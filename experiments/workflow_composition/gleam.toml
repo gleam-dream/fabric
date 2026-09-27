@@ -1,0 +1,14 @@
+# THROWAWAY experiment: see FINDINGS.md for the question it answers.
+name = "workflow_composition"
+version = "0.0.0"
+target = "erlang"
+gleam = ">= 1.18.0"
+
+[dependencies]
+gleam_stdlib = ">= 0.70.0 and < 1.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_json = ">= 3.0.0 and < 4.0.0"
+saga = { path = "../../../saga" }
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
