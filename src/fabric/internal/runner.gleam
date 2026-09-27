@@ -291,13 +291,22 @@ fn persist(
   ownership: store.Ownership,
   attempt: Int,
 ) -> Result(Int, store.StoreError) {
-  case
-    store.commit(store, state.run, expected, record.encode(state), ownership)
-  {
+  let encoded = record.encode(state)
+  case store.commit(store, state.run, expected, encoded, ownership) {
     Error(store.Unavailable(_)) if attempt < unavailable_retries -> {
       process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
       persist(store, state, expected, ownership, attempt + 1)
     }
+    // An earlier attempt that was reported unavailable may have landed
+    // after all: the conflict is then with this runner's own write.
+    Error(store.Conflict(current)) as conflict
+      if attempt > 0 && current == expected + 1
+    ->
+      case store.get(store, state.run) {
+        Ok(entry) if entry.revision == current && entry.record == encoded ->
+          Ok(current)
+        _ -> conflict
+      }
     outcome -> outcome
   }
 }

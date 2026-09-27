@@ -31,10 +31,11 @@
 //// compare-and-set keeps their commits safe, but each only knows its own
 //// runners.
 
-import fabric/internal/executor
+import fabric/internal/bounded
 import fabric/internal/live
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -202,7 +203,15 @@ type Request {
   Watch(run: String, watcher: Subject(Nil), reply: Subject(Nil))
   Unwatch(run: String, watcher: Subject(Nil))
   Down(pid: Pid)
+  /// A worker finished the backend call of the run's current request.
+  Finished(run: String, done: Done)
+  SetTimeout(milliseconds: Int)
   Close
+}
+
+type Done {
+  Got(Result(Stored, StoreError))
+  Wrote(Result(Int, StoreError))
 }
 
 type Loop {
@@ -212,8 +221,16 @@ type Loop {
     live: Dict(String, #(Pid, Live)),
     watchers: Dict(String, List(#(Pid, Subject(Nil)))),
     monitored: List(Pid),
+    /// Per run: the request whose backend call is in flight, and the
+    /// requests waiting behind it, oldest first.
+    busy: Dict(String, #(Request, List(Request))),
+    timeout: Int,
   )
 }
+
+/// How long one backend call may take, in milliseconds, before it is
+/// abandoned and reported `Unavailable`.
+const default_backend_timeout = 5000
 
 /// Starts the store process linked to the caller; it builds its backend
 /// itself, so a backend process is linked to the store.
@@ -223,10 +240,25 @@ fn open(backend: fn() -> Backend) -> Store {
     process.spawn(fn() {
       let subject = process.new_subject()
       process.send(ready, subject)
-      serve(Loop(subject, backend(), dict.new(), dict.new(), []))
+      serve(Loop(
+        subject:,
+        backend: backend(),
+        live: dict.new(),
+        watchers: dict.new(),
+        monitored: [],
+        busy: dict.new(),
+        timeout: default_backend_timeout,
+      ))
     })
   let subject = process.receive_forever(ready)
   Store(pid, subject)
+}
+
+/// Sets how long one backend call may take (default 5000 ms). For tests.
+@internal
+pub fn with_backend_timeout(store: Store, milliseconds: Int) -> Store {
+  process.send(store.subject, SetTimeout(milliseconds))
+  store
 }
 
 fn call(
@@ -247,6 +279,9 @@ fn call(
   answer
 }
 
+/// The store process never calls the backend itself. Backend calls run in
+/// worker processes, one run at a time in arrival order, each bounded by
+/// the backend timeout, so a slow or hung call holds up only its own run.
 fn serve(state: Loop) -> Nil {
   let selector =
     process.new_selector()
@@ -259,46 +294,10 @@ fn serve(state: Loop) -> Nil {
     })
   case process.selector_receive_forever(selector) {
     Close -> Nil
-    Get(run, reply) -> {
-      let entry =
-        guarded(fn() { state.backend.get(run) })
-        |> result.map(fn(stored) {
-          Entry(
-            stored.revision,
-            stored.record,
-            dict.get(state.live, run)
-              |> result.map(fn(l) { l.1 })
-              |> option.from_result,
-          )
-        })
-      process.send(reply, entry)
-      serve(state)
-    }
-    Write(run, expected, record, ownership, reply) -> {
-      let revision = case expected {
-        None -> 1
-        Some(expected) -> expected + 1
-      }
-      let written =
-        case expected {
-          None -> guarded(fn() { state.backend.insert(run, record) })
-          Some(expected) ->
-            guarded(fn() {
-              state.backend.compare_and_set(run, expected, record)
-            })
-        }
-        |> result.replace(revision)
-        |> confirm(state.backend, run, revision, record)
-      process.send(reply, written)
-      case written {
-        Error(_) -> serve(state)
-        Ok(_) -> {
-          let state = own(state, run, ownership)
-          notify(state, run)
-          serve(state)
-        }
-      }
-    }
+    SetTimeout(milliseconds) -> serve(Loop(..state, timeout: milliseconds))
+    Get(run, ..) as request | Write(run, ..) as request ->
+      serve(enqueue(state, run, request))
+    Finished(run, done) -> serve(finish(state, run, done))
     Watch(run, watcher, reply) -> {
       let state = case process.subject_owner(watcher) {
         Error(Nil) -> state
@@ -348,19 +347,128 @@ fn serve(state: Loop) -> Nil {
   }
 }
 
+fn enqueue(state: Loop, run: String, request: Request) -> Loop {
+  case dict.get(state.busy, run) {
+    Ok(#(current, waiting)) ->
+      Loop(
+        ..state,
+        busy: dict.insert(state.busy, run, #(
+          current,
+          list.append(waiting, [request]),
+        )),
+      )
+    Error(Nil) -> {
+      begin(state, run, request)
+      Loop(..state, busy: dict.insert(state.busy, run, #(request, [])))
+    }
+  }
+}
+
+/// Starts the backend call of `request` in a worker linked to the store.
+fn begin(state: Loop, run: String, request: Request) -> Nil {
+  let backend = state.backend
+  let timeout = state.timeout
+  let subject = state.subject
+  let _ =
+    process.spawn(fn() {
+      let done = case request {
+        Write(expected:, record:, ..) -> {
+          let revision = case expected {
+            None -> 1
+            Some(expected) -> expected + 1
+          }
+          bounded_backend(timeout, fn() {
+            case expected {
+              None -> backend.insert(run, record)
+              Some(expected) -> backend.compare_and_set(run, expected, record)
+            }
+          })
+          |> result.replace(revision)
+          |> confirm(backend, timeout, run, revision, record)
+          |> Wrote
+        }
+        _ -> Got(bounded_backend(timeout, fn() { backend.get(run) }))
+      }
+      process.send(subject, Finished(run, done))
+    })
+  Nil
+}
+
+/// Answers the run's current request and starts the next one.
+fn finish(state: Loop, run: String, done: Done) -> Loop {
+  case dict.get(state.busy, run) {
+    Error(Nil) -> state
+    Ok(#(current, waiting)) -> {
+      let state = case current, done {
+        Get(reply:, ..), Got(got) -> {
+          process.send(
+            reply,
+            result.map(got, fn(stored) {
+              Entry(
+                stored.revision,
+                stored.record,
+                dict.get(state.live, run)
+                  |> result.map(fn(l) { l.1 })
+                  |> option.from_result,
+              )
+            }),
+          )
+          state
+        }
+        Write(ownership:, reply:, ..), Wrote(written) -> {
+          process.send(reply, written)
+          case written {
+            Error(_) -> state
+            Ok(_) -> {
+              let state = own(state, run, ownership)
+              notify(state, run)
+              state
+            }
+          }
+        }
+        _, _ -> state
+      }
+      case waiting {
+        [] -> Loop(..state, busy: dict.delete(state.busy, run))
+        [next, ..rest] -> {
+          begin(state, run, next)
+          Loop(..state, busy: dict.insert(state.busy, run, #(next, rest)))
+        }
+      }
+    }
+  }
+}
+
+/// A backend call that crashes or exceeds the deadline is `Unavailable`.
+fn bounded_backend(
+  timeout: Int,
+  body: fn() -> Result(a, StoreError),
+) -> Result(a, StoreError) {
+  case bounded.call(timeout, body) {
+    Ok(result) -> result
+    Error(bounded.Crashed(crash)) ->
+      Error(Unavailable("the backend crashed: " <> crash))
+    Error(bounded.TimedOut) ->
+      Error(Unavailable(
+        "the backend gave no answer within " <> int.to_string(timeout) <> " ms",
+      ))
+  }
+}
+
 /// A backend may commit and still report `Unavailable` (a lost reply). The
 /// write is confirmed when reading back finds exactly this record at this
 /// revision; otherwise the error stands.
 fn confirm(
   written: Result(Int, StoreError),
   backend: Backend,
+  timeout: Int,
   run: String,
   revision: Int,
   record: String,
 ) -> Result(Int, StoreError) {
   case written {
     Error(Unavailable(_)) ->
-      case guarded(fn() { backend.get(run) }) {
+      case bounded_backend(timeout, fn() { backend.get(run) }) {
         Ok(Stored(found, stored)) if found == revision && stored == record ->
           Ok(revision)
         _ -> written
@@ -400,13 +508,6 @@ fn notify(state: Loop, run: String) -> Nil {
   dict.get(state.watchers, run)
   |> result.unwrap([])
   |> list.each(fn(entry) { process.send(entry.1, Nil) })
-}
-
-fn guarded(body: fn() -> Result(a, StoreError)) -> Result(a, StoreError) {
-  case executor.rescue(body) {
-    Ok(result) -> result
-    Error(crash) -> Error(Unavailable("the backend crashed: " <> crash))
-  }
 }
 
 // --- in memory ---------------------------------------------------------------
