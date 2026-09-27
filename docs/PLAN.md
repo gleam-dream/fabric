@@ -81,12 +81,20 @@ an idle run is data in the store with no process holding it.
   newer owner reads the newer record and is validated again.
 - **Runner loss is reported, not waited on.** When a runner dies while its
   record still needs one, the store drops its registration and wakes every
-  `await`, which then returns `NoRunner`. Commands that would start work
-  return `RecoveryRequired`; `cancel` needs no recovery. Recovery is an
-  explicit `fabric.recover`, because a store knows only the runners of its own
-  VM: taking a run over automatically could steal it from a live runner in
-  another VM. An older runner cannot commit after a takeover (its revision is
+  `await`, which then returns `NoRunner`. A command is first checked against
+  the stored record, so a refusal is reported as such; a valid command that
+  needs the absent runner returns `OwnerUnknown` and changes nothing;
+  `cancel` needs no runner. Recovery is an explicit `fabric.recover`,
+  because a store knows only the runners of its own VM: taking a run over
+  automatically could steal it from a live runner driven through another
+  `Store`. An older runner cannot commit after a takeover (its revision is
   stale), so the takeover is safe; it is not a lease.
+- **Transient store failures are retried, not taken as a takeover.** After an
+  `Unavailable` write the store reads the run back and confirms a write
+  that landed; a runner tries an `Unavailable` commit again (six times,
+  backoff doubling from 10 ms) and stops only on a conflict. Backend calls
+  run in worker processes, serialised per run and bounded by 5000 ms, so a
+  hung call holds up only its own run.
 - **A task that dies without a report** (killed from outside) is recorded as an
   uncertain effect, whether or not its fence was committed.
 - **Model retries back off.** A retryable model failure is retried after
@@ -97,7 +105,15 @@ an idle run is data in the store with no process holding it.
   the `reviewer` it is given as is. The application authenticates and
   authorizes the reviewer before calling it; Fabric checks only that the
   reference is current and that the policy, run again with the context the
-  application passes, still allows the action.
+  application passes, still allows the action. That context is for the
+  recheck only: the approved action runs with the run's own context (from
+  `start` or `recover`) whether or not a runner was live. This departs from
+  the design line "approved invocation retains the same context used by the
+  recheck" (oversight `fabric-design.md` §0), which the two paths did not
+  honour consistently; the design owner should confirm or restore it.
+- **A superseded answer is kept.** When the recheck asks for another
+  requirement, the answer stays in the action's approvals (it authorizes
+  nothing) and the new request is issued.
 
 ## Public API (slice 2a)
 
@@ -293,9 +309,49 @@ Backlog from this slice:
   but a store knows only its own runners, so `recover` in one VM takes over a
   run another VM still drives. A lease or heartbeat would let recovery wait
   for a live owner.
-- **Cancel of an incompatible record.** Every command, `cancel` included,
+- **Cancel of an incompatible record** (resolved: `fabric.cancel_stored`
+  needs no agent, and `cancel` skips the compatibility check). Every command, `cancel` included,
   requires the record to be compatible with the agent; a run whose pending
   tool was removed cannot be cancelled under the new agent.
+
+## Slice 2a review fixes
+
+An independent review of slice 2a found no double execution or lost fence
+under process or VM loss. Its findings were fixed test-first:
+
+| Finding                                                                                                          | Resolution and evidence                                                                                                                                                                                                                                                       |
+| ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unparseable Anthropic or Google tool arguments failed the next turn                                              | Replayed as `{"unparsed_arguments": text}`; the record keeps the original (`unparseable_arguments_replay_to_anthropic_as_an_object_test`). llm_wire itself should replay arguments it reported as invalid (proposed sibling change).                                          |
+| A second `Store` over one directory answered `RecoveryRequired` and advised a takeover                           | Commands are checked against the stored record first; `OwnerUnknown` replaces `RecoveryRequired` (`a_second_store_checks_commands_before_reporting_an_unknown_owner_test`).                                                                                                   |
+| An agent change stranded paused runs                                                                             | `fabric.cancel_stored(store, id)` needs no agent; `cancel` through a handle skips the compatibility check (`a_stranded_run_is_cancelled_without_an_agent_test`, `cancel_stored_stops_a_live_run_through_its_runner_test`).                                                    |
+| One transient `Unavailable` stalled the run                                                                      | Store read-back and runner retry (`a_runner_retries_a_commit_the_store_could_not_make_test`, `a_write_the_backend_made_despite_an_error_is_confirmed_test`).                                                                                                                  |
+| A hung backend froze every run of a Store                                                                        | Per-run worker calls with a deadline (`a_hung_backend_call_blocks_only_its_run_until_its_deadline_test`).                                                                                                                                                                     |
+| Cancelling an orphaned stopping record did nothing                                                               | `controller.cancel_abandoned` (`cancelling_a_record_a_lost_runner_left_stopping_ends_it_test`).                                                                                                                                                                               |
+| Cancel through another Store left tool bodies running                                                            | Documented on `fabric.cancel`.                                                                                                                                                                                                                                                |
+| Directory store: directory entry not fsynced; O(n²) disk; stray temporary files; `ok = file:close`               | "Never retried" scoped in the `fabric` module documentation; old revisions emptied, stale temporary files swept (`the_directory_store_empties_revisions_older_than_the_previous_test`, `opening_a_directory_store_sweeps_stale_temporary_files_test`); close errors reported. |
+| The answer's context became the run context only without a live runner                                           | The answer's context is for the recheck only (`the_answer_context_is_for_the_recheck_and_the_tool_keeps_the_run_context_test`); see the decision above.                                                                                                                       |
+| A changed requirement left no audit trail                                                                        | The superseded answer is kept (`a_changed_requirement_demands_a_new_answer_test`).                                                                                                                                                                                            |
+| A backend that committed then reported `Unavailable` gave `StartFailed`/`StoreFailed`                            | Store read-back, as above.                                                                                                                                                                                                                                                    |
+| ORACLE A13 said "VM restart"; CAPABILITIES excluded multi-node while the store claims cross-VM safety            | Relabelled and reconciled in ORACLE.md and CAPABILITIES.md.                                                                                                                                                                                                                   |
+| Nits: dead `registry.is_registered`; foreign run ids gave a store error; the runner ignored outside exit signals | Removed; `RunNotFound` (`a_run_id_that_fabric_never_issues_is_not_found_test`); the runner stops (`an_exit_signal_from_outside_stops_the_runner_test`).                                                                                                                       |
+
+Deferred, with reasons:
+
+- **The default identity `agent/1`** makes the identity check vacuous for
+  applications that never name their agent. Requiring a name changes the one
+  ordinary path (`agent.new`); deriving one from the tools would refuse
+  compatible changes. Kept, pending an API decision.
+- **Rejecting a stranded run.** `recover` still refuses an incompatible
+  record, so a stranded run can be cancelled (`cancel_stored`) but not
+  rejected: a rejection would continue the run under an agent that recovery
+  refused.
+- **A lease or heartbeat** for runs driven through several Stores (see the
+  cross-VM backlog item above).
+- **Unknown record fields** are ignored when decoding; strict decoding would
+  make every added field a version bump.
+- Ergonomics (five error types, `answer` needing a context for a rejection,
+  a Store linked to its opener, an opaque run id) are recorded for an API
+  review; none was changed here.
 
 ## Slice 2b — sub-agents and observations
 
