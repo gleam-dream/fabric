@@ -159,7 +159,10 @@ pub fn a_record_continues_only_under_its_agent_and_tools_test() {
         action("w", run.Queued),
         run.ActionRecord(
           ActionId(2, "t"),
-          call("t", "transfer_funds"),
+          ToolCall(
+            ..call("t", "transfer_funds"),
+            arguments_json: "{\"to\":\"bob\",\"amount\":10}",
+          ),
           run.AwaitingApproval(Requirement("transfer", 1), 1),
           [],
         ),

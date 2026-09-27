@@ -535,8 +535,10 @@ fn host_failure_decoder() -> Decoder(HostFailure) {
 // --- compatibility ---------------------------------------------------------------
 
 /// Whether `state` can continue under an agent with `agent` identity and
-/// `registry`: the identity must match, and every action that may still
-/// run (queued, running, or awaiting approval) must name a registered tool.
+/// `registry`: the identity must match, and every action that has not
+/// started yet (queued or awaiting approval) must name a registered tool
+/// that accepts its arguments. A running action is not checked: under
+/// another runner it becomes an uncertain effect and never runs again.
 pub fn check(
   state: State,
   agent: Identity,
@@ -553,12 +555,17 @@ pub fn check(
   }
   let tools =
     list.filter_map(current, fn(action) {
-      case action.state, registry.is_registered(registry, action.call.name) {
-        run.Queued, False
-        | run.Running, False
-        | run.AwaitingApproval(..), False
-        -> Ok(run.ToolNotRegistered(action.id, action.call.name))
-        _, _ -> Error(Nil)
+      let name = action.call.name
+      case action.state {
+        run.Queued | run.AwaitingApproval(..) ->
+          case registry.admit(registry, name, action.call.arguments_json) {
+            Ok(Nil) -> Error(Nil)
+            Error(registry.NotRegistered) ->
+              Ok(run.ToolNotRegistered(action.id, name))
+            Error(registry.MalformedArguments(detail)) ->
+              Ok(run.ArgumentsNotAccepted(action.id, name, detail))
+          }
+        _ -> Error(Nil)
       }
     })
   case list.append(identity, tools) {
