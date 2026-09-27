@@ -50,28 +50,53 @@ recorded as a passing comparison.
 
 ## Ledger
 
-| Behaviour                                                                            | Category                 | Status                             | Evidence                                                                    |
-| ------------------------------------------------------------------------------------ | ------------------------ | ---------------------------------- | --------------------------------------------------------------------------- |
-| Two tool calls with distinct ids are executed and fed back in call order             | Executed differential    | See [results](#slice-1-results)    | `test/oracle/fixtures/two_tool_calls.json`, `test/fabric/oracle_test.gleam` |
-| A failing tool becomes a model-visible error and the run continues to a final answer | Executed differential    | See [results](#slice-1-results)    | `test/oracle/fixtures/tool_error_visible.json`                              |
-| The model-call limit stops a looping agent without further tool effects              | Executed differential    | See [results](#slice-1-results)    | `test/oracle/fixtures/model_call_limit.json`                                |
-| Unknown tool name becomes a model-visible error (`tool_node_test.exs:432`)           | Inspired test            | Fabric test only                   | `test/fabric/controller_test.gleam`                                         |
-| HITL pause before a tool is data, no process held (`human_in_the_loop_test.exs`)     | Inspired test            | Fabric test only                   | `test/fabric/runner_test.gleam`                                             |
-| Parallel tools are bounded by a concurrency limit                                    | Original Fabric contract | Fabric test only                   | `test/fabric/runner_test.gleam`                                             |
-| Cancel during a tool: in-flight uncertain, never retried; terminal `Cancelled`       | Original Fabric contract | Fabric test only                   | `test/fabric/runner_test.gleam`                                             |
-| Uncertain effect blocks the next model turn until reconciled                         | Original Fabric contract | Fabric test only                   | `test/fabric/controller_test.gleam`, `runner_test.gleam`                    |
-| Token budget from observed usage; missing usage reported                             | Original Fabric contract | Fabric test only                   | `test/fabric/controller_test.gleam`                                         |
-| Foreign and duplicate reports rejected                                               | Original Fabric contract | Fabric test only                   | `test/fabric/controller_test.gleam`                                         |
-| Crash mid-tool re-runs the tool on recovery (B5)                                     | Anti-oracle              | Slice 1 records crash as uncertain | `test/fabric/runner_test.gleam`; restart is slice 2                         |
-| Stale, duplicate, unknown-thread resume accepted (B2)                                | Anti-oracle              | Slice 2                            | —                                                                           |
-| Concurrent double resume executes twice (B3)                                         | Anti-oracle              | Slice 2                            | —                                                                           |
-| Invalid resume burns the pending interrupt (B4)                                      | Anti-oracle              | Slice 2                            | —                                                                           |
-| Child sub-agent interrupt stringified and dropped (B1)                               | Anti-oracle              | Slice 2                            | —                                                                           |
-| Durable pause survives VM restart and executes once (A13)                            | Executed differential    | Unverified (slice 2)               | —                                                                           |
-| HITL approve / reject / edit / respond decisions (A1–A7)                             | Executed differential    | Unverified (slice 2)               | —                                                                           |
-| Run, step and node timeouts (A19)                                                    | Unverified               | No Fabric timeout yet              | —                                                                           |
+| Behaviour                                                                                           | Category                                              | Status                                                              | Evidence                                                                    |
+| --------------------------------------------------------------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Two tool calls with distinct ids are executed and fed back in call order                            | Executed differential (match)                         | Passing                                                             | `test/oracle/fixtures/two_tool_calls.json`, `test/fabric/oracle_test.gleam` |
+| A failing tool and an unknown tool become model-visible errors; the run continues to a final answer | Executed differential (match, error wording excluded) | Passing                                                             | `test/oracle/fixtures/tool_error_visible.json`                              |
+| A model-call limit of 2 stops a looping agent                                                       | Executed differential (deliberate divergence)         | Passing; divergence asserted                                        | `test/oracle/fixtures/model_call_limit.json`                                |
+| Unknown tool name becomes a model-visible error (`tool_node_test.exs:432`)                          | Inspired test                                         | Fabric test only                                                    | `test/fabric/controller_test.gleam`                                         |
+| HITL pause before a tool is data, no process held (`human_in_the_loop_test.exs`)                    | Inspired test                                         | Fabric test only                                                    | `test/fabric/runner_test.gleam`                                             |
+| Parallel tools are bounded by a concurrency limit                                                   | Original Fabric contract                              | Fabric test only                                                    | `test/fabric/runner_test.gleam`                                             |
+| Cancel during a tool: in-flight uncertain, never retried; terminal `Cancelled`                      | Original Fabric contract                              | Fabric test only                                                    | `test/fabric/runner_test.gleam`                                             |
+| Uncertain effect blocks the next model turn until reconciled                                        | Original Fabric contract                              | Fabric test only                                                    | `test/fabric/controller_test.gleam`, `runner_test.gleam`                    |
+| Token budget from observed usage; missing usage reported                                            | Original Fabric contract                              | Fabric test only                                                    | `test/fabric/controller_test.gleam`                                         |
+| Foreign and duplicate reports rejected                                                              | Original Fabric contract                              | Fabric test only                                                    | `test/fabric/controller_test.gleam`                                         |
+| Crash mid-tool re-runs the tool on recovery (B5); a raising tool becomes a model-visible error      | Anti-oracle                                           | Slice 1 records a crash after the fence as uncertain, never retried | `test/fabric/runner_test.gleam`; restart is slice 2                         |
+| Stale, duplicate, unknown-thread resume accepted (B2)                                               | Anti-oracle                                           | Slice 2                                                             | —                                                                           |
+| Concurrent double resume executes twice (B3)                                                        | Anti-oracle                                           | Slice 2                                                             | —                                                                           |
+| Invalid resume burns the pending interrupt (B4)                                                     | Anti-oracle                                           | Slice 2                                                             | —                                                                           |
+| Child sub-agent interrupt stringified and dropped (B1)                                              | Anti-oracle                                           | Slice 2                                                             | —                                                                           |
+| Durable pause survives VM restart and executes once (A13)                                           | Executed differential                                 | Unverified (slice 2)                                                | —                                                                           |
+| HITL approve / reject / edit / respond decisions (A1–A7)                                            | Executed differential                                 | Unverified (slice 2)                                                | —                                                                           |
+| Run, step and node timeouts (A19)                                                                   | Unverified                                            | No Fabric timeout yet                                               | —                                                                           |
 
 ## Slice 1 results
 
-Filled in when the fixtures are captured and compared; until then every row
-above marked "See results" is unverified.
+Captured 2026-09-27 at `d0aa1f90d31c55d49be2f7b5a24224b5e18145a1` (Elixir
+1.19.5, OTP 28) by `test/oracle/capture/capture.exs`, run from the scratch
+clone with the default `~/.mix` (its Hex archive; overriding `MIX_HOME` makes
+`mix` prompt for Hex and hang):
+
+```sh
+cd <scratch>/fork_clone   # git clone --no-local of the fork, at the pin
+PATH=/nix/store/5fbjxaaizi26pmghbyn09llww48qg01q-elixir-1.19.5/bin:/nix/store/cyr4xsis8csd0sjvmy6lxaw9214f1sjf-erlang-28.5/bin:$PATH \
+  MIX_ENV=test FIXTURE_DIR=<fabric>/test/oracle/fixtures \
+  mix run --no-compile <fabric>/test/oracle/capture/capture.exs < /dev/null
+```
+
+Each fixture carries its provenance fields (`oracle`, `script`, `command`,
+`captured`, `license`); the Fabric test refuses a fixture from another commit.
+`test/fabric/oracle_test.gleam` runs the same scenario rules through Fabric
+with a transcript-pure model and compares normalized observables.
+
+| Fixture              | Compared                                                                                                 | Result                                                                                                                                                                                                                                                                                                                                                                                         |
+| -------------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `two_tool_calls`     | Full transcript (ids, order, success contents, final text), tool effects as a multiset, model-call count | Equal.                                                                                                                                                                                                                                                                                                                                                                                         |
+| `tool_error_visible` | Transcript without the final answer, tool statuses, success contents, effects, model-call count          | Equal. Error wording differs by package (`Tool error: ...` versus `{"error": ...}`) and is not compared. In BeamWeaver the failing tool returned `{:error, reason}`; in Fabric it is a typed error bound with `bind_reporting` and `Explain`.                                                                                                                                                  |
+| `model_call_limit`   | Model-call count, first four transcript entries, then the divergence                                     | Deliberate divergence, asserted. Both call the model twice. BeamWeaver checks its limit before the third model call, so the tool requested by the second reply runs (`tool:step:2`) and the run ends with a limit message. Fabric does not start a tool whose result could not reach the model within the limit: `step 2` stays `NotStarted` and the run ends `BudgetExhausted(TurnLimit(2))`. |
+
+Not claimed: parity for error wording, BeamWeaver's `recursion_limit`
+(super-steps, not model turns), or a raising tool, which BeamWeaver turns into
+a model-visible error and Fabric records as an uncertain effect (anti-oracle
+B5 row above).
