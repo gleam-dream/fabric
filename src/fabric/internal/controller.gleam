@@ -246,7 +246,9 @@ fn answer_approval(
   }
   case reference.run == state.run, state.phase {
     False, _ -> Error(WrongReference)
-    True, Ended(_) | True, Stopping(..) -> Error(RunEnded)
+    True, Ended(_) -> Error(after_end(state.history, reference))
+    True, Stopping(_, actions, _) ->
+      Error(after_end(list.append(state.history, actions), reference))
     True, Acting(turn, actions) ->
       case find(actions) {
         Ok(
@@ -267,6 +269,23 @@ fn answer_approval(
         Error(Nil) -> Error(in_history(state, reference))
       }
     True, AwaitingModel(_) -> Error(in_history(state, reference))
+  }
+}
+
+/// An ended run accepts no answer. A request it answered is reported as
+/// answered; any other request of the run was voided by the ending.
+fn after_end(actions: List(ActionRecord), reference: ApprovalRef) -> Rejection {
+  case list.find(actions, fn(action) { action.id == reference.id }) {
+    Error(Nil) -> WrongReference
+    Ok(action) ->
+      case
+        list.any(action.approvals, fn(approval) {
+          approval.revision == reference.revision
+        })
+      {
+        True -> AlreadyAnswered
+        False -> RunEnded
+      }
   }
 }
 
