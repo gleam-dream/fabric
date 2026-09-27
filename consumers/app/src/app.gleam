@@ -158,6 +158,9 @@ pub fn desk_policy(
   case member.id, action.tool {
     "", _ -> Error("member directory unavailable")
     "guest", "reserve_book" -> Ok(policy.Deny("guests cannot reserve"))
+    // A junior member's reservation waits for a guardian's approval.
+    "junior", "reserve_book" ->
+      Ok(policy.RequireApproval(policy.Requirement("guardian", 1)))
     _, _ -> Ok(policy.Allow)
   }
 }
