@@ -2,6 +2,7 @@
 //// directory store's durability.
 
 import fabric/store.{type Store}
+import fabric/support/flaky
 import fabric/support/restart
 import gleam/erlang/process
 import gleam/list
@@ -132,4 +133,18 @@ pub fn a_closed_store_is_unavailable_test() {
   let store = store.in_memory()
   store.close(store)
   let assert Error(store.Unavailable(_)) = store.get(store, "run-x")
+}
+
+/// A backend that committed but reported `Unavailable` is read back: the
+/// write is confirmed when the stored record is the one written.
+pub fn a_write_the_backend_made_despite_an_error_is_confirmed_test() {
+  let flaky = flaky.new()
+  let store = flaky.store(flaky)
+  flaky.arm(flaky, [flaky.FailAfter, flaky.FailAfter, flaky.FailBefore])
+  store.insert(store, "run-f", "one", store.Keep) |> should.equal(Ok(1))
+  store.commit(store, "run-f", 1, "two", store.Keep) |> should.equal(Ok(2))
+  store.commit(store, "run-f", 2, "three", store.Keep)
+  |> should.equal(Error(store.Unavailable("the backend blinked")))
+  let assert Ok(store.Entry(revision: 2, record: "two", ..)) =
+    store.get(store, "run-f")
 }

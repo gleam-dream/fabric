@@ -268,17 +268,37 @@ fn commit(
     True -> store.Keep
     False -> store.Release(process.self())
   }
-  case
-    store.commit(
-      runner.setup.store,
-      state.run,
-      runner.revision,
-      record.encode(state),
-      ownership,
-    )
-  {
+  case persist(runner.setup.store, state, runner.revision, ownership, 0) {
     Error(_) -> Error(Superseded)
     Ok(revision) -> Ok(perform(Runner(..runner, state:, revision:), effects))
+  }
+}
+
+/// How often a commit the store reports `Unavailable` is tried again, and
+/// the first wait in milliseconds (doubled per attempt).
+const unavailable_retries = 6
+
+const unavailable_backoff = 10
+
+/// Commits `state` over `expected`. A conflict means a newer owner exists:
+/// stop. `Unavailable` may be transient, so it is tried again after a
+/// bounded backoff (the store has already read back a write that happened
+/// despite the error).
+fn persist(
+  store: Store,
+  state: State,
+  expected: Int,
+  ownership: store.Ownership,
+  attempt: Int,
+) -> Result(Int, store.StoreError) {
+  case
+    store.commit(store, state.run, expected, record.encode(state), ownership)
+  {
+    Error(store.Unavailable(_)) if attempt < unavailable_retries -> {
+      process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
+      persist(store, state, expected, ownership, attempt + 1)
+    }
+    outcome -> outcome
   }
 }
 
