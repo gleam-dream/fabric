@@ -324,8 +324,10 @@ fn unanswerable(action: ActionRecord, reference: ApprovalRef) -> Rejection {
       approval.revision == reference.revision
     })
   case answered, action.approvals, action.state {
+    // A request superseded by a new one is stale even though it was
+    // answered.
+    _, _, run.AwaitingApproval(..) -> StaleReference
     True, _, _ -> AlreadyAnswered
-    False, [], run.AwaitingApproval(..) -> StaleReference
     False, [], _ -> WrongReference
     False, _, _ -> StaleReference
   }
@@ -370,13 +372,10 @@ fn decide(
           if required != approval.requirement
         -> {
           let issued = state.approvals_issued + 1
+          // The superseded answer stays on the action for the audit
+          // trail; it authorizes nothing.
           let actions =
-            replace(
-              ActionRecord(
-                ..action,
-                state: run.AwaitingApproval(required, issued),
-              ),
-            )
+            replace(answered(run.AwaitingApproval(required, issued)))
           #(
             State(
               ..state,
