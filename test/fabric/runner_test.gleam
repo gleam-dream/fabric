@@ -9,6 +9,7 @@ import fabric/run
 import fabric/store
 import fabric/support/apps
 import fabric/support/probe
+import fabric/support/restart
 import fabric/support/scripted
 import fabric/tool
 import gleam/erlang/process
@@ -44,8 +45,8 @@ pub fn run_completes_with_two_typed_tools_test() {
       [apps.weather_tool(), apps.transfer_tool()],
       policy.always_allow(),
     )
-  let assert Ok(run) =
-    fabric.start(store.in_memory(), agent, Nil, "weather, then pay bob")
+  let held = store.in_memory()
+  let assert Ok(run) = fabric.start(held, agent, Nil, "weather, then pay bob")
   let assert Ok(run.Finished(run.Completed(answer))) = fabric.await(run, 5000)
   answer
   |> should.equal("final: {\"summary\":\"sunny\"} | {\"receipt\":\"r-bob\"}")
@@ -60,7 +61,7 @@ pub fn run_completes_with_two_typed_tools_test() {
   ])
   snapshot.turns_used |> should.equal(2)
   snapshot.usage |> should.equal(run.TokenUsage(30, 10, 0))
-  fabric.is_live(run) |> should.be_false
+  restart.runner(held, fabric.id(run)) |> should.equal(Error(Nil))
 }
 
 pub fn typed_failure_is_visible_to_the_model_test() {
@@ -117,13 +118,14 @@ pub fn approval_suspends_the_run_as_data_test() {
       [apps.weather_tool(), apps.transfer_tool()],
       transfers_need_approval,
     )
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "pay bob")
+  let held = store.in_memory()
+  let assert Ok(run) = fabric.start(held, agent, Nil, "pay bob")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   pending.reference.id |> should.equal(ActionId(1, "t"))
   pending.reference.requirement
   |> should.equal(policy.Requirement("transfer", 1))
   // No process holds the suspended run.
-  fabric.is_live(run) |> should.be_false
+  restart.runner(held, fabric.id(run)) |> should.equal(Error(Nil))
   let assert [run.Succeeded(_), run.AwaitingApproval(_, 1)] = states(run)
   // Cancelling it is a transition on the stored record.
   fabric.cancel(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
@@ -140,8 +142,8 @@ pub fn cancel_kills_running_tools_and_records_them_uncertain_test() {
       policy.always_allow(),
     )
     |> agent.with_max_concurrency(1)
-  let assert Ok(run) =
-    fabric.start(store.in_memory(), agent, Nil, "two slow things")
+  let held = store.in_memory()
+  let assert Ok(run) = fabric.start(held, agent, Nil, "two slow things")
   let first = probe.arrival(probe)
   first.name |> should.equal("a")
   let assert Ok(_) = fabric.cancel(run)
@@ -149,7 +151,7 @@ pub fn cancel_kills_running_tools_and_records_them_uncertain_test() {
   let assert [run.Uncertain(_), run.NotStarted] = states(run)
   // The body started once, never finished, and was never retried.
   probe.entries(probe) |> should.equal(["start:a"])
-  fabric.is_live(run) |> should.be_false
+  restart.runner(held, fabric.id(run)) |> should.equal(Error(Nil))
 }
 
 pub fn cancel_while_the_model_is_called_test() {
@@ -175,8 +177,8 @@ pub fn uncertain_effect_blocks_until_reconciled_test() {
       [apps.transfer_tool()],
       policy.always_allow(),
     )
-  let assert Ok(run) =
-    fabric.start(store.in_memory(), agent, Nil, "pay bob a lot")
+  let held = store.in_memory()
+  let assert Ok(run) = fabric.start(held, agent, Nil, "pay bob a lot")
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
   uncertain
   |> should.equal(run.UncertainAction(
@@ -184,7 +186,7 @@ pub fn uncertain_effect_blocks_until_reconciled_test() {
     "transfer_funds",
     "gateway timed out after sending",
   ))
-  fabric.is_live(run) |> should.be_false
+  restart.runner(held, fabric.id(run)) |> should.equal(Error(Nil))
   let assert Ok(run.Working) =
     fabric.reconcile(run, uncertain.id, "{\"receipt\":\"confirmed\"}")
   fabric.await(run, 5000)

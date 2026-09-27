@@ -295,14 +295,6 @@ fn pending_of(state: State) -> List(PendingApproval) {
   }
 }
 
-/// Whether a runner in this VM currently drives the run.
-pub fn is_live(run: Run(context)) -> Bool {
-  case load(run) {
-    Ok(#(entry, state)) -> option.is_some(live_runner(entry, state))
-    Error(_) -> False
-  }
-}
-
 /// Answers an approval request. `context` is the application's current
 /// context: the policy is checked again with it, and a current denial or
 /// policy failure wins over an approval. If the approved action runs from
