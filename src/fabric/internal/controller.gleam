@@ -163,8 +163,7 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
       Ok(model_replied(env, state, turn, reply))
     AwaitingModel(turn), ModelFailed(t, error) if t == turn ->
       Ok(model_failed(env, state, error))
-    AwaitingModel(_), Cancel ->
-      Ok(#(State(..state, phase: Ended(run.Cancelled)), [AbortModel]))
+    _, Cancel -> cancel(state)
     AwaitingModel(_), _ -> Error(StaleEvent)
 
     Acting(turn, actions), ToolStarting(id) ->
@@ -200,8 +199,6 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
       )
       Ok(settle(env, State(..state, phase: Acting(turn, actions))))
     }
-    Acting(turn, actions), Cancel ->
-      Ok(stop(state, turn, actions, CancelRequested))
     Acting(..), _ -> Error(StaleEvent)
 
     Stopping(turn, actions, reason), ToolReported(id, outcome) -> {
@@ -214,8 +211,18 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
     }
     Stopping(_, actions, reason), ToolsStopped ->
       Ok(#(finish_stop(state, actions, reason, "stopped while running"), []))
-    Stopping(..), Cancel -> Ok(#(state, []))
     Stopping(..), _ -> Error(StaleEvent)
+  }
+}
+
+/// Cancels the run. It needs no environment: cancelling starts nothing.
+pub fn cancel(state: State) -> Transition {
+  case state.phase {
+    Ended(_) -> Error(RunEnded)
+    AwaitingModel(_) ->
+      Ok(#(State(..state, phase: Ended(run.Cancelled)), [AbortModel]))
+    Acting(turn, actions) -> Ok(stop(state, turn, actions, CancelRequested))
+    Stopping(..) -> Ok(#(state, []))
   }
 }
 
