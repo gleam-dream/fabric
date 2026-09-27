@@ -64,6 +64,9 @@ pub type Incompatibility {
   OtherAgent(stored: Identity)
   /// An action that may still run names a tool the agent does not have.
   ToolNotRegistered(id: ActionId, tool: String)
+  /// An action that has not started yet names a tool whose input codec no
+  /// longer accepts its arguments.
+  ArgumentsNotAccepted(id: ActionId, tool: String, detail: String)
 }
 
 pub type UncertainAction {
