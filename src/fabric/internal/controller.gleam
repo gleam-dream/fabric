@@ -474,7 +474,8 @@ fn model_failed(
   state: State,
   error: ModelError,
 ) -> #(State, List(Effect)) {
-  case error.retryable && state.turns_used < state.limits.max_turns {
+  case error.retryable {
+    // A retry the turn budget refuses ends the run on the budget.
     True -> call_model(env, state)
     False -> #(
       State(..state, phase: Ended(run.Failed(run.ModelFailed(error)))),
