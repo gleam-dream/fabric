@@ -348,3 +348,41 @@ pub fn cancelling_a_paused_run_after_a_restart_test() {
   probe.count(probe, "pay:bob") |> should.equal(0)
   restart.remove_dir(dir)
 }
+
+/// The context given to `answer` is for the policy's recheck only; the
+/// approved tool runs with the run's own context, whether or not a runner
+/// was live when the answer arrived.
+pub fn the_answer_context_is_for_the_recheck_and_the_tool_keeps_the_run_context_test() {
+  let probe = probe.new()
+  let recording =
+    tool.bind(
+      apps.transfer_definition(),
+      fn(who: String, transfer: apps.Transfer) -> Result(apps.Receipt, Nil) {
+        probe.record(probe, "pay as " <> who)
+        Ok(apps.Receipt("r-" <> transfer.to))
+      },
+      fn(_) { tool.Explain("failed") },
+    )
+  let agent =
+    agent.new(scripted.plan([transfer_call()]), [recording], fn(who, action) {
+      probe.record(probe, "policy as " <> who)
+      case action.tool {
+        "transfer_funds" ->
+          Ok(policy.RequireApproval(Requirement("transfer", 1)))
+        _ -> Ok(policy.Allow)
+      }
+    })
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, "carol", "pay")
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(_) =
+    fabric.answer(
+      run,
+      pending.reference,
+      run.Approve,
+      reviewer: Some("alice"),
+      context: "alice",
+    )
+  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  probe.entries(probe)
+  |> should.equal(["policy as carol", "policy as alice", "pay as carol"])
+}
