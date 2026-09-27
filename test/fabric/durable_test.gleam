@@ -526,3 +526,36 @@ pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
   probe.count(probe, "start:p") |> should.equal(1)
   restart.remove_dir(dir)
 }
+
+/// A run paused on a tool the current agent no longer has, or started by
+/// an agent whose identity changed, cannot be recovered; it can still be
+/// cancelled through the store, with no agent.
+pub fn a_stranded_run_is_cancelled_without_an_agent_test() {
+  let dir = restart.temp_dir()
+  let id = suspended_on_disk(dir)
+  let store = reopen(dir)
+  let assert Error(fabric.RecoverUnreadable(fabric.IncompatibleAgent(_))) =
+    fabric.recover(store, paying_agent([apps.weather_tool()]), Nil, id)
+
+  fabric.cancel_stored(store, id)
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.cancel_stored(store, id) |> should.equal(Error(fabric.RunEnded))
+  fabric.cancel_stored(store, "run-nope")
+  |> should.equal(Error(fabric.Unreadable(fabric.RunNotFound)))
+
+  let assert Ok(run) =
+    fabric.recover(store, paying_agent([apps.transfer_tool()]), Nil, id)
+  states(run) |> should.equal([run.NotStarted])
+  restart.remove_dir(dir)
+}
+
+/// A run whose runner is live in this store is cancelled through it.
+pub fn cancel_stored_stops_a_live_run_through_its_runner_test() {
+  let probe = probe.new()
+  let store = store.in_memory()
+  let assert Ok(run) = fabric.start(store, one_slow(probe), Nil, "go")
+  let _ = probe.arrival(probe)
+  let assert Ok(run.Working) = fabric.cancel_stored(store, fabric.id(run))
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  states(run) |> should.equal([run.Uncertain("stopped while running")])
+}

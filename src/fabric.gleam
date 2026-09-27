@@ -352,6 +352,56 @@ pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
   command(run, controller.Cancel, retries) |> result.map(controller.status)
 }
 
+/// Cancels the stored run `id` with no agent: for a run that cannot be
+/// recovered because its agent changed (another identity, or a pending tool
+/// that no longer exists). A run whose runner is live in this store is
+/// cancelled through that runner, as `cancel` would; otherwise the work of
+/// a lost runner is abandoned (running tools become uncertain effects) and
+/// the run ends `Cancelled` in one commit.
+pub fn cancel_stored(store: Store, id: String) -> Result(Status, CommandError) {
+  cancel_stored_loop(store, id, retries)
+}
+
+fn cancel_stored_loop(
+  store: Store,
+  id: String,
+  tries: Int,
+) -> Result(Status, CommandError) {
+  use #(entry, state) <- result.try(
+    load_record(store, id) |> result.map_error(Unreadable),
+  )
+  let retry = fn() {
+    case tries > 1 {
+      True -> cancel_stored_loop(store, id, tries - 1)
+      False -> Error(Contended)
+    }
+  }
+  case live_runner(entry, state) {
+    Some(mailbox) ->
+      case send_live(mailbox, controller.cancel) {
+        Ok(live.Applied(state)) -> Ok(controller.status(state))
+        Ok(live.Refused(rejection)) -> Error(refusal(rejection))
+        Ok(live.Superseded) | Error(Nil) -> retry()
+      }
+    None -> {
+      let from = case controller.needs_runner(state) {
+        True -> controller.abandon(state)
+        False -> state
+      }
+      use #(next, _) <- result.try(
+        controller.cancel(from) |> result.map_error(refusal),
+      )
+      case
+        store.commit(store, id, entry.revision, record.encode(next), store.Keep)
+      {
+        Ok(_) -> Ok(controller.status(next))
+        Error(store.Conflict(_)) -> retry()
+        Error(error) -> Error(Unreadable(StoreFailed(error)))
+      }
+    }
+  }
+}
+
 /// Records what actually happened for an uncertain effect. `content` is what
 /// the model will see as that call's result. When nothing else is pending
 /// the run continues with its next model turn. Reconciliation does not
@@ -373,9 +423,13 @@ fn command(
   event: Event,
   tries: Int,
 ) -> Result(State, CommandError) {
-  use #(entry, state) <- result.try(
-    load_checked(run) |> result.map_error(Unreadable),
-  )
+  // Cancelling needs nothing from the agent, so it is not refused when
+  // the record no longer fits it.
+  let loaded = case event {
+    controller.Cancel -> load(run)
+    _ -> load_checked(run)
+  }
+  use #(entry, state) <- result.try(loaded |> result.map_error(Unreadable))
   let retry = fn() {
     case tries > 1 {
       True -> command(run, event, tries - 1)
@@ -459,8 +513,15 @@ fn refusal(rejection: controller.Rejection) -> CommandError {
 // --- loading -------------------------------------------------------------------
 
 fn load(run: Run(context)) -> Result(#(store.Entry, State), RecordError) {
+  load_record(run.setup.store, run.id)
+}
+
+fn load_record(
+  store: Store,
+  id: String,
+) -> Result(#(store.Entry, State), RecordError) {
   use entry <- result.try(
-    store.get(run.setup.store, run.id)
+    store.get(store, id)
     |> result.map_error(fn(error) {
       case error {
         store.NotFound -> RunNotFound
