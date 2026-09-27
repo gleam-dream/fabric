@@ -190,8 +190,12 @@ pub fn a_changed_requirement_demands_a_new_answer_test() {
     Requirement("transfer", 2),
     2,
   ))
-  // The answer to the old request was not applied.
-  transfer_record(state).approvals |> should.equal([])
+  // The answer to the old request is kept for the audit trail but did not
+  // authorize the action.
+  transfer_record(state).approvals
+  |> should.equal([
+    run.Approval(Requirement("transfer", 1), 1, run.Approve, None),
+  ])
   answer(env(now), state, pending.reference, run.Approve)
   |> should.equal(Error(controller.StaleReference))
   let assert Ok(#(state, [Dispatch(_)])) =
