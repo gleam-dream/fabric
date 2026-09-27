@@ -14,6 +14,9 @@
 //// Acting(batch)       --cancel or host fault, tools running--> Stopping
 //// Stopping            --tools stopped--> Ended
 //// ```
+////
+//// `answer` resolves an approval request of the current batch; `abandon`
+//// and `recover` take over a record whose runner was lost.
 
 import fabric/internal/invocation
 import fabric/internal/registry.{type Registry}
@@ -22,8 +25,9 @@ import fabric/model.{
 }
 import fabric/policy.{type ActionId, type Policy, ActionId}
 import fabric/run.{
-  type ActionRecord, type ActionState, type HostFailure, type Outcome,
-  type Status, type TokenUsage, ActionRecord,
+  type ActionRecord, type ActionState, type Answer, type ApprovalRef,
+  type HostFailure, type Identity, type Outcome, type Status, type TokenUsage,
+  ActionRecord,
 }
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -63,6 +67,9 @@ pub type Phase {
 pub type State {
   State(
     run: String,
+    agent: Identity,
+    /// Increases by one each time a lost runner's work is taken over.
+    incarnation: Int,
     limits: Limits,
     turns_used: Int,
     usage: TokenUsage,
@@ -85,6 +92,9 @@ pub type Event {
   /// The executor confirms nothing of this batch runs any more.
   ToolsStopped
   Reconcile(ActionId, content: String)
+  /// A reviewer's answer; the policy is checked again with the context of
+  /// the environment the event is applied with.
+  Answer(reference: ApprovalRef, answer: Answer, reviewer: Option(String))
   Cancel
 }
 
@@ -101,6 +111,12 @@ pub type Rejection {
   ReportNotExpected(ActionId)
   NotReconcilable(ActionId)
   RunEnded
+  /// No approval request of this run matches the reference.
+  WrongReference
+  /// The action's approval request has another revision or requirement.
+  StaleReference
+  /// This approval request was already answered.
+  AlreadyAnswered
 }
 
 type Transition =
@@ -111,12 +127,15 @@ type Transition =
 pub fn start(
   env: Env(context),
   run: String,
+  agent: Identity,
   limits: Limits,
   prompt: String,
 ) -> #(State, List(Effect)) {
   let state =
     State(
       run:,
+      agent:,
+      incarnation: 1,
       limits:,
       turns_used: 0,
       usage: run.TokenUsage(0, 0, 0),
@@ -129,6 +148,14 @@ pub fn start(
 }
 
 pub fn step(env: Env(context), state: State, event: Event) -> Transition {
+  case event {
+    Answer(reference, answer, reviewer) ->
+      answer_approval(env, state, reference, answer, reviewer)
+    _ -> step_phase(env, state, event)
+  }
+}
+
+fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
   case state.phase, event {
     Ended(_), _ -> Error(RunEnded)
 
@@ -181,23 +208,157 @@ pub fn step(env: Env(context), state: State, event: Event) -> Transition {
       use actions <- result.try(update(actions, id, lose(id, why)))
       Ok(#(State(..state, phase: Stopping(turn, actions, reason)), []))
     }
-    Stopping(_, actions, reason), ToolsStopped -> {
-      let actions =
-        list.map(actions, fn(action) {
-          case action.state {
-            run.Running ->
-              ActionRecord(
-                ..action,
-                state: run.Uncertain("stopped while running"),
-              )
-            run.Queued -> ActionRecord(..action, state: run.NotStarted)
-            _ -> action
-          }
-        })
-      Ok(#(end(state, actions, stop_outcome(reason)), []))
-    }
+    Stopping(_, actions, reason), ToolsStopped ->
+      Ok(#(finish_stop(state, actions, reason, "stopped while running"), []))
     Stopping(..), Cancel -> Ok(#(state, []))
     Stopping(..), _ -> Error(StaleEvent)
+  }
+}
+
+fn finish_stop(
+  state: State,
+  actions: List(ActionRecord),
+  reason: StopReason,
+  evidence: String,
+) -> State {
+  let actions =
+    list.map(actions, fn(action) {
+      case action.state {
+        run.Running -> ActionRecord(..action, state: run.Uncertain(evidence))
+        run.Queued -> ActionRecord(..action, state: run.NotStarted)
+        _ -> action
+      }
+    })
+  end(state, actions, stop_outcome(reason))
+}
+
+// --- approvals -----------------------------------------------------------------
+
+fn answer_approval(
+  env: Env(context),
+  state: State,
+  reference: ApprovalRef,
+  answer: Answer,
+  reviewer: Option(String),
+) -> Transition {
+  let find = fn(actions: List(ActionRecord)) {
+    list.find(actions, fn(action) { action.id == reference.id })
+  }
+  case reference.run == state.run, state.phase {
+    False, _ -> Error(WrongReference)
+    True, Ended(_) | True, Stopping(..) -> Error(RunEnded)
+    True, Acting(turn, actions) ->
+      case find(actions) {
+        Ok(
+          ActionRecord(state: run.AwaitingApproval(requirement, revision), ..) as action,
+        )
+          if requirement == reference.requirement
+          && revision == reference.revision
+        ->
+          Ok(decide(
+            env,
+            state,
+            turn,
+            actions,
+            action,
+            run.Approval(requirement, revision, answer, reviewer),
+          ))
+        Ok(action) -> Error(unanswerable(action, reference))
+        Error(Nil) -> Error(in_history(state, reference))
+      }
+    True, AwaitingModel(_) -> Error(in_history(state, reference))
+  }
+}
+
+fn in_history(state: State, reference: ApprovalRef) -> Rejection {
+  case list.find(state.history, fn(action) { action.id == reference.id }) {
+    Ok(action) -> unanswerable(action, reference)
+    Error(Nil) -> WrongReference
+  }
+}
+
+/// Why `reference` cannot be answered on `action`.
+fn unanswerable(action: ActionRecord, reference: ApprovalRef) -> Rejection {
+  let answered =
+    list.any(action.approvals, fn(approval) {
+      approval.revision == reference.revision
+    })
+  case answered, action.approvals, action.state {
+    True, _, _ -> AlreadyAnswered
+    False, [], run.AwaitingApproval(..) -> StaleReference
+    False, [], _ -> WrongReference
+    False, _, _ -> StaleReference
+  }
+}
+
+/// Applies an answer to an action awaiting it. An approval is checked
+/// again against the current policy and context: a denial or a policy
+/// failure wins, and a different requirement issues a new request.
+fn decide(
+  env: Env(context),
+  state: State,
+  turn: Int,
+  actions: List(ActionRecord),
+  action: ActionRecord,
+  approval: run.Approval,
+) -> #(State, List(Effect)) {
+  let answered = fn(action_state) {
+    ActionRecord(
+      ..action,
+      state: action_state,
+      approvals: list.append(action.approvals, [approval]),
+    )
+  }
+  let replace = fn(changed: ActionRecord) {
+    list.map(actions, fn(other) {
+      case other.id == changed.id {
+        True -> changed
+        False -> other
+      }
+    })
+  }
+  case approval.answer {
+    run.Reject(reason) -> {
+      let actions = replace(answered(run.Rejected(reason)))
+      settle(env, State(..state, phase: Acting(turn, actions)))
+    }
+    run.Approve ->
+      case gate(env, state.run, action.id, action.call) {
+        Error(failure) ->
+          stop(state, turn, replace(answered(action.state)), HostFault(failure))
+        Ok(Decided(policy.RequireApproval(required)))
+          if required != approval.requirement
+        -> {
+          let issued = state.approvals_issued + 1
+          let actions =
+            replace(
+              ActionRecord(
+                ..action,
+                state: run.AwaitingApproval(required, issued),
+              ),
+            )
+          #(
+            State(
+              ..state,
+              approvals_issued: issued,
+              phase: Acting(turn, actions),
+            ),
+            [],
+          )
+        }
+        Ok(gated) -> {
+          let approved =
+            answered(case gated {
+              Refused(action_state) -> action_state
+              Decided(policy.Deny(reason)) -> run.Denied(reason)
+              Decided(policy.Allow) | Decided(policy.RequireApproval(_)) ->
+                run.Queued
+            })
+          let state = State(..state, phase: Acting(turn, replace(approved)))
+          let #(state, effects) = settle(env, state)
+          #(state, list.append(dispatch([approved]), effects))
+        }
+      }
   }
 }
 
@@ -258,7 +419,7 @@ fn tools_requested(
         )
       let withdrawn =
         list.map(calls, fn(call) {
-          ActionRecord(ActionId(turn, call.id), call, run.NotStarted)
+          ActionRecord(ActionId(turn, call.id), call, run.NotStarted, [])
         })
       case continuation_blocked(state, usage) {
         Some(outcome) -> #(end(state, withdrawn, outcome), [])
@@ -324,7 +485,7 @@ fn admit_batch(
         run.AwaitingApproval(..) -> issued + 1
         _ -> issued
       }
-      #(issued, [ActionRecord(id, call, action_state), ..records])
+      #(issued, [ActionRecord(id, call, action_state, []), ..records])
     })
   case admitted {
     Error(failure) -> #(end(state, withdrawn, run.Failed(failure)), [])
@@ -338,6 +499,33 @@ fn admit_batch(
   }
 }
 
+/// What the gate says about a call: refused before the policy (unknown
+/// tool, malformed arguments), or the policy's decision.
+type Gated {
+  Refused(ActionState)
+  Decided(policy.Decision)
+}
+
+fn gate(
+  env: Env(context),
+  run: String,
+  id: ActionId,
+  call: ToolCall,
+) -> Result(Gated, HostFailure) {
+  case registry.admit(env.registry, call.name, call.arguments_json) {
+    Error(registry.NotRegistered) -> Ok(Refused(run.UnknownTool))
+    Error(registry.MalformedArguments(detail)) ->
+      Ok(Refused(run.InvalidArguments(detail)))
+    Ok(Nil) ->
+      env.policy(
+        env.context,
+        policy.Action(run, id, call.name, call.arguments_json),
+      )
+      |> result.map(Decided)
+      |> result.map_error(run.PolicyFailed(id, _))
+  }
+}
+
 fn admit(
   env: Env(context),
   run: String,
@@ -345,20 +533,13 @@ fn admit(
   call: ToolCall,
   issued: Int,
 ) -> Result(ActionState, HostFailure) {
-  case registry.admit(env.registry, call.name, call.arguments_json) {
-    Error(registry.NotRegistered) -> Ok(run.UnknownTool)
-    Error(registry.MalformedArguments(detail)) ->
-      Ok(run.InvalidArguments(detail))
-    Ok(Nil) -> {
-      let action = policy.Action(run, id, call.name, call.arguments_json)
-      case env.policy(env.context, action) {
-        Error(reason) -> Error(run.PolicyFailed(id, reason))
-        Ok(policy.Allow) -> Ok(run.Queued)
-        Ok(policy.Deny(reason)) -> Ok(run.Denied(reason))
-        Ok(policy.RequireApproval(requirement)) ->
-          Ok(run.AwaitingApproval(requirement, issued + 1))
-      }
-    }
+  use gated <- result.map(gate(env, run, id, call))
+  case gated {
+    Refused(action_state) -> action_state
+    Decided(policy.Allow) -> run.Queued
+    Decided(policy.Deny(reason)) -> run.Denied(reason)
+    Decided(policy.RequireApproval(requirement)) ->
+      run.AwaitingApproval(requirement, issued + 1)
   }
 }
 
@@ -580,6 +761,8 @@ pub fn model_content(action_state: ActionState) -> Result(String, Nil) {
     | run.ToolFailed(content)
     | run.Reconciled(content) -> Ok(content)
     run.Denied(reason) -> Ok(invocation.error_detail_content("denied", reason))
+    run.Rejected(reason) ->
+      Ok(invocation.error_detail_content("rejected", reason))
     run.InvalidArguments(detail) ->
       Ok(invocation.error_detail_content("invalid_arguments", detail))
     run.UnknownTool -> Ok(invocation.error_content("unknown_tool"))
@@ -589,6 +772,49 @@ pub fn model_content(action_state: ActionState) -> Result(String, Nil) {
     | run.Uncertain(_)
     | run.NotStarted
     | run.Faulted(_) -> Error(Nil)
+  }
+}
+
+// --- recovery ------------------------------------------------------------------
+
+const lost_evidence = "the runner was lost while the tool ran; its effect may have happened"
+
+/// Takes over a record whose runner was lost, as a new incarnation. A
+/// running tool may have taken effect, so it becomes an uncertain effect
+/// (never retried); a stop in progress completes. Queued actions never
+/// started and stay queued; a lost model call stays pending.
+pub fn abandon(state: State) -> State {
+  let state = State(..state, incarnation: state.incarnation + 1)
+  case state.phase {
+    Acting(turn, actions) ->
+      State(
+        ..state,
+        phase: Acting(
+          turn,
+          list.map(actions, fn(action) {
+            case action.state {
+              run.Running ->
+                ActionRecord(..action, state: run.Uncertain(lost_evidence))
+              _ -> action
+            }
+          }),
+        ),
+      )
+    Stopping(_, actions, reason) ->
+      finish_stop(state, actions, reason, lost_evidence)
+    AwaitingModel(_) | Ended(_) -> state
+  }
+}
+
+/// `abandon`, then restarts the work that is safe to restart: queued
+/// actions are dispatched again and a lost model call is issued again as a
+/// new attempt against the turn budget.
+pub fn recover(env: Env(context), state: State) -> #(State, List(Effect)) {
+  let state = abandon(state)
+  case state.phase {
+    AwaitingModel(_) -> call_model(env, state)
+    Acting(_, actions) -> #(state, dispatch(actions))
+    Stopping(..) | Ended(_) -> #(state, [])
   }
 }
 
@@ -607,11 +833,9 @@ pub fn status(state: State) -> Status {
               case action.state {
                 run.AwaitingApproval(requirement, revision) ->
                   Ok(run.PendingApproval(
-                    action.id,
+                    run.ApprovalRef(state.run, action.id, requirement, revision),
                     action.call.name,
                     action.call.arguments_json,
-                    requirement,
-                    revision,
                   ))
                 _ -> Error(Nil)
               }
@@ -650,6 +874,8 @@ pub fn snapshot(state: State) -> run.Snapshot {
   }
   run.Snapshot(
     run: state.run,
+    agent: state.agent,
+    incarnation: state.incarnation,
     status: status(state),
     turns_used: state.turns_used,
     max_turns: state.limits.max_turns,

@@ -323,5 +323,5 @@ pub fn model_call_limit_diverges_from_beamweaver_by_design_test() {
   ])
   list.drop(fabric_side.transcript, 4) |> should.equal([])
   let assert Ok(snapshot) = fabric.snapshot(run)
-  let assert [_, run.ActionRecord(_, _, run.NotStarted)] = snapshot.actions
+  let assert [_, run.ActionRecord(state: run.NotStarted, ..)] = snapshot.actions
 }
