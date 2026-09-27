@@ -28,22 +28,53 @@ now_ms() ->
 
 ensure_directory(Path) ->
     case filelib:ensure_path(Path) of
-        ok -> {ok, nil};
+        ok ->
+            sweep(Path),
+            {ok, nil};
         {error, Reason} -> {error, describe(Reason)}
     end.
 
+%% Removes temporary files that a writer which crashed before publishing
+%% left behind. A file younger than ten minutes may belong to a live
+%% writer in another VM and is kept.
+sweep(Root) ->
+    Cutoff = erlang:system_time(second) - 600,
+    case file:list_dir(Root) of
+        {ok, Runs} ->
+            lists:foreach(fun(Run) ->
+                Dir = filename:join(Root, Run),
+                case file:list_dir(Dir) of
+                    {ok, Names} ->
+                        [sweep_file(filename:join(Dir, N), Cutoff)
+                         || N <- Names, lists:prefix(".tmp-", N)];
+                    {error, _} -> ok
+                end
+            end, Runs);
+        {error, _} -> ok
+    end.
+
+sweep_file(Path, Cutoff) ->
+    case file:read_file_info(Path, [{time, posix}]) of
+        {ok, Info} when element(6, Info) < Cutoff -> _ = file:delete(Path), ok;
+        _ -> ok
+    end.
+
 directory_get(Root, Run) ->
-    with_run(Run, fun() ->
-        Dir = filename:join(Root, Run),
-        case latest(Dir) of
-            {ok, Revision} ->
-                case file:read_file(revision_path(Dir, Revision)) of
-                    {ok, Bin} -> {ok, {stored, Revision, Bin}};
-                    {error, Reason} -> unavailable(Reason)
-                end;
-            Other -> Other
-        end
-    end).
+    with_run(Run, fun() -> read_latest(filename:join(Root, Run), 5) end).
+
+%% An empty revision was emptied after two newer ones were published
+%% while this read was listing: list again.
+read_latest(Dir, Tries) ->
+    case latest(Dir) of
+        {ok, Revision} ->
+            case file:read_file(revision_path(Dir, Revision)) of
+                {ok, <<>>} when Tries > 1 -> read_latest(Dir, Tries - 1);
+                {ok, <<>>} -> unavailable(emptied_while_reading);
+                {ok, Bin} -> {ok, {stored, Revision, Bin}};
+                {error, Reason} -> unavailable(Reason)
+            end;
+        Other -> Other
+    end.
 
 directory_insert(Root, Run, Record) ->
     with_run(Run, fun() ->
@@ -65,7 +96,9 @@ directory_compare_and_set(Root, Run, Expected, Record) ->
         case latest(Dir) of
             {ok, Expected} ->
                 case publish(Dir, Expected + 1, Record) of
-                    ok -> {ok, nil};
+                    ok ->
+                        empty_old(Dir, Expected - 1),
+                        {ok, nil};
                     exists -> conflict(Dir);
                     {error, Reason} -> unavailable(Reason)
                 end;
@@ -117,8 +150,8 @@ publish(Dir, Revision, Record) ->
                         ok -> file:sync(File);
                         Error -> Error
                     end,
-                ok = file:close(File),
-                case Written of
+                Closed = file:close(File),
+                case first_error([Written, Closed]) of
                     ok ->
                         case file:make_link(Temporary, revision_path(Dir, Revision)) of
                             ok -> ok;
@@ -131,6 +164,21 @@ publish(Dir, Revision, Record) ->
         end,
     _ = file:delete(Temporary),
     Result.
+
+first_error(Results) ->
+    case [E || {error, _} = E <- Results] of
+        [] -> ok;
+        [Error | _] -> Error
+    end.
+
+%% Revision names are never removed, so a stale writer can never publish
+%% one again; the content of revisions older than the previous one is
+%% dropped. The previous revision stays readable for a reader that listed
+%% just before the latest was published.
+empty_old(_Dir, Revision) when Revision < 1 -> ok;
+empty_old(Dir, Revision) ->
+    _ = file:write_file(revision_path(Dir, Revision), <<>>),
+    ok.
 
 unavailable(Reason) ->
     {error, {unavailable, describe(Reason)}}.

@@ -15,6 +15,13 @@ pub fn remove_dir(path: String) -> Nil
 @external(erlang, "fabric_test_ffi", "list_dir")
 pub fn list_dir(path: String) -> Result(List(String), Nil)
 
+@external(erlang, "fabric_test_ffi", "read_file")
+pub fn read_file(path: String) -> Result(String, Nil)
+
+/// Sets the file's modification time `seconds` into the past.
+@external(erlang, "fabric_test_ffi", "age_file")
+pub fn age_file(path: String, seconds: Int) -> Result(Nil, Nil)
+
 @external(erlang, "fabric_test_ffi", "write_file")
 pub fn write_file(path: String, content: String) -> Result(Nil, Nil)
 
