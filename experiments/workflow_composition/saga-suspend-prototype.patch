@@ -1,0 +1,618 @@
+From 95a4240f5bcc3121138fe3e459239d5dfda386ea Mon Sep 17 00:00:00 2001
+From: lostbean <talktoedgar@gmail.com>
+Date: Sun, 27 Sep 2026 19:01:59 -0300
+Subject: [PATCH] PROTOTYPE: in-memory Suspend recovery and execution.resume
+
+---
+ src/saga.gleam                      |  51 ++++++++++
+ src/saga/execution.gleam            |  54 +++++++++-
+ src/saga/internal/coordinator.gleam | 115 +++++++++++++++++++--
+ src/saga/internal/node.gleam        |   2 +
+ test/suspend_proto_test.gleam       | 149 ++++++++++++++++++++++++++++
+ 5 files changed, 363 insertions(+), 8 deletions(-)
+ create mode 100644 test/suspend_proto_test.gleam
+
+diff --git a/src/saga.gleam b/src/saga.gleam
+index 68fc17d..d636011 100644
+--- a/src/saga.gleam
++++ b/src/saga.gleam
+@@ -154,6 +154,9 @@ pub type Recovery(o, e, u) {
+   Abort(error: e)
+   AbortAfterCleanupFailure(error: e, cleanup_error: u)
+   Hold(evidence: e)
++  /// PROTOTYPE: stop the run without failing it. Completed steps keep
++  /// their outputs; this step is attempted again by `execution.resume`.
++  Suspend(evidence: e)
+ }
+ 
+ /// Whether a successful (or `Continue`d) output has an undo action.
+@@ -384,6 +387,7 @@ fn map_recovery(
+     AbortAfterCleanupFailure(error, cleanup_error) ->
+       AbortAfterCleanupFailure(map_error(error), map_undo_error(cleanup_error))
+     Hold(evidence) -> Hold(map_error(evidence))
++    Suspend(evidence) -> Suspend(map_error(evidence))
+   }
+ }
+ 
+@@ -608,6 +612,7 @@ pub fn perform(input: Port(i, e, u), step: Step(i, o, e, u)) -> Port(o, e, u) {
+       AbortAfterCleanupFailure(error, cleanup_error) ->
+         node.EAbortCleanup(error, cleanup_error)
+       Hold(evidence) -> node.EHold(evidence)
++      Suspend(evidence) -> node.ESuspend(evidence)
+     }
+   }
+ 
+@@ -1097,6 +1102,52 @@ pub fn for_run(
+   )
+ }
+ 
++/// PROTOTYPE: the graph for resuming from a checkpoint (its store already
++/// holds the input), plus the identity of this `define` evaluation. Node ids
++/// are unique integers minted by `define`, so a checkpoint only fits the
++/// very same `Workflow` value, never a re-defined or re-deployed one.
++@internal
++pub fn for_resume(
++  workflow: Workflow(i, o, e, u),
++) -> #(
++  Dict(Int, node.Node(e, u)),
++  List(Int),
++  Dict(Int, List(Int)),
++  Store,
++  fn(Store) -> ffi.RescueResult(o),
++) {
++  let #(nodes, order, dependents, _, fetch) = for_run_graph(workflow)
++  #(nodes, order, dependents, store.new(), fetch)
++}
++
++@internal
++pub fn graph_identity(workflow: Workflow(i, o, e, u)) -> Int {
++  workflow.root_input_id
++}
++
++fn for_run_graph(
++  workflow: Workflow(i, o, e, u),
++) -> #(
++  Dict(Int, node.Node(e, u)),
++  List(Int),
++  Dict(Int, List(Int)),
++  Store,
++  fn(Store) -> ffi.RescueResult(o),
++) {
++  #(
++    workflow.nodes,
++    workflow.order,
++    workflow.dependents,
++    store.new(),
++    fn(current_store) {
++      ffi.rescue(fn() {
++        let produce_output = workflow.fetch_output(current_store)
++        produce_output()
++      })
++    },
++  )
++}
++
+ /// The workflow's declared name.
+ pub fn name(workflow: Workflow(i, o, e, u)) -> String {
+   workflow.name
+diff --git a/src/saga/execution.gleam b/src/saga/execution.gleam
+index 59b8536..3952780 100644
+--- a/src/saga/execution.gleam
++++ b/src/saga/execution.gleam
+@@ -111,6 +111,8 @@ pub fn validate(config: Config) -> Result(Config, List(ConfigError)) {
+ pub type RunError {
+   InvalidConfig(errors: List(ConfigError))
+   ExecutionLost(crash: Crash)
++  /// PROTOTYPE: the checkpoint came from a different `define` evaluation.
++  CheckpointMismatch
+ }
+ 
+ pub type Crash =
+@@ -200,6 +202,21 @@ pub type Outcome(o, e, u) {
+   Failed(cause: Cause(e), settlement: Settlement(e, u))
+   Cancelled(reason: CancelReason, settlement: Settlement(e, u))
+   Unresolved(step: StepAddress, evidence: e, settlement: Settlement(e, u))
++  /// PROTOTYPE: a step decided `Suspend`. Completed steps are kept (not
++  /// undone); `resume` continues from `checkpoint` in this VM only.
++  Suspended(step: StepAddress, evidence: e, checkpoint: Checkpoint(u))
++}
++
++/// PROTOTYPE: opaque, in-memory only (erased values and undo closures).
++pub opaque type Checkpoint(u) {
++  Checkpoint(inner: coordinator.Checkpoint(u))
++}
++
++/// PROTOTYPE: steps killed while the run was settling into suspension:
++/// their effects are unknown, and `resume` will attempt them again.
++pub fn checkpoint_interrupted(checkpoint: Checkpoint(u)) -> List(StepAddress) {
++  coordinator.checkpoint_interrupted(checkpoint.inner)
++  |> list.map(saga.address_from_node)
+ }
+ 
+ /// The run's current admission phase: accepting new work, letting active
+@@ -356,6 +373,37 @@ pub fn start(
+   workflow: Workflow(i, o, e, u),
+   input: i,
+   config: Config,
++) -> Result(Execution(o, e, u), RunError) {
++  launch(workflow, config, fn() { saga.for_run(workflow, input) }, None)
++}
++
++/// PROTOTYPE: continue a suspended run with the *same* `Workflow` value.
++/// The suspended step (and any interrupted sibling) is attempted again.
++pub fn resume(
++  workflow: Workflow(i, o, e, u),
++  checkpoint: Checkpoint(u),
++  config: Config,
++) -> Result(Execution(o, e, u), RunError) {
++  case
++    coordinator.checkpoint_graph(checkpoint.inner)
++    == saga.graph_identity(workflow)
++  {
++    False -> Error(CheckpointMismatch)
++    True ->
++      launch(
++        workflow,
++        config,
++        fn() { saga.for_resume(workflow) },
++        Some(checkpoint.inner),
++      )
++  }
++}
++
++fn launch(
++  workflow: Workflow(i, o, e, u),
++  config: Config,
++  build_graph,
++  resume_from: Option(coordinator.Checkpoint(u)),
+ ) -> Result(Execution(o, e, u), RunError) {
+   use validated <- result_try(case validate(config) {
+     Ok(validated) -> Ok(validated)
+@@ -373,9 +421,11 @@ pub fn start(
+       step_timeout: validated.step_timeout,
+       settle_timeout: validated.settle_timeout,
+       cleanup_timeout: validated.cleanup_timeout,
+-      build_graph: fn() { saga.for_run(workflow, input) },
++      build_graph: build_graph,
+       result_subject: result_subject,
+       control_subject_out: control_subject_out,
++      graph: saga.graph_identity(workflow),
++      resume_from: resume_from,
+     )
+   case process.receive(control_subject_out, 5000) {
+     Error(_) ->
+@@ -684,6 +734,8 @@ fn to_public_outcome(
+         to_public_cancel_reason(reason),
+         to_public_settlement(settlement),
+       )
++    coordinator.Suspended(step, evidence, checkpoint) ->
++      Suspended(saga.address_from_node(step), evidence, Checkpoint(checkpoint))
+   }
+ }
+ 
+diff --git a/src/saga/internal/coordinator.gleam b/src/saga/internal/coordinator.gleam
+index 078546e..ce9fb36 100644
+--- a/src/saga/internal/coordinator.gleam
++++ b/src/saga/internal/coordinator.gleam
+@@ -34,8 +34,8 @@ import saga/internal/min_heap.{type MinHeap}
+ import saga/internal/node.{
+   type Attempt, type AttemptFailure, type AttemptResult, type ErasedRecovery,
+   type Node, type StepAddress, Attempt, AttemptFailed, AttemptSucceeded, Crashed,
+-  EAbort, EAbortCleanup, EContinue, EHold, ERetry, ERetryAfter, Returned,
+-  TimedOut,
++  EAbort, EAbortCleanup, EContinue, EHold, ERetry, ERetryAfter, ESuspend,
++  Returned, TimedOut,
+ }
+ import saga/internal/store.{type Store}
+ import saga/observation
+@@ -134,6 +134,29 @@ pub type Outcome(o, e, u) {
+   Failed(cause: Cause(e), settlement: Settlement(e, u))
+   Cancelled(reason: CancelReason, settlement: Settlement(e, u))
+   Unresolved(step: StepAddress, evidence: e, settlement: Settlement(e, u))
++  /// PROTOTYPE: the run stopped at `step` without failing; `checkpoint`
++  /// resumes it in this VM with the same `Workflow` value.
++  Suspended(step: StepAddress, evidence: e, checkpoint: Checkpoint(u))
++}
++
++/// PROTOTYPE: everything a resumed coordinator needs. It holds the erased
++/// value store and undo closures, so it cannot leave this VM.
++pub opaque type Checkpoint(u) {
++  Checkpoint(
++    graph: Int,
++    store: Store,
++    done: List(Int),
++    journal: List(JournalEntry(u)),
++    interrupted: List(StepAddress),
++  )
++}
++
++pub fn checkpoint_graph(checkpoint: Checkpoint(u)) -> Int {
++  checkpoint.graph
++}
++
++pub fn checkpoint_interrupted(checkpoint: Checkpoint(u)) -> List(StepAddress) {
++  checkpoint.interrupted
+ }
+ 
+ pub type StepState {
+@@ -299,6 +322,7 @@ type RunState(o, e, u) {
+     // can let it proceed to `Completed`) when this needs to be remembered.
+     // See `Outcome.Completed`'s doc comment.
+     timed_out_attempts: List(StepAddress),
++    graph: Int,
+   )
+ }
+ 
+@@ -316,6 +340,7 @@ type RunPhase(e, u) {
+ type Trigger(e) {
+   TriggerFailure(cause: Cause(e))
+   TriggerUnresolved(step: StepAddress, evidence: e)
++  TriggerSuspend(step: StepAddress, evidence: e)
+   TriggerCancel(reason: CancelReason)
+ }
+ 
+@@ -343,6 +368,8 @@ pub fn start(
+     ),
+   result_subject result_subject: Subject(Outcome(o, e, u)),
+   control_subject_out control_subject_out: Subject(Subject(Control(o, e, u))),
++  graph graph: Int,
++  resume_from resume_from: Option(Checkpoint(u)),
+ ) -> #(Pid, Int) {
+   let run_id = ffi.unique_integer()
+   let ready = process.new_subject()
+@@ -361,6 +388,8 @@ pub fn start(
+         result_subject,
+         control_subject_out,
+         ready,
++        graph,
++        resume_from,
+       )
+     })
+   // This wait is a startup smoke-check, not the caller's actual failure
+@@ -395,6 +424,8 @@ fn run(
+   result_subject: Subject(Outcome(o, e, u)),
+   control_subject_out: Subject(Subject(Control(o, e, u))),
+   ready: Subject(Nil),
++  graph: Int,
++  resume_from: Option(Checkpoint(u)),
+ ) -> Nil {
+   process.trap_exits(True)
+   let control = process.new_subject()
+@@ -402,8 +433,21 @@ fn run(
+   process.send(control_subject_out, control)
+   process.send(ready, Nil)
+   let #(nodes, order, dependents, run_store, fetch_output) = build_graph()
++  // PROTOTYPE: a resumed run starts with the checkpoint's completed nodes
++  // done, its store and journal, and every other node waiting only on
++  // dependencies that are not done yet.
++  let #(done, run_store, journal) = case resume_from {
++    None -> #([], run_store, [])
++    Some(checkpoint) -> #(checkpoint.done, checkpoint.store, checkpoint.journal)
++  }
+   let node_state =
+-    dict.map_values(nodes, fn(_id, n) { NodeWaiting(list.length(n.deps)) })
++    dict.map_values(nodes, fn(id, n) {
++      case list.contains(done, id) {
++        True -> NodeDone
++        False ->
++          NodeWaiting(list.count(n.deps, fn(dep) { !list.contains(done, dep) }))
++      }
++    })
+   // Every node with no dependencies is ready from the start. Pushed in
+   // ascending node-id order (`order` is already sorted ascending — see
+   // `saga.gleam`'s `resolve_addresses`), matching what a full scan of
+@@ -436,7 +480,7 @@ fn run(
+       dependents: dependents,
+       state: node_state,
+       ready: initial_ready,
+-      done_count: 0,
++      done_count: list.length(done),
+       undoing: False,
+       store: run_store,
+       last_failure: dict.new(),
+@@ -448,10 +492,11 @@ fn run(
+       cleanup_timeout: cleanup_timeout,
+       deadline_timer: deadline_timer,
+       owner_monitor: owner_monitor,
+-      journal: [],
++      journal: journal,
+       phase: PhaseRunning,
+       start_time: start_time,
+       timed_out_attempts: [],
++      graph: graph,
+     )
+   let admitted = admit(initial)
+   loop(admitted, fetch_output, result_subject)
+@@ -528,6 +573,31 @@ fn run_finished(state: RunState(o, e, u)) -> Option(Outcome(o, e, u)) {
+   case state.phase {
+     PhaseRunning -> None
+     PhaseSettling(..) -> None
++    PhaseRollingBack(TriggerSuspend(step, evidence), settlement) ->
++      case state.running == 0 {
++        False -> None
++        True -> {
++          let done =
++            dict.to_list(state.state)
++            |> list.filter_map(fn(entry) {
++              case entry.1 {
++                NodeDone -> Ok(entry.0)
++                _ -> Error(Nil)
++              }
++            })
++          Some(Suspended(
++            step,
++            evidence,
++            Checkpoint(
++              state.graph,
++              state.store,
++              done,
++              state.journal,
++              settlement.interrupted,
++            ),
++          ))
++        }
++      }
+     PhaseRollingBack(trigger, settlement) ->
+       case rollback_complete(state) {
+         False -> None
+@@ -565,6 +635,12 @@ fn run_finished(state: RunState(o, e, u)) -> Option(Outcome(o, e, u)) {
+             TriggerUnresolved(step, evidence) ->
+               Unresolved(step, evidence, settlement)
+             TriggerCancel(reason) -> Cancelled(reason, settlement)
++            TriggerSuspend(step, evidence) ->
++              Suspended(
++                step,
++                evidence,
++                Checkpoint(state.graph, state.store, [], [], []),
++              )
+           })
+         }
+       }
+@@ -1084,6 +1160,12 @@ fn handle_recovery_done(
+           )
+           |> record_compensation_failure(cleanup_failure)
+         }
++        ESuspend(evidence), _ ->
++          begin_suspend(
++            RunState(..state, running: state.running - 1),
++            node_id,
++            evidence,
++          )
+         EHold(evidence), _ ->
+           begin_unresolved(
+             RunState(..state, running: state.running - 1),
+@@ -1100,7 +1182,7 @@ fn decision_kind(recovery: ErasedRecovery(e, u)) -> observation.DecisionKind {
+     ERetry | ERetryAfter(_) -> observation.DecisionRetry
+     EContinue(_) -> observation.DecisionContinue
+     EAbort(_) | EAbortCleanup(_, _) -> observation.DecisionAbort
+-    EHold(_) -> observation.DecisionHold
++    EHold(_) | ESuspend(_) -> observation.DecisionHold
+   }
+ }
+ 
+@@ -1509,6 +1591,23 @@ fn begin_unresolved(
+   }
+ }
+ 
++/// PROTOTYPE: like `begin_unresolved`, but the step is left not-done so a
++/// resumed run attempts it again, and nothing is held or undone. Siblings
++/// in flight settle as usual; completed ones stay done in the checkpoint.
++fn begin_suspend(
++  state: RunState(o, e, u),
++  node_id: Int,
++  evidence: e,
++) -> RunState(o, e, u) {
++  let address = node_address(state, node_id)
++  let state =
++    RunState(..state, state: dict.insert(state.state, node_id, NodeSkipped))
++  case is_terminal(state.phase) {
++    True -> maybe_finish_settling(state)
++    False -> begin_settling(state, TriggerSuspend(address, evidence))
++  }
++}
++
+ /// Enters `Settling` on the first terminal trigger (failure, deadline, or
+ /// cancellation): stops admission, marks every waiting or backoff-scheduled
+ /// node `Skipped` (cancelling its backoff timer), and starts the
+@@ -1587,6 +1686,7 @@ fn maybe_finish_settling(state: RunState(o, e, u)) -> RunState(o, e, u) {
+             RunState(..state, phase: PhaseRollingBack(trigger, settlement))
+           case trigger {
+             TriggerUnresolved(..) -> hold_journal(state)
++            TriggerSuspend(..) -> state
+             TriggerFailure(..) | TriggerCancel(..) -> undo_next(state)
+           }
+         }
+@@ -1922,13 +2022,14 @@ fn emit_run_stopped(
+       list.length(settlement.undo_failures),
+       list.length(settlement.interrupted),
+     )
++    Suspended(..) -> #(0, 0, 0)
+   }
+   let kind = case outcome {
+     Completed(_) -> observation.OutcomeCompleted
+     CompletedWithUnknownEffects(_, _) -> observation.OutcomeCompleted
+     Failed(_, _) -> observation.OutcomeFailed
+     Cancelled(_, _) -> observation.OutcomeCancelled
+-    Unresolved(_, _, _) -> observation.OutcomeUnresolved
++    Unresolved(_, _, _) | Suspended(..) -> observation.OutcomeUnresolved
+   }
+   let event = observation.run_stopped()
+   let _ =
+diff --git a/src/saga/internal/node.gleam b/src/saga/internal/node.gleam
+index 3764690..fb3d2f4 100644
+--- a/src/saga/internal/node.gleam
++++ b/src/saga/internal/node.gleam
+@@ -45,6 +45,7 @@ pub type ErasedRecovery(e, u) {
+   EAbort(error: e)
+   EAbortCleanup(error: e, cleanup_error: u)
+   EHold(evidence: e)
++  ESuspend(evidence: e)
+ }
+ 
+ /// The outcome of running one attempt body, computed inside a task process
+@@ -159,6 +160,7 @@ fn map_erased_recovery(
+     EAbortCleanup(error, cleanup_error) ->
+       EAbortCleanup(map_error(error), map_undo_error(cleanup_error))
+     EHold(evidence) -> EHold(map_error(evidence))
++    ESuspend(evidence) -> ESuspend(map_error(evidence))
+   }
+ }
+ 
+diff --git a/test/suspend_proto_test.gleam b/test/suspend_proto_test.gleam
+new file mode 100644
+index 0000000..85e6327
+--- /dev/null
++++ b/test/suspend_proto_test.gleam
+@@ -0,0 +1,149 @@
++//// PROTOTYPE (scratchpad only): in-memory suspend/resume for Saga.
++
++import gleam/erlang/process.{type Subject}
++import gleam/list
++import gleam/option.{type Option, None, Some}
++import saga
++import saga/execution
++
++pub type Err {
++  Pending
++  Rejected
++  Declined
++}
++
++pub type Msg {
++  Log(String, Subject(Nil))
++  Read(Subject(List(String)))
++  SetAnswer(Bool)
++  GetAnswer(Subject(Option(Bool)))
++}
++
++fn world() -> Subject(Msg) {
++  let ready = process.new_subject()
++  process.spawn(fn() {
++    let s = process.new_subject()
++    process.send(ready, s)
++    loop(s, [], None)
++  })
++  let assert Ok(s) = process.receive(ready, 1000)
++  s
++}
++
++fn loop(s: Subject(Msg), log: List(String), answer: Option(Bool)) -> Nil {
++  case process.receive_forever(s) {
++    Log(e, r) -> {
++      process.send(r, Nil)
++      loop(s, [e, ..log], answer)
++    }
++    Read(r) -> {
++      process.send(r, list.reverse(log))
++      loop(s, log, answer)
++    }
++    SetAnswer(a) -> loop(s, log, Some(a))
++    GetAnswer(r) -> {
++      process.send(r, answer)
++      loop(s, log, answer)
++    }
++  }
++}
++
++fn log(w: Subject(Msg), e: String) -> Nil {
++  process.call(w, 1000, Log(e, _))
++}
++
++fn workflow(w: Subject(Msg), transfer_fails: Bool) {
++  let lookup =
++    saga.step("lookup", fn(n: Int) {
++      log(w, "lookup")
++      Ok(n + 1)
++    })
++    |> saga.undo(fn(_, _) {
++      log(w, "undo lookup")
++      Ok(Nil)
++    })
++  let approve =
++    saga.step("approve", fn(x: Int) {
++      case process.call(w, 1000, GetAnswer) {
++        None -> Error(Pending)
++        Some(True) -> Ok(x)
++        Some(False) -> Error(Rejected)
++      }
++    })
++    |> saga.compensate(max_attempts: 1, with: fn(_, failure, _) {
++      case failure {
++        saga.Returned(Pending) -> saga.Suspend(Pending)
++        saga.Returned(e) -> saga.Abort(e)
++        _ -> saga.Abort(Rejected)
++      }
++    })
++  let transfer =
++    saga.step("transfer", fn(x: Int) {
++      log(w, "transfer")
++      case transfer_fails {
++        True -> Error(Declined)
++        False -> Ok(x * 10)
++      }
++    })
++  let assert Ok(wf) =
++    saga.define("proto", fn(n) {
++      n
++      |> saga.perform(lookup)
++      |> saga.perform(approve)
++      |> saga.perform(transfer)
++    })
++  wf
++}
++
++pub fn suspend_then_resume_skips_completed_steps_test() {
++  let w = world()
++  let wf = workflow(w, False)
++  let assert Ok(execution.Suspended(step, Pending, checkpoint)) =
++    execution.run(wf, 1, execution.config())
++  let assert "approve" = step.name
++  process.send(w, SetAnswer(True))
++  let assert Ok(run) = execution.resume(wf, checkpoint, execution.config())
++  let assert Ok(execution.Completed(20)) = execution.await(run, timeout: 5000)
++  let assert ["lookup", "transfer"] = process.call(w, 1000, Read)
++}
++
++pub fn journal_survives_suspension_test() {
++  let w = world()
++  let wf = workflow(w, True)
++  let assert Ok(execution.Suspended(_, _, checkpoint)) =
++    execution.run(wf, 1, execution.config())
++  process.send(w, SetAnswer(True))
++  let assert Ok(run) = execution.resume(wf, checkpoint, execution.config())
++  let assert Ok(execution.Failed(execution.StepFailed(_, Declined), settlement)) =
++    execution.await(run, timeout: 5000)
++  let assert ["lookup"] = list.map(settlement.undone, fn(a) { a.name })
++  let assert ["lookup", "transfer", "undo lookup"] = process.call(w, 1000, Read)
++}
++
++/// The checkpoint fits only the identical `Workflow` value: a re-defined
++/// workflow (as after any restart or redeploy) cannot resume it.
++pub fn checkpoint_does_not_fit_a_redefined_workflow_test() {
++  let w = world()
++  let assert Ok(execution.Suspended(_, _, checkpoint)) =
++    execution.run(workflow(w, False), 1, execution.config())
++  let assert Error(execution.CheckpointMismatch) =
++    execution.resume(workflow(w, False), checkpoint, execution.config())
++  Nil
++}
++
++/// A checkpoint is a copyable value: resuming it twice runs the pending
++/// effect twice. Durable use needs a revisioned owner (compare-and-set).
++pub fn duplicate_resume_repeats_effects_test() {
++  let w = world()
++  let wf = workflow(w, False)
++  let assert Ok(execution.Suspended(_, _, checkpoint)) =
++    execution.run(wf, 1, execution.config())
++  process.send(w, SetAnswer(True))
++  let assert Ok(first) = execution.resume(wf, checkpoint, execution.config())
++  let assert Ok(execution.Completed(20)) = execution.await(first, timeout: 5000)
++  let assert Ok(second) = execution.resume(wf, checkpoint, execution.config())
++  let assert Ok(execution.Completed(20)) =
++    execution.await(second, timeout: 5000)
++  let assert ["lookup", "transfer", "transfer"] = process.call(w, 1000, Read)
++  Nil
++}
+-- 
+2.51.2
+
