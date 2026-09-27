@@ -3,13 +3,19 @@ version = "0.1.0"
 target = "erlang"
 gleam = ">= 1.18.0"
 licenses = ["Apache-2.0"]
-description = "A partial Gleam port of BeamWeaver: a typed DAG compiler, durable OTP execution, an autonomous LLM agent loop, and provider wire adapters, with a runtime action-authorization seam."
+description = "A bounded, typed LLM agent runtime for Gleam: typed tools, an explicit policy gate, a pure controller, and a thin OTP runner with cancellation."
 repository = { type = "github", user = "gleam-dream", repo = "fabric" }
+
+internal_modules = ["fabric/internal", "fabric/internal/*"]
 
 [dependencies]
 gleam_stdlib = ">= 0.70.0 and < 1.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
+gleam_json = ">= 3.0.0 and < 4.0.0"
+gleam_crypto = ">= 1.0.0 and < 2.0.0"
+json_blueprint = { path = "../json_blueprint" }
+llm_wire = { path = "../llm_wire" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
