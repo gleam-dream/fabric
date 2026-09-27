@@ -7,6 +7,7 @@ import fabric/llm
 import fabric/model
 import fabric/policy
 import fabric/run
+import fabric/store
 import fabric/support/apps
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Pid}
@@ -167,7 +168,8 @@ pub fn two_tool_calls_round_trip_through_llm_wire_test() {
     )
     |> agent.with_system_prompt("You are a careful assistant.")
     |> agent.with_token_budget(1000)
-  let assert Ok(run) = fabric.start(agent, Nil, "weather, then pay bob")
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), agent, Nil, "weather, then pay bob")
   fabric.await(run, 10_000)
   |> should.equal(
     Ok(run.Finished(run.Completed("Sunny in Paris; bob is paid."))),
@@ -215,7 +217,7 @@ pub fn malformed_arguments_through_llm_wire_fail_the_model_call_test() {
       [apps.weather_tool()],
       policy.always_allow(),
     )
-  let assert Ok(run) = fabric.start(agent, Nil, "weather")
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
   let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =
     fabric.await(run, 10_000)
   error.retryable |> should.be_false

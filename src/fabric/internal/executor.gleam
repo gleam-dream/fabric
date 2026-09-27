@@ -37,7 +37,7 @@ pub type Hooks {
 }
 
 pub opaque type Executor {
-  Executor(subject: Subject(Message))
+  Executor(pid: Pid, subject: Subject(Message))
 }
 
 type Message {
@@ -62,15 +62,18 @@ type Loop {
 pub fn start(hooks: Hooks) -> Executor {
   let parent = process.self()
   let ready = process.new_subject()
-  process.spawn(fn() {
-    process.trap_exits(True)
-    let self = process.new_subject()
-    process.send(ready, self)
-    serve(Loop(hooks, parent, self, [], dict.new(), []))
-  })
-  let assert Ok(subject) = process.receive(ready, 5000)
-    as "the executor did not start"
-  Executor(subject)
+  let pid =
+    process.spawn(fn() {
+      process.trap_exits(True)
+      let self = process.new_subject()
+      process.send(ready, self)
+      serve(Loop(hooks, parent, self, [], dict.new(), []))
+    })
+  Executor(pid, process.receive_forever(ready))
+}
+
+pub fn pid(executor: Executor) -> Pid {
+  executor.pid
 }
 
 pub fn submit(executor: Executor, actions: List(#(ActionId, ToolCall))) -> Nil {

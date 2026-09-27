@@ -12,6 +12,7 @@ import fabric/agent
 import fabric/model.{type Reply}
 import fabric/policy
 import fabric/run
+import fabric/store
 import fabric/support/probe.{type Probe}
 import fabric/support/scripted
 import fabric/tool
@@ -107,7 +108,7 @@ fn plain(content: String) -> String {
   }
 }
 
-fn observe(run: fabric.Run, probe: Probe) -> Observed {
+fn observe(run: fabric.Run(Nil), probe: Probe) -> Observed {
   let assert Ok(snapshot) = fabric.snapshot(run)
   let statuses =
     list.map(snapshot.actions, fn(action) {
@@ -209,11 +210,11 @@ fn run_scenario(
   rules: fn(List(String)) -> Reply,
   tools: List(tool.Tool(Nil)),
   max_turns: Int,
-) -> #(fabric.Run, run.Status) {
+) -> #(fabric.Run(Nil), run.Status) {
   let agent =
     agent.new(oracle_model(probe, rules), tools, policy.always_allow())
     |> agent.with_max_turns(max_turns)
-  let assert Ok(run) = fabric.start(agent, Nil, "go")
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "go")
   let assert Ok(status) = fabric.await(run, 5000)
   #(run, status)
 }

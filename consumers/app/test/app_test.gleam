@@ -1,6 +1,7 @@
 import app
 import fabric
 import fabric/run
+import fabric/store
 import gleam/erlang/process
 import gleam/list
 import gleeunit
@@ -12,7 +13,12 @@ pub fn main() -> Nil {
 
 pub fn a_member_finds_and_reserves_a_book_test() {
   let assert Ok(run) =
-    fabric.start(app.librarian(), app.member("ada"), "reserve Dune")
+    fabric.start(
+      store.in_memory(),
+      app.librarian(),
+      app.member("ada"),
+      "reserve Dune",
+    )
   fabric.await(run, 5000)
   |> should.equal(
     Ok(
@@ -25,7 +31,12 @@ pub fn a_member_finds_and_reserves_a_book_test() {
 
 pub fn a_missing_book_is_explained_to_the_model_test() {
   let assert Ok(run) =
-    fabric.start(app.librarian(), app.member("ada"), "reserve Necronomicon")
+    fabric.start(
+      store.in_memory(),
+      app.librarian(),
+      app.member("ada"),
+      "reserve Necronomicon",
+    )
   fabric.await(run, 5000)
   |> should.equal(
     Ok(
@@ -38,7 +49,12 @@ pub fn a_missing_book_is_explained_to_the_model_test() {
 
 pub fn the_policy_denies_guests_with_a_visible_reason_test() {
   let assert Ok(run) =
-    fabric.start(app.librarian(), app.member("guest"), "reserve Dune")
+    fabric.start(
+      store.in_memory(),
+      app.librarian(),
+      app.member("guest"),
+      "reserve Dune",
+    )
   let assert Ok(run.Finished(run.Completed(answer))) = fabric.await(run, 5000)
   answer
   |> should.equal(
@@ -48,7 +64,12 @@ pub fn the_policy_denies_guests_with_a_visible_reason_test() {
 
 pub fn an_unavailable_member_directory_is_a_host_failure_test() {
   let assert Ok(run) =
-    fabric.start(app.librarian(), app.member(""), "reserve Dune")
+    fabric.start(
+      store.in_memory(),
+      app.librarian(),
+      app.member(""),
+      "reserve Dune",
+    )
   let assert Ok(run.Finished(run.Failed(run.PolicyFailed(_, reason)))) =
     fabric.await(run, 5000)
   reason |> should.equal("member directory unavailable")
@@ -58,6 +79,7 @@ pub fn a_long_inventory_scan_can_be_cancelled_test() {
   let arrivals = process.new_subject()
   let assert Ok(run) =
     fabric.start(
+      store.in_memory(),
       app.librarian(),
       app.member_with_scan_gate("ada", arrivals),
       "scan the inventory",

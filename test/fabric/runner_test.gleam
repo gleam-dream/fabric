@@ -6,6 +6,7 @@ import fabric/agent
 import fabric/model.{AssistantMessage, ToolResultMessage, UserMessage}
 import fabric/policy.{ActionId}
 import fabric/run
+import fabric/store
 import fabric/support/apps
 import fabric/support/probe
 import fabric/support/scripted
@@ -16,7 +17,7 @@ import gleam/option
 import gleam/string
 import gleeunit/should
 
-fn states(run: fabric.Run) -> List(run.ActionState) {
+fn states(run: fabric.Run(Nil)) -> List(run.ActionState) {
   let assert Ok(snapshot) = fabric.snapshot(run)
   list.map(snapshot.actions, fn(action) { action.state })
 }
@@ -43,7 +44,8 @@ pub fn run_completes_with_two_typed_tools_test() {
       [apps.weather_tool(), apps.transfer_tool()],
       policy.always_allow(),
     )
-  let assert Ok(run) = fabric.start(agent, Nil, "weather, then pay bob")
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), agent, Nil, "weather, then pay bob")
   let assert Ok(run.Finished(run.Completed(answer))) = fabric.await(run, 5000)
   answer
   |> should.equal("final: {\"summary\":\"sunny\"} | {\"receipt\":\"r-bob\"}")
@@ -70,7 +72,8 @@ pub fn typed_failure_is_visible_to_the_model_test() {
       [apps.weather_tool()],
       policy.always_allow(),
     )
-  let assert Ok(run) = fabric.start(agent, Nil, "weather in Oslo")
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), agent, Nil, "weather in Oslo")
   fabric.await(run, 5000)
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"error\":\"unknown city: Oslo\"}"))),
@@ -91,7 +94,8 @@ pub fn tool_concurrency_is_bounded_per_run_test() {
       policy.always_allow(),
     )
     |> agent.with_max_concurrency(2)
-  let assert Ok(run) = fabric.start(agent, Nil, "three slow things")
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), agent, Nil, "three slow things")
   let first = probe.arrival(probe)
   let second = probe.arrival(probe)
   // Two bodies are blocked; the third may only start after one ends.
@@ -113,7 +117,7 @@ pub fn approval_suspends_the_run_as_data_test() {
       [apps.weather_tool(), apps.transfer_tool()],
       transfers_need_approval,
     )
-  let assert Ok(run) = fabric.start(agent, Nil, "pay bob")
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "pay bob")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   pending.reference.id |> should.equal(ActionId(1, "t"))
   pending.reference.requirement
@@ -136,7 +140,8 @@ pub fn cancel_kills_running_tools_and_records_them_uncertain_test() {
       policy.always_allow(),
     )
     |> agent.with_max_concurrency(1)
-  let assert Ok(run) = fabric.start(agent, Nil, "two slow things")
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), agent, Nil, "two slow things")
   let first = probe.arrival(probe)
   first.name |> should.equal("a")
   let assert Ok(_) = fabric.cancel(run)
@@ -155,7 +160,7 @@ pub fn cancel_while_the_model_is_called_test() {
       Ok(model.FinalAnswer("too late", option.None))
     })
   let agent = agent.new(blocking, [], policy.always_allow())
-  let assert Ok(run) = fabric.start(agent, Nil, "think")
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "think")
   let _ = probe.arrival(probe)
   fabric.cancel(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
@@ -170,7 +175,8 @@ pub fn uncertain_effect_blocks_until_reconciled_test() {
       [apps.transfer_tool()],
       policy.always_allow(),
     )
-  let assert Ok(run) = fabric.start(agent, Nil, "pay bob a lot")
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), agent, Nil, "pay bob a lot")
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
   uncertain
   |> should.equal(run.UncertainAction(
@@ -197,7 +203,7 @@ pub fn crash_after_the_fence_is_an_uncertain_effect_test() {
       [scripted.crashing_tool(probe)],
       policy.always_allow(),
     )
-  let assert Ok(run) = fabric.start(agent, Nil, "crash")
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "crash")
   let assert Ok(run.Suspended([], [crashed])) = fabric.await(run, 5000)
   string.starts_with(crashed.evidence, "tool crashed") |> should.be_true
   probe.count(probe, "crash:boom") |> should.equal(1)
@@ -213,7 +219,7 @@ pub fn policy_failure_is_a_host_failure_test() {
       [apps.weather_tool()],
       failing,
     )
-  let assert Ok(run) = fabric.start(agent, Nil, "weather")
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
   fabric.await(run, 5000)
   |> should.equal(
     Ok(
@@ -236,7 +242,7 @@ pub fn crashing_policy_fails_closed_test() {
       [apps.weather_tool()],
       crashing,
     )
-  let assert Ok(run) = fabric.start(agent, Nil, "weather")
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
   let assert Ok(run.Finished(run.Failed(run.PolicyFailed(_, reason)))) =
     fabric.await(run, 5000)
   string.starts_with(reason, "policy crashed") |> should.be_true
@@ -259,7 +265,8 @@ pub fn invalid_configuration_is_rejected_before_starting_test() {
     agent.TokenBudgetNotPositive(0),
   ]
   agent.validate(agent) |> should.equal(Error(expected))
-  let assert Error(fabric.InvalidAgent(errors)) = fabric.start(agent, Nil, "x")
+  let assert Error(fabric.InvalidAgent(errors)) =
+    fabric.start(store.in_memory(), agent, Nil, "x")
   errors |> should.equal(expected)
 }
 
@@ -275,7 +282,7 @@ pub fn handler_receives_the_run_context_test() {
       [greet],
       policy.always_allow(),
     )
-  let assert Ok(run) = fabric.start(agent, "alice", "hi")
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, "alice", "hi")
   fabric.await(run, 5000)
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"alice in Rome\"}"))),
@@ -303,7 +310,7 @@ pub fn concurrent_cancels_of_a_suspended_run_have_one_winner_test() {
       [apps.transfer_tool()],
       transfers_need_approval,
     )
-  let assert Ok(run) = fabric.start(agent, Nil, "pay bob")
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "pay bob")
   let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
   let results = process.new_subject()
   list.each(list.repeat(Nil, 8), fn(_) {
@@ -334,7 +341,7 @@ pub fn a_policy_that_never_answers_fails_closed_at_its_deadline_test() {
       stuck,
     )
     |> agent.with_policy_timeout(50)
-  let assert Ok(run) = fabric.start(agent, Nil, "weather")
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
   fabric.await(run, 5000)
   |> should.equal(
     Ok(
