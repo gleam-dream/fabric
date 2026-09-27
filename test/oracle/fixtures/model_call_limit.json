@@ -1,6 +1,6 @@
 {
   "captured": "2026-09-27",
-  "command": "MIX_ENV=test FIXTURE_DIR=... mix run --no-compile test/oracle/capture/capture.exs",
+  "command": "cd <scratch clone> && PATH=/nix/store/5fbjxaaizi26pmghbyn09llww48qg01q-elixir-1.19.5/bin:/nix/store/cyr4xsis8csd0sjvmy6lxaw9214f1sjf-erlang-28.5/bin:$PATH MIX_ENV=test FIXTURE_DIR=<fabric>/test/oracle/fixtures mix run --no-compile <fabric>/test/oracle/capture/capture.exs < /dev/null",
   "description": "A model that always requests a tool is stopped by a run model-call limit of 2.",
   "effects": [
     "model:tool_msgs=0",
