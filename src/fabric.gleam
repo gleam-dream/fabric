@@ -311,8 +311,9 @@ fn pending_of(state: State) -> List(PendingApproval) {
 
 /// Answers an approval request. `context` is the application's current
 /// context: the policy is checked again with it, and a current denial or
-/// policy failure wins over an approval. If the approved action runs from
-/// here (no runner was live), it runs with this context.
+/// policy failure wins over an approval. It is used for that check only:
+/// the approved action runs with the run's context (the one the run was
+/// started or recovered with), whether or not a runner was live.
 ///
 /// Works with no process holding the run: the answer is committed to the
 /// stored record with compare-and-set, so of concurrent answers exactly one
@@ -328,10 +329,10 @@ pub fn answer(
   reviewer reviewer: Option(String),
   context context: context,
 ) -> Result(Status, CommandError) {
-  let env = controller.Env(..run.setup.env, context:)
-  let answering = Run(..run, setup: runner.Setup(..run.setup, env:))
+  let recheck = controller.Env(..run.setup.env, context:)
   use state <- result.try(command(
-    answering,
+    run,
+    recheck,
     controller.Answer(reference, answer, reviewer),
     retries,
   ))
@@ -359,7 +360,8 @@ pub fn answer(
 /// until its runner next tries to commit and stops; they are recorded as
 /// uncertain effects.
 pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
-  command(run, controller.Cancel, retries) |> result.map(controller.status)
+  command(run, run.setup.env, controller.Cancel, retries)
+  |> result.map(controller.status)
 }
 
 /// Cancels the stored run `id` with no agent: for a run that cannot be
@@ -419,15 +421,18 @@ pub fn reconcile(
   action: ActionId,
   content: String,
 ) -> Result(Status, CommandError) {
-  command(run, controller.Reconcile(action, content), retries)
+  command(run, run.setup.env, controller.Reconcile(action, content), retries)
   |> result.map(controller.status)
 }
 
 /// Sends `event` to the live runner, or applies it to the stored record
 /// and starts a runner if the transition produced work. A lost race reads
 /// the newer record and validates the command again.
+/// `env` is the environment the event is stepped with (an answer's
+/// recheck context); work the command starts runs with the run's own.
 fn command(
   run: Run(context),
+  env: controller.Env(context),
   event: Event,
   tries: Int,
 ) -> Result(State, CommandError) {
@@ -440,16 +445,14 @@ fn command(
   use #(entry, state) <- result.try(loaded |> result.map_error(Unreadable))
   let retry = fn() {
     case tries > 1 {
-      True -> command(run, event, tries - 1)
+      True -> command(run, env, event, tries - 1)
       False -> Error(Contended)
     }
   }
   case live_runner(entry, state) {
     Some(mailbox) ->
       case
-        send_live(mailbox, fn(state) {
-          controller.step(run.setup.env, state, event)
-        })
+        send_live(mailbox, fn(state) { controller.step(env, state, event) })
       {
         Ok(live.Applied(state)) -> Ok(state)
         Ok(live.Refused(rejection)) -> Error(refusal(rejection))
@@ -463,7 +466,7 @@ fn command(
       // whoever drives the run.
       let transition = case orphaned, event {
         True, controller.Cancel -> controller.cancel_abandoned(state)
-        _, _ -> controller.step(run.setup.env, state, event)
+        _, _ -> controller.step(env, state, event)
       }
       use #(next, effects) <- result.try(
         transition |> result.map_error(refusal),
