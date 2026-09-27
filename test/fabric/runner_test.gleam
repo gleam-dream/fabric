@@ -318,3 +318,38 @@ pub fn concurrent_cancels_of_a_suspended_run_have_one_winner_test() {
   list.count(outcomes, fn(o) { o == Error(fabric.RunEnded) })
   |> should.equal(7)
 }
+
+pub fn a_policy_that_never_answers_fails_closed_at_its_deadline_test() {
+  let stuck = fn(_context: Nil, _action) -> Result(policy.Decision, String) {
+    let never: process.Subject(policy.Decision) = process.new_subject()
+    Ok(process.receive_forever(never))
+  }
+  let agent =
+    agent.new(
+      scripted.plan([
+        scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}"),
+      ]),
+      [apps.weather_tool()],
+      stuck,
+    )
+    |> agent.with_policy_timeout(50)
+  let assert Ok(run) = fabric.start(agent, Nil, "weather")
+  fabric.await(run, 5000)
+  |> should.equal(
+    Ok(
+      run.Finished(
+        run.Failed(run.PolicyFailed(
+          ActionId(1, "w"),
+          "policy gave no decision within 50 ms",
+        )),
+      ),
+    ),
+  )
+}
+
+pub fn the_policy_timeout_must_be_positive_test() {
+  agent.new(scripted.plan([]), [], policy.always_allow())
+  |> agent.with_policy_timeout(0)
+  |> agent.validate
+  |> should.equal(Error([agent.PolicyTimeoutNotPositive(0)]))
+}
