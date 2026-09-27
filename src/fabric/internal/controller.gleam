@@ -179,11 +179,15 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
       })
     Acting(turn, actions), ToolReported(id, outcome) -> {
       use actions <- result.try(update(actions, id, accept_report(id, outcome)))
-      Ok(after_report(env, State(..state, phase: Acting(turn, actions))))
+      let state = State(..state, phase: Acting(turn, actions))
+      case host_fault(id, outcome) {
+        Some(failure) -> Ok(stop(state, turn, actions, HostFault(failure)))
+        None -> Ok(settle(env, state))
+      }
     }
     Acting(turn, actions), ToolLost(id, reason) -> {
       use actions <- result.try(update(actions, id, lose(id, reason)))
-      Ok(after_report(env, State(..state, phase: Acting(turn, actions))))
+      Ok(settle(env, State(..state, phase: Acting(turn, actions))))
     }
     Acting(turn, actions), Reconcile(id, content) -> {
       use actions <- result.try(
@@ -573,8 +577,8 @@ fn accept_report(
           invocation.Returned(content) -> run.Succeeded(content)
           invocation.FailedVisibly(content) -> run.ToolFailed(content)
           invocation.EffectUncertain(evidence) -> run.Uncertain(evidence)
-          invocation.ArgumentsRejected(detail) -> run.InvalidArguments(detail)
-          invocation.OutputUnencodable(detail) -> run.Faulted(detail)
+          invocation.ArgumentsRejected(detail)
+          | invocation.OutputUnencodable(detail) -> run.Faulted(detail)
         })
       _ -> Error(ReportNotExpected(id))
     }
@@ -596,22 +600,18 @@ fn lose(
   }
 }
 
-fn after_report(env: Env(context), state: State) -> #(State, List(Effect)) {
-  case state.phase {
-    Acting(turn, actions) ->
-      case
-        list.find_map(actions, fn(action) {
-          case action.state {
-            run.Faulted(detail) ->
-              Ok(run.OutputEncodingFailed(action.id, detail))
-            _ -> Error(Nil)
-          }
-        })
-      {
-        Ok(failure) -> stop(state, turn, actions, HostFault(failure))
-        Error(Nil) -> settle(env, state)
-      }
-    _ -> #(state, [])
+/// A report that means the host, not the tool's business logic, failed.
+fn host_fault(
+  id: ActionId,
+  outcome: invocation.Outcome,
+) -> Option(HostFailure) {
+  case outcome {
+    invocation.OutputUnencodable(detail) ->
+      Some(run.OutputEncodingFailed(id, detail))
+    invocation.ArgumentsRejected(detail) -> Some(run.ToolChanged(id, detail))
+    invocation.Returned(_)
+    | invocation.FailedVisibly(_)
+    | invocation.EffectUncertain(_) -> None
   }
 }
 

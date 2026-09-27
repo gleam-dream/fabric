@@ -74,6 +74,7 @@ fn phases() -> List(controller.Phase) {
   let failures = [
     run.PolicyFailed(ActionId(1, "a"), "down"),
     run.OutputEncodingFailed(ActionId(1, "b"), "bad"),
+    run.ToolChanged(ActionId(1, "c"), "tool is not registered"),
     run.ModelFailed(model.ModelError("reset", retryable: True)),
     run.ModelProtocolViolation("empty batch"),
   ]

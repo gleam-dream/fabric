@@ -95,6 +95,11 @@ pub type Budget {
 pub type HostFailure {
   PolicyFailed(id: ActionId, reason: String)
   OutputEncodingFailed(id: ActionId, detail: String)
+  /// The call's arguments were admitted, but when its tool started they no
+  /// longer decode, or no tool of that name is registered: the tool changed
+  /// between admission and start. The handler did not run. It is not shown
+  /// to the model, whose arguments were valid.
+  ToolChanged(id: ActionId, detail: String)
   ModelFailed(ModelError)
   ModelProtocolViolation(reason: String)
 }
@@ -119,7 +124,8 @@ pub type ActionState {
   Reconciled(content: String)
   /// Withdrawn before it started (cancellation, a budget, or a host failure).
   NotStarted
-  /// The handler finished but its output could not be encoded.
+  /// The host could not complete the action: its output could not be
+  /// encoded, or its tool changed after admission. The run stopped.
   Faulted(detail: String)
 }
 

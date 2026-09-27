@@ -466,6 +466,31 @@ pub fn unencodable_output_stops_the_run_as_a_host_failure_test() {
   let assert [run.Faulted("no"), run.Uncertain(_)] = states(state)
 }
 
+/// Arguments were admitted, then rejected when the tool started: the tool
+/// changed in between (not the model's fault, and its handler did not
+/// run), so the run stops as a host failure rather than telling the model
+/// its arguments were invalid.
+pub fn arguments_rejected_after_the_fence_stop_the_run_as_a_host_failure_test() {
+  let env = env()
+  let state = begin(env, limits())
+  let #(state, _) = tools_requested(env, state, [weather("b", "Paris")])
+  let #(state, effects) =
+    run_tool(
+      env,
+      state,
+      ActionId(1, "b"),
+      invocation.ArgumentsRejected("tool is not registered"),
+    )
+  effects |> should.equal([])
+  controller.status(state)
+  |> should.equal(
+    run.Finished(
+      run.Failed(run.ToolChanged(ActionId(1, "b"), "tool is not registered")),
+    ),
+  )
+  let assert [run.Faulted("tool is not registered")] = states(state)
+}
+
 pub fn lost_task_is_an_uncertain_effect_test() {
   let env = env()
   let state = begin(env, limits())
