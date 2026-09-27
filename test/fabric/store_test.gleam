@@ -6,6 +6,7 @@ import fabric/support/flaky
 import fabric/support/restart
 import gleam/erlang/process
 import gleam/list
+import gleam/result
 import gleam/string
 import gleeunit/should
 
@@ -147,4 +148,48 @@ pub fn a_write_the_backend_made_despite_an_error_is_confirmed_test() {
   |> should.equal(Error(store.Unavailable("the backend blinked")))
   let assert Ok(store.Entry(revision: 2, record: "two", ..)) =
     store.get(store, "run-f")
+}
+
+/// A backend call that hangs holds up neither other runs nor the store: it
+/// is abandoned after the store's backend deadline and reported
+/// `Unavailable`, while calls for other runs complete meanwhile.
+pub fn a_hung_backend_call_blocks_only_its_run_until_its_deadline_test() {
+  let entered = process.new_subject()
+  let memory = store.in_memory()
+  let hanging =
+    store.with_backend_timeout(
+      store.new(
+        get: fn(run) {
+          case run {
+            "run-hung" -> {
+              process.send(entered, Nil)
+              process.sleep_forever()
+              Error(store.NotFound)
+            }
+            _ ->
+              case store.get(memory, run) {
+                Ok(entry) -> Ok(store.Stored(entry.revision, entry.record))
+                Error(error) -> Error(error)
+              }
+          }
+        },
+        insert: fn(run, record) {
+          store.insert(memory, run, record, store.Keep) |> result.replace(Nil)
+        },
+        compare_and_set: fn(run, expected, record) {
+          store.commit(memory, run, expected, record, store.Keep)
+          |> result.replace(Nil)
+        },
+      ),
+      200,
+    )
+  let hung = process.new_subject()
+  process.spawn(fn() { process.send(hung, store.get(hanging, "run-hung")) })
+  let assert Ok(Nil) = process.receive(entered, 1000)
+  // While run-hung's call hangs, another run is served.
+  store.insert(hanging, "run-ok", "one", store.Keep) |> should.equal(Ok(1))
+  let assert Ok(store.Entry(revision: 1, record: "one", ..)) =
+    store.get(hanging, "run-ok")
+  let assert Ok(Error(store.Unavailable(reason))) = process.receive(hung, 5000)
+  string.contains(reason, "200 ms") |> should.be_true
 }
