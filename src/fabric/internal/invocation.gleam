@@ -13,8 +13,9 @@ pub type Outcome {
   FailedVisibly(content: String)
   /// The effect may or may not have happened.
   EffectUncertain(evidence: String)
-  /// The arguments no longer decode. Admission checks them first, so this
-  /// indicates a codec that changed behaviour between admission and call.
+  /// The arguments no longer decode, or the tool is not registered.
+  /// Admission checks both first, so this means the tool changed between
+  /// admission and start: a host failure, never shown to the model.
   ArgumentsRejected(detail: String)
   /// The handler returned a value its output codec cannot encode.
   OutputUnencodable(detail: String)

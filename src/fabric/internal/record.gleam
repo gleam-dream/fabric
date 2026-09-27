@@ -225,6 +225,11 @@ fn host_failure(failure: HostFailure) -> Json {
         #("id", action_id(id)),
         #("detail", json.string(detail)),
       ])
+    run.ToolChanged(id, detail) ->
+      tag("tool_changed", [
+        #("id", action_id(id)),
+        #("detail", json.string(detail)),
+      ])
     run.ModelFailed(model.ModelError(reason, retryable)) ->
       tag("model_failed", [
         #("reason", json.string(reason)),
@@ -519,6 +524,12 @@ fn host_failure_decoder() -> Decoder(HostFailure) {
         use id <- decode.field("id", action_id_decoder())
         use detail <- decode.field("detail", decode.string)
         decode.success(run.OutputEncodingFailed(id, detail))
+      })
+    "tool_changed" ->
+      Ok({
+        use id <- decode.field("id", action_id_decoder())
+        use detail <- decode.field("detail", decode.string)
+        decode.success(run.ToolChanged(id, detail))
       })
     "model_failed" ->
       Ok({
