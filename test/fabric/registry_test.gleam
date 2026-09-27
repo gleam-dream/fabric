@@ -3,6 +3,7 @@ import fabric/internal/registry
 import fabric/model
 import fabric/support/apps
 import fabric/tool
+import gleam/option
 import gleeunit/should
 import json/blueprint/codec
 
@@ -124,4 +125,19 @@ pub fn unencodable_output_is_a_host_failure_test() {
   let assert Ok(tools) = registry.new([broken])
   let assert invocation.OutputUnencodable(_) =
     registry.invoke(tools, Nil, "broken", "{\"city\":\"Rome\"}")
+}
+
+/// A scripted model builds its calls from the same typed definitions the
+/// tools are bound from, so their arguments always decode.
+pub fn a_typed_call_encodes_its_input_with_the_definition_test() {
+  tool.call(apps.transfer_definition(), "t", apps.Transfer("bob", 10))
+  |> should.equal(
+    Ok(model.ToolCall(
+      "t",
+      "transfer_funds",
+      "{\"to\":\"bob\",\"amount\":10}",
+      provider_id: option.None,
+      provider_state: option.None,
+    )),
+  )
 }
