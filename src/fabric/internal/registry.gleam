@@ -76,6 +76,10 @@ pub fn declarations(registry: Registry(context)) -> List(model.ToolSpec) {
   })
 }
 
+pub fn is_registered(registry: Registry(context), name: String) -> Bool {
+  dict.has_key(registry.tools, name)
+}
+
 /// Checks that `name` is registered and its arguments decode with the
 /// tool's input codec. Nothing runs.
 pub fn admit(
