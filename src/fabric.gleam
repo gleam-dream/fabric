@@ -384,13 +384,11 @@ fn cancel_stored_loop(
         Ok(live.Superseded) | Error(Nil) -> retry()
       }
     None -> {
-      let from = case controller.needs_runner(state) {
-        True -> controller.abandon(state)
-        False -> state
+      let transition = case controller.needs_runner(state) {
+        True -> controller.cancel_abandoned(state)
+        False -> controller.cancel(state)
       }
-      use #(next, _) <- result.try(
-        controller.cancel(from) |> result.map_error(refusal),
-      )
+      use #(next, _) <- result.try(transition |> result.map_error(refusal))
       case
         store.commit(store, id, entry.revision, record.encode(next), store.Keep)
       {
@@ -450,16 +448,15 @@ fn command(
     None -> {
       let orphaned = controller.needs_runner(state)
       // Cancelling starts nothing, so it needs no runner: the work of a
-      // lost runner is abandoned first.
-      let from = case orphaned, event {
-        True, controller.Cancel -> controller.abandon(state)
-        _, _ -> state
+      // lost runner is abandoned first. Any other command is checked
+      // against the stored record first, so a refusal is reported as such
+      // whoever drives the run.
+      let transition = case orphaned, event {
+        True, controller.Cancel -> controller.cancel_abandoned(state)
+        _, _ -> controller.step(run.setup.env, state, event)
       }
-      // Any other command is checked against the stored record first, so a
-      // refusal is reported as such whoever drives the run.
       use #(next, effects) <- result.try(
-        controller.step(run.setup.env, from, event)
-        |> result.map_error(refusal),
+        transition |> result.map_error(refusal),
       )
       use Nil <- result.try(case orphaned, event {
         True, controller.Cancel | False, _ -> Ok(Nil)

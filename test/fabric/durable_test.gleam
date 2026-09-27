@@ -5,6 +5,8 @@
 
 import fabric
 import fabric/agent.{type Agent}
+import fabric/internal/controller
+import fabric/internal/record
 import fabric/model
 import fabric/policy.{ActionId}
 import fabric/run
@@ -558,4 +560,37 @@ pub fn cancel_stored_stops_a_live_run_through_its_runner_test() {
   let assert Ok(run.Working) = fabric.cancel_stored(store, fabric.id(run))
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
   states(run) |> should.equal([run.Uncertain("stopped while running")])
+}
+
+/// A record left stopping by a lost runner (a cancel was committed, then
+/// the runner died before its tools were confirmed stopped): cancelling it
+/// commits the ended run instead of refusing because it already ended.
+pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
+  let store = store.in_memory()
+  let call = scripted.slow("a", "a")
+  let stopping =
+    controller.State(
+      run: "run-stopping",
+      agent: run.Identity("agent", 1),
+      incarnation: 1,
+      limits: controller.Limits(max_turns: 8, token_budget: None),
+      turns_used: 1,
+      usage: run.TokenUsage(0, 0, 0),
+      transcript: [model.UserMessage("go"), model.AssistantMessage("", [call])],
+      history: [],
+      approvals_issued: 0,
+      phase: controller.Stopping(
+        1,
+        [run.ActionRecord(ActionId(1, "a"), call, run.Running, [])],
+        controller.CancelRequested,
+      ),
+    )
+  let assert Ok(1) =
+    store.insert(store, "run-stopping", record.encode(stopping), store.Keep)
+  fabric.cancel_stored(store, "run-stopping")
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
+  let assert Ok(store.Entry(record: stored, ..)) =
+    store.get(store, "run-stopping")
+  let assert Ok(controller.State(phase: controller.Ended(run.Cancelled), ..)) =
+    record.decode(stored)
 }
