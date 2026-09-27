@@ -22,9 +22,10 @@ pub opaque type Definition(input, output) {
   )
 }
 
-/// How a typed handler error is disclosed.
+/// What a typed handler error means.
 pub type Failure {
-  /// The model sees `message` as the tool's result and the run continues.
+  /// The action definitely failed without its effect. The model sees
+  /// `{"error": message}` as the tool's result and the run continues.
   Explain(message: String)
   /// The effect may or may not have happened. The run stops before its next
   /// model turn until the action is reconciled; it is never retried.
@@ -50,21 +51,15 @@ pub fn define(
   Definition(name, description, input, output)
 }
 
-/// The ordinary binding. A typed error reaches the model only as a fixed
-/// failure text, so no error detail leaks by accident.
+/// Binds a typed handler. `classify` decides, for every typed error, what
+/// it means: a definite failure the model sees (`Explain`), or an effect that
+/// may have happened (`Uncertain`), which blocks the run until it is
+/// reconciled. There is no default: a timeout after a request was sent must
+/// not look like a clean failure the model could simply retry.
 pub fn bind(
   definition: Definition(input, output),
   handler: fn(context, input) -> Result(output, error),
-) -> Tool(context) {
-  bind_reporting(definition, handler, fn(_) { Explain(hidden_failure) })
-}
-
-/// Binds a handler whose typed errors are classified by `report`: explained
-/// to the model, or declared an uncertain effect.
-pub fn bind_reporting(
-  definition: Definition(input, output),
-  handler: fn(context, input) -> Result(output, error),
-  report: fn(error) -> Failure,
+  classify: fn(error) -> Failure,
 ) -> Tool(context) {
   let Definition(name:, description:, input:, output:) = definition
   Tool(
@@ -91,7 +86,7 @@ pub fn bind_reporting(
                   ))
               }
             Error(error) ->
-              case report(error) {
+              case classify(error) {
                 Explain(message) ->
                   invocation.FailedVisibly(invocation.error_content(message))
                 Uncertain(evidence) -> invocation.EffectUncertain(evidence)
@@ -105,8 +100,6 @@ pub fn bind_reporting(
 pub fn name(tool: Tool(context)) -> String {
   tool.name
 }
-
-const hidden_failure = "tool_failed"
 
 @internal
 pub fn description(tool: Tool(context)) -> String {

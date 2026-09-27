@@ -284,12 +284,13 @@ pub fn handler_receives_the_run_context_test() {
 fn tool_bind_context(
   definition: tool.Definition(apps.City, apps.Forecast),
 ) -> tool.Tool(String) {
-  tool.bind(definition, fn(context: String, city: apps.City) -> Result(
-    apps.Forecast,
-    Nil,
-  ) {
-    Ok(apps.Forecast(context <> " in " <> city.name))
-  })
+  tool.bind(
+    definition,
+    fn(context: String, city: apps.City) -> Result(apps.Forecast, Nil) {
+      Ok(apps.Forecast(context <> " in " <> city.name))
+    },
+    fn(_) { tool.Explain("failed") },
+  )
 }
 
 pub fn concurrent_cancels_of_a_suspended_run_have_one_winner_test() {

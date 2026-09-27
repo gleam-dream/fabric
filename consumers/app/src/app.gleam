@@ -124,25 +124,28 @@ pub fn tools() -> List(tool.Tool(Member)) {
       title_codec(),
       book_codec(),
     )
-      |> tool.bind_reporting(find_book, fn(error) {
+      |> tool.bind(find_book, fn(error) {
         let NotInCatalog(title) = error
         tool.Explain("no book titled " <> title)
       }),
-    // Reservation errors stay hidden from the model.
+    // A refused reservation made no change; its detail stays hidden.
     tool.define(
       "reserve_book",
       "Reserve a book for the current member.",
       reservation_codec(),
       confirmation_codec(),
     )
-      |> tool.bind(reserve_book),
+      |> tool.bind(reserve_book, fn(error) {
+        let AlreadyReserved = error
+        tool.Explain("not reserved")
+      }),
     tool.define(
       "scan_inventory",
       "Count the books on a shelf.",
       codec.field("shelf", codec.string()),
       codec.int(),
     )
-      |> tool.bind(scan_inventory),
+      |> tool.bind(scan_inventory, fn(_) { tool.Explain("scan failed") }),
   ]
 }
 

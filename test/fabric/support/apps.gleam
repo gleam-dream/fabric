@@ -87,7 +87,7 @@ pub fn lookup_weather(
 
 /// Weather errors are safe to show the model.
 pub fn weather_tool() -> tool.Tool(ctx) {
-  tool.bind_reporting(weather_definition(), lookup_weather, fn(error) {
+  tool.bind(weather_definition(), lookup_weather, fn(error) {
     let UnknownCity(name) = error
     tool.Explain("unknown city: " <> name)
   })
@@ -107,7 +107,7 @@ pub fn transfer(
 }
 
 pub fn transfer_tool() -> tool.Tool(ctx) {
-  tool.bind_reporting(transfer_definition(), transfer, fn(error) {
+  tool.bind(transfer_definition(), transfer, fn(error) {
     case error {
       InsufficientFunds(_) -> tool.Explain("insufficient funds")
       GatewayTimeout -> tool.Uncertain("gateway timed out after sending")

@@ -165,7 +165,7 @@ fn lookup(probe: Probe) -> tool.Tool(Nil) {
     codec.field("city", codec.string()),
     codec.string(),
   )
-  |> tool.bind_reporting(
+  |> tool.bind(
     fn(_, city: String) {
       probe.record(probe, "tool:lookup:" <> city)
       case city {
@@ -184,18 +184,24 @@ fn pay(probe: Probe) -> tool.Tool(Nil) {
     codec.field("to", codec.string()),
     codec.string(),
   )
-  |> tool.bind(fn(_, to: String) -> Result(String, Nil) {
-    probe.record(probe, "tool:pay:" <> to)
-    Ok("paid " <> to)
-  })
+  |> tool.bind(
+    fn(_, to: String) -> Result(String, Nil) {
+      probe.record(probe, "tool:pay:" <> to)
+      Ok("paid " <> to)
+    },
+    fn(_) { tool.Explain("failed") },
+  )
 }
 
 fn step(probe: Probe) -> tool.Tool(Nil) {
   tool.define("step", "One step", codec.field("n", codec.int()), codec.string())
-  |> tool.bind(fn(_, n: Int) -> Result(String, Nil) {
-    probe.record(probe, "tool:step:" <> int.to_string(n))
-    Ok("stepped " <> int.to_string(n))
-  })
+  |> tool.bind(
+    fn(_, n: Int) -> Result(String, Nil) {
+      probe.record(probe, "tool:step:" <> int.to_string(n))
+      Ok("stepped " <> int.to_string(n))
+    },
+    fn(_) { tool.Explain("failed") },
+  )
 }
 
 fn run_scenario(
