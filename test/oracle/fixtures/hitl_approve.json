@@ -1,0 +1,134 @@
+{
+  "captured": "2026-09-27",
+  "command": "cd <scratch clone> && PATH=/nix/store/5fbjxaaizi26pmghbyn09llww48qg01q-elixir-1.19.5/bin:/nix/store/cyr4xsis8csd0sjvmy6lxaw9214f1sjf-erlang-28.5/bin:$PATH MIX_ENV=test FIXTURE_DIR=<fabric>/test/oracle/fixtures mix run --no-compile <fabric>/test/oracle/capture/capture.exs < /dev/null",
+  "description": "The pay tool requires approval: invoke pauses before it runs; an approve decision runs it once and the model answers.",
+  "effects": ["model:tool_msgs=0", "tool:pay:bob", "model:tool_msgs=1"],
+  "license": "Output of running BeamWeaver (Apache-2.0); not copied source.",
+  "oracle": {
+    "commit": "d0aa1f90d31c55d49be2f7b5a24224b5e18145a1",
+    "elixir": "1.19.5",
+    "otp": "28",
+    "repository": "lostbean/beam_weaver (fork of caudena/beam_weaver)"
+  },
+  "result": {
+    "tag": "ok",
+    "transcript": [
+      {
+        "content": "go",
+        "role": "user"
+      },
+      {
+        "calls": [
+          {
+            "id": "call_t",
+            "name": "pay"
+          }
+        ],
+        "role": "assistant_calls"
+      },
+      {
+        "content": "paid bob",
+        "id": "call_t",
+        "role": "tool",
+        "status": "success"
+      },
+      {
+        "content": "final: paid bob",
+        "role": "assistant"
+      }
+    ]
+  },
+  "scenario": "hitl_approve",
+  "script": "test/oracle/capture/capture.exs",
+  "steps": [
+    {
+      "call": "invoke",
+      "effects": ["model:tool_msgs=0"],
+      "interrupt": {
+        "action_requests": [
+          {
+            "args": {
+              "to": "bob"
+            },
+            "description": "Tool execution requires approval\n\nTool: pay\nArgs: %{\"to\" => \"bob\"}",
+            "name": "pay"
+          }
+        ],
+        "id_matches_snapshot": true,
+        "nodes": ["human_in_the_loop.after_model"],
+        "review_configs": [
+          {
+            "action_name": "pay",
+            "allowed_decisions": ["approve", "edit", "reject", "respond"]
+          }
+        ],
+        "timing": "during",
+        "under_review": [
+          {
+            "id": "call_t",
+            "name": "pay"
+          }
+        ]
+      },
+      "snapshot": {
+        "interrupts": 1,
+        "next": ["human_in_the_loop.after_model"],
+        "transcript": [
+          {
+            "content": "go",
+            "role": "user"
+          },
+          {
+            "calls": [
+              {
+                "id": "call_t",
+                "name": "pay"
+              }
+            ],
+            "role": "assistant_calls"
+          }
+        ]
+      },
+      "tag": "interrupted"
+    },
+    {
+      "call": "resume",
+      "decision": {
+        "decisions": [
+          {
+            "type": "approve"
+          }
+        ]
+      },
+      "effects": ["tool:pay:bob", "model:tool_msgs=1"],
+      "result": {
+        "tag": "ok",
+        "transcript": [
+          {
+            "content": "go",
+            "role": "user"
+          },
+          {
+            "calls": [
+              {
+                "id": "call_t",
+                "name": "pay"
+              }
+            ],
+            "role": "assistant_calls"
+          },
+          {
+            "content": "paid bob",
+            "id": "call_t",
+            "role": "tool",
+            "status": "success"
+          },
+          {
+            "content": "final: paid bob",
+            "role": "assistant"
+          }
+        ]
+      }
+    }
+  ]
+}
