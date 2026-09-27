@@ -437,3 +437,38 @@ pub fn a_runner_retries_a_commit_the_store_could_not_make_test() {
     Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
   )
 }
+
+/// An exit signal from outside (a supervisor's shutdown) stops the runner
+/// and its tools instead of being ignored; the run is then reported as
+/// having no runner.
+pub fn an_exit_signal_from_outside_stops_the_runner_test() {
+  let probe = probe.new()
+  let store = store.in_memory()
+  let agent =
+    agent.new(
+      scripted.plan([scripted.slow("a", "a")]),
+      [scripted.gated_tool(probe)],
+      policy.always_allow(),
+    )
+  let assert Ok(run) = fabric.start(store, agent, Nil, "go")
+  let _ = probe.arrival(probe)
+  let assert Ok(runner) = restart.runner(store, fabric.id(run))
+  let monitor = process.monitor(runner)
+  process.send_abnormal_exit(runner, "shutdown")
+  let assert Ok(Nil) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_) { Nil })
+    |> process.selector_receive(5000)
+  fabric.await(run, 5000) |> should.equal(Error(fabric.NoRunner))
+}
+
+pub fn a_run_id_that_fabric_never_issues_is_not_found_test() {
+  let dir = restart.temp_dir()
+  let assert Ok(store) = store.directory(dir)
+  let agent = agent.new(scripted.plan([]), [], policy.always_allow())
+  fabric.recover(store, agent, Nil, "../escape")
+  |> should.equal(Error(fabric.RecoverUnreadable(fabric.RunNotFound)))
+  fabric.cancel_stored(store, "")
+  |> should.equal(Error(fabric.Unreadable(fabric.RunNotFound)))
+  restart.remove_dir(dir)
+}

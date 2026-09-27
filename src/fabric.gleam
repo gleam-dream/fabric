@@ -46,6 +46,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 
 /// A handle on one run, for the agent and context it was started or
 /// recovered with. It holds no process: it can be dropped and rebuilt with
@@ -530,6 +531,10 @@ fn load_record(
   store: Store,
   id: String,
 ) -> Result(#(store.Entry, State), RecordError) {
+  use Nil <- result.try(case issued_id(id) {
+    True -> Ok(Nil)
+    False -> Error(RunNotFound)
+  })
   use entry <- result.try(
     store.get(store, id)
     |> result.map_error(fn(error) {
@@ -591,6 +596,21 @@ fn contain_policy(
         )
     }
   }
+}
+
+/// Whether `id` has the shape of the run ids Fabric issues: 1 to 128
+/// letters, digits, `-` and `_`. Anything else names no run.
+fn issued_id(id: String) -> Bool {
+  let length = string.length(id)
+  length >= 1
+  && length <= 128
+  && string.to_graphemes(id)
+  |> list.all(fn(grapheme) {
+    string.contains(
+      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_",
+      grapheme,
+    )
+  })
 }
 
 @external(erlang, "fabric_ffi", "random_id")
