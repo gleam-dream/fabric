@@ -58,6 +58,14 @@ pub type Identity {
   Identity(name: String, version: Int)
 }
 
+/// Why a stored run cannot continue under a given agent.
+pub type Incompatibility {
+  /// The run was started by another agent definition.
+  OtherAgent(stored: Identity)
+  /// An action that may still run names a tool the agent does not have.
+  ToolNotRegistered(id: ActionId, tool: String)
+}
+
 pub type UncertainAction {
   UncertainAction(id: ActionId, tool: String, evidence: String)
 }
