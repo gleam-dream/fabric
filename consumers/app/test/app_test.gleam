@@ -2,8 +2,11 @@ import app
 import fabric
 import fabric/run
 import fabric/store
+import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process
+import gleam/int
 import gleam/list
+import gleam/option.{None, Some}
 import gleeunit
 import gleeunit/should
 
@@ -98,3 +101,126 @@ pub fn the_configuration_is_checked_before_anything_starts_test() {
   app.librarian() |> app.check |> should.equal(Ok(Nil))
   app.misconfigured() |> app.check |> should.be_error
 }
+
+// --- approvals, cancellation, restart -----------------------------------------
+
+pub fn a_guardian_approves_a_junior_reservation_test() {
+  let assert Ok(run) =
+    fabric.start(
+      store.in_memory(),
+      app.librarian(),
+      app.member("junior"),
+      "reserve Dune",
+    )
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  pending.tool |> should.equal("reserve_book")
+  let assert Ok(_) =
+    fabric.answer(
+      run,
+      pending.reference,
+      run.Approve,
+      reviewer: Some("guardian-ann"),
+      context: app.member("junior"),
+    )
+  fabric.await(run, 5000)
+  |> should.equal(
+    Ok(
+      run.Finished(run.Completed(
+        "done: {\"isbn\":\"978-0441013593\",\"title\":\"Dune\"} | {\"confirmation\":\"junior:978-0441013593\"}",
+      )),
+    ),
+  )
+}
+
+pub fn a_rejected_reservation_is_explained_to_the_model_test() {
+  let assert Ok(run) =
+    fabric.start(
+      store.in_memory(),
+      app.librarian(),
+      app.member("junior"),
+      "reserve Dune",
+    )
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(_) =
+    fabric.answer(
+      run,
+      pending.reference,
+      run.Reject("ask again tomorrow"),
+      reviewer: Some("guardian-ann"),
+      context: app.member("junior"),
+    )
+  fabric.await(run, 5000)
+  |> should.equal(
+    Ok(
+      run.Finished(run.Completed(
+        "done: {\"isbn\":\"978-0441013593\",\"title\":\"Dune\"} | {\"error\":\"rejected\",\"detail\":\"ask again tomorrow\"}",
+      )),
+    ),
+  )
+}
+
+pub fn a_paused_reservation_can_be_cancelled_test() {
+  let assert Ok(run) =
+    fabric.start(
+      store.in_memory(),
+      app.librarian(),
+      app.member("junior"),
+      "reserve Dune",
+    )
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  fabric.cancel(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.answer(
+    run,
+    pending.reference,
+    run.Approve,
+    reviewer: None,
+    context: app.member("junior"),
+  )
+  |> should.equal(Error(fabric.RunEnded))
+}
+
+/// The process that started the run dies with its store; the paused run
+/// survives on disk, and a new process recovers and approves it.
+pub fn a_paused_reservation_survives_a_restart_test() {
+  let dir = "build/fabric-restart-" <> int.to_string(int.random(1_000_000_000))
+  let started = process.new_subject()
+  let owner =
+    process.spawn_unlinked(fn() {
+      let assert Ok(store) = store.directory(dir)
+      let assert Ok(run) =
+        fabric.start(
+          store,
+          app.librarian(),
+          app.member("junior"),
+          "reserve Dune",
+        )
+      let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
+      process.send(started, fabric.id(run))
+      process.sleep_forever()
+    })
+  let assert Ok(id) = process.receive(started, 5000)
+  let monitor = process.monitor(owner)
+  process.kill(owner)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_) { Nil })
+    |> process.selector_receive(5000)
+
+  let assert Ok(store) = store.directory(dir)
+  let assert Ok(run) =
+    fabric.recover(store, app.librarian(), app.member("junior"), id)
+  let assert Ok([pending]) = fabric.pending(run)
+  let assert Ok(_) =
+    fabric.answer(
+      run,
+      pending.reference,
+      run.Approve,
+      reviewer: Some("guardian-ann"),
+      context: app.member("junior"),
+    )
+  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  delete_directory(dir)
+}
+
+@external(erlang, "file", "del_dir_r")
+fn delete_directory(path: String) -> Dynamic
