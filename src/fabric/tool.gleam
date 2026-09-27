@@ -10,6 +10,8 @@
 //// business input.
 
 import fabric/internal/invocation.{type Outcome}
+import fabric/model.{type ToolCall}
+import gleam/option.{None}
 import gleam/result
 import json/blueprint/codec.{type Codec}
 
@@ -94,6 +96,24 @@ pub fn bind(
           }
       }
     },
+  )
+}
+
+/// A call to `definition` with `input` encoded by its input codec, as a
+/// model would request it. For scripted models and tests: the arguments
+/// always decode under the tool bound from the same definition.
+pub fn call(
+  definition: Definition(input, output),
+  id: String,
+  input: input,
+) -> Result(ToolCall, codec.EncodeError) {
+  use arguments <- result.map(codec.encode_json(definition.input, input))
+  model.ToolCall(
+    id:,
+    name: definition.name,
+    arguments_json: arguments,
+    provider_id: None,
+    provider_state: None,
   )
 }
 
