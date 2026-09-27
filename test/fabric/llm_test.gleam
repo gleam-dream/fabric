@@ -19,6 +19,7 @@ import gleam/option.{Some}
 import gleam/string
 import gleeunit/should
 import llm_wire/config
+import llm_wire/provider/anthropic
 import llm_wire/provider/openai
 import llm_wire/testing
 import llm_wire/types
@@ -293,4 +294,127 @@ pub fn http_statuses_through_llm_wire_are_classified_for_retry_test() {
     fabric.await(run, 10_000)
   error.retryable |> should.be_false
   testing.remaining(script) |> should.equal(0)
+}
+
+fn sse(name: String, data: String) -> String {
+  "event: " <> name <> "\ndata: " <> data <> "\n\n"
+}
+
+fn anthropic_message(blocks: String, stop_reason: String) -> String {
+  sse(
+    "message_start",
+    "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"m\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}",
+  )
+  <> blocks
+  <> sse(
+    "message_delta",
+    "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\""
+      <> stop_reason
+      <> "\"},\"usage\":{\"output_tokens\":2}}",
+  )
+  <> sse("message_stop", "{\"type\":\"message_stop\"}")
+}
+
+fn anthropic_tool_use(
+  id: String,
+  name: String,
+  partial_json: String,
+) -> String {
+  anthropic_message(
+    sse(
+      "content_block_start",
+      "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\""
+        <> id
+        <> "\",\"name\":\""
+        <> name
+        <> "\"}}",
+    )
+      <> sse(
+      "content_block_delta",
+      "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":"
+        <> json.to_string(json.string(partial_json))
+        <> "}}",
+    )
+      <> sse(
+      "content_block_stop",
+      "{\"type\":\"content_block_stop\",\"index\":0}",
+    ),
+    "tool_use",
+  )
+}
+
+fn anthropic_text(text: String) -> String {
+  anthropic_message(
+    sse(
+      "content_block_start",
+      "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+    )
+      <> sse(
+      "content_block_delta",
+      "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":"
+        <> json.to_string(json.string(text))
+        <> "}}",
+    )
+      <> sse(
+      "content_block_stop",
+      "{\"type\":\"content_block_stop\",\"index\":0}",
+    ),
+    "end_turn",
+  )
+}
+
+/// Anthropic requires a replayed `tool_use` input to be a JSON object. A
+/// call whose arguments were not even JSON is answered with
+/// `invalid_arguments`, and the next turn still reaches the model: the
+/// arguments are replayed as an object that carries the original text,
+/// which the record keeps unchanged.
+pub fn unparseable_arguments_replay_to_anthropic_as_an_object_test() {
+  let assert Ok(key) = types.api_key("sk-scripted")
+  let script =
+    testing.start([
+      testing.Events([
+        anthropic_tool_use("toolu_1", "lookup_weather", "{\"city\": "),
+      ]),
+      testing.Events([anthropic_text("I will ask properly.")]),
+    ])
+  let settings =
+    config.anthropic(anthropic.options(key)) |> testing.with_script(script)
+  let agent =
+    agent.new(
+      llm.model(settings, model_id()),
+      [apps.weather_tool()],
+      policy.always_allow(),
+    )
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
+  fabric.await(run, 10_000)
+  |> should.equal(Ok(run.Finished(run.Completed("I will ask properly."))))
+
+  let assert Ok(snapshot) = fabric.snapshot(run)
+  let assert [run.ActionRecord(call:, state: run.InvalidArguments(_), ..)] =
+    snapshot.actions
+  call.arguments_json |> should.equal("{\"city\": ")
+
+  let assert [_, second] = bodies(script)
+  let tool_use = {
+    use kind <- decode.field("type", decode.string)
+    use input <- decode.optional_field(
+      "input",
+      "",
+      decode.at(["unparsed_arguments"], decode.string),
+    )
+    decode.success(#(kind, input))
+  }
+  let message = {
+    use content <- decode.field(
+      "content",
+      decode.one_of(decode.list(tool_use), [decode.success([])]),
+    )
+    decode.success(content)
+  }
+  let assert Ok(messages) =
+    json.parse(second, decode.at(["messages"], decode.list(message)))
+  messages
+  |> list.flatten
+  |> list.filter(fn(block) { block.0 == "tool_use" })
+  |> should.equal([#("tool_use", "{\"city\": ")])
 }
