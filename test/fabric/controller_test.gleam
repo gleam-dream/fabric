@@ -319,6 +319,8 @@ pub fn turn_limit_prevents_effects_that_cannot_be_continued_test() {
     controller.snapshot(state).transcript
 }
 
+/// A retryable failure that meets an exhausted budget ends the run on the
+/// budget, like any other attempt the budget refuses.
 pub fn every_model_attempt_counts_against_the_turn_limit_test() {
   let env = env()
   let state = begin(env, controller.Limits(max_turns: 2, token_budget: None))
@@ -328,7 +330,7 @@ pub fn every_model_attempt_counts_against_the_turn_limit_test() {
   let #(state, effects) = step(env, state, controller.ModelFailed(2, flaky))
   effects |> should.equal([])
   controller.status(state)
-  |> should.equal(run.Finished(run.Failed(run.ModelFailed(flaky))))
+  |> should.equal(run.Finished(run.BudgetExhausted(run.TurnLimit(2))))
   controller.snapshot(state).turns_used |> should.equal(2)
 }
 
