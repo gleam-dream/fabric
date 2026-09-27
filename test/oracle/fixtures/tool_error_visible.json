@@ -1,0 +1,68 @@
+{
+  "captured": "2026-09-27",
+  "command": "MIX_ENV=test FIXTURE_DIR=... mix run --no-compile test/oracle/capture/capture.exs",
+  "description": "A failing tool and an unknown tool become error tool messages; the run continues to a final answer.",
+  "effects": [
+    "model:tool_msgs=0",
+    "tool:lookup:Paris",
+    "tool:lookup:Oslo",
+    "model:tool_msgs=3"
+  ],
+  "license": "Output of running BeamWeaver (Apache-2.0); not copied source.",
+  "oracle": {
+    "commit": "d0aa1f90d31c55d49be2f7b5a24224b5e18145a1",
+    "elixir": "1.19.5",
+    "otp": "28",
+    "repository": "lostbean/beam_weaver (fork of caudena/beam_weaver)"
+  },
+  "result": {
+    "tag": "ok",
+    "transcript": [
+      {
+        "content": "go",
+        "role": "user"
+      },
+      {
+        "calls": [
+          {
+            "id": "call_a",
+            "name": "lookup"
+          },
+          {
+            "id": "call_b",
+            "name": "lookup"
+          },
+          {
+            "id": "call_c",
+            "name": "ghost"
+          }
+        ],
+        "role": "assistant_calls"
+      },
+      {
+        "content": "sunny in Paris",
+        "id": "call_a",
+        "role": "tool",
+        "status": "success"
+      },
+      {
+        "content": "Tool error: tool returned an error. Args: %{\"city\" => \"Oslo\"}. Details: %{reason: \"\\\"unknown city: Oslo\\\"\"}",
+        "id": "call_b",
+        "role": "tool",
+        "status": "error"
+      },
+      {
+        "content": "Tool error: tool is not registered. Details: %{tool: \"ghost\"}",
+        "id": "call_c",
+        "role": "tool",
+        "status": "error"
+      },
+      {
+        "content": "final: sunny in Paris|Tool error: tool returned an error. Args: %{\"city\" => \"Oslo\"}. Details: %{reason: \"\\\"unknown city: Oslo\\\"\"}|Tool error: tool is not registered. Details: %{tool: \"ghost\"}",
+        "role": "assistant"
+      }
+    ]
+  },
+  "scenario": "tool_error_visible",
+  "script": "test/oracle/capture/capture.exs"
+}

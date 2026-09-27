@@ -1,0 +1,63 @@
+{
+  "captured": "2026-09-27",
+  "command": "MIX_ENV=test FIXTURE_DIR=... mix run --no-compile test/oracle/capture/capture.exs",
+  "description": "A model that always requests a tool is stopped by a run model-call limit of 2.",
+  "effects": [
+    "model:tool_msgs=0",
+    "tool:step:1",
+    "model:tool_msgs=1",
+    "tool:step:2"
+  ],
+  "license": "Output of running BeamWeaver (Apache-2.0); not copied source.",
+  "oracle": {
+    "commit": "d0aa1f90d31c55d49be2f7b5a24224b5e18145a1",
+    "elixir": "1.19.5",
+    "otp": "28",
+    "repository": "lostbean/beam_weaver (fork of caudena/beam_weaver)"
+  },
+  "result": {
+    "tag": "ok",
+    "transcript": [
+      {
+        "content": "go",
+        "role": "user"
+      },
+      {
+        "calls": [
+          {
+            "id": "call_1",
+            "name": "step"
+          }
+        ],
+        "role": "assistant_calls"
+      },
+      {
+        "content": "stepped 1",
+        "id": "call_1",
+        "role": "tool",
+        "status": "success"
+      },
+      {
+        "calls": [
+          {
+            "id": "call_2",
+            "name": "step"
+          }
+        ],
+        "role": "assistant_calls"
+      },
+      {
+        "content": "stepped 2",
+        "id": "call_2",
+        "role": "tool",
+        "status": "success"
+      },
+      {
+        "content": "Model call limits exceeded: run limit (2/2)",
+        "role": "assistant"
+      }
+    ]
+  },
+  "scenario": "model_call_limit",
+  "script": "test/oracle/capture/capture.exs"
+}
