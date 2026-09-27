@@ -87,9 +87,11 @@ pub type CommandError {
   /// The current policy now requires another approval for the action; the
   /// answer was not applied. Answer the new request.
   RequirementChanged(PendingApproval)
-  /// Work was in flight when the run's runner was lost; call `recover`
-  /// first. (`cancel` never needs this: it starts nothing.)
-  RecoveryRequired
+  /// The command is valid for the stored record, but work is in flight
+  /// and no runner known to this store drives it: its runner was lost, or
+  /// the run is driven through another `Store` (possibly in another VM).
+  /// Nothing was changed. `cancel` never needs a runner.
+  OwnerUnknown
   /// The command lost every retry against concurrent commits.
   Contended
   Unreadable(RecordError)
@@ -98,8 +100,10 @@ pub type CommandError {
 pub type AwaitError {
   /// The run was still working when the time ran out.
   StillWorking
-  /// Work is in flight but no runner drives it (the runner was lost, or it
-  /// runs in another VM); call `recover`.
+  /// Work is in flight but no runner known to this store drives it: the
+  /// runner was lost, or the run is driven through another `Store`. Only
+  /// the application knows which: `recover` takes the run over, so call it
+  /// only when the previous owner is known to be gone.
   NoRunner
   AwaitUnreadable(RecordError)
 }
@@ -391,17 +395,22 @@ fn command(
       }
     None -> {
       let orphaned = controller.needs_runner(state)
-      let transition = case orphaned, event {
-        False, _ -> Ok(controller.step(run.setup.env, state, event))
-        // Cancelling starts nothing, so it needs no recovery first.
-        True, controller.Cancel ->
-          Ok(controller.step(run.setup.env, controller.abandon(state), event))
-        True, _ -> Error(RecoveryRequired)
+      // Cancelling starts nothing, so it needs no runner: the work of a
+      // lost runner is abandoned first.
+      let from = case orphaned, event {
+        True, controller.Cancel -> controller.abandon(state)
+        _, _ -> state
       }
-      use transition <- result.try(transition)
+      // Any other command is checked against the stored record first, so a
+      // refusal is reported as such whoever drives the run.
       use #(next, effects) <- result.try(
-        transition |> result.map_error(refusal),
+        controller.step(run.setup.env, from, event)
+        |> result.map_error(refusal),
       )
+      use Nil <- result.try(case orphaned, event {
+        True, controller.Cancel | False, _ -> Ok(Nil)
+        True, _ -> Error(OwnerUnknown)
+      })
       case runner.launch(run.setup, Some(entry.revision), next, effects) {
         Ok(_) -> Ok(next)
         Error(store.Conflict(_)) -> retry()

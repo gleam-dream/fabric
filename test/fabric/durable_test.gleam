@@ -441,8 +441,9 @@ pub fn a_killed_runner_is_reported_and_its_run_recovered_test() {
 
   fabric.await(run, 5000) |> should.equal(Error(fabric.NoRunner))
   fabric.status(run) |> should.equal(Ok(run.Working))
+  // The stored action is still running, so it is not reconcilable yet.
   fabric.reconcile(run, ActionId(1, "a"), "\"a\"")
-  |> should.equal(Error(fabric.RecoveryRequired))
+  |> should.equal(Error(fabric.NotReconcilable(ActionId(1, "a"))))
 
   let assert Ok(run) =
     fabric.recover(store, one_slow(probe), Nil, fabric.id(run))
@@ -477,4 +478,51 @@ pub fn await_reports_a_closed_store_test() {
   let assert Ok(Error(fabric.AwaitUnreadable(fabric.StoreFailed(store.Unavailable(
     _,
   ))))) = process.receive(awaited, 5000)
+}
+
+// --- several stores over one directory ------------------------------------------
+
+/// Both calls need an approval.
+fn two_reviewed(probe: Probe) -> Agent(Nil) {
+  agent.new(
+    scripted.plan([scripted.slow("p", "p"), scripted.slow("q", "q")]),
+    [scripted.gated_tool(probe)],
+    fn(_, _) { Ok(policy.RequireApproval(policy.Requirement("review", 1))) },
+  )
+}
+
+/// Store A drives the run; store B opened the same directory. A command
+/// through B is checked against the stored record first: an answer A
+/// already applied is `AlreadyAnswered`, and a valid answer that B cannot
+/// apply because A's runner drives the work is `OwnerUnknown`, not a
+/// request to recover (which would take the run away from A).
+pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let assert Ok(a) = store.directory(dir)
+  let assert Ok(run_a) = fabric.start(a, two_reviewed(probe), Nil, "go")
+  let assert Ok(run.Suspended([p, q], [])) = fabric.await(run_a, 5000)
+
+  let b = reopen(dir)
+  let assert Ok(run_b) =
+    fabric.recover(b, two_reviewed(probe), Nil, fabric.id(run_a))
+  let assert Ok(run.Working) =
+    fabric.answer(run_a, p.reference, run.Approve, reviewer: None, context: Nil)
+  let started = probe.arrival(probe)
+  started.name |> should.equal("p")
+
+  fabric.answer(run_b, p.reference, run.Approve, reviewer: None, context: Nil)
+  |> should.equal(Error(fabric.AlreadyAnswered))
+  fabric.answer(run_b, q.reference, run.Approve, reviewer: None, context: Nil)
+  |> should.equal(Error(fabric.OwnerUnknown))
+
+  probe.release(started)
+  let assert Ok(run.Suspended([_], [])) = fabric.await(run_a, 5000)
+  let assert Ok(run.Working) =
+    fabric.answer(run_b, q.reference, run.Approve, reviewer: None, context: Nil)
+  probe.release(probe.arrival(probe))
+  fabric.await(run_b, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"p\" | \"q\""))))
+  probe.count(probe, "start:p") |> should.equal(1)
+  restart.remove_dir(dir)
 }
