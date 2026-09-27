@@ -23,6 +23,7 @@ import fabric/model.{type Model}
 import fabric/run
 import fabric/store.{type Store}
 import gleam/erlang/process.{type Pid, type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -33,6 +34,8 @@ pub type Setup(context) {
     env: controller.Env(context),
     model: Model,
     max_concurrency: Int,
+    /// Milliseconds before the first retry of a retryable model failure.
+    model_retry_delay: Int,
     store: Store,
   )
 }
@@ -46,6 +49,8 @@ type Runner(context) {
     executor: Option(Executor),
     /// The model task and the turn it answers.
     model_task: Option(#(Pid, Int)),
+    /// Consecutive retryable model failures; the next call waits longer.
+    model_failures: Int,
   )
 }
 
@@ -118,7 +123,7 @@ fn prepare(setup: Setup(context)) -> #(Pid, Subject(Message), Subject(Go)) {
         Ok(Go(revision, state, effects)) -> {
           process.demonitor_process(caller_monitor)
           process.trap_exits(True)
-          Runner(setup, self, state, revision, None, None)
+          Runner(setup, self, state, revision, None, None, 0)
           |> perform(effects)
           |> serve
         }
@@ -151,7 +156,12 @@ fn serve(runner: Runner(context)) -> Nil {
           outcome
         }
         live.ModelDone(turn, result) -> {
-          let runner = Runner(..runner, model_task: None)
+          let model_failures = case result {
+            Error(model.ModelError(retryable: True, ..)) ->
+              runner.model_failures + 1
+            _ -> 0
+          }
+          let runner = Runner(..runner, model_task: None, model_failures:)
           apply(runner, case result {
             Ok(reply) -> controller.ModelReplied(turn, reply)
             Error(error) -> controller.ModelFailed(turn, error)
@@ -278,10 +288,17 @@ fn perform(runner: Runner(context), effects: List(Effect)) -> Runner(context) {
     controller.CallModel(turn, request) -> {
       let self = runner.self
       let model = runner.setup.model
+      let delay =
+        retry_delay(runner.setup.model_retry_delay, runner.model_failures)
       // Linked: the task dies with the runner, and the runner (trapping
-      // exits) learns of a task that dies without answering.
+      // exits) learns of a task that dies without answering. A retry waits
+      // inside the task, so aborting the call also ends the wait.
       let pid =
         process.spawn(fn() {
+          case delay > 0 {
+            True -> process.sleep(delay)
+            False -> Nil
+          }
           let result = case
             executor.rescue(fn() { model.call(model, request) })
           {
@@ -316,6 +333,15 @@ fn perform(runner: Runner(context), effects: List(Effect)) -> Runner(context) {
           runner
         }
       }
+  }
+}
+
+/// Exponential backoff: `initial` doubled per consecutive failure after the
+/// first, at most six times.
+fn retry_delay(initial: Int, failures: Int) -> Int {
+  case failures {
+    0 -> 0
+    n -> initial * int.bitwise_shift_left(1, int.min(n - 1, 6))
   }
 }
 

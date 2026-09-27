@@ -23,6 +23,7 @@ pub opaque type Agent(context) {
     max_concurrency: Int,
     token_budget: Option(Int),
     policy_timeout: Int,
+    model_retry_delay: Int,
   )
 }
 
@@ -36,6 +37,7 @@ pub type ConfigError {
   MaxConcurrencyNotPositive(Int)
   TokenBudgetNotPositive(Int)
   PolicyTimeoutNotPositive(Int)
+  ModelRetryDelayNegative(Int)
   /// The name is empty or the version is not positive.
   InvalidIdentity(name: String, version: Int)
 }
@@ -45,6 +47,8 @@ pub const default_max_turns = 8
 pub const default_max_concurrency = 4
 
 pub const default_policy_timeout = 5000
+
+pub const default_model_retry_delay = 200
 
 pub const default_identity = Identity("agent", 1)
 
@@ -65,6 +69,7 @@ pub fn new(
     max_concurrency: default_max_concurrency,
     token_budget: None,
     policy_timeout: default_policy_timeout,
+    model_retry_delay: default_model_retry_delay,
   )
 }
 
@@ -115,6 +120,17 @@ pub fn with_policy_timeout(
   Agent(..agent, policy_timeout: milliseconds)
 }
 
+/// Sets the delay before the first retry of a retryable model failure, in
+/// milliseconds (default 200). The delay doubles with each consecutive
+/// retryable failure, up to 64 times this value, and every attempt still
+/// counts against the turn limit. A cancelled run does not wait for it.
+pub fn with_model_retry_delay(
+  agent: Agent(context),
+  milliseconds: Int,
+) -> Agent(context) {
+  Agent(..agent, model_retry_delay: milliseconds)
+}
+
 pub fn validate(agent: Agent(context)) -> Result(Nil, List(ConfigError)) {
   admit(agent) |> result.replace(Nil)
 }
@@ -132,6 +148,7 @@ pub type Admitted(context) {
     max_concurrency: Int,
     token_budget: Option(Int),
     policy_timeout: Int,
+    model_retry_delay: Int,
   )
 }
 
@@ -151,6 +168,10 @@ pub fn admit(
         None -> Ok(Nil)
       },
       positive(agent.policy_timeout, PolicyTimeoutNotPositive),
+      case agent.model_retry_delay >= 0 {
+        True -> Ok(Nil)
+        False -> Error(ModelRetryDelayNegative(agent.model_retry_delay))
+      },
       case agent.identity {
         Identity(name, version) if name == "" || version < 1 ->
           Error(InvalidIdentity(name, version))
@@ -175,6 +196,7 @@ pub fn admit(
         max_concurrency: agent.max_concurrency,
         token_budget: agent.token_budget,
         policy_timeout: agent.policy_timeout,
+        model_retry_delay: agent.model_retry_delay,
       ))
     Ok(_), errors -> Error(errors)
     Error(tool_errors), errors -> Error(list.append(tool_errors, errors))
