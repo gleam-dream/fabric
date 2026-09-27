@@ -197,6 +197,7 @@ fn prepare(
       env:,
       model: admitted.model,
       max_concurrency: admitted.max_concurrency,
+      model_retry_delay: admitted.model_retry_delay,
       store:,
     ),
     admitted,

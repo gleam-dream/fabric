@@ -361,3 +361,46 @@ pub fn the_policy_timeout_must_be_positive_test() {
   |> agent.validate
   |> should.equal(Error([agent.PolicyTimeoutNotPositive(0)]))
 }
+
+// --- model retries -------------------------------------------------------------
+
+/// A retryable model failure is retried after a delay that doubles with
+/// each consecutive failure.
+pub fn model_retries_back_off_test() {
+  let probe = probe.new()
+  let flaky =
+    model.new(fn(_request) {
+      probe.record(probe, "call")
+      case probe.count(probe, "call") {
+        n if n <= 2 -> Error(model.ModelError("reset", retryable: True))
+        _ -> Ok(model.FinalAnswer("ok", option.None))
+      }
+    })
+  let agent =
+    agent.new(flaky, [], policy.always_allow())
+    |> agent.with_model_retry_delay(40)
+  let started = now()
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "hi")
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Completed("ok"))))
+  // Two retries: 40 ms, then 80 ms.
+  { now() - started >= 120 } |> should.be_true
+  probe.count(probe, "call") |> should.equal(3)
+}
+
+pub fn the_model_retry_delay_must_not_be_negative_test() {
+  agent.new(scripted.plan([]), [], policy.always_allow())
+  |> agent.with_model_retry_delay(-1)
+  |> agent.validate
+  |> should.equal(Error([agent.ModelRetryDelayNegative(-1)]))
+}
+
+@external(erlang, "erlang", "monotonic_time")
+fn monotonic(unit: Unit) -> Int
+
+type Unit {
+  Millisecond
+}
+
+fn now() -> Int {
+  monotonic(Millisecond)
+}
