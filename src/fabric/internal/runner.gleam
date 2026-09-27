@@ -216,7 +216,9 @@ fn exited(
         Runner(..runner, executor: None),
         "the executor exited: " <> string.inspect(reason),
       )
-    _, _, _ -> Ok(runner)
+    // An exit signal from anyone else (a supervisor shutting down) stops
+    // the runner, and with it the executor and the model task.
+    _, _, _ -> Error(Superseded)
   }
 }
 
