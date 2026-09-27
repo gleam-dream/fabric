@@ -2,9 +2,9 @@
 
 ## About this repo
 
-`fabric` — A partial Gleam port of BeamWeaver: a typed DAG compiler, durable OTP execution, an autonomous LLM agent loop, and provider wire adapters, with a runtime action-authorization seam.
+`fabric` — A bounded, typed LLM agent runtime for Gleam: typed application tools, an explicit policy gate, a pure agent controller, and a thin OTP runner with cancellation. It consumes llm_wire for providers and json_blueprint for tool codecs; typed workflows (DAGs) belong to Saga.
 
-Ports/wraps: BeamWeaver. Design: [gleam-dream/oversight](https://github.com/gleam-dream/oversight)/fabric-design.md.
+Behavioural oracle: BeamWeaver (partial migration of its agent loop; see docs/ORACLE.md). Plan: docs/PLAN.md. Design: [gleam-dream/oversight](https://github.com/gleam-dream/oversight)/fabric-design.md.
 
 ## Tooling
 
