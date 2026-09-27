@@ -226,6 +226,16 @@ pub fn cancel(state: State) -> Transition {
   }
 }
 
+/// Cancels a run whose runner was lost: its work is abandoned first. A
+/// stop the lost runner had begun is completed by abandoning it, and that
+/// ending is the cancellation.
+pub fn cancel_abandoned(state: State) -> Transition {
+  case state.phase, abandon(state) {
+    Stopping(..), State(phase: Ended(_), ..) as ended -> Ok(#(ended, []))
+    _, abandoned -> cancel(abandoned)
+  }
+}
+
 fn finish_stop(
   state: State,
   actions: List(ActionRecord),
