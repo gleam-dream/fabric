@@ -74,8 +74,11 @@ pub fn in_memory() -> Store {
 }
 
 /// A durable store in `path`, created if missing. Each run is a directory
-/// holding one file per revision, `<revision>.json`, and every revision is
-/// kept.
+/// holding one file per revision, `<revision>.json`. Every revision name is
+/// kept, but revisions older than the previous one are emptied, so disk use
+/// follows the latest record rather than every record written. Opening the
+/// store removes temporary files older than ten minutes that a crashed
+/// writer left behind.
 ///
 /// Atomicity: a revision is written to a temporary file in the run's
 /// directory, flushed to disk (`fsync`), and then hard-linked under its

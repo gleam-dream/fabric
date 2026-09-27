@@ -23,7 +23,11 @@
 //// work was in flight when its runner was lost, recovery takes it over as a
 //// new incarnation: tools that had started become uncertain effects, which
 //// are never retried and must be reconciled; queued tools and a lost model
-//// call are started again.
+//// call are started again. "Never retried" holds as long as the store keeps
+//// every commit it acknowledged: the directory store does not flush the
+//// directory entry, so after an operating-system crash or power loss (not
+//// a process or VM crash) the latest revisions may be missing, and a tool
+//// whose start was among them could run again.
 
 import fabric/agent.{type Agent, type ConfigError}
 import fabric/internal/bounded
@@ -348,6 +352,12 @@ pub fn answer(
 /// started. Returns the status right after the cancellation was committed:
 /// `Working` while tools are being stopped, then `Finished(Cancelled)` (see
 /// `await`).
+///
+/// Through a `Store` that does not drive the run (another `Store` over the
+/// same backend), the cancellation is committed to the record at once and
+/// reported `Finished(Cancelled)`, but the owner's tool bodies keep running
+/// until its runner next tries to commit and stops; they are recorded as
+/// uncertain effects.
 pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
   command(run, controller.Cancel, retries) |> result.map(controller.status)
 }

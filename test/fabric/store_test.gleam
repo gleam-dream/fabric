@@ -5,6 +5,7 @@ import fabric/store.{type Store}
 import fabric/support/flaky
 import fabric/support/restart
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
@@ -105,6 +106,44 @@ pub fn the_directory_store_keeps_every_revision_on_disk_test() {
   |> should.equal(
     Ok(["00000000000000000001.json", "00000000000000000002.json"]),
   )
+  restart.remove_dir(dir)
+}
+
+/// Every revision name stays (so a stale writer can never publish a name
+/// again), but revisions older than the previous one are emptied: disk use
+/// grows with the latest record, not with every record ever written.
+pub fn the_directory_store_empties_revisions_older_than_the_previous_test() {
+  let dir = restart.temp_dir()
+  let assert Ok(store) = store.directory(dir)
+  let assert Ok(1) = store.insert(store, "run-p", "first", store.Keep)
+  let assert Ok(2) = store.commit(store, "run-p", 1, "second", store.Keep)
+  let assert Ok(3) = store.commit(store, "run-p", 2, "third", store.Keep)
+  let assert Ok(4) = store.commit(store, "run-p", 3, "fourth", store.Keep)
+  store.commit(store, "run-p", 1, "stale", store.Keep)
+  |> should.equal(Error(store.Conflict(4)))
+  list.map([1, 2, 3, 4], fn(revision) {
+    restart.read_file(
+      dir <> "/run-p/0000000000000000000" <> int.to_string(revision) <> ".json",
+    )
+  })
+  |> should.equal([Ok(""), Ok(""), Ok("third"), Ok("fourth")])
+  let assert Ok(store.Entry(revision: 4, record: "fourth", ..)) =
+    store.get(store, "run-p")
+  restart.remove_dir(dir)
+}
+
+/// Opening a directory store removes temporary files a crashed writer
+/// left behind, once they are old enough not to belong to a live writer.
+pub fn opening_a_directory_store_sweeps_stale_temporary_files_test() {
+  let dir = restart.temp_dir()
+  let assert Ok(store) = store.directory(dir)
+  let assert Ok(1) = store.insert(store, "run-t", "first", store.Keep)
+  let assert Ok(Nil) = restart.write_file(dir <> "/run-t/.tmp-stale", "x")
+  let assert Ok(Nil) = restart.age_file(dir <> "/run-t/.tmp-stale", 3600)
+  let assert Ok(Nil) = restart.write_file(dir <> "/run-t/.tmp-fresh", "x")
+  let assert Ok(_) = store.directory(dir)
+  restart.list_dir(dir <> "/run-t")
+  |> should.equal(Ok([".tmp-fresh", "00000000000000000001.json"]))
   restart.remove_dir(dir)
 }
 
