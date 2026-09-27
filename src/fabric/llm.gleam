@@ -13,10 +13,11 @@
 //// - llm_wire's exact result-coverage check at `prepare_continue`; Fabric's
 ////   controller only continues when every call has exactly one result.
 ////
-//// llm_wire validates tool-call arguments and tool names while it reads the
-//// response, so through this adapter an unknown tool or malformed arguments
-//// arrive as a failed model call (`ModelError`), not as the per-call
-//// outcomes Fabric reports for models that pass them through.
+//// The adapter asks llm_wire to report invalid tool calls rather than fail
+//// the turn (`types.ReportInvalidToolCalls`): every call reaches Fabric, whose
+//// registry answers an unknown tool or malformed arguments per call, as for
+//// any other model. Names outside the tool-name grammar, duplicate call ids,
+//// and bounds still fail the turn in llm_wire.
 
 import fabric/model.{type Model, type ModelError, type Reply, type Request}
 import gleam/int
@@ -33,6 +34,8 @@ import llm_wire/types
 /// credentials, limits, and deadlines; nothing is allocated until a turn
 /// runs. Killing the task that runs a turn closes its HTTP stream.
 pub fn model(settings: config.Config, model_id: types.ModelId) -> Model {
+  let settings =
+    config.with_tool_call_checks(settings, types.ReportInvalidToolCalls)
   model.new(fn(request) { call(settings, model_id, request) })
 }
 

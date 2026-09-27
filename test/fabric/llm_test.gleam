@@ -1,5 +1,7 @@
-//// The llm_wire adapter against a deterministic local OpenAI Responses SSE
-//// stub on 127.0.0.1. No real or paid service is contacted.
+//// The llm_wire adapter through llm_wire's scripted transport: OpenAI
+//// Responses SSE bytes routed through a real OpenAI configuration, and the
+//// scripted provider's reply builders. No socket is opened and no service is
+//// contacted.
 
 import fabric
 import fabric/agent
@@ -10,27 +12,30 @@ import fabric/run
 import fabric/store
 import fabric/support/apps
 import gleam/dynamic/decode
-import gleam/erlang/process.{type Pid}
 import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{Some}
+import gleam/string
 import gleeunit/should
 import llm_wire/config
 import llm_wire/provider/openai
+import llm_wire/testing
 import llm_wire/types
 
-@external(erlang, "fabric_stub_ffi", "start")
-fn start_stub(responses: List(String)) -> #(Int, Pid)
+/// OpenAI settings whose requests the script answers.
+fn openai_settings(script: testing.Script) -> config.Config {
+  let assert Ok(key) = types.api_key("sk-scripted")
+  config.openai(openai.options(key)) |> testing.with_script(script)
+}
 
-@external(erlang, "fabric_stub_ffi", "requests")
-fn stub_requests(stub: Pid) -> List(String)
+fn bodies(script: testing.Script) -> List(String) {
+  testing.requests(script) |> list.map(fn(recorded) { recorded.body })
+}
 
-fn settings(port: Int) -> config.Config {
-  let assert Ok(key) = types.api_key("sk-local-stub")
-  let assert Ok(endpoint) =
-    types.endpoint("http://127.0.0.1:" <> int.to_string(port) <> "/v1")
-  config.openai(openai.options(key)) |> config.with_endpoint(endpoint)
+fn model_id() -> types.ModelId {
+  let assert Ok(model_id) = types.model_id("gpt-scripted")
+  model_id
 }
 
 fn event(name: String, data: String) -> String {
@@ -146,23 +151,26 @@ fn function_output(body: String, call_id: String) -> String {
 }
 
 pub fn two_tool_calls_round_trip_through_llm_wire_test() {
-  let #(port, stub) =
-    start_stub([
-      function_call(0, "call_a", "lookup_weather", "{\"city\":\"Paris\"}")
+  let script =
+    testing.start([
+      testing.Events([
+        function_call(0, "call_a", "lookup_weather", "{\"city\":\"Paris\"}")
         <> function_call(
-        1,
-        "call_b",
-        "transfer_funds",
-        "{\"to\":\"bob\",\"amount\":10}",
-      )
+          1,
+          "call_b",
+          "transfer_funds",
+          "{\"to\":\"bob\",\"amount\":10}",
+        )
         <> completed("resp_1", 11, 7),
-      text("msg_1", "Sunny in Paris; bob is paid.")
+      ]),
+      testing.Events([
+        text("msg_1", "Sunny in Paris; bob is paid.")
         <> completed("resp_2", 30, 9),
+      ]),
     ])
-  let assert Ok(model_id) = types.model_id("gpt-local")
   let agent =
     agent.new(
-      llm.model(settings(port), model_id),
+      llm.model(openai_settings(script), model_id()),
       [apps.weather_tool(), apps.transfer_tool()],
       policy.always_allow(),
     )
@@ -184,7 +192,7 @@ pub fn two_tool_calls_round_trip_through_llm_wire_test() {
   #(second.id, second.name) |> should.equal(#("call_b", "transfer_funds"))
 
   // The second request replays the whole transcript, results in call order.
-  let assert [first_request, second_request] = stub_requests(stub)
+  let assert [first_request, second_request] = bodies(script)
   input_items(first_request)
   |> should.equal([#("message", "system"), #("message", "user")])
   input_items(second_request)
@@ -202,25 +210,87 @@ pub fn two_tool_calls_round_trip_through_llm_wire_test() {
   |> should.equal("{\"receipt\":\"r-bob\"}")
 }
 
-pub fn malformed_arguments_through_llm_wire_fail_the_model_call_test() {
-  // llm_wire checks arguments against the declared schema while reading the
-  // response; Fabric sees a failed model call, not a per-call outcome.
-  let #(port, _stub) =
-    start_stub([
-      function_call(0, "call_a", "lookup_weather", "{\"town\":\"Paris\"}")
-      <> completed("resp_1", 5, 5),
+/// llm_wire reports invalid calls instead of failing the turn, so Fabric's
+/// registry gives the model per-call feedback: invalid arguments and an
+/// unknown tool are answered, and the model continues.
+pub fn invalid_calls_through_llm_wire_get_per_call_feedback_test() {
+  let script =
+    testing.start([
+      testing.tool_calls("", [
+        testing.ScriptedCall("call_a", "lookup_weather", "{\"town\":\"Paris\"}"),
+        testing.ScriptedCall("call_b", "ghost", "{}"),
+      ]),
+      testing.text("I will ask properly."),
     ])
-  let assert Ok(model_id) = types.model_id("gpt-local")
   let agent =
     agent.new(
-      llm.model(settings(port), model_id),
+      llm.model(testing.config(script), model_id()),
       [apps.weather_tool()],
       policy.always_allow(),
     )
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
+  fabric.await(run, 10_000)
+  |> should.equal(Ok(run.Finished(run.Completed("I will ask properly."))))
+  let assert Ok(snapshot) = fabric.snapshot(run)
+  let assert [
+    run.ActionRecord(state: run.InvalidArguments(_), ..),
+    run.ActionRecord(state: run.UnknownTool, ..),
+  ] = snapshot.actions
+  let assert [_, _, model.ToolResultMessage("call_a", invalid), ..] =
+    snapshot.transcript
+  invalid
+  |> string.starts_with("{\"error\":\"invalid_arguments\"")
+  |> should.be_true
+}
+
+pub fn refusal_and_truncation_through_llm_wire_end_the_run_test() {
+  let script =
+    testing.start([
+      testing.refusal("not allowed") |> testing.with_usage(types.Usage(3, 1, 4)),
+      testing.output_limited("partial ans"),
+    ])
+  let agent =
+    agent.new(
+      llm.model(testing.config(script), model_id()),
+      [],
+      policy.always_allow(),
+    )
+  let assert Ok(refused) = fabric.start(store.in_memory(), agent, Nil, "a")
+  fabric.await(refused, 10_000)
+  |> should.equal(Ok(run.Finished(run.Refused("not allowed"))))
+  let assert Ok(snapshot) = fabric.snapshot(refused)
+  snapshot.usage |> should.equal(run.TokenUsage(3, 1, 0))
+  let assert Ok(limited) = fabric.start(store.in_memory(), agent, Nil, "b")
+  fabric.await(limited, 10_000)
+  |> should.equal(Ok(run.Finished(run.OutputLimited("partial ans"))))
+}
+
+/// A server error is retryable: the run retries after its backoff and the
+/// next attempt succeeds. A client error is not retried.
+pub fn http_statuses_through_llm_wire_are_classified_for_retry_test() {
+  let script =
+    testing.start([testing.Status(503, "busy"), testing.text("recovered")])
+  let agent =
+    agent.new(
+      llm.model(testing.config(script), model_id()),
+      [],
+      policy.always_allow(),
+    )
+    |> agent.with_model_retry_delay(0)
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "hi")
+  fabric.await(run, 10_000)
+  |> should.equal(Ok(run.Finished(run.Completed("recovered"))))
+
+  let script = testing.start([testing.Status(400, "bad request")])
+  let agent =
+    agent.new(
+      llm.model(testing.config(script), model_id()),
+      [],
+      policy.always_allow(),
+    )
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "hi")
   let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =
     fabric.await(run, 10_000)
   error.retryable |> should.be_false
-  let assert Ok(snapshot) = fabric.snapshot(run)
-  snapshot.actions |> should.equal([])
+  testing.remaining(script) |> should.equal(0)
 }

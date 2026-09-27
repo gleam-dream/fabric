@@ -7,7 +7,7 @@ import fabric/tool.{type Tool}
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/result
-import gleam/string
+import llm_wire/types
 
 pub opaque type Registry(context) {
   Registry(order: List(String), tools: Dict(String, Tool(context)))
@@ -55,16 +55,10 @@ pub fn new(
   }
 }
 
+/// The providers' grammar, `^[a-zA-Z0-9_-]{1,64}$`, as llm_wire admits it.
 fn valid_name(name: String) -> Bool {
-  let length = string.length(name)
-  length >= 1
-  && length <= 64
-  && list.all(string.to_graphemes(name), fn(grapheme) {
-    string.contains(name_alphabet, grapheme)
-  })
+  types.tool_name(name) |> result.is_ok
 }
-
-const name_alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 
 pub fn declarations(registry: Registry(context)) -> List(model.ToolSpec) {
   list.filter_map(registry.order, fn(name) {
