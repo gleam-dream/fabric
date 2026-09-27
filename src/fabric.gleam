@@ -2,8 +2,8 @@
 ////
 //// ```gleam
 //// let agent = agent.new(model, [weather_tool, transfer_tool], my_policy)
-//// let assert Ok(run) = fabric.start(agent, context, "What is the weather?")
-//// let assert Ok(run.Finished(run.Completed(answer))) = fabric.await(run, 5000)
+//// let assert Ok(handle) = fabric.start(agent, context, "What is the weather?")
+//// let assert Ok(run.Finished(run.Completed(answer))) = fabric.await(handle, 5000)
 //// ```
 ////
 //// A run's record lives in a store owned by the process that called `start`
