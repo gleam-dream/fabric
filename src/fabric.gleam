@@ -145,6 +145,12 @@ pub fn start(
 /// queued tools are dispatched again, and a lost model call is issued again
 /// against the turn budget. A suspended or finished run is opened
 /// unchanged. Calling it again is harmless.
+///
+/// A store knows only the runners of its own VM. Recovering through a store
+/// in another VM while the run's runner is still alive takes the run over:
+/// the older runner can no longer commit and stops, and its running tools
+/// become uncertain effects. Recover in another VM only when the previous
+/// owner is known to be gone (for example at boot).
 pub fn recover(
   store: Store,
   agent: Agent(context),
