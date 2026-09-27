@@ -13,13 +13,14 @@
 //// the stored record when there is none.
 
 import fabric/agent.{type Agent, type ConfigError}
+import fabric/internal/bounded
 import fabric/internal/controller.{type Event, type State}
-import fabric/internal/executor
 import fabric/internal/runner.{type RunStore}
 import fabric/internal/store
 import fabric/policy.{type ActionId}
 import fabric/run.{type Snapshot, type Status}
 import gleam/erlang/process
+import gleam/int
 import gleam/option.{None, Some}
 import gleam/result
 
@@ -72,7 +73,7 @@ pub fn start(
   let env =
     controller.Env(
       registry: admitted.registry,
-      policy: contain_policy(admitted.policy),
+      policy: contain_policy(admitted.policy, admitted.policy_timeout),
       context:,
       system: admitted.system_prompt,
     )
@@ -269,12 +270,20 @@ fn rejection(rejection: controller.Rejection) -> CommandError {
   }
 }
 
-/// A policy that crashes has failed: the run stops closed.
-fn contain_policy(policy: policy.Policy(context)) -> policy.Policy(context) {
+/// A policy that crashes or gives no decision in time has failed: the run
+/// stops closed.
+fn contain_policy(
+  policy: policy.Policy(context),
+  timeout: Int,
+) -> policy.Policy(context) {
   fn(context, action) {
-    case executor.rescue(fn() { policy(context, action) }) {
+    case bounded.call(timeout, fn() { policy(context, action) }) {
       Ok(decision) -> decision
-      Error(crash) -> Error("policy crashed: " <> crash)
+      Error(bounded.Crashed(crash)) -> Error("policy crashed: " <> crash)
+      Error(bounded.TimedOut) ->
+        Error(
+          "policy gave no decision within " <> int.to_string(timeout) <> " ms",
+        )
     }
   }
 }

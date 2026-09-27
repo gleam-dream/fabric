@@ -20,6 +20,7 @@ pub opaque type Agent(context) {
     max_turns: Int,
     max_concurrency: Int,
     token_budget: Option(Int),
+    policy_timeout: Int,
   )
 }
 
@@ -32,11 +33,14 @@ pub type ConfigError {
   MaxTurnsNotPositive(Int)
   MaxConcurrencyNotPositive(Int)
   TokenBudgetNotPositive(Int)
+  PolicyTimeoutNotPositive(Int)
 }
 
 pub const default_max_turns = 8
 
 pub const default_max_concurrency = 4
+
+pub const default_policy_timeout = 5000
 
 /// An agent with the given model, tools, and policy. The policy is required:
 /// there is no implicit allow (`policy.always_allow()` is the explicit one).
@@ -53,6 +57,7 @@ pub fn new(
     max_turns: default_max_turns,
     max_concurrency: default_max_concurrency,
     token_budget: None,
+    policy_timeout: default_policy_timeout,
   )
 }
 
@@ -82,6 +87,16 @@ pub fn with_token_budget(agent: Agent(context), tokens: Int) -> Agent(context) {
   Agent(..agent, token_budget: Some(tokens))
 }
 
+/// Bounds how long one policy decision may take, in milliseconds. A policy
+/// that gives no decision in time has failed: the run stops closed. The
+/// policy runs in its own process.
+pub fn with_policy_timeout(
+  agent: Agent(context),
+  milliseconds: Int,
+) -> Agent(context) {
+  Agent(..agent, policy_timeout: milliseconds)
+}
+
 pub fn validate(agent: Agent(context)) -> Result(Nil, List(ConfigError)) {
   admit(agent) |> result.replace(Nil)
 }
@@ -97,6 +112,7 @@ pub type Admitted(context) {
     max_turns: Int,
     max_concurrency: Int,
     token_budget: Option(Int),
+    policy_timeout: Int,
   )
 }
 
@@ -115,6 +131,7 @@ pub fn admit(
         Some(tokens) -> positive(tokens, TokenBudgetNotPositive)
         None -> Ok(Nil)
       },
+      positive(agent.policy_timeout, PolicyTimeoutNotPositive),
     ]
     |> list.filter_map(fn(check) {
       case check {
@@ -132,6 +149,7 @@ pub fn admit(
         max_turns: agent.max_turns,
         max_concurrency: agent.max_concurrency,
         token_budget: agent.token_budget,
+        policy_timeout: agent.policy_timeout,
       ))
     Ok(_), errors -> Error(errors)
     Error(tool_errors), errors -> Error(list.append(tool_errors, errors))
