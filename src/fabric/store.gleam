@@ -18,7 +18,9 @@
 ////   both succeed, also across processes and machines that share the
 ////   backend.
 //// - Any other failure is `Unavailable(reason)`. A backend function that
-////   crashes is treated as `Unavailable`.
+////   crashes is treated as `Unavailable`. After an `Unavailable` write,
+////   Fabric reads the run back: finding exactly the record it wrote at the
+////   revision it wrote confirms the write.
 ////
 //// A `Store` value is a process linked to the process that opened it; it
 //// lives until that process exits or `close` is called. It calls the
@@ -273,14 +275,20 @@ fn serve(state: Loop) -> Nil {
       serve(state)
     }
     Write(run, expected, record, ownership, reply) -> {
-      let written = case expected {
-        None ->
-          guarded(fn() { state.backend.insert(run, record) })
-          |> result.replace(1)
-        Some(expected) ->
-          guarded(fn() { state.backend.compare_and_set(run, expected, record) })
-          |> result.replace(expected + 1)
+      let revision = case expected {
+        None -> 1
+        Some(expected) -> expected + 1
       }
+      let written =
+        case expected {
+          None -> guarded(fn() { state.backend.insert(run, record) })
+          Some(expected) ->
+            guarded(fn() {
+              state.backend.compare_and_set(run, expected, record)
+            })
+        }
+        |> result.replace(revision)
+        |> confirm(state.backend, run, revision, record)
       process.send(reply, written)
       case written {
         Error(_) -> serve(state)
@@ -337,6 +345,27 @@ fn serve(state: Loop) -> Nil {
       list.each(released, notify(state, _))
       serve(state)
     }
+  }
+}
+
+/// A backend may commit and still report `Unavailable` (a lost reply). The
+/// write is confirmed when reading back finds exactly this record at this
+/// revision; otherwise the error stands.
+fn confirm(
+  written: Result(Int, StoreError),
+  backend: Backend,
+  run: String,
+  revision: Int,
+  record: String,
+) -> Result(Int, StoreError) {
+  case written {
+    Error(Unavailable(_)) ->
+      case guarded(fn() { backend.get(run) }) {
+        Ok(Stored(found, stored)) if found == revision && stored == record ->
+          Ok(revision)
+        _ -> written
+      }
+    _ -> written
   }
 }
 

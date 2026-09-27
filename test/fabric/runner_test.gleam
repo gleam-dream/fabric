@@ -8,6 +8,7 @@ import fabric/policy.{ActionId}
 import fabric/run
 import fabric/store
 import fabric/support/apps
+import fabric/support/flaky
 import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
@@ -405,4 +406,34 @@ type Unit {
 
 fn now() -> Int {
   monotonic(Millisecond)
+}
+
+/// A transient `Unavailable` on the fence commit, or on any later commit,
+/// is retried by the runner instead of stranding the run.
+pub fn a_runner_retries_a_commit_the_store_could_not_make_test() {
+  let flaky = flaky.new()
+  let store = flaky.store(flaky)
+  let agent =
+    agent.new(
+      scripted.plan([
+        scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}"),
+      ]),
+      [apps.weather_tool()],
+      policy.always_allow(),
+    )
+  // The insert passes; the commit of the reply, the fence, and the report
+  // each fail once before the write happens.
+  flaky.arm(flaky, [
+    flaky.Pass,
+    flaky.FailBefore,
+    flaky.Pass,
+    flaky.FailBefore,
+    flaky.Pass,
+    flaky.FailBefore,
+  ])
+  let assert Ok(run) = fabric.start(store, agent, Nil, "weather")
+  fabric.await(run, 5000)
+  |> should.equal(
+    Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
+  )
 }
