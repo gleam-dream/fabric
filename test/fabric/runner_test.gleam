@@ -10,6 +10,7 @@ import fabric/support/apps
 import fabric/support/probe
 import fabric/support/scripted
 import fabric/tool
+import gleam/erlang/process
 import gleam/list
 import gleam/option
 import gleam/string
@@ -289,4 +290,30 @@ fn tool_bind_context(
   ) {
     Ok(apps.Forecast(context <> " in " <> city.name))
   })
+}
+
+pub fn concurrent_cancels_of_a_suspended_run_have_one_winner_test() {
+  let agent =
+    agent.new(
+      scripted.plan([
+        scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":10}"),
+      ]),
+      [apps.transfer_tool()],
+      transfers_need_approval,
+    )
+  let assert Ok(run) = fabric.start(agent, Nil, "pay bob")
+  let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
+  let results = process.new_subject()
+  list.each(list.repeat(Nil, 8), fn(_) {
+    process.spawn(fn() { process.send(results, fabric.cancel(run)) })
+  })
+  let outcomes =
+    list.map(list.repeat(Nil, 8), fn(_) {
+      let assert Ok(outcome) = process.receive(results, 5000)
+      outcome
+    })
+  list.count(outcomes, fn(o) { o == Ok(run.Finished(run.Cancelled)) })
+  |> should.equal(1)
+  list.count(outcomes, fn(o) { o == Error(fabric.RunEnded) })
+  |> should.equal(7)
 }
