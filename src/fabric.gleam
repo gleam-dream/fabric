@@ -1,43 +1,75 @@
-//// Fabric runs bounded, typed LLM agents.
+//// Fabric runs bounded, typed LLM agents whose runs can pause durably,
+//// wait for a human, survive a restart, and be cancelled at any point.
 ////
 //// ```gleam
+//// let store = store.in_memory()            // or store.directory(path)
 //// let agent = agent.new(model, [weather_tool, transfer_tool], my_policy)
-//// let assert Ok(handle) = fabric.start(agent, context, "What is the weather?")
-//// let assert Ok(run.Finished(run.Completed(answer))) = fabric.await(handle, 5000)
+//// let assert Ok(handle) = fabric.start(store, agent, context, "Pay Bob")
+//// case fabric.await(handle, 5000) {
+////   Ok(run.Suspended([pending, ..], _)) ->
+////     fabric.answer(handle, pending.reference, run.Approve,
+////       reviewer: Some("alice"), context: current_context)
+////   ...
+//// }
 //// ```
 ////
-//// A run's record lives in a store owned by the process that called `start`
-//// (the store is linked to it). A runner process exists only while a model
-//// call or a tool is in flight; a suspended or finished run has no process.
-//// Commands (`cancel`, `reconcile`) go to the live runner, or are applied to
-//// the stored record when there is none.
+//// A run's record lives in a store. A runner process exists only while a
+//// model call or a tool is in flight; a suspended or finished run has no
+//// process. Commands (`answer`, `cancel`, `reconcile`) go to the live
+//// runner, or are applied to the stored record when there is none, and a
+//// runner is started if the command produced work.
+////
+//// After a restart, `recover` opens a stored run under the same agent. If
+//// work was in flight when its runner was lost, recovery takes it over as a
+//// new incarnation: tools that had started become uncertain effects, which
+//// are never retried and must be reconciled; queued tools and a lost model
+//// call are started again.
 
 import fabric/agent.{type Agent, type ConfigError}
 import fabric/internal/bounded
 import fabric/internal/controller.{type Event, type State}
-import fabric/internal/runner.{type RunStore}
-import fabric/internal/store
+import fabric/internal/live
+import fabric/internal/record
+import fabric/internal/runner
 import fabric/policy.{type ActionId}
-import fabric/run.{type Snapshot, type Status}
+import fabric/run.{
+  type Answer, type ApprovalRef, type Incompatibility, type PendingApproval,
+  type Snapshot, type Status,
+}
+import fabric/store.{type Store}
 import gleam/erlang/process
 import gleam/int
-import gleam/option.{None, Some}
+import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 
-pub opaque type Run {
-  Run(
-    id: String,
-    store: RunStore,
-    command: fn(Event) -> Result(Status, CommandError),
-  )
+/// A handle on one run, for the agent and context it was started or
+/// recovered with. It holds no process: it can be dropped and rebuilt with
+/// `recover`.
+pub opaque type Run(context) {
+  Run(id: String, setup: runner.Setup(context), agent: run.Identity)
 }
 
 pub type StartError {
   InvalidAgent(List(ConfigError))
+  /// The store refused the first record.
+  StartFailed(store.StoreError)
+}
+
+/// Why a stored run could not be read or continued.
+pub type RecordError {
+  RunNotFound
+  StoreFailed(store.StoreError)
+  /// The record was written by a Fabric version this one cannot read.
+  UnsupportedVersion(found: Int)
+  CorruptRecord(detail: String)
+  /// The run cannot continue under this agent.
+  IncompatibleAgent(List(Incompatibility))
 }
 
 pub type CommandError {
-  /// The run has finished; nothing more can change it.
+  /// The run has finished (completed, failed, or cancelled); nothing more
+  /// can change it. A pending approval of a cancelled run is void.
   RunEnded
   /// No action with this identity exists in the current tool batch.
   UnknownAction(ActionId)
@@ -46,30 +78,113 @@ pub type CommandError {
   /// The run is in a phase that does not accept this command (for example
   /// reconciling while the model is being called).
   WrongPhase
+  /// No approval request of this run matches the reference.
+  WrongReference
+  /// The action's approval request has another revision or requirement.
+  StaleReference
+  /// This approval request was already answered.
+  AlreadyAnswered
+  /// The current policy now requires another approval for the action; the
+  /// answer was not applied. Answer the new request.
+  RequirementChanged(PendingApproval)
+  /// Work was in flight when the run's runner was lost; call `recover`
+  /// first. (`cancel` never needs this: it starts nothing.)
+  RecoveryRequired
   /// The command lost every retry against concurrent commits.
   Contended
-  /// The store holding the run is gone (its owner exited).
-  StoreUnavailable
+  Unreadable(RecordError)
 }
 
 pub type AwaitError {
   /// The run was still working when the time ran out.
   StillWorking
-  AwaitStoreUnavailable
+  /// Work is in flight but no runner drives it (the runner was lost, or it
+  /// runs in another VM); call `recover`.
+  NoRunner
+  AwaitUnreadable(RecordError)
 }
 
-/// Validates `agent`, then starts the run: stores its first record and
-/// spawns a runner for the first model call.
+pub type RecoverError {
+  RecoverInvalidAgent(List(ConfigError))
+  RecoverUnreadable(RecordError)
+  /// Recovery lost every retry against concurrent commits.
+  RecoverContended
+}
+
+const retries = 3
+
+/// Validates `agent`, then starts a run in `store`: stores its first record
+/// and hands the first model call to a new runner.
 pub fn start(
+  store: Store,
   agent: Agent(context),
   context: context,
   prompt: String,
-) -> Result(Run, StartError) {
-  use admitted <- result.try(
-    agent.admit(agent) |> result.map_error(InvalidAgent),
+) -> Result(Run(context), StartError) {
+  use #(setup, admitted) <- result.try(
+    prepare(store, agent, context) |> result.map_error(InvalidAgent),
   )
-  let run_store = store.start()
   let id = "run-" <> random_id()
+  let limits =
+    controller.Limits(
+      max_turns: admitted.max_turns,
+      token_budget: admitted.token_budget,
+    )
+  let #(state, effects) =
+    controller.start(setup.env, id, admitted.identity, limits, prompt)
+  use _ <- result.map(
+    runner.launch(setup, None, state, effects) |> result.map_error(StartFailed),
+  )
+  Run(id:, setup:, agent: admitted.identity)
+}
+
+/// Opens the stored run `id` under `agent` and `context`. When work was in
+/// flight and no runner in this VM drives it, recovery takes the work over
+/// as a new incarnation (committed with compare-and-set, so concurrent
+/// recoveries have one winner): running tools become uncertain effects,
+/// queued tools are dispatched again, and a lost model call is issued again
+/// against the turn budget. A suspended or finished run is opened
+/// unchanged. Calling it again is harmless.
+pub fn recover(
+  store: Store,
+  agent: Agent(context),
+  context: context,
+  id: String,
+) -> Result(Run(context), RecoverError) {
+  use #(setup, admitted) <- result.try(
+    prepare(store, agent, context) |> result.map_error(RecoverInvalidAgent),
+  )
+  let run = Run(id:, setup:, agent: admitted.identity)
+  take_over(run, retries) |> result.replace(run)
+}
+
+fn take_over(run: Run(context), tries: Int) -> Result(Nil, RecoverError) {
+  use #(entry, state) <- result.try(
+    load_checked(run) |> result.map_error(RecoverUnreadable),
+  )
+  case live_runner(entry, state), controller.needs_runner(state) {
+    Some(_), _ | None, False -> Ok(Nil)
+    None, True -> {
+      let #(state, effects) = controller.recover(run.setup.env, state)
+      case runner.launch(run.setup, Some(entry.revision), state, effects) {
+        Ok(_) -> Ok(Nil)
+        Error(store.Conflict(_)) if tries > 1 -> take_over(run, tries - 1)
+        Error(store.Conflict(_)) -> Error(RecoverContended)
+        Error(error) -> Error(RecoverUnreadable(StoreFailed(error)))
+      }
+    }
+  }
+}
+
+fn prepare(
+  store: Store,
+  agent: Agent(context),
+  context: context,
+) -> Result(
+  #(runner.Setup(context), agent.Admitted(context)),
+  List(ConfigError),
+) {
+  use admitted <- result.map(agent.admit(agent))
   let env =
     controller.Env(
       registry: admitted.registry,
@@ -77,91 +192,161 @@ pub fn start(
       context:,
       system: admitted.system_prompt,
     )
-  let limits =
-    controller.Limits(
-      max_turns: admitted.max_turns,
-      token_budget: admitted.token_budget,
-    )
-  let setup =
+  #(
     runner.Setup(
       env:,
       model: admitted.model,
       max_concurrency: admitted.max_concurrency,
-      store: run_store,
-    )
-  let #(state, effects) =
-    controller.start(env, id, admitted.identity, limits, prompt)
-  let assert Ok(revision) = store.insert(run_store, id, state)
-    as "a fresh store accepts the first record"
-  runner.spawn(setup, state, revision, effects)
-  Ok(
-    Run(id:, store: run_store, command: fn(event) {
-      command(setup, id, event, 3)
-    }),
+      store:,
+    ),
+    admitted,
   )
 }
 
-pub fn id(run: Run) -> String {
+pub fn id(run: Run(context)) -> String {
   run.id
 }
 
 /// Blocks until the run is no longer `Working` (suspended or finished), or
-/// until `within` milliseconds pass.
-pub fn await(run: Run, within: Int) -> Result(Status, AwaitError) {
+/// until `within` milliseconds pass. It wakes on commits made through this
+/// run's store and when the run's runner exits.
+pub fn await(run: Run(context), within: Int) -> Result(Status, AwaitError) {
   let watcher = process.new_subject()
   let deadline = now() + within
-  case store.watch(run.store, run.id, watcher) {
-    Error(_) -> Error(AwaitStoreUnavailable)
+  case store.watch(run.setup.store, run.id, watcher) {
+    Error(error) -> Error(AwaitUnreadable(StoreFailed(error)))
     Ok(Nil) -> {
-      let outcome = case store.get(run.store, run.id) {
-        Error(_) -> Error(AwaitStoreUnavailable)
-        Ok(entry) -> wait(watcher, controller.status(entry.record), deadline)
-      }
-      store.unwatch(run.store, run.id, watcher)
+      let monitor = process.monitor(store.pid(run.setup.store))
+      let outcome = wait(run, watcher, monitor, deadline)
+      process.demonitor_process(monitor)
+      store.unwatch(run.setup.store, run.id, watcher)
       outcome
     }
   }
 }
 
 fn wait(
-  watcher: process.Subject(store.Committed(State)),
-  status: Status,
+  run: Run(context),
+  watcher: process.Subject(Nil),
+  monitor: process.Monitor,
   deadline: Int,
 ) -> Result(Status, AwaitError) {
-  case status {
-    run.Working ->
-      case process.receive(watcher, int_max(0, deadline - now())) {
+  use #(entry, state) <- result.try(
+    load(run) |> result.map_error(AwaitUnreadable),
+  )
+  case controller.status(state), live_runner(entry, state) {
+    run.Working, None -> Error(NoRunner)
+    run.Working, Some(_) -> {
+      let woken =
+        process.new_selector()
+        |> process.select_map(watcher, Ok)
+        |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
+        |> process.selector_receive(int.max(0, deadline - now()))
+      case woken {
         Error(Nil) -> Error(StillWorking)
-        Ok(store.Committed(_, record)) ->
-          wait(watcher, controller.status(record), deadline)
+        Ok(Error(Nil)) ->
+          Error(
+            AwaitUnreadable(
+              StoreFailed(store.Unavailable("the store is closed")),
+            ),
+          )
+        Ok(Ok(Nil)) -> wait(run, watcher, monitor, deadline)
       }
-    _ -> Ok(status)
+    }
+    status, _ -> Ok(status)
   }
 }
 
-pub fn status(run: Run) -> Result(Status, CommandError) {
-  load(run) |> result.map(controller.status)
+pub fn status(run: Run(context)) -> Result(Status, RecordError) {
+  use #(_, state) <- result.map(load(run))
+  controller.status(state)
 }
 
-pub fn snapshot(run: Run) -> Result(Snapshot, CommandError) {
-  load(run) |> result.map(controller.snapshot)
+pub fn snapshot(run: Run(context)) -> Result(Snapshot, RecordError) {
+  use #(_, state) <- result.map(load(run))
+  controller.snapshot(state)
 }
 
-/// Whether a runner process currently drives the run.
-pub fn is_live(run: Run) -> Bool {
-  case store.get(run.store, run.id) {
-    Ok(store.Entry(live: Some(_), ..)) -> True
-    _ -> False
+/// The approval requests waiting for an answer, oldest first. They can be
+/// answered while other tools of the batch still run.
+pub fn pending(
+  run: Run(context),
+) -> Result(List(PendingApproval), RecordError) {
+  use #(_, state) <- result.map(load(run))
+  pending_of(state)
+}
+
+fn pending_of(state: State) -> List(PendingApproval) {
+  case state.phase {
+    controller.Acting(_, actions) ->
+      list.filter_map(actions, fn(action) {
+        case action.state {
+          run.AwaitingApproval(requirement, revision) ->
+            Ok(run.PendingApproval(
+              run.ApprovalRef(state.run, action.id, requirement, revision),
+              action.call.name,
+              action.call.arguments_json,
+            ))
+          _ -> Error(Nil)
+        }
+      })
+    _ -> []
   }
 }
 
-/// Cancels an active or suspended run. Running tools are killed and
-/// recorded as uncertain effects, never retried; queued and waiting actions
-/// are recorded as not started. Returns the status right after the
-/// cancellation was committed: `Working` while tools are being stopped,
-/// then `Finished(Cancelled)` (see `await`).
-pub fn cancel(run: Run) -> Result(Status, CommandError) {
-  run.command(controller.Cancel)
+/// Whether a runner in this VM currently drives the run.
+pub fn is_live(run: Run(context)) -> Bool {
+  case load(run) {
+    Ok(#(entry, state)) -> option.is_some(live_runner(entry, state))
+    Error(_) -> False
+  }
+}
+
+/// Answers an approval request. `context` is the application's current
+/// context: the policy is checked again with it, and a current denial or
+/// policy failure wins over an approval. If the approved action runs from
+/// here (no runner was live), it runs with this context.
+///
+/// Works with no process holding the run: the answer is committed to the
+/// stored record with compare-and-set, so of concurrent answers exactly one
+/// wins and the others get `AlreadyAnswered` (or `RunEnded` after a cancel).
+///
+/// `reviewer` is recorded with the answer as given. Fabric does not
+/// authenticate it: the application must authenticate and authorize whoever
+/// answers before calling this.
+pub fn answer(
+  run: Run(context),
+  reference: ApprovalRef,
+  answer: Answer,
+  reviewer reviewer: Option(String),
+  context context: context,
+) -> Result(Status, CommandError) {
+  let env = controller.Env(..run.setup.env, context:)
+  let answering = Run(..run, setup: runner.Setup(..run.setup, env:))
+  use state <- result.try(command(
+    answering,
+    controller.Answer(reference, answer, reviewer),
+    retries,
+  ))
+  let reissued =
+    list.find(pending_of(state), fn(pending) {
+      pending.reference.id == reference.id
+      && pending.reference.revision != reference.revision
+    })
+  case reissued {
+    Ok(pending) -> Error(RequirementChanged(pending))
+    Error(Nil) -> Ok(controller.status(state))
+  }
+}
+
+/// Cancels a run that is active, suspended, or whose runner was lost.
+/// Running tools are stopped and recorded as uncertain effects, never
+/// retried; queued actions and pending approvals are recorded as not
+/// started. Returns the status right after the cancellation was committed:
+/// `Working` while tools are being stopped, then `Finished(Cancelled)` (see
+/// `await`).
+pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
+  command(run, controller.Cancel, retries) |> result.map(controller.status)
 }
 
 /// Records what actually happened for an uncertain effect. `content` is what
@@ -169,87 +354,76 @@ pub fn cancel(run: Run) -> Result(Status, CommandError) {
 /// the run continues with its next model turn. Reconciliation does not
 /// consume a turn.
 pub fn reconcile(
-  run: Run,
+  run: Run(context),
   action: ActionId,
   content: String,
 ) -> Result(Status, CommandError) {
-  run.command(controller.Reconcile(action, content))
+  command(run, controller.Reconcile(action, content), retries)
+  |> result.map(controller.status)
 }
 
-fn load(run: Run) -> Result(State, CommandError) {
-  store.get(run.store, run.id)
-  |> result.map(fn(entry) { entry.record })
-  |> result.replace_error(StoreUnavailable)
-}
-
-/// Sends `event` to the live runner, or applies it to the stored record and
-/// spawns a runner if the transition produced work. A lost race re-reads
+/// Sends `event` to the live runner, or applies it to the stored record
+/// and starts a runner if the transition produced work. A lost race reads
 /// the newer record and validates the command again.
 fn command(
-  setup: runner.Setup(context),
-  id: String,
+  run: Run(context),
   event: Event,
   tries: Int,
-) -> Result(Status, CommandError) {
-  use entry <- result.try(
-    store.get(setup.store, id) |> result.replace_error(StoreUnavailable),
+) -> Result(State, CommandError) {
+  use #(entry, state) <- result.try(
+    load_checked(run) |> result.map_error(Unreadable),
   )
-  case entry.live {
-    Some(live) ->
-      case send_live(live, event) {
-        Ok(outcome) -> outcome |> result.map_error(rejection)
-        Error(Nil) -> retry(setup, id, event, tries)
-      }
-    None ->
-      case controller.step(setup.env, entry.record, event) {
-        Error(error) -> Error(rejection(error))
-        Ok(#(state, effects)) ->
-          case
-            store.compare_and_set(
-              setup.store,
-              id,
-              entry.revision,
-              state,
-              release: False,
-            )
-          {
-            Error(store.Conflict(_)) -> retry(setup, id, event, tries)
-            Error(_) -> Error(StoreUnavailable)
-            Ok(revision) -> {
-              case controller.needs_runner(state) {
-                True -> runner.spawn(setup, state, revision, effects)
-                False -> Nil
-              }
-              Ok(controller.status(state))
-            }
-          }
-      }
+  let retry = fn() {
+    case tries > 1 {
+      True -> command(run, event, tries - 1)
+      False -> Error(Contended)
+    }
   }
-}
-
-fn retry(
-  setup: runner.Setup(context),
-  id: String,
-  event: Event,
-  tries: Int,
-) -> Result(Status, CommandError) {
-  case tries > 1 {
-    True -> command(setup, id, event, tries - 1)
-    False -> Error(Contended)
+  case live_runner(entry, state) {
+    Some(mailbox) ->
+      case
+        send_live(mailbox, fn(state) {
+          controller.step(run.setup.env, state, event)
+        })
+      {
+        Ok(live.Applied(state)) -> Ok(state)
+        Ok(live.Refused(rejection)) -> Error(refusal(rejection))
+        Ok(live.Superseded) | Error(Nil) -> retry()
+      }
+    None -> {
+      let orphaned = controller.needs_runner(state)
+      let transition = case orphaned, event {
+        False, _ -> Ok(controller.step(run.setup.env, state, event))
+        // Cancelling starts nothing, so it needs no recovery first.
+        True, controller.Cancel ->
+          Ok(controller.step(run.setup.env, controller.abandon(state), event))
+        True, _ -> Error(RecoveryRequired)
+      }
+      use transition <- result.try(transition)
+      use #(next, effects) <- result.try(
+        transition |> result.map_error(refusal),
+      )
+      case runner.launch(run.setup, Some(entry.revision), next, effects) {
+        Ok(_) -> Ok(next)
+        Error(store.Conflict(_)) -> retry()
+        Error(error) -> Error(Unreadable(StoreFailed(error)))
+      }
+    }
   }
 }
 
 /// `Error(Nil)` when the runner exited before answering.
 fn send_live(
-  live: process.Subject(runner.Message),
-  event: Event,
-) -> Result(Result(Status, controller.Rejection), Nil) {
-  case process.subject_owner(live) {
+  mailbox: process.Subject(live.Message),
+  step: fn(State) ->
+    Result(#(State, List(controller.Effect)), controller.Rejection),
+) -> Result(live.CommandReply, Nil) {
+  case process.subject_owner(mailbox) {
     Error(Nil) -> Error(Nil)
     Ok(pid) -> {
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
-      process.send(live, runner.Command(event, reply))
+      process.send(mailbox, live.Command(step, reply))
       let answer =
         process.new_selector()
         |> process.select_map(reply, Ok)
@@ -261,16 +435,64 @@ fn send_live(
   }
 }
 
-fn rejection(rejection: controller.Rejection) -> CommandError {
+fn refusal(rejection: controller.Rejection) -> CommandError {
   case rejection {
     controller.RunEnded -> RunEnded
     controller.UnknownAction(id) | controller.ReportNotExpected(id) ->
       UnknownAction(id)
     controller.NotReconcilable(id) -> NotReconcilable(id)
     controller.StaleEvent -> WrongPhase
-    controller.WrongReference
-    | controller.StaleReference
-    | controller.AlreadyAnswered -> WrongPhase
+    controller.WrongReference -> WrongReference
+    controller.StaleReference -> StaleReference
+    controller.AlreadyAnswered -> AlreadyAnswered
+  }
+}
+
+// --- loading -------------------------------------------------------------------
+
+fn load(run: Run(context)) -> Result(#(store.Entry, State), RecordError) {
+  use entry <- result.try(
+    store.get(run.setup.store, run.id)
+    |> result.map_error(fn(error) {
+      case error {
+        store.NotFound -> RunNotFound
+        other -> StoreFailed(other)
+      }
+    }),
+  )
+  use state <- result.map(
+    record.decode(entry.record)
+    |> result.map_error(fn(error) {
+      case error {
+        record.UnsupportedVersion(found) -> UnsupportedVersion(found)
+        record.Corrupt(detail) -> CorruptRecord(detail)
+      }
+    }),
+  )
+  #(entry, state)
+}
+
+/// `load`, and the record must be able to continue under this run's agent.
+fn load_checked(
+  run: Run(context),
+) -> Result(#(store.Entry, State), RecordError) {
+  use #(entry, state) <- result.try(load(run))
+  record.check(state, run.agent, run.setup.env.registry)
+  |> result.map(fn(state) { #(entry, state) })
+  |> result.map_error(IncompatibleAgent)
+}
+
+/// The runner registered for the record's current incarnation. A runner of
+/// an older incarnation lost the run to a recovery elsewhere; its commits
+/// will fail.
+fn live_runner(
+  entry: store.Entry,
+  state: State,
+) -> Option(process.Subject(live.Message)) {
+  case entry.live {
+    Some(store.Live(incarnation, mailbox)) if incarnation == state.incarnation ->
+      Some(mailbox)
+    _ -> None
   }
 }
 
@@ -289,13 +511,6 @@ fn contain_policy(
           "policy gave no decision within " <> int.to_string(timeout) <> " ms",
         )
     }
-  }
-}
-
-fn int_max(a: Int, b: Int) -> Int {
-  case a > b {
-    True -> a
-    False -> b
   }
 }
 

@@ -1,0 +1,60 @@
+//// Instruments for durable-run tests: fresh temporary directories, owner
+//// processes whose death takes down every Fabric process they started, and
+//// access to a run's live runner.
+
+import fabric/store.{type Store}
+import gleam/erlang/process.{type Pid}
+import gleam/option.{None, Some}
+
+@external(erlang, "fabric_test_ffi", "temp_dir")
+pub fn temp_dir() -> String
+
+@external(erlang, "fabric_test_ffi", "remove_dir")
+pub fn remove_dir(path: String) -> Nil
+
+@external(erlang, "fabric_test_ffi", "list_dir")
+pub fn list_dir(path: String) -> Result(List(String), Nil)
+
+@external(erlang, "fabric_test_ffi", "write_file")
+pub fn write_file(path: String, content: String) -> Result(Nil, Nil)
+
+/// Runs `body` in a new process that then stays alive; everything `body`
+/// starts linked (a store, and through it the runners) belongs to it.
+pub fn owned(body: fn() -> a) -> #(Pid, a) {
+  let reply = process.new_subject()
+  let pid =
+    process.spawn_unlinked(fn() {
+      process.send(reply, body())
+      let hold: process.Subject(Nil) = process.new_subject()
+      process.receive_forever(hold)
+    })
+  #(pid, process.receive_forever(reply))
+}
+
+/// Kills `pid` and waits until it is gone.
+pub fn kill(pid: Pid) -> Nil {
+  let monitor = process.monitor(pid)
+  process.kill(pid)
+  let _ =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_) { Nil })
+    |> process.selector_receive_forever
+  Nil
+}
+
+/// Waits until `pid` has exited.
+pub fn gone(pid: Pid) -> Nil {
+  let monitor = process.monitor(pid)
+  process.new_selector()
+  |> process.select_specific_monitor(monitor, fn(_) { Nil })
+  |> process.selector_receive_forever
+}
+
+/// The process of the runner the store has registered for `run`.
+pub fn runner(store: Store, run: String) -> Result(Pid, Nil) {
+  case store.get(store, run) {
+    Ok(store.Entry(live: Some(store.Live(mailbox:, ..)), ..)) ->
+      process.subject_owner(mailbox)
+    Ok(store.Entry(live: None, ..)) | Error(_) -> Error(Nil)
+  }
+}
