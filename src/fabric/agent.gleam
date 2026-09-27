@@ -6,6 +6,7 @@
 import fabric/internal/registry.{type Registry}
 import fabric/model.{type Model}
 import fabric/policy.{type Policy}
+import fabric/run.{type Identity, Identity}
 import fabric/tool.{type Tool}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -13,6 +14,7 @@ import gleam/result
 
 pub opaque type Agent(context) {
   Agent(
+    identity: Identity,
     model: Model,
     tools: List(Tool(context)),
     policy: Policy(context),
@@ -34,6 +36,8 @@ pub type ConfigError {
   MaxConcurrencyNotPositive(Int)
   TokenBudgetNotPositive(Int)
   PolicyTimeoutNotPositive(Int)
+  /// The name is empty or the version is not positive.
+  InvalidIdentity(name: String, version: Int)
 }
 
 pub const default_max_turns = 8
@@ -41,6 +45,8 @@ pub const default_max_turns = 8
 pub const default_max_concurrency = 4
 
 pub const default_policy_timeout = 5000
+
+pub const default_identity = Identity("agent", 1)
 
 /// An agent with the given model, tools, and policy. The policy is required:
 /// there is no implicit allow (`policy.always_allow()` is the explicit one).
@@ -50,6 +56,7 @@ pub fn new(
   policy: Policy(context),
 ) -> Agent(context) {
   Agent(
+    identity: default_identity,
     model:,
     tools:,
     policy:,
@@ -59,6 +66,17 @@ pub fn new(
     token_budget: None,
     policy_timeout: default_policy_timeout,
   )
+}
+
+/// Names this agent definition. A stored run records the name and version
+/// it started with and continues only under the same pair: change the
+/// version when a change to the agent must not continue older runs.
+pub fn with_identity(
+  agent: Agent(context),
+  name: String,
+  version: Int,
+) -> Agent(context) {
+  Agent(..agent, identity: Identity(name, version))
 }
 
 pub fn with_system_prompt(
@@ -105,6 +123,7 @@ pub fn validate(agent: Agent(context)) -> Result(Nil, List(ConfigError)) {
 @internal
 pub type Admitted(context) {
   Admitted(
+    identity: Identity,
     model: Model,
     registry: Registry(context),
     policy: Policy(context),
@@ -132,6 +151,11 @@ pub fn admit(
         None -> Ok(Nil)
       },
       positive(agent.policy_timeout, PolicyTimeoutNotPositive),
+      case agent.identity {
+        Identity(name, version) if name == "" || version < 1 ->
+          Error(InvalidIdentity(name, version))
+        Identity(..) -> Ok(Nil)
+      },
     ]
     |> list.filter_map(fn(check) {
       case check {
@@ -142,6 +166,7 @@ pub fn admit(
   case registry, limits {
     Ok(registry), [] ->
       Ok(Admitted(
+        identity: agent.identity,
         model: agent.model,
         registry:,
         policy: agent.policy,

@@ -89,7 +89,8 @@ pub fn start(
       max_concurrency: admitted.max_concurrency,
       store: run_store,
     )
-  let #(state, effects) = controller.start(env, id, limits, prompt)
+  let #(state, effects) =
+    controller.start(env, id, admitted.identity, limits, prompt)
   let assert Ok(revision) = store.insert(run_store, id, state)
     as "a fresh store accepts the first record"
   runner.spawn(setup, state, revision, effects)
@@ -267,6 +268,9 @@ fn rejection(rejection: controller.Rejection) -> CommandError {
       UnknownAction(id)
     controller.NotReconcilable(id) -> NotReconcilable(id)
     controller.StaleEvent -> WrongPhase
+    controller.WrongReference
+    | controller.StaleReference
+    | controller.AlreadyAnswered -> WrongPhase
   }
 }
 

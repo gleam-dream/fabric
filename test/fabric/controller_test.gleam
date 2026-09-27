@@ -57,7 +57,8 @@ fn limits() -> controller.Limits {
 }
 
 fn begin(env: controller.Env(Nil), limits: controller.Limits) -> State {
-  let #(state, effects) = controller.start(env, "run-1", limits, "hello")
+  let #(state, effects) =
+    controller.start(env, "run-1", run.Identity("bank", 1), limits, "hello")
   let assert [CallModel(1, _)] = effects
   state
 }
@@ -120,7 +121,8 @@ fn states(state: State) -> List(run.ActionState) {
 // --- tests -------------------------------------------------------------------
 
 pub fn start_requests_the_first_turn_with_declarations_test() {
-  let #(_, effects) = controller.start(env(), "run-1", limits(), "hello")
+  let #(_, effects) =
+    controller.start(env(), "run-1", run.Identity("bank", 1), limits(), "hello")
   let assert [CallModel(1, request)] = effects
   request.messages |> should.equal([UserMessage("hello")])
   request.tools
@@ -207,11 +209,9 @@ pub fn policy_denies_and_requires_approval_test() {
     run.Suspended(
       [
         run.PendingApproval(
-          ActionId(1, "a"),
+          run.ApprovalRef("run-1", ActionId(1, "a"), requirement, 1),
           "transfer_funds",
           "{\"to\":\"bob\",\"amount\":500}",
-          requirement,
-          1,
         ),
       ],
       [],

@@ -115,8 +115,9 @@ pub fn approval_suspends_the_run_as_data_test() {
     )
   let assert Ok(run) = fabric.start(agent, Nil, "pay bob")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
-  pending.id |> should.equal(ActionId(1, "t"))
-  pending.requirement |> should.equal(policy.Requirement("transfer", 1))
+  pending.reference.id |> should.equal(ActionId(1, "t"))
+  pending.reference.requirement
+  |> should.equal(policy.Requirement("transfer", 1))
   // No process holds the suspended run.
   fabric.is_live(run) |> should.be_false
   let assert [run.Succeeded(_), run.AwaitingApproval(_, 1)] = states(run)
