@@ -14,7 +14,7 @@ pub fn registry_rejects_duplicate_names_test() {
 pub fn registry_rejects_provider_incompatible_names_test() {
   let bad =
     tool.define("look up!", "", apps.city_codec(), apps.forecast_codec())
-    |> tool.bind(apps.lookup_weather)
+    |> tool.bind(apps.lookup_weather, fn(_) { tool.Explain("unknown city") })
   registry.new([bad])
   |> should.equal(Error([registry.InvalidName("look up!")]))
 }
@@ -24,7 +24,7 @@ pub fn registry_rejects_codecs_without_schema_test() {
     codec.new(fn(_) { codec.encode_string_value("x") }, fn(_) { Ok(Nil) })
   let custom =
     tool.define("custom", "", schemaless, codec.string())
-    |> tool.bind(fn(_, _) { Ok("ok") })
+    |> tool.bind(fn(_, _) { Ok("ok") }, fn(_: Nil) { tool.Explain("failed") })
   registry.new([custom])
   |> should.equal(Error([registry.SchemaUnavailable("custom")]))
 }
@@ -74,26 +74,37 @@ pub fn invocation_distinguishes_success_failure_and_uncertainty_test() {
   |> should.equal(invocation.EffectUncertain("gateway timed out after sending"))
 }
 
-pub fn plain_binding_hides_typed_failure_detail_test() {
-  let hidden =
+pub fn the_binding_classifies_every_typed_error_test() {
+  let classified =
     apps.transfer_definition()
-    |> tool.bind(apps.transfer)
-  let assert Ok(tools) = registry.new([hidden])
-  registry.invoke(
-    tools,
-    Nil,
-    "transfer_funds",
-    "{\"to\":\"bob\",\"amount\":500}",
-  )
-  |> should.equal(invocation.FailedVisibly("{\"error\":\"tool_failed\"}"))
+    |> tool.bind(apps.transfer, fn(error) {
+      case error {
+        apps.InsufficientFunds(_) -> tool.Explain("declined")
+        apps.GatewayTimeout -> tool.Uncertain("timed out after sending")
+      }
+    })
+  let assert Ok(tools) = registry.new([classified])
+  let invoke = fn(amount) {
+    registry.invoke(
+      tools,
+      Nil,
+      "transfer_funds",
+      "{\"to\":\"bob\",\"amount\":" <> amount <> "}",
+    )
+  }
+  invoke("500")
+  |> should.equal(invocation.FailedVisibly("{\"error\":\"declined\"}"))
+  invoke("5000")
+  |> should.equal(invocation.EffectUncertain("timed out after sending"))
 }
 
 pub fn handler_receives_context_separately_from_input_test() {
   let echo_context =
     tool.define("whoami", "", apps.city_codec(), codec.string())
-    |> tool.bind(fn(context: String, city: apps.City) {
-      Ok(context <> "@" <> city.name)
-    })
+    |> tool.bind(
+      fn(context: String, city: apps.City) { Ok(context <> "@" <> city.name) },
+      fn(_: Nil) { tool.Explain("failed") },
+    )
   let assert Ok(tools) = registry.new([echo_context])
   registry.invoke(tools, "alice", "whoami", "{\"city\":\"Rome\"}")
   |> should.equal(invocation.Returned("\"alice@Rome\""))
@@ -107,7 +118,9 @@ pub fn unencodable_output_is_a_host_failure_test() {
     })
   let broken =
     tool.define("broken", "", apps.city_codec(), refusing)
-    |> tool.bind(fn(_, _) { Ok("anything") })
+    |> tool.bind(fn(_, _) { Ok("anything") }, fn(_: Nil) {
+      tool.Explain("failed")
+    })
   let assert Ok(tools) = registry.new([broken])
   let assert invocation.OutputUnencodable(_) =
     registry.invoke(tools, Nil, "broken", "{\"city\":\"Rome\"}")

@@ -50,12 +50,15 @@ pub fn gated_tool(probe: Probe) -> tool.Tool(ctx) {
     codec.field("x", codec.string()),
     codec.string(),
   )
-  |> tool.bind(fn(_context, x: String) -> Result(String, Nil) {
-    probe.record(probe, "start:" <> x)
-    probe.gate(probe, x)
-    probe.record(probe, "end:" <> x)
-    Ok(x)
-  })
+  |> tool.bind(
+    fn(_context, x: String) -> Result(String, Nil) {
+      probe.record(probe, "start:" <> x)
+      probe.gate(probe, x)
+      probe.record(probe, "end:" <> x)
+      Ok(x)
+    },
+    fn(_) { tool.Explain("failed") },
+  )
 }
 
 pub fn slow(id: String, x: String) -> ToolCall {
@@ -70,8 +73,11 @@ pub fn crashing_tool(probe: Probe) -> tool.Tool(ctx) {
     codec.field("x", codec.string()),
     codec.string(),
   )
-  |> tool.bind(fn(_context, x: String) -> Result(String, Nil) {
-    probe.record(probe, "crash:" <> x)
-    panic as "the tool body crashed after its effect"
-  })
+  |> tool.bind(
+    fn(_context, x: String) -> Result(String, Nil) {
+      probe.record(probe, "crash:" <> x)
+      panic as "the tool body crashed after its effect"
+    },
+    fn(_) { tool.Explain("failed") },
+  )
 }
