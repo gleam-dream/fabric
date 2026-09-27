@@ -177,11 +177,12 @@ fn perform(runner: Runner(context), effects: List(Effect)) -> Runner(context) {
     }
     controller.AbortModel -> abort_model(runner)
     controller.Dispatch(actions) -> {
-      let runner = ensure_executor(runner)
-      let assert Some(executor) = runner.executor
-        as "ensure_executor always starts one"
+      let executor = case runner.executor {
+        Some(executor) -> executor
+        None -> start_executor(runner)
+      }
       executor.submit(executor, actions)
-      runner
+      Runner(..runner, executor: Some(executor))
     }
     controller.StopTools ->
       case runner.executor {
@@ -197,29 +198,24 @@ fn perform(runner: Runner(context), effects: List(Effect)) -> Runner(context) {
   }
 }
 
-fn ensure_executor(runner: Runner(context)) -> Runner(context) {
-  case runner.executor {
-    Some(_) -> runner
-    None -> {
-      let self = runner.self
-      let env = runner.setup.env
-      let hooks =
-        executor.Hooks(
-          max_in_flight: runner.setup.max_concurrency,
-          fence: fn(id) { process.call_forever(self, Fence(id, _)) },
-          invoke: fn(call) {
-            registry.invoke(
-              env.registry,
-              env.context,
-              call.name,
-              call.arguments_json,
-            )
-          },
-          report: fn(report) { process.send(self, Executed(report)) },
+fn start_executor(runner: Runner(context)) -> Executor {
+  let self = runner.self
+  let env = runner.setup.env
+  executor.start(
+    executor.Hooks(
+      max_in_flight: runner.setup.max_concurrency,
+      fence: fn(id) { process.call_forever(self, Fence(id, _)) },
+      invoke: fn(call) {
+        registry.invoke(
+          env.registry,
+          env.context,
+          call.name,
+          call.arguments_json,
         )
-      Runner(..runner, executor: Some(executor.start(hooks)))
-    }
-  }
+      },
+      report: fn(report) { process.send(self, Executed(report)) },
+    ),
+  )
 }
 
 fn abort_model(runner: Runner(context)) -> Runner(context) {

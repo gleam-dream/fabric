@@ -170,7 +170,7 @@ pub fn step(env: Env(context), state: State, event: Event) -> Transition {
       Ok(settle(env, State(..state, phase: Acting(turn, actions))))
     }
     Acting(turn, actions), Cancel ->
-      Ok(stop(State(..state, phase: Acting(turn, actions)), CancelRequested))
+      Ok(stop(state, turn, actions, CancelRequested))
     Acting(..), _ -> Error(StaleEvent)
 
     Stopping(turn, actions, reason), ToolReported(id, outcome) -> {
@@ -408,8 +408,7 @@ fn after_report(env: Env(context), state: State) -> #(State, List(Effect)) {
           }
         })
       {
-        Ok(failure) ->
-          stop(State(..state, phase: Acting(turn, actions)), HostFault(failure))
+        Ok(failure) -> stop(state, turn, actions, HostFault(failure))
         Error(Nil) -> settle(env, state)
       }
     _ -> #(state, [])
@@ -417,9 +416,12 @@ fn after_report(env: Env(context), state: State) -> #(State, List(Effect)) {
 }
 
 /// Withdraws everything not started. Running tools must be stopped first.
-fn stop(state: State, reason: StopReason) -> #(State, List(Effect)) {
-  let assert Acting(turn, actions) = state.phase
-    as "stop is only reached from Acting"
+fn stop(
+  state: State,
+  turn: Int,
+  actions: List(ActionRecord),
+  reason: StopReason,
+) -> #(State, List(Effect)) {
   let actions =
     list.map(actions, fn(action) {
       case action.state {
