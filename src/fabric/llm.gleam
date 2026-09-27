@@ -71,7 +71,7 @@ fn declaration(
   spec: model.ToolSpec,
 ) -> Result(types.ToolDefinition, ModelError) {
   use name <- result.try(
-    types.tool_name(spec.name) |> result.map_error(failure(_, None)),
+    types.tool_name(spec.name) |> result.map_error(name_failure(spec.name, _)),
   )
   use contract <- result.map(
     runtime.from_schema(spec.schema)
@@ -122,7 +122,7 @@ fn to_wire_call(call: model.ToolCall) -> Result(types.ToolCall, ModelError) {
     types.call_id(call.id) |> result.map_error(failure(_, None)),
   )
   use name <- result.map(
-    types.tool_name(call.name) |> result.map_error(failure(_, None)),
+    types.tool_name(call.name) |> result.map_error(name_failure(call.name, _)),
   )
   types.ToolCall(
     id:,
@@ -176,6 +176,15 @@ fn failure(
     None -> ""
   }
   model.ModelError(describe(error) <> evidence, retryable:)
+}
+
+/// A tool name outside the providers' grammar cannot be sent; retrying does
+/// not help.
+fn name_failure(name: String, error: types.ToolNameError) -> ModelError {
+  model.ModelError(
+    "tool name " <> name <> " is not admissible: " <> string.inspect(error),
+    retryable: False,
+  )
 }
 
 fn describe(error: types.WireError) -> String {
