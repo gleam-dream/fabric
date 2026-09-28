@@ -210,12 +210,14 @@ fn start_in(
   reports: Subject(Report),
   rollback_within: Int,
 ) -> fabric.Run(Nil) {
-  let agent =
+  let assert Ok(agent) =
     agent.new(
+      "traveller",
       traveller(city),
       [trip_tool(reports, rollback_within)],
       policy.always_allow(),
     )
+    |> agent.build
   let assert Ok(run) = fabric.start(store, agent, Nil, "book")
   run
 }

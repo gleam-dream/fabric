@@ -15,6 +15,7 @@ import fabric/model
 import fabric/policy
 import fabric/run.{Requirement}
 import fabric/store
+import fabric/support
 import fabric/support/apps
 import fabric/support/flaky
 import fabric/support/probe.{type Probe}
@@ -97,12 +98,20 @@ fn two_turns(first: List(model.ToolCall)) -> model.Model {
   })
 }
 
-fn paying_agent(probe: Probe, first: List(model.ToolCall)) -> Agent(String) {
+fn paying_agent_spec(
+  probe: Probe,
+  first: List(model.ToolCall),
+) -> agent.Spec(String) {
   agent.new(
+    "agent",
     two_turns(first),
     [scripted.gated_tool(probe), paying_tool(probe), note_tool(probe, "note")],
     gate(probe, "policy"),
   )
+}
+
+fn paying_agent(probe: Probe, first: List(model.ToolCall)) -> Agent(String) {
+  support.agent(paying_agent_spec(probe, first))
 }
 
 /// What the actions and the policy did, without the barrier's entries.
@@ -181,8 +190,11 @@ pub fn an_approved_tool_not_started_before_a_restart_is_asked_for_again_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
   let agent =
-    paying_agent(probe, [scripted.slow("s", "s"), transfer_call()])
-    |> agent.with_max_concurrency(1)
+    paying_agent_spec(probe, [scripted.slow("s", "s"), transfer_call()])
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), max_concurrency: 1),
+    )
+    |> support.agent
   let #(owner, #(old, run)) =
     restart.owned(fn() {
       let assert Ok(store) = store.directory(dir)
@@ -253,12 +265,14 @@ fn research_call() -> model.ToolCall {
 fn delegating(probe: Probe) -> Agent(String) {
   let researcher =
     agent.new(
+      "researcher",
       scripted.plan([note_call()]),
       [note_tool(probe, "child note")],
       gate(probe, "child policy"),
     )
-    |> agent.with_identity("researcher", 1)
+    |> support.agent
   agent.new(
+    "agent",
     two_turns([research_call()]),
     [note_tool(probe, "parent note")],
     gate(probe, "policy"),
@@ -274,6 +288,7 @@ fn delegating(probe: Probe) -> Agent(String) {
       }
     },
   )
+  |> support.agent
 }
 
 /// The approved start is the child run's start: the child runs with the

@@ -73,15 +73,19 @@ fn prompt(messages: List(model.Message)) -> String {
 }
 
 /// A researcher that answers at once.
-fn quick_researcher(probe: Probe) -> Agent(Nil) {
+fn quick_researcher_spec(probe: Probe) -> agent.Spec(Nil) {
   agent.new(
+    "researcher",
     recorded(probe, "child", fn(messages) {
       model.FinalAnswer("found " <> prompt(messages), None)
     }),
     [],
     policy.always_allow(),
   )
-  |> agent.with_identity("researcher", 1)
+}
+
+fn quick_researcher(probe: Probe) -> Agent(Nil) {
+  support.agent(quick_researcher_spec(probe))
 }
 
 /// A researcher that calls `tools` first (as `plan` does), then answers.
@@ -92,6 +96,7 @@ fn working_researcher(
   policy: policy.Policy(Nil),
 ) -> Agent(Nil) {
   agent.new(
+    "researcher",
     recorded(probe, "child", fn(messages) {
       case scripted.results(messages) {
         [] -> model.ToolRequest("", calls, None)
@@ -101,16 +106,27 @@ fn working_researcher(
     tools,
     policy,
   )
-  |> agent.with_identity("researcher", 1)
+  |> support.agent
 }
 
-fn delegating(
+fn delegating_spec(
   probe: Probe,
   calls: List(model.ToolCall),
   child: Agent(Nil),
   policy: policy.Policy(Nil),
-) -> Agent(Nil) {
+) -> agent.Spec(Nil) {
+  named_delegating_spec("agent", probe, calls, child, policy)
+}
+
+fn named_delegating_spec(
+  name: String,
+  probe: Probe,
+  calls: List(model.ToolCall),
+  child: Agent(Nil),
+  policy: policy.Policy(Nil),
+) -> agent.Spec(Nil) {
   agent.new(
+    name,
     recorded(probe, "parent", fn(messages) {
       case scripted.results(messages) {
         [] -> model.ToolRequest("", calls, None)
@@ -131,6 +147,15 @@ fn delegating(
       }
     },
   )
+}
+
+fn delegating(
+  probe: Probe,
+  calls: List(model.ToolCall),
+  child: Agent(Nil),
+  policy: policy.Policy(Nil),
+) -> Agent(Nil) {
+  support.agent(delegating_spec(probe, calls, child, policy))
 }
 
 /// Starting a sub-agent needs an approval; tools do not.
@@ -421,6 +446,7 @@ pub fn a_child_reply_after_the_parent_was_cancelled_is_discarded_test() {
   let probe = probe.new()
   let slow_child =
     agent.new(
+      "agent",
       model.new(fn(_) {
         probe.gate(probe, "child-model")
         Ok(model.FinalAnswer("too late", None))
@@ -428,6 +454,7 @@ pub fn a_child_reply_after_the_parent_was_cancelled_is_discarded_test() {
       [],
       policy.always_allow(),
     )
+    |> support.agent
   let parent =
     delegating(
       probe,
@@ -579,7 +606,7 @@ pub fn an_unreadable_child_is_an_uncertain_effect_of_the_parent_test() {
 pub fn delegations_beyond_the_child_limit_are_refused_test() {
   let probe = probe.new()
   let parent =
-    delegating(
+    delegating_spec(
       probe,
       [
         research_call("a", "one"),
@@ -589,7 +616,10 @@ pub fn delegations_beyond_the_child_limit_are_refused_test() {
       quick_researcher(probe),
       policy.always_allow(),
     )
-    |> agent.with_max_children(2)
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), max_children: 2),
+    )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), parent, Nil, "go")
   let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
   let assert Ok(snapshot) = fabric.snapshot(run)
@@ -607,15 +637,17 @@ pub fn delegations_beyond_the_child_limit_are_refused_test() {
 pub fn nested_delegation_is_bounded_by_the_root_depth_test() {
   let probe = probe.new()
   let middle =
-    delegating(
+    named_delegating_spec(
+      "middle",
       probe,
       [research_call("m", "deeper")],
       quick_researcher(probe),
       policy.always_allow(),
     )
-    |> agent.with_identity("middle", 1)
-  let root = fn() {
+    |> support.agent
+  let root = fn(max_depth) {
     agent.new(
+      "agent",
       scripted.plan([research_call("r", "gleam")]),
       [],
       policy.always_allow(),
@@ -631,21 +663,17 @@ pub fn nested_delegation_is_bounded_by_the_root_depth_test() {
         }
       },
     )
+    |> agent.with_limits(agent.Limits(..agent.default_limits(), max_depth:))
+    |> support.agent
   }
 
-  let assert Ok(shallow) = fabric.start(store.in_memory(), root(), Nil, "go")
+  let assert Ok(shallow) = fabric.start(store.in_memory(), root(1), Nil, "go")
   let assert Ok(run.Finished(run.Completed(_))) = fabric.await(shallow, 5000)
   let assert Ok(snapshot) = fabric.snapshot(child_of(shallow))
   list.map(snapshot.actions, fn(action) { action.state })
   |> should.equal([run.LimitReached(run.DepthLimit(1))])
 
-  let assert Ok(deep) =
-    fabric.start(
-      store.in_memory(),
-      root() |> agent.with_max_depth(2),
-      Nil,
-      "go",
-    )
+  let assert Ok(deep) = fabric.start(store.in_memory(), root(2), Nil, "go")
   let assert Ok(run.Finished(run.Completed(_))) = fabric.await(deep, 5000)
   let assert Ok(snapshot) = fabric.snapshot(child_of(deep))
   list.map(snapshot.actions, fn(action) { action.state })
@@ -656,17 +684,22 @@ pub fn nested_delegation_is_bounded_by_the_root_depth_test() {
 
 pub fn a_delegation_is_validated_with_its_child_test() {
   let probe = probe.new()
-  let broken = quick_researcher(probe) |> agent.with_max_turns(0)
-  delegating(probe, [], broken, policy.always_allow())
-  |> agent.with_max_children(-1)
-  |> agent.validate
-  |> should.equal(
-    Error([
-      agent.MaxChildrenNegative(-1),
-      agent.InvalidChild("research", [agent.MaxTurnsNotPositive(0)]),
-    ]),
+  // A sub-agent is checked by its own build, so an invalid one can never
+  // be delegated to.
+  quick_researcher_spec(probe)
+  |> agent.with_limits(agent.Limits(..agent.default_limits(), max_turns: 0))
+  |> agent.build
+  |> should.equal(Error([agent.MaxTurnsNotPositive(0)]))
+  delegating_spec(probe, [], quick_researcher(probe), policy.always_allow())
+  |> agent.with_limits(agent.Limits(..agent.default_limits(), max_children: -1))
+  |> agent.build
+  |> should.equal(Error([agent.MaxChildrenNegative(-1)]))
+  agent.new(
+    "agent",
+    scripted.plan([]),
+    [apps.weather_tool()],
+    policy.always_allow(),
   )
-  agent.new(scripted.plan([]), [apps.weather_tool()], policy.always_allow())
   |> agent.with_sub_agent(
     tool.define(
       "lookup_weather",
@@ -678,7 +711,7 @@ pub fn a_delegation_is_validated_with_its_child_test() {
     prompt: fn(city) { city },
     result: fn(_) { Ok("") },
   )
-  |> agent.validate
+  |> agent.build
   |> should.equal(Error([agent.DuplicateToolName("lookup_weather")]))
 }
 
@@ -687,21 +720,21 @@ pub fn a_delegation_is_validated_with_its_child_test() {
 /// that every child id the limits allow is a valid run id.
 pub fn delegation_limits_keep_child_ids_valid_test() {
   let probe = probe.new()
-  delegating(probe, [], quick_researcher(probe), policy.always_allow())
-  |> agent.with_max_depth(agent.max_depth_limit + 1)
-  |> agent.with_max_children(agent.max_children_limit + 1)
-  |> agent.validate
+  let limited = fn(max_children, max_depth) {
+    delegating_spec(probe, [], quick_researcher(probe), policy.always_allow())
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), max_children:, max_depth:),
+    )
+    |> agent.build
+  }
+  limited(1000, 17)
   |> should.equal(
     Error([
-      agent.MaxChildrenTooLarge(agent.max_children_limit + 1),
-      agent.MaxDepthTooLarge(agent.max_depth_limit + 1),
+      agent.MaxChildrenTooLarge(value: 1000, limit: 999),
+      agent.MaxDepthTooLarge(value: 17, limit: 16),
     ]),
   )
-  delegating(probe, [], quick_researcher(probe), policy.always_allow())
-  |> agent.with_max_depth(agent.max_depth_limit)
-  |> agent.with_max_children(agent.max_children_limit)
-  |> agent.validate
-  |> should.equal(Ok(Nil))
+  let assert Ok(_) = limited(999, 16)
 }
 
 /// With no agent, `cancel_stored` cancels a paused child first and then its
@@ -926,6 +959,7 @@ pub fn cancelling_does_not_depend_on_the_current_delegations_test() {
   let child = child_of(run)
   let plain =
     agent.new(
+      "agent",
       scripted.plan([]),
       [
         research()
@@ -936,6 +970,7 @@ pub fn cancelling_does_not_depend_on_the_current_delegations_test() {
       ],
       policy.always_allow(),
     )
+    |> support.agent
   let assert Ok(reopened) = fabric.recover(store, plain, Nil, fabric.id(run))
 
   let assert Ok(_) = fabric.cancel(reopened)

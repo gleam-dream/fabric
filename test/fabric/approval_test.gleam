@@ -61,7 +61,13 @@ fn transfer_call() -> model.ToolCall {
 }
 
 fn paying_agent(probe: Probe) -> Agent(Desk) {
-  agent.new(scripted.plan([transfer_call()]), [paying_tool(probe)], desk_policy)
+  agent.new(
+    "agent",
+    scripted.plan([transfer_call()]),
+    [paying_tool(probe)],
+    desk_policy,
+  )
+  |> support.agent
 }
 
 fn suspended(probe: Probe) -> #(fabric.Run(Desk), run.PendingApproval) {
@@ -159,7 +165,13 @@ pub fn a_rejection_never_runs_the_policy_test() {
     }
   }
   let agent =
-    agent.new(scripted.plan([transfer_call()]), [paying_tool(probe)], once)
+    agent.new(
+      "agent",
+      scripted.plan([transfer_call()]),
+      [paying_tool(probe)],
+      once,
+    )
+    |> support.agent
   let assert Ok(run) =
     fabric.start(store.in_memory(), agent, open_desk(), "pay")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
@@ -320,7 +332,8 @@ pub fn an_answer_racing_a_cancel_has_a_defined_outcome_test() {
     let assert Ok(run) =
       fabric.start(
         store.in_memory(),
-        agent.new(model, [paying_tool(probe)], desk_policy),
+        agent.new("agent", model, [paying_tool(probe)], desk_policy)
+          |> support.agent,
         open_desk(),
         "pay",
       )
@@ -391,6 +404,7 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
   let backend = flaky.new()
   let agent =
     agent.new(
+      "agent",
       model.new(fn(request: model.Request) {
         case scripted.results(request.messages) {
           [] ->
@@ -420,6 +434,7 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
         }
       },
     )
+    |> support.agent
   let first = flaky.store(backend)
   let assert Ok(run) = fabric.start(first, agent, Nil, "pay")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)

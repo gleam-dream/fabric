@@ -1,5 +1,6 @@
 import app
 import fabric
+import fabric/agent.{type Agent}
 import fabric/observation
 import fabric/run
 import fabric/store
@@ -21,7 +22,7 @@ pub fn a_member_finds_and_reserves_a_book_test() {
   let assert Ok(run) =
     fabric.start(
       store.in_memory(),
-      app.librarian(),
+      librarian(),
       app.member("ada"),
       "reserve Dune",
     )
@@ -39,7 +40,7 @@ pub fn a_missing_book_is_explained_to_the_model_test() {
   let assert Ok(run) =
     fabric.start(
       store.in_memory(),
-      app.librarian(),
+      librarian(),
       app.member("ada"),
       "reserve Necronomicon",
     )
@@ -57,7 +58,7 @@ pub fn the_policy_denies_guests_with_a_visible_reason_test() {
   let assert Ok(run) =
     fabric.start(
       store.in_memory(),
-      app.librarian(),
+      librarian(),
       app.member("guest"),
       "reserve Dune",
     )
@@ -70,12 +71,7 @@ pub fn the_policy_denies_guests_with_a_visible_reason_test() {
 
 pub fn an_unavailable_member_directory_is_a_host_failure_test() {
   let assert Ok(run) =
-    fabric.start(
-      store.in_memory(),
-      app.librarian(),
-      app.member(""),
-      "reserve Dune",
-    )
+    fabric.start(store.in_memory(), librarian(), app.member(""), "reserve Dune")
   let assert Ok(run.Finished(run.Failed(run.PolicyFailed(_, reason)))) =
     fabric.await(run, 5000)
   reason |> should.equal("member directory unavailable")
@@ -86,7 +82,7 @@ pub fn a_long_inventory_scan_can_be_cancelled_test() {
   let assert Ok(run) =
     fabric.start(
       store.in_memory(),
-      app.librarian(),
+      librarian(),
       app.member_with_scan_gate("ada", arrivals),
       "scan the inventory",
     )
@@ -101,8 +97,8 @@ pub fn a_long_inventory_scan_can_be_cancelled_test() {
 }
 
 pub fn the_configuration_is_checked_before_anything_starts_test() {
-  app.librarian() |> app.check |> should.equal(Ok(Nil))
-  app.misconfigured() |> app.check |> should.be_error
+  app.librarian() |> should.be_ok
+  app.misconfigured() |> should.be_error
 }
 
 // --- approvals, cancellation, restart -----------------------------------------
@@ -111,7 +107,7 @@ pub fn a_guardian_approves_a_junior_reservation_test() {
   let assert Ok(run) =
     fabric.start(
       store.in_memory(),
-      app.librarian(),
+      librarian(),
       app.member("junior"),
       "reserve Dune",
     )
@@ -138,7 +134,7 @@ pub fn a_rejected_reservation_is_explained_to_the_model_test() {
   let assert Ok(run) =
     fabric.start(
       store.in_memory(),
-      app.librarian(),
+      librarian(),
       app.member("junior"),
       "reserve Dune",
     )
@@ -164,7 +160,7 @@ pub fn a_paused_reservation_can_be_cancelled_test() {
   let assert Ok(run) =
     fabric.start(
       store.in_memory(),
-      app.librarian(),
+      librarian(),
       app.member("junior"),
       "reserve Dune",
     )
@@ -191,12 +187,7 @@ pub fn a_paused_reservation_survives_a_restart_test() {
     process.spawn_unlinked(fn() {
       let assert Ok(store) = store.directory(dir)
       let assert Ok(run) =
-        fabric.start(
-          store,
-          app.librarian(),
-          app.member("junior"),
-          "reserve Dune",
-        )
+        fabric.start(store, librarian(), app.member("junior"), "reserve Dune")
       let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
       process.send(started, fabric.id(run))
       process.sleep_forever()
@@ -211,7 +202,7 @@ pub fn a_paused_reservation_survives_a_restart_test() {
 
   let assert Ok(store) = store.directory(dir)
   let assert Ok(run) =
-    fabric.recover(store, app.librarian(), app.member("junior"), id)
+    fabric.recover(store, librarian(), app.member("junior"), id)
   let assert Ok([pending]) = fabric.pending(run)
   let assert Ok(_) =
     fabric.approve(
@@ -430,4 +421,9 @@ fn receive_until(
     2 -> list.reverse(seen)
     _ -> receive_until(events, last, seen)
   }
+}
+
+fn librarian() -> Agent(app.Member) {
+  let assert Ok(librarian) = app.librarian()
+  librarian
 }

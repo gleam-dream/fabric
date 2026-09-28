@@ -8,6 +8,7 @@ import fabric/model.{AssistantMessage, ToolResultMessage, UserMessage}
 import fabric/policy
 import fabric/run.{ActionId}
 import fabric/store
+import fabric/support
 import fabric/support/apps
 import fabric/support/flaky
 import fabric/support/probe
@@ -16,7 +17,7 @@ import fabric/support/scripted
 import fabric/tool
 import gleam/erlang/process
 import gleam/list
-import gleam/option
+import gleam/option.{Some}
 import gleam/string
 import gleeunit/should
 
@@ -43,10 +44,12 @@ pub fn run_completes_with_two_typed_tools_test() {
   ]
   let agent =
     agent.new(
+      "agent",
       scripted.plan(calls),
       [apps.weather_tool(), apps.transfer_tool()],
       policy.always_allow(),
     )
+    |> support.agent
   let held = store.in_memory()
   let assert Ok(run) = fabric.start(held, agent, Nil, "weather, then pay bob")
   let assert Ok(run.Finished(run.Completed(answer))) = fabric.await(run, 5000)
@@ -69,12 +72,14 @@ pub fn run_completes_with_two_typed_tools_test() {
 pub fn typed_failure_is_visible_to_the_model_test() {
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.call("c1", "lookup_weather", "{\"city\":\"Oslo\"}"),
       ]),
       [apps.weather_tool()],
       policy.always_allow(),
     )
+    |> support.agent
   let assert Ok(run) =
     fabric.start(store.in_memory(), agent, Nil, "weather in Oslo")
   fabric.await(run, 5000)
@@ -88,6 +93,7 @@ pub fn tool_concurrency_is_bounded_per_run_test() {
   let probe = probe.new()
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.slow("a", "a"),
         scripted.slow("b", "b"),
@@ -96,7 +102,10 @@ pub fn tool_concurrency_is_bounded_per_run_test() {
       [scripted.gated_tool(probe)],
       policy.always_allow(),
     )
-    |> agent.with_max_concurrency(2)
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), max_concurrency: 2),
+    )
+    |> support.agent
   let assert Ok(run) =
     fabric.start(store.in_memory(), agent, Nil, "three slow things")
   let first = probe.arrival(probe)
@@ -113,6 +122,7 @@ pub fn tool_concurrency_is_bounded_per_run_test() {
 pub fn approval_suspends_the_run_as_data_test() {
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}"),
         scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":10}"),
@@ -120,6 +130,7 @@ pub fn approval_suspends_the_run_as_data_test() {
       [apps.weather_tool(), apps.transfer_tool()],
       transfers_need_approval,
     )
+    |> support.agent
   let held = store.in_memory()
   let assert Ok(run) = fabric.start(held, agent, Nil, "pay bob")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
@@ -139,11 +150,15 @@ pub fn cancel_kills_running_tools_and_records_them_uncertain_test() {
   let probe = probe.new()
   let agent =
     agent.new(
+      "agent",
       scripted.plan([scripted.slow("a", "a"), scripted.slow("b", "b")]),
       [scripted.gated_tool(probe)],
       policy.always_allow(),
     )
-    |> agent.with_max_concurrency(1)
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), max_concurrency: 1),
+    )
+    |> support.agent
   let held = store.in_memory()
   let assert Ok(run) = fabric.start(held, agent, Nil, "two slow things")
   let first = probe.arrival(probe)
@@ -163,7 +178,9 @@ pub fn cancel_while_the_model_is_called_test() {
       probe.gate(probe, "model")
       Ok(model.FinalAnswer("too late", option.None))
     })
-  let agent = agent.new(blocking, [], policy.always_allow())
+  let agent =
+    agent.new("agent", blocking, [], policy.always_allow())
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "think")
   let _ = probe.arrival(probe)
   fabric.cancel(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
@@ -173,12 +190,14 @@ pub fn cancel_while_the_model_is_called_test() {
 pub fn uncertain_effect_blocks_until_reconciled_test() {
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":5000}"),
       ]),
       [apps.transfer_tool()],
       policy.always_allow(),
     )
+    |> support.agent
   let held = store.in_memory()
   let assert Ok(run) = fabric.start(held, agent, Nil, "pay bob a lot")
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
@@ -203,10 +222,12 @@ pub fn crash_after_the_fence_is_an_uncertain_effect_test() {
   let probe = probe.new()
   let agent =
     agent.new(
+      "agent",
       scripted.plan([scripted.call("x", "crash", "{\"x\":\"boom\"}")]),
       [scripted.crashing_tool(probe)],
       policy.always_allow(),
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "crash")
   let assert Ok(run.Suspended([], [crashed])) = fabric.await(run, 5000)
   string.starts_with(crashed.evidence, "tool crashed") |> should.be_true
@@ -217,12 +238,14 @@ pub fn policy_failure_is_a_host_failure_test() {
   let failing = fn(_context: Nil, _action) { Error("policy service down") }
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}"),
       ]),
       [apps.weather_tool()],
       failing,
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
   fabric.await(run, 5000)
   |> should.equal(
@@ -240,38 +263,45 @@ pub fn crashing_policy_fails_closed_test() {
   }
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}"),
       ]),
       [apps.weather_tool()],
       crashing,
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
   let assert Ok(run.Finished(run.Failed(run.PolicyFailed(_, reason)))) =
     fabric.await(run, 5000)
   string.starts_with(reason, "policy crashed") |> should.be_true
 }
 
+/// Every problem is reported at once, and only a checked agent can start
+/// a run.
 pub fn invalid_configuration_is_rejected_before_starting_test() {
-  let agent =
+  let spec =
     agent.new(
+      "agent",
       scripted.plan([]),
       [apps.weather_tool(), apps.weather_tool()],
       policy.always_allow(),
     )
-    |> agent.with_max_turns(0)
-    |> agent.with_max_concurrency(-1)
-    |> agent.with_token_budget(0)
+    |> agent.with_limits(
+      agent.Limits(
+        ..agent.default_limits(),
+        max_turns: 0,
+        max_concurrency: -1,
+        token_budget: Some(0),
+      ),
+    )
   let expected = [
     agent.DuplicateToolName("lookup_weather"),
     agent.MaxTurnsNotPositive(0),
     agent.MaxConcurrencyNotPositive(-1),
     agent.TokenBudgetNotPositive(0),
   ]
-  agent.validate(agent) |> should.equal(Error(expected))
-  let assert Error(fabric.InvalidAgent(errors)) =
-    fabric.start(store.in_memory(), agent, Nil, "x")
-  errors |> should.equal(expected)
+  agent.build(spec) |> should.equal(Error(expected))
 }
 
 pub fn handler_receives_the_run_context_test() {
@@ -280,12 +310,14 @@ pub fn handler_receives_the_run_context_test() {
     |> tool_bind_context
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.call("w", "lookup_weather", "{\"city\":\"Rome\"}"),
       ]),
       [greet],
       policy.always_allow(),
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, "alice", "hi")
   fabric.await(run, 5000)
   |> should.equal(
@@ -308,12 +340,14 @@ fn tool_bind_context(
 pub fn concurrent_cancels_of_a_suspended_run_have_one_winner_test() {
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":10}"),
       ]),
       [apps.transfer_tool()],
       transfers_need_approval,
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "pay bob")
   let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
   let results = process.new_subject()
@@ -338,13 +372,17 @@ pub fn a_policy_that_never_answers_fails_closed_at_its_deadline_test() {
   }
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}"),
       ]),
       [apps.weather_tool()],
       stuck,
     )
-    |> agent.with_policy_timeout(50)
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), policy_timeout: 50),
+    )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
   fabric.await(run, 5000)
   |> should.equal(
@@ -360,9 +398,11 @@ pub fn a_policy_that_never_answers_fails_closed_at_its_deadline_test() {
 }
 
 pub fn the_policy_timeout_must_be_positive_test() {
-  agent.new(scripted.plan([]), [], policy.always_allow())
-  |> agent.with_policy_timeout(0)
-  |> agent.validate
+  agent.new("agent", scripted.plan([]), [], policy.always_allow())
+  |> agent.with_limits(
+    agent.Limits(..agent.default_limits(), policy_timeout: 0),
+  )
+  |> agent.build
   |> should.equal(Error([agent.PolicyTimeoutNotPositive(0)]))
 }
 
@@ -381,8 +421,11 @@ pub fn model_retries_back_off_test() {
       }
     })
   let agent =
-    agent.new(flaky, [], policy.always_allow())
-    |> agent.with_model_retry_delay(40)
+    agent.new("agent", flaky, [], policy.always_allow())
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), model_retry_delay: 40),
+    )
+    |> support.agent
   let started = now()
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "hi")
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Completed("ok"))))
@@ -392,9 +435,11 @@ pub fn model_retries_back_off_test() {
 }
 
 pub fn the_model_retry_delay_must_not_be_negative_test() {
-  agent.new(scripted.plan([]), [], policy.always_allow())
-  |> agent.with_model_retry_delay(-1)
-  |> agent.validate
+  agent.new("agent", scripted.plan([]), [], policy.always_allow())
+  |> agent.with_limits(
+    agent.Limits(..agent.default_limits(), model_retry_delay: -1),
+  )
+  |> agent.build
   |> should.equal(Error([agent.ModelRetryDelayNegative(-1)]))
 }
 
@@ -416,12 +461,14 @@ pub fn a_runner_retries_a_commit_the_store_could_not_make_test() {
   let store = flaky.store(flaky)
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}"),
       ]),
       [apps.weather_tool()],
       policy.always_allow(),
     )
+    |> support.agent
   // The insert passes; the commit of the reply, the fence, and the report
   // each fail once before the write happens.
   flaky.arm(flaky, [
@@ -447,10 +494,12 @@ pub fn an_exit_signal_from_outside_stops_the_runner_test() {
   let store = store.in_memory()
   let agent =
     agent.new(
+      "agent",
       scripted.plan([scripted.slow("a", "a")]),
       [scripted.gated_tool(probe)],
       policy.always_allow(),
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store, agent, Nil, "go")
   let _ = probe.arrival(probe)
   let assert Ok(runner) = restart.runner(store, fabric.id(run))

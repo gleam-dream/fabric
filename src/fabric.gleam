@@ -3,7 +3,9 @@
 ////
 //// ```gleam
 //// let store = store.in_memory()            // or store.directory(path)
-//// let agent = agent.new(model, [weather_tool, transfer_tool], my_policy)
+//// let assert Ok(agent) =
+////   agent.new("desk", model, [weather_tool, transfer_tool], my_policy)
+////   |> agent.build
 //// let assert Ok(handle) = fabric.start(store, agent, context, "Pay Bob")
 //// case fabric.await(handle, 5000) {
 ////   Ok(run.Suspended([pending, ..], _)) ->
@@ -42,7 +44,7 @@
 //// a process or VM crash) the latest revisions may be missing, and a tool
 //// whose start was among them could run again.
 
-import fabric/agent.{type Agent, type ConfigError}
+import fabric/agent.{type Agent}
 import fabric/internal/controller.{type State}
 import fabric/internal/family
 import fabric/internal/runner
@@ -66,8 +68,6 @@ pub opaque type Run(context) {
 }
 
 pub type StartError {
-  /// The agent is invalid; nothing was stored.
-  InvalidAgent(List(ConfigError))
   /// The store did not confirm the run's first record, so its outcome is
   /// unknown: the backend may still store it later, as the run `id` with
   /// work in flight and no runner (`await` then reports `Unattended`).
@@ -89,8 +89,6 @@ pub type RecordError {
 }
 
 pub type CommandError {
-  /// The agent is invalid; nothing was read or changed.
-  AgentInvalid(List(ConfigError))
   /// The run has finished (completed, failed, or cancelled); nothing more
   /// can change it. A pending approval of a cancelled run is void. Also
   /// returned for a sub-agent run one of whose ancestors is stopping or has
@@ -116,7 +114,7 @@ pub type CommandError {
   /// Nothing was changed. `cancel` never needs a runner.
   RunUnattended
   /// The run's runner did not take the command within the agent's command
-  /// timeout (`agent.with_command_timeout`): a synchronous observation
+  /// timeout (`agent.Limits.command_timeout`): a synchronous observation
   /// handler holds it, or the command was sent from such a handler running
   /// in the run's own runner. Nothing was changed, and the command will not
   /// be applied later. Try again, or route Fabric's events through a
@@ -133,18 +131,15 @@ pub type CommandError {
 
 const retries = 3
 
-/// Validates `agent`, then starts a run in `store`: stores its first record
-/// and hands the first model call to a new runner.
+/// Starts a run of `agent` in `store`: stores its first record and hands the
+/// first model call to a new runner.
 pub fn start(
   store: Store,
   agent: Agent(context),
   context: context,
   prompt: String,
 ) -> Result(Run(context), StartError) {
-  use admitted <- result.try(
-    agent.admit(agent) |> result.map_error(InvalidAgent),
-  )
-  let setup = runner.setup(store, admitted, context, None)
+  let setup = runner.setup(store, agent.admitted(agent), context, None)
   start_with(setup, prompt, retries)
 }
 
@@ -197,10 +192,7 @@ pub fn recover(
   id: RunId,
 ) -> Result(Run(context), CommandError) {
   let id = id_to_string(id)
-  use admitted <- result.try(
-    agent.admit(agent) |> result.map_error(AgentInvalid),
-  )
-  let setup = runner.setup(store, admitted, context, None)
+  let setup = runner.setup(store, agent.admitted(agent), context, None)
   case family.take_over(setup, id, retries) {
     Ok(Nil) -> Ok(Run(id:, setup:))
     Error(family.TakeOverContended) -> Error(Contended)
@@ -492,24 +484,28 @@ pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
 
 /// Cancels the stored run `id` with no agent: for a run that cannot be
 /// recovered because its agent changed (another identity, or a pending tool
-/// that no longer exists). Cancelling a sub-agent run this way does not
-/// apply its end to its parent, which needs its agent to map it: `recover`
-/// the parent to apply it (`await` on the parent reports `Unattended` until
-/// then). A run whose runner is live in this store is cancelled through
-/// that runner, as `cancel` would, which must take it within
-/// `agent.default_command_timeout` (there is no agent to configure it);
-/// otherwise (a lost runner, or one a handler holds) the work of
-/// a lost runner is abandoned (running tools become uncertain effects) and
-/// the run ends `Cancelled` in one commit. Active sub-agent runs are
-/// cancelled first, the same way; their delegations are recorded as
-/// uncertain effects, since no agent maps their outcome. A sub-agent that
-/// is still stopping (it waits for a stopped tool's settlement) is recorded
-/// as such, and ends on its own. A sub-agent run
-/// that was never stored is stored as cancelled before it started (naming
-/// no agent), and its delegation is recorded as not started.
+/// that no longer exists). Cancelling a sub-agent run this way does not apply
+/// its end to its parent, which needs its agent to map it: `recover` the parent
+/// to apply it (`await` on the parent reports `Unattended` until then). A run
+/// whose runner is live in this store is cancelled through that runner, as
+/// `cancel` would, which must take it within
+/// `agent.default_limits().command_timeout` (there is no agent to configure
+/// it); otherwise (a lost runner, or one a handler holds) the work of a lost
+/// runner is abandoned (running tools become uncertain effects) and the run
+/// ends `Cancelled` in one commit. Active sub-agent runs are cancelled first,
+/// the same way; their delegations are recorded as uncertain effects, since no
+/// agent maps their outcome. A sub-agent that is still stopping (it waits for a
+/// stopped tool's settlement) is recorded as such, and ends on its own. A
+/// sub-agent run that was never stored is stored as cancelled before it started
+/// (naming no agent), and its delegation is recorded as not started.
 pub fn cancel_stored(store: Store, id: RunId) -> Result(Status, CommandError) {
   let id = id_to_string(id)
-  runner.cancel_unattended(store, id, agent.default_command_timeout, retries)
+  runner.cancel_unattended(
+    store,
+    id,
+    agent.default_limits().command_timeout,
+    retries,
+  )
   |> result.map(committed_status(store, id, _))
   |> result.map_error(command_error)
 }

@@ -10,6 +10,7 @@ import fabric/model
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/support
 import fabric/support/apps
 import gleam/dynamic/decode
 import gleam/int
@@ -171,12 +172,16 @@ pub fn two_tool_calls_round_trip_through_llm_wire_test() {
     ])
   let agent =
     agent.new(
+      "agent",
       llm.model(openai_settings(script), model_id()),
       [apps.weather_tool(), apps.transfer_tool()],
       policy.always_allow(),
     )
     |> agent.with_system_prompt("You are a careful assistant.")
-    |> agent.with_token_budget(1000)
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), token_budget: Some(1000)),
+    )
+    |> support.agent
   let assert Ok(run) =
     fabric.start(store.in_memory(), agent, Nil, "weather, then pay bob")
   fabric.await(run, 10_000)
@@ -225,10 +230,12 @@ pub fn invalid_calls_through_llm_wire_get_per_call_feedback_test() {
     ])
   let agent =
     agent.new(
+      "agent",
       llm.model(testing.config(script), model_id()),
       [apps.weather_tool()],
       policy.always_allow(),
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
   fabric.await(run, 10_000)
   |> should.equal(Ok(run.Finished(run.Completed("I will ask properly."))))
@@ -252,10 +259,12 @@ pub fn refusal_and_truncation_through_llm_wire_end_the_run_test() {
     ])
   let agent =
     agent.new(
+      "agent",
       llm.model(testing.config(script), model_id()),
       [],
       policy.always_allow(),
     )
+    |> support.agent
   let assert Ok(refused) = fabric.start(store.in_memory(), agent, Nil, "a")
   fabric.await(refused, 10_000)
   |> should.equal(Ok(run.Finished(run.Refused("not allowed"))))
@@ -273,11 +282,15 @@ pub fn http_statuses_through_llm_wire_are_classified_for_retry_test() {
     testing.start([testing.Status(503, "busy"), testing.text("recovered")])
   let agent =
     agent.new(
+      "agent",
       llm.model(testing.config(script), model_id()),
       [],
       policy.always_allow(),
     )
-    |> agent.with_model_retry_delay(0)
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), model_retry_delay: 0),
+    )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "hi")
   fabric.await(run, 10_000)
   |> should.equal(Ok(run.Finished(run.Completed("recovered"))))
@@ -285,10 +298,12 @@ pub fn http_statuses_through_llm_wire_are_classified_for_retry_test() {
   let script = testing.start([testing.Status(400, "bad request")])
   let agent =
     agent.new(
+      "agent",
       llm.model(testing.config(script), model_id()),
       [],
       policy.always_allow(),
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "hi")
   let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =
     fabric.await(run, 10_000)
@@ -381,10 +396,12 @@ pub fn unparseable_arguments_replay_to_anthropic_as_an_object_test() {
     config.anthropic(anthropic.options(key)) |> testing.with_script(script)
   let agent =
     agent.new(
+      "agent",
       llm.model(settings, model_id()),
       [apps.weather_tool()],
       policy.always_allow(),
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
   fabric.await(run, 10_000)
   |> should.equal(Ok(run.Finished(run.Completed("I will ask properly."))))
@@ -434,10 +451,12 @@ pub fn unparseable_arguments_replay_to_openai_verbatim_test() {
     ])
   let agent =
     agent.new(
+      "agent",
       llm.model(openai_settings(script), model_id()),
       [apps.weather_tool()],
       policy.always_allow(),
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
   fabric.await(run, 10_000)
   |> should.equal(Ok(run.Finished(run.Completed("I will ask properly."))))

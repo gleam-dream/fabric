@@ -72,7 +72,9 @@ fn start(
       explain: fn(failure) { "typed error: " <> string.inspect(failure) },
       rollback_within: 5000,
     )
-  let agent = agent.new(model_once(), [tool], policy.always_allow())
+  let assert Ok(agent) =
+    agent.new("agent", model_once(), [tool], policy.always_allow())
+    |> agent.build
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "go")
   run
 }

@@ -75,12 +75,14 @@ fn start(
 ) -> #(fabric.Run(Nil), Handed) {
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}"),
       ]),
       [settling_tool(handed, then, within)],
       policy.always_allow(),
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
   let assert Ok(handed) = process.receive(handed, 5000)
   #(run, handed)
@@ -199,11 +201,12 @@ pub fn a_settlement_after_a_reconciliation_is_refused_test() {
 
 pub fn a_settlement_bound_must_be_positive_test() {
   agent.new(
+    "agent",
     scripted.plan([]),
     [settling_tool(process.new_subject(), Wait, 0)],
     policy.always_allow(),
   )
-  |> agent.validate
+  |> agent.build
   |> should.equal(
     Error([agent.SettlementBoundNotPositive("lookup_weather", 0)]),
   )
@@ -244,6 +247,7 @@ fn start_two(
   let handed = process.new_subject()
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.call("a", "wa", "{\"city\":\"Paris\"}"),
         scripted.call("b", "wb", "{\"city\":\"Paris\"}"),
@@ -254,6 +258,7 @@ fn start_two(
       ],
       policy.always_allow(),
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "go")
   let assert Ok(first) = process.receive(handed, 5000)
   let assert Ok(second) = process.receive(handed, 5000)
@@ -359,11 +364,12 @@ pub fn a_refused_settlement_is_observed_test() {
 /// leaving a stopped run waiting forever: it is refused up front.
 pub fn a_settlement_bound_must_fit_a_timer_test() {
   agent.new(
+    "agent",
     scripted.plan([]),
     [settling_tool(process.new_subject(), Wait, 5_000_000_000)],
     policy.always_allow(),
   )
-  |> agent.validate
+  |> agent.build
   |> should.equal(
     Error([agent.SettlementBoundTooLarge("lookup_weather", 5_000_000_000)]),
   )
