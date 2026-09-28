@@ -658,6 +658,28 @@ pub fn a_delegation_is_validated_with_its_child_test() {
   |> should.equal(Error([agent.DuplicateToolName("lookup_weather")]))
 }
 
+/// A child run's id extends its parent's by a sequence number, and run ids
+/// are at most 128 characters: nesting and child counts are bounded so
+/// that every child id the limits allow is a valid run id.
+pub fn delegation_limits_keep_child_ids_valid_test() {
+  let probe = probe.new()
+  delegating(probe, [], quick_researcher(probe), policy.always_allow())
+  |> agent.with_max_depth(agent.max_depth_limit + 1)
+  |> agent.with_max_children(agent.max_children_limit + 1)
+  |> agent.validate
+  |> should.equal(
+    Error([
+      agent.MaxChildrenTooLarge(agent.max_children_limit + 1),
+      agent.MaxDepthTooLarge(agent.max_depth_limit + 1),
+    ]),
+  )
+  delegating(probe, [], quick_researcher(probe), policy.always_allow())
+  |> agent.with_max_depth(agent.max_depth_limit)
+  |> agent.with_max_children(agent.max_children_limit)
+  |> agent.validate
+  |> should.equal(Ok(Nil))
+}
+
 /// With no agent, `cancel_stored` cancels a paused child first and then its
 /// parent in one commit; the delegation is recorded uncertain, since no
 /// agent maps the child's outcome.

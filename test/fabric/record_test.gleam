@@ -43,10 +43,10 @@ fn every_action() -> List(run.ActionRecord) {
     action("k", run.Reconciled("{\"receipt\":\"r\"}")),
     action("l", run.NotStarted),
     action("m", run.Faulted("cannot encode")),
-    run.ActionRecord(..action("n", run.Delegated), child: Some("run-0123-1")),
+    run.ActionRecord(..action("n", run.Delegated), child: Some("run-01-3-1")),
     run.ActionRecord(
       ..action("o", run.Succeeded("{}")),
-      child: Some("run-0123-2"),
+      child: Some("run-01-3-2"),
     ),
     action("p", run.LimitReached(run.ChildLimit(2))),
     action("q", run.LimitReached(run.DepthLimit(1))),
@@ -70,7 +70,7 @@ fn every_action() -> List(run.ActionRecord) {
 
 fn base() -> State {
   controller.State(
-    run: "run-0123",
+    run: "run-01-3",
     agent: run.Identity("desk", 3),
     incarnation: 4,
     parent: Some(run.Parent("run-01", ActionId(3, "delegate"))),
@@ -225,6 +225,23 @@ pub fn unreadable_records_are_corrupt_test() {
       "\"tag\":\"dreaming\"",
     ),
     string.replace(encoded, "\"turns_used\":2", "\"turns_used\":\"two\""),
+  ]
+  list.each(corrupt, fn(text) {
+    let assert Error(record.Corrupt(detail)) = record.decode(text)
+    detail |> should.not_equal("")
+  })
+}
+
+/// A child run's id extends its parent's with a sequence number. A record
+/// whose parent or child links break that rule is corrupt, so a corrupt or
+/// cyclic link can never send a family walk around forever.
+pub fn family_links_must_extend_the_run_id_test() {
+  let encoded = record.encode(base())
+  let corrupt = [
+    string.replace(encoded, "\"run-01-3-1\"", "\"run-01-3\""),
+    string.replace(encoded, "\"run-01-3-2\"", "\"run-01\""),
+    string.replace(encoded, "\"run-01-3-2\"", "\"run-01-3-x\""),
+    string.replace(encoded, "\"run\":\"run-01\"", "\"run\":\"run-01-3\""),
   ]
   list.each(corrupt, fn(text) {
     let assert Error(record.Corrupt(detail)) = record.decode(text)

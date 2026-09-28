@@ -49,6 +49,10 @@ pub type ConfigError {
   InvalidIdentity(name: String, version: Int)
   MaxChildrenNegative(Int)
   MaxDepthNegative(Int)
+  /// More sub-agent runs per run than `max_children_limit`.
+  MaxChildrenTooLarge(Int)
+  /// Deeper nesting than `max_depth_limit`.
+  MaxDepthTooLarge(Int)
   /// The sub-agent of the delegation `name` is invalid.
   InvalidChild(name: String, errors: List(ConfigError))
 }
@@ -68,6 +72,14 @@ pub const default_identity = Identity("agent", 1)
 pub const default_max_children = 4
 
 pub const default_max_depth = 1
+
+/// The most sub-agent runs one run may start. With `max_depth_limit`, it
+/// keeps every child run id (the parent's id, `-`, and a sequence number)
+/// within the 128 characters of a run id.
+pub const max_children_limit = 999
+
+/// The deepest nesting of sub-agent runs below a root run.
+pub const max_depth_limit = 16
 
 /// An agent with the given model, tools, and policy. The policy is required:
 /// there is no implicit allow (`policy.always_allow()` is the explicit one).
@@ -124,15 +136,17 @@ pub fn with_sub_agent(
   )
 }
 
-/// Limits how many sub-agent runs one run starts (default 4). A delegation
-/// beyond it is refused before the policy, and the model sees why.
+/// Limits how many sub-agent runs one run starts (default 4, at most
+/// `max_children_limit`). A delegation beyond it is refused before the
+/// policy, and the model sees why.
 pub fn with_max_children(agent: Agent(context), limit: Int) -> Agent(context) {
   Agent(..agent, max_children: limit)
 }
 
 /// Limits how many levels of sub-agents may exist below a run started with
-/// this agent (default 1: its children may not delegate in turn). A child
-/// is bounded by its own setting and by what its parent has left.
+/// this agent (default 1: its children may not delegate in turn; at most
+/// `max_depth_limit`). A child is bounded by its own setting and by what
+/// its parent has left.
 pub fn with_max_depth(agent: Agent(context), levels: Int) -> Agent(context) {
   Agent(..agent, max_depth: levels)
 }
@@ -261,6 +275,14 @@ pub fn admit(
       },
       not_negative(agent.max_children, MaxChildrenNegative),
       not_negative(agent.max_depth, MaxDepthNegative),
+      case agent.max_children > max_children_limit {
+        True -> Error(MaxChildrenTooLarge(agent.max_children))
+        False -> Ok(Nil)
+      },
+      case agent.max_depth > max_depth_limit {
+        True -> Error(MaxDepthTooLarge(agent.max_depth))
+        False -> Ok(Nil)
+      },
     ]
     |> list.filter_map(fn(check) {
       case check {
