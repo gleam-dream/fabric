@@ -274,7 +274,7 @@ adapter is planned) or another application backend.
 Several nodes that share one database coordinate through per-run leases:
 `store.leased(name, node: "app-1", lease: 30_000, backend:)` over a
 `store.LeasedBackend` (its contract is in the `fabric/store` docs, and
-`fabric/testing.leased_backend_checks` checks one; `store.leased_memory()`
+`fabric/testing.leased_backend_checks` checks one; `testing.leased_memory()`
 is one in memory, for tests). A runner commits only while its node holds
 the run's lease; another node reads the run `Working`, answers an idle run
 itself, gets `RunUnattended` for a command that needs the other node's

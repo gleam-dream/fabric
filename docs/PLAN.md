@@ -469,7 +469,7 @@ Deviations from the accepted design, each the smallest safe variant:
 - **The conformance suite is in `fabric/testing`** (source, not a test
   module) so that `integrations/fabric_postgres` can run it; each check
   returns a `Result` rather than asserting.
-- **The in-memory leased backend** is `store.leased_memory()`, returning
+- **The in-memory leased backend** is `testing.leased_memory()`, returning
   `LeasedMemory(backend, advance)`; its process stops when its creator
   exits.
 

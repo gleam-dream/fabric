@@ -3,11 +3,17 @@
 //// nothing here.
 
 import fabric/model.{type ToolCall}
-import fabric/store.{type LeasedBackend}
+import fabric/store.{
+  type Current, type Lease, type LeasedBackend, type StoreError, AlreadyExists,
+  Claim, Conflict, Current, Free, Held, Hold, LeaseRefused, LeasedBackend,
+  NotFound, Release, Seize,
+}
 import fabric/tool.{type Definition}
-import gleam/erlang/process
+import gleam/dict.{type Dict}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import json/blueprint/codec
@@ -603,6 +609,209 @@ fn hold_races_claim(backend: LeasedBackend) -> Result(Nil, String) {
     }
   })
 }
+
+// --- a leased backend in memory ---------------------------------------------------
+
+/// A leased backend kept in memory by one process, shared by every store
+/// given `backend` in this VM, and a clock that tests can move forward.
+pub type LeasedMemory {
+  LeasedMemory(
+    backend: LeasedBackend,
+    /// Moves the backend's clock forward by this many milliseconds.
+    advance: fn(Int) -> Nil,
+  )
+}
+
+type Row {
+  Row(revision: Int, record: String, lease: Option(#(String, Int)))
+}
+
+type LeasedRequest {
+  LeasedGet(String, Subject(Result(Current, StoreError)))
+  LeasedWrite(
+    String,
+    Option(Int),
+    String,
+    Lease,
+    Subject(Result(Nil, StoreError)),
+  )
+  LeasedRenew(String, List(String), Int, Subject(List(String)))
+  LeasedClaimExpired(String, Int, Int, Subject(List(String)))
+  Advance(Int, Subject(Nil))
+}
+
+/// A leased backend in memory (see `fabric/store`, Leases), for tests: it
+/// stands for a database that several nodes share, each node a leased
+/// store of its own node id over `backend`; not for runs that must outlive
+/// the VM. Its process stops when the process that called this exits. Its
+/// clock is the VM's monotonic clock, moved forward by `advance`.
+pub fn leased_memory() -> LeasedMemory {
+  let ready = process.new_subject()
+  let owner = process.self()
+  process.spawn_unlinked(fn() {
+    let subject = process.new_subject()
+    let requests =
+      process.new_selector()
+      |> process.select_map(subject, Ok)
+      |> process.select_specific_monitor(process.monitor(owner), fn(_) {
+        Error(Nil)
+      })
+    process.send(ready, subject)
+    leased_loop(requests, dict.new(), 0)
+  })
+  let subject = process.receive_forever(ready)
+  LeasedMemory(
+    backend: LeasedBackend(
+      get: fn(run) { process.call_forever(subject, LeasedGet(run, _)) },
+      insert: fn(run, record, lease) {
+        process.call_forever(subject, LeasedWrite(run, None, record, lease, _))
+      },
+      compare_and_set: fn(run, expected, record, lease) {
+        process.call_forever(subject, LeasedWrite(
+          run,
+          Some(expected),
+          record,
+          lease,
+          _,
+        ))
+      },
+      renew: fn(owner, runs, ttl) {
+        Ok(process.call_forever(subject, LeasedRenew(owner, runs, ttl, _)))
+      },
+      claim_expired: fn(owner, ttl, limit) {
+        Ok(
+          process.call_forever(subject, LeasedClaimExpired(owner, ttl, limit, _)),
+        )
+      },
+    ),
+    advance: fn(milliseconds) {
+      process.call_forever(subject, Advance(milliseconds, _))
+    },
+  )
+}
+
+fn leased_loop(
+  requests: process.Selector(Result(LeasedRequest, Nil)),
+  rows: Dict(String, Row),
+  offset: Int,
+) -> Nil {
+  case process.selector_receive_forever(requests) {
+    Error(Nil) -> Nil
+    Ok(request) -> {
+      let #(rows, offset) =
+        leased_serve(request, rows, now_ms() + offset, offset)
+      leased_loop(requests, rows, offset)
+    }
+  }
+}
+
+/// Serves one request at the backend's time `now`.
+fn leased_serve(
+  request: LeasedRequest,
+  rows: Dict(String, Row),
+  now: Int,
+  offset: Int,
+) -> #(Dict(String, Row), Int) {
+  let holder = fn(row: Row) {
+    case row.lease {
+      None -> Free
+      Some(#(owner, until)) -> Held(owner, until > now)
+    }
+  }
+  case request {
+    Advance(milliseconds, reply) -> {
+      process.send(reply, Nil)
+      #(rows, offset + milliseconds)
+    }
+    LeasedGet(run, reply) -> {
+      process.send(reply, case dict.get(rows, run) {
+        Ok(row) -> Ok(Current(row.revision, row.record, holder(row)))
+        Error(Nil) -> Error(NotFound)
+      })
+      #(rows, offset)
+    }
+    LeasedWrite(run, expected, record, lease, reply) -> {
+      let outcome = case expected, dict.get(rows, run) {
+        None, Ok(_) -> Error(AlreadyExists)
+        None, Error(Nil) ->
+          Ok(
+            Row(1, record, case lease {
+              Claim(owner, ttl) | Seize(owner, ttl) -> Some(#(owner, now + ttl))
+              Hold(_) | Release -> None
+            }),
+          )
+        Some(_), Error(Nil) -> Error(NotFound)
+        Some(expected), Ok(row) if row.revision != expected ->
+          Error(Conflict(row.revision))
+        Some(_), Ok(row) -> {
+          let next = Row(row.revision + 1, record, row.lease)
+          case lease, holder(row) {
+            Hold(owner), Held(holding, _) if holding == owner -> Ok(next)
+            Claim(owner, ttl), Free
+            | Claim(owner, ttl), Held(_, False)
+            | Seize(owner, ttl), _
+            -> Ok(Row(..next, lease: Some(#(owner, now + ttl))))
+            Claim(owner, ttl), Held(holding, True) if holding == owner ->
+              Ok(Row(..next, lease: Some(#(owner, now + ttl))))
+            Release, _ -> Ok(Row(..next, lease: None))
+            Hold(_), found | Claim(..), found -> Error(LeaseRefused(found))
+          }
+        }
+      }
+      process.send(reply, result.replace(outcome, Nil))
+      case outcome {
+        Ok(row) -> #(dict.insert(rows, run, row), offset)
+        Error(_) -> #(rows, offset)
+      }
+    }
+    LeasedRenew(owner, runs, ttl, reply) -> {
+      let renewed =
+        list.filter(list.unique(runs), fn(run) {
+          case dict.get(rows, run) {
+            Ok(Row(lease: Some(#(holding, until)), ..)) ->
+              holding == owner && until > now
+            _ -> False
+          }
+        })
+      process.send(reply, renewed)
+      #(
+        list.fold(renewed, rows, fn(rows, run) {
+          dict.upsert(rows, run, fn(row) {
+            let assert Some(row) = row
+            Row(..row, lease: Some(#(owner, now + ttl)))
+          })
+        }),
+        offset,
+      )
+    }
+    LeasedClaimExpired(owner, ttl, limit, reply) -> {
+      let claimed =
+        dict.to_list(rows)
+        |> list.filter_map(fn(entry) {
+          case entry.1.lease {
+            Some(#(_, until)) if until <= now -> Ok(#(until, entry.0))
+            _ -> Error(Nil)
+          }
+        })
+        |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
+        |> list.take(int.max(limit, 0))
+        |> list.map(fn(entry) { entry.1 })
+      process.send(reply, claimed)
+      #(
+        list.fold(claimed, rows, fn(rows, run) {
+          dict.upsert(rows, run, fn(row) {
+            let assert Some(row) = row
+            Row(..row, lease: Some(#(owner, now + ttl)))
+          })
+        }),
+        offset,
+      )
+    }
+  }
+}
+
+@external(erlang, "fabric_ffi", "now_ms")
+fn now_ms() -> Int
 
 @external(erlang, "fabric_ffi", "random_id")
 fn random_id() -> String
