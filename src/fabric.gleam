@@ -384,7 +384,10 @@ pub fn answer(
 /// fails on a store error is tried again with a bounded backoff; one that
 /// still fails makes the delegation an uncertain effect, and the sub-agent
 /// then accepts no answer or reconciliation (see `RunEnded`). Cancelling a
-/// run that is still stopping asks its sub-agents to cancel again. Running tools are stopped and
+/// run that is still stopping asks its sub-agents to cancel again. A
+/// sub-agent run that was never stored is stored as cancelled before it
+/// started, so a start or a recovery racing the cancellation never runs
+/// it. Running tools are stopped and
 /// recorded as uncertain effects, never retried; queued actions and pending
 /// approvals are recorded as not started. Returns the status right after
 /// the cancellation was committed: `Working` while tools are being stopped
@@ -408,7 +411,9 @@ pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
 /// a lost runner is abandoned (running tools become uncertain effects) and
 /// the run ends `Cancelled` in one commit. Active sub-agent runs are
 /// cancelled first, the same way; their delegations are recorded as
-/// uncertain effects, since no agent maps their outcome.
+/// uncertain effects, since no agent maps their outcome. A sub-agent run
+/// that was never stored is stored as cancelled before it started (naming
+/// no agent), and its delegation is recorded as not started.
 pub fn cancel_stored(store: Store, id: String) -> Result(Status, CommandError) {
   cancel_stored_loop(store, id, retries)
 }
@@ -440,17 +445,7 @@ fn cancel_stored_loop(
       let ended =
         list.map(controller.active_children(state), fn(active) {
           let #(action, _, child) = active
-          let _ = cancel_stored(store, child)
-          #(action, case runner.load(store, child) {
-            Error(runner.NotFound) -> controller.ChildMissing
-            Error(problem) ->
-              controller.ChildLost(runner.describe_read(problem))
-            Ok(#(_, child_state)) ->
-              case controller.child_result(child_state) {
-                Ok(result) -> result
-                Error(Nil) -> controller.ChildLost("it did not end")
-              }
-          })
+          #(action, end_child(store, state, action, child, retries))
         })
       use #(next, _) <- result.try(
         controller.cancel_unattended(state, ended)
@@ -467,6 +462,38 @@ fn cancel_stored_loop(
         Error(error) -> Error(Unreadable(StoreFailed(error)))
       }
     }
+  }
+}
+
+/// Cancels the child run `child` of `parent`'s delegation `action` with no
+/// agent, and reads its end. A child that does not exist is buried in
+/// place (`runner.bury`, naming no agent), so that a start or recovery
+/// racing this cancellation never runs it; one that appears meanwhile is
+/// cancelled in turn.
+fn end_child(
+  store: Store,
+  parent: State,
+  action: ActionId,
+  child: String,
+  tries: Int,
+) -> controller.ChildResult {
+  let _ = cancel_stored(store, child)
+  case runner.load(store, child) {
+    Error(runner.NotFound) ->
+      case runner.bury(store, parent, action, child, run.Identity("", 0)) {
+        Ok(runner.Buried) -> controller.ChildMissing
+        Ok(runner.Exists) if tries > 1 ->
+          end_child(store, parent, action, child, tries - 1)
+        Ok(runner.Exists) -> controller.ChildLost("it was being stored")
+        Error(error) ->
+          controller.ChildLost(runner.describe_read(runner.StoreFailed(error)))
+      }
+    Error(problem) -> controller.ChildLost(runner.describe_read(problem))
+    Ok(#(_, child_state)) ->
+      case controller.child_result(child_state) {
+        Ok(result) -> result
+        Error(Nil) -> controller.ChildLost("it did not end")
+      }
   }
 }
 
