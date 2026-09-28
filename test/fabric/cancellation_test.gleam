@@ -351,7 +351,8 @@ pub fn a_sub_agent_under_a_stopping_ancestor_never_starts_test() {
   // The grandchild is a tombstone: cancelled before it ever started.
   let assert Ok(store.Entry(record: stored, ..)) =
     store.get(store, child <> "-1")
-  let assert Ok(controller.State(transcript: [], ..)) = record.decode(stored)
+  let assert Ok(controller.State(phase: controller.NeverStarted, ..)) =
+    record.decode(stored)
 }
 
 /// An answer to a child races its parent's cancellation: the answer's

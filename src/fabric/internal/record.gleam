@@ -24,7 +24,12 @@
 //// `max_children` and `max_depth`, each action's `child`, and the action
 //// states `delegated` and `limit_reached`. A version 1 record is read as a
 //// root run (no parent, depth 0) that may start no sub-agents (both limits
-//// 0) and whose actions started none; it is written back as version 2.
+//// 0) and whose actions started none; it is written back in the current version.
+////
+//// Version 3 records a child run cancelled before it started as the phase
+//// `never_started`. Version 2 stored it as an ended, cancelled run with no
+//// transcript, which is read as `never_started`; any other version 1 or 2
+//// record reads as it did.
 ////
 //// The `stopping` phase records `tools_stopped`, whether the executor
 //// confirmed that no tool task runs. A record without it reads as not yet
@@ -48,7 +53,7 @@ import gleam/string
 
 pub const format = "fabric.run"
 
-pub const version = 2
+pub const version = 3
 
 pub type DecodeError {
   UnsupportedVersion(found: Int)
@@ -245,6 +250,7 @@ fn phase(phase: Phase) -> Json {
       ])
     controller.Ended(outcome) ->
       tag("ended", [#("outcome", outcome_json(outcome))])
+    controller.NeverStarted -> tag("never_started", [])
   }
 }
 
@@ -309,12 +315,25 @@ pub fn decode(text: String) -> Result(State, DecodeError) {
     Error(error) -> Error(Corrupt(describe(error)))
     Ok(#(found, _)) if found != format ->
       Error(Corrupt("not a Fabric run record: format " <> found))
-    Ok(#(_, found)) if found != version && found != 1 ->
+    Ok(#(_, found)) if found < 1 || found > version ->
       Error(UnsupportedVersion(found))
     Ok(#(_, found)) ->
       json.parse(text, state_decoder(found))
       |> result.map_error(fn(error) { Corrupt(describe(error)) })
+      |> result.map(never_started_before_3(_, found))
       |> result.try(linked)
+  }
+}
+
+/// Before version 3, a child run cancelled before it started was stored
+/// as an ended, cancelled run with no transcript. Every run that started
+/// has its prompt in its transcript, so that record is read as
+/// `NeverStarted`.
+fn never_started_before_3(state: State, found: Int) -> State {
+  case found < 3, state.phase, state.transcript {
+    True, controller.Ended(run.Cancelled), [] ->
+      State(..state, phase: controller.NeverStarted)
+    _, _, _ -> state
   }
 }
 
@@ -329,7 +348,9 @@ fn linked(state: State) -> Result(State, DecodeError) {
   let actions = case state.phase {
     controller.Acting(_, actions) | controller.Stopping(actions:, ..) ->
       list.append(state.history, actions)
-    controller.AwaitingModel(_) | controller.Ended(_) -> state.history
+    controller.AwaitingModel(_)
+    | controller.Ended(_)
+    | controller.NeverStarted -> state.history
   }
   let children =
     list.all(actions, fn(action) {
@@ -652,6 +673,7 @@ fn phase_decoder(version: Int) -> Decoder(Phase) {
           decode.success(controller.Ended(outcome))
         }),
       )
+    "never_started" -> Ok(decode.success(controller.NeverStarted))
     _ -> Error(Nil)
   }
 }
@@ -748,7 +770,9 @@ pub fn check(
   }
   let current = case state.phase {
     controller.Acting(_, actions) | controller.Stopping(actions:, ..) -> actions
-    controller.AwaitingModel(_) | controller.Ended(_) -> []
+    controller.AwaitingModel(_)
+    | controller.Ended(_)
+    | controller.NeverStarted -> []
   }
   let tools =
     list.filter_map(current, fn(action) {
