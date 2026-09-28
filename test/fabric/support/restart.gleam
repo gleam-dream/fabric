@@ -6,8 +6,10 @@ import fabric/run.{type RunId}
 import fabric/store.{type Store}
 import gleam/erlang/atom.{type Atom}
 import gleam/erlang/process.{type Pid, type Subject}
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/static_supervisor
+import gleam/otp/supervision
 
 @external(erlang, "fabric_test_ffi", "temp_dir")
 pub fn temp_dir() -> String
@@ -108,11 +110,20 @@ pub type Application {
 
 /// Starts an application running `store`'s subtree (`store.supervised`).
 pub fn application(store: Store) -> Application {
+  application_with(store, [])
+}
+
+/// Runs the store followed by its dependent workers, in shutdown order.
+pub fn application_with(
+  store: Store,
+  after: List(supervision.ChildSpecification(Nil)),
+) -> Application {
   let reply = process.new_subject()
   process.spawn_unlinked(fn() {
     let assert Ok(started) =
-      static_supervisor.new(static_supervisor.OneForOne)
+      static_supervisor.new(static_supervisor.RestForOne)
       |> static_supervisor.add(store.supervised(store))
+      |> add_children(after)
       |> static_supervisor.start
     let stop = process.new_subject()
     process.send(reply, Application(started.pid, stop))
@@ -123,6 +134,10 @@ pub fn application(store: Store) -> Application {
   })
   let assert Ok(application) = process.receive(reply, 5000)
   application
+}
+
+fn add_children(supervisor, children) {
+  list.fold(children, supervisor, static_supervisor.add)
 }
 
 /// Begins stopping `application`; `stopped` waits for the end.

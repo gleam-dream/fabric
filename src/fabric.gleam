@@ -64,6 +64,7 @@ import fabric/agent.{type Agent}
 import fabric/internal/controller.{type State}
 import fabric/internal/family
 import fabric/internal/runner
+import fabric/internal/sweeper
 import fabric/run.{
   type ActionRef, type Answer, type ApprovalRef, type Incompatibility,
   type PendingApproval, type RunId, type Snapshot, type Status, id_to_string,
@@ -74,6 +75,7 @@ import gleam/erlang/process.{type Pid}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/otp/supervision
 import gleam/result
 
 /// A handle on one run, for the agent and context it was started, opened
@@ -203,6 +205,8 @@ pub fn start(
 /// own lease whose runner is gone is taken over. This node reads that last
 /// case as `Unattended`; another node reads it as `Working` until expiry.
 /// Of several nodes recovering one run at once, exactly one takes it over.
+/// A live foreign parent keeps its runner; eligible children can recover
+/// independently, and that parent reads their committed outcomes.
 ///
 /// An unleased store knows only the runners it started. Recovering
 /// through another unleased `Store` (for example in another VM) while the
@@ -240,8 +244,8 @@ pub fn recover(
 /// one that needs the live runner of another `Store` is `RunUnattended`.
 /// A sub-agent run is reached through its root's handle (`child`).
 ///
-/// Use `recover` instead only when the previous owner is known to be gone
-/// (at boot): it takes over work in flight.
+/// `recover` takes over work in flight. Leased stores permit it at any
+/// time; on an unleased store the previous owner must be known to be gone.
 pub fn open(
   store: Store,
   agent: Agent(context),
@@ -798,3 +802,58 @@ fn random_id() -> String
 
 @external(erlang, "fabric_ffi", "now_ms")
 fn now() -> Int
+
+/// A root agent and the application's way to rebuild its run context.
+/// The context function is called during recovery, never during setup.
+pub opaque type Recovery {
+  Recovery(sweeper.Recovery)
+}
+
+pub fn recovery(
+  agent: Agent(context),
+  context: fn(RunId) -> context,
+) -> Recovery {
+  Recovery(sweeper.recovery(agent, context))
+}
+
+pub type SweeperError {
+  EveryNotPositive(Int)
+  EveryTooLarge(value: Int, limit: Int)
+  DuplicateRecovery(run.Identity)
+  StoreNotLeased
+}
+
+/// A supervised recovery driver for a leased store. Add it after the store
+/// in a rest-for-one supervisor: it stops before runners drain. It scans
+/// at boot, then waits `every` milliseconds after each bounded batch of at
+/// most 100 expired runs. No scans overlap. Each candidate is recovered
+/// through its root agent; a crashed running tool becomes uncertain.
+///
+/// Context construction has 5 seconds; each root recovery has 30 seconds.
+/// A failure or unknown identity leaves its claim to expire and does not
+/// prevent the next root's recovery. `observation.sweep` reports each scan;
+/// synchronous sweep handlers have 1 second before their emitter is stopped.
+/// An automatic scan discovers only expired leases, including after a local
+/// store restart; explicit `recover` can take an earlier local lease at once.
+pub fn sweeper(
+  store: Store,
+  recoveries: List(Recovery),
+  every milliseconds: Int,
+) -> Result(supervision.ChildSpecification(Nil), List(SweeperError)) {
+  let recoveries =
+    list.map(recoveries, fn(item) {
+      let Recovery(recovery) = item
+      recovery
+    })
+  sweeper.new(store, recoveries, milliseconds)
+  |> result.map_error(fn(errors) {
+    list.map(errors, fn(error) {
+      case error {
+        sweeper.EveryNotPositive(n) -> EveryNotPositive(n)
+        sweeper.EveryTooLarge(n) -> EveryTooLarge(n, 4_294_967_295)
+        sweeper.DuplicateRecovery(identity) -> DuplicateRecovery(identity)
+        sweeper.StoreNotLeased -> StoreNotLeased
+      }
+    })
+  })
+}

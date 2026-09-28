@@ -94,11 +94,9 @@ an idle run is data in the store with no process holding it.
   against the stored record, so a refusal is reported as such; a valid
   command that needs the absent runner returns `RunUnattended` and changes
   nothing;
-  `cancel` needs no runner. Recovery is an explicit `fabric.recover`,
-  because a store knows only the runners of its own VM: taking a run over
-  automatically could steal it from a live runner driven through another
-  `Store`. An older runner cannot commit after a takeover (its revision is
-  stale), so the takeover is safe; it is not a lease.
+  `cancel` needs no runner. Unleased stores require explicit recovery when
+  the previous owner is known to be gone. Leased stores coordinate through
+  per-run leases; the S5 sweeper recovers expired work automatically.
 - **Transient store failures are retried, not taken as a takeover.** After an
   `Unavailable` write the store reads the run back and confirms a write
   that landed; a runner tries an `Unavailable` commit again (six times,
@@ -191,8 +189,8 @@ an idle run is data in the store with no process holding it.
 
 The accepted production-runtime design (2026-09-28, at `7901edb`; user
 decisions D1 to D5) is built in slices. This section records the slices
-built so far (S1 to S3); the rest (the Postgres adapter, the sweeper, the
-write-version window, operations) follows the design's slice list.
+built so far (S1 to S5); the write-version window and operations follow
+the design's remaining slices.
 
 ### S1: limits
 
@@ -465,8 +463,9 @@ Deviations from the accepted design, each the smallest safe variant:
   crashed), reads `Unattended` on this node, which knows its runner is
   gone, and `Working` on other nodes until it expires; `recover` here takes
   it at once (owner = me).
-- **`recover` of a run another node drives** leaves its children alone
-  too: that node drives the family.
+- **`recover` of a run another node drives** originally left its children
+  alone too. S5 refines this: leases belong to individual runs, so an
+  expired child can recover beneath a live foreign parent (see S5).
 - **The self-fencing margin is a fifth of the lease**, and a renewal is
   bounded by a third of the lease; `renewal_failed` is included (cheap).
 - **The conformance suite is in `fabric/testing`** (source, not a test
@@ -491,8 +490,8 @@ sinal `858dfa3` and saga `4a93b04`, each with a clean working tree.
 
 The Postgres backend and its conformance checks are implemented in S4.
 Notifications remain a later optimisation: cross-node `await` still polls.
-Deferred to S5: the sweeper (`claim_expired`, the boot scan) and a peer-VM
-test. Deferred to S7: the drain summary (with failed handoffs) and lease
+Implemented in S5: the sweeper (`claim_expired`, the boot scan) and a
+peer-VM test. Deferred to S7: the drain summary (with failed handoffs) and lease
 gauges.
 
 ### S4: PostgreSQL store and leased shutdown coverage
@@ -559,8 +558,8 @@ Deviations and scope:
   schema; fixed claim limits cannot be consumed by another check's rows.
 - **No notification listener or `stats` yet.** Cross-node waits use the S3
   polling path. Notifications are an optimisation; gauges remain S7.
-  Sweeper recovery, peer-VM node-loss tests and the write-version window
-  remain S5 and S6.
+  Sweeper recovery and peer-VM node-loss tests are implemented in S5.
+  The write-version window remains S6.
 
 The completion gates passed: core **302**, external consumer **15**, Saga
 integration **35**, PostgreSQL integration **25**, with no failures. Each
@@ -621,6 +620,70 @@ remaining findings are resolved as follows:
     `a_tick_during_a_renewal_is_made_up_when_it_completes_test` verifies
     the next renewal starts without waiting another interval.
 
+### S5: automatic recovery of expired leases
+
+`fabric.recovery(agent, context_for_run)` retains a root agent and a typed
+context constructor behind an opaque `Recovery`. `fabric.sweeper` validates
+the interval, duplicate root identities and leased store, then returns an
+OTP child specification. A rest-for-one application supervisor starts pool,
+optional forwarder, store, then sweeper; shutdown reverses that order.
+
+- **Bounded scans.** The first scan starts at boot; subsequent scans start
+  `every` milliseconds after the previous scan finishes. Each claims at most
+  100 expired runs, resolves their checked parent records to root identities,
+  and groups candidates from one root into one recovery attempt.
+- **Contained failures.** Context construction has 5 seconds and each root
+  recovery has 30 seconds. Unknown identities, unreadable records, crashes
+  and timeouts leave the claim to expire without preventing another root's
+  recovery. A guardian kills a blocked callback on timeout or caller death,
+  including callbacks that trap exit signals.
+- **Store incarnation.** The sweeper pins the running store process and
+  stops if that process dies. Restart obtains the new process; shutdown
+  stops a pending context before the store drains.
+- **Independent family leases.** An expired child can be claimed separately
+  from its parent. Recovery traverses eligible children under a live foreign
+  parent, and takes over an expired stopping child during cancellation.
+- **Parent delivery.** A leased parent reads terminal child outcomes in one
+  linked worker at a time and applies them with its own context. A slow read
+  does not block its receive loop; a failed read changes nothing and reports
+  arriving after drain starts are ignored.
+- **Acknowledgement.** An ended child's retained lease lets a later scan
+  retry delivery. Only after its parent no longer awaits that action does
+  the sweeper release the lease with a revision check.
+- **Observation.** `observation.sweep` reports claimed runs, recovered
+  candidates, unmatched root identities and failures. A synchronous handler
+  has 1 second; expired-lease age and the remaining operations gauges belong
+  to S7 because the current backend contract returns ids without timestamps.
+
+Refinements from the proposal:
+
+- A live foreign root cannot imply ownership of every child: concurrent
+  claims can split a family. Per-run recovery and parent polling preserve
+  D1 without moving the parent's context or adding distributed messaging.
+- The expired-only backend query cannot discover an unexpired prior local
+  lease. Automatic recovery waits for expiry after a local restart too;
+  explicit `recover` retains the immediate known-id boot fast path. No
+  additional backend listing contract is introduced.
+- Configuration also rejects unleased stores and intervals above 2^32 - 1.
+  Counts include failures separately; recovery counts actual candidate
+  incarnation changes or acknowledged terminal candidates, not a successful
+  call that did no work.
+
+Acceptance evidence: `sweeper_test` covers boot and periodic scans, live
+lease protection, concurrent sweepers, unknown/corrupt records, crashing and
+blocked contexts, store restart, shutdown and non-overlapping scans.
+`family_lease_test` covers completion and cancellation beneath a live
+foreign parent and acknowledgement cleanup. The PostgreSQL `peer_test`
+starts a second VM over standard I/O, verifies its live lease, kills the VM
+with SIGKILL, and recovers exactly once after expiry; the interrupted tool
+is uncertain, never replayed, and reconciliation lets the run finish. A misfiled record is rejected before
+context construction; the decoded run id must equal its storage key.
+
+Completion gates: core **313**, external consumer **15**, Saga integration
+**35**, PostgreSQL integration **26**, all passing. Every package passed
+format checking and warnings-as-errors compilation; PostgreSQL ran only
+against the temporary cluster. The repository formatting gate also passed.
+
 ## Public API (slice 3: ergonomics pass)
 
 The current public surface. The sections after this one are the history
@@ -649,6 +712,10 @@ pub fn open(store: Store, agent: Agent(c), context: c, id: RunId) -> Result(Run(
   // reads and checks the record; never takes the run over or starts a runner
 pub fn recover(store: Store, agent: Agent(c), context: c, id: RunId) -> Result(Run(c), CommandError)
   // takes over work whose runner is gone; a leased store leaves live foreign leases alone
+pub opaque type Recovery
+pub fn recovery(agent: Agent(c), context: fn(RunId) -> c) -> Recovery
+pub type SweeperError { EveryNotPositive(Int) EveryTooLarge(Int, Int) DuplicateRecovery(run.Identity) StoreNotLeased }
+pub fn sweeper(store: Store, recoveries: List(Recovery), every milliseconds: Int) -> Result(supervision.ChildSpecification(Nil), List(SweeperError))
 pub fn id(run: Run(c)) -> RunId
 pub fn child(run: Run(c), id: RunId) -> Result(Run(c), RecordError)
 pub fn await(run: Run(c), within: Int) -> Result(Status, RecordError)   // Ok(Working) at the deadline
@@ -1466,7 +1533,7 @@ adopted here:
 ## Tested sibling revisions
 
 Fabric resolves its siblings as `../` path dependencies. The completion
-gates through production S4 passed against these revisions, each
+gates through production S5 passed against these revisions, each
 with a clean working tree (the slice 3 ergonomics pass used sinal
 `c886825`):
 

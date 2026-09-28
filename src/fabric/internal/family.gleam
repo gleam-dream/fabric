@@ -309,9 +309,12 @@ pub fn take_over(
     runner.held_elsewhere(entry),
     controller.needs_runner(state)
   {
-    // Another node's runner drives the run and its children: nothing is
-    // taken.
-    None, True, _ -> Ok(Nil)
+    // Leases belong to runs, not families. Leave this foreign runner
+    // alone, but recover eligible children through the root's setup.
+    None, True, _ -> {
+      reattach(setup, id)
+      Ok(Nil)
+    }
     Some(_), _, _ | None, False, False -> {
       reattach(setup, id)
       Ok(Nil)
@@ -337,8 +340,9 @@ pub fn take_over(
   }
 }
 
-/// Reattaches the delegated children of `id` (see `take_over`). A run that
-/// is stopping cancels its children itself.
+/// Reattaches the delegated children of `id` (see `take_over`). A live
+/// stopping parent cancels its children, but may lose a child runner
+/// during settlement; that child's expired lease can be recovered here.
 fn reattach(setup: Setup(context), id: String) -> Nil {
   case runner.load(setup.store, id) {
     Error(_) -> Nil
@@ -352,9 +356,34 @@ fn reattach(setup: Setup(context), id: String) -> Nil {
               _, _ -> Nil
             }
           })
+        controller.Stopping(..) -> reattach_stopping(setup, state)
         _ -> Nil
       }
   }
+}
+
+fn reattach_stopping(setup: Setup(context), parent: State) -> Nil {
+  list.each(controller.active_children(parent), fn(child) {
+    let #(action, name, id) = child
+    case runner.child_setup(setup, name, parent.run, action) {
+      Error(Nil) -> Nil
+      Ok(child_setup) ->
+        case runner.load_checked(child_setup, id) {
+          Ok(#(_, controller.State(phase: controller.Stopping(..), ..))) -> {
+            let _ = take_over(child_setup, id, 3)
+            Nil
+          }
+          Ok(#(_, state)) ->
+            case controller.child_result(state) {
+              Ok(outcome) -> runner.notify_parent(child_setup, outcome)
+              Error(Nil) -> Nil
+            }
+          // The parent's cancellation worker handles unreadable or
+          // missing children. A scan never starts them under a stop.
+          Error(_) -> Nil
+        }
+    }
+  })
 }
 
 fn reattach_child(

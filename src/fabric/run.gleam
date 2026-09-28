@@ -64,8 +64,9 @@ pub type Status {
   Working
   /// Work is in flight but no runner known to this store drives it: its
   /// runner was lost, or the run is driven through another `Store`.
-  /// `fabric.recover` takes it over; call it only when the previous owner is
-  /// known to be gone.
+  /// `fabric.recover` takes it over. On an unleased store the previous
+  /// owner must be known to be gone; a leased store checks ownership.
+  /// A configured sweeper recovers it after the lease expires.
   Unattended
   /// Nothing is in flight and the run cannot continue without outside
   /// input: approvals to answer or uncertain effects to reconcile.

@@ -47,6 +47,37 @@ pub fn start(database_url: String, node: String) -> store.Store {
 The store is then used like any Fabric store: `fabric.start(runs, ...)`,
 `fabric.open`, `fabric.approve`, `fabric.recover`, and so on.
 
+## Automatic recovery
+
+Build one `Recovery` per root agent. Its context function receives the
+root run id, including when an expired child triggered the scan:
+
+```gleam
+let recoveries = [fabric.recovery(root_agent, context_for_run)]
+let assert Ok(sweeper) = fabric.sweeper(runs, recoveries, every: 1000)
+```
+
+Add `sweeper` after `store.supervised(runs)` in the rest-for-one supervisor.
+The order is pool, optional Sinal forwarder, store, sweeper. Shutdown stops
+the sweeper before runners drain and keeps the pool available until their
+handoffs are committed. Apply migrations before enabling recovery; a scan
+against an unmigrated database reports a failure and retries next interval.
+
+A scan runs at boot, then after each interval. It claims at most 100 expired
+leases and never overlaps the next scan. Each root's recovery has 30 seconds,
+including at most 5 seconds to rebuild context. Invalid intervals, duplicate
+root identities, and unleased stores are rejected before startup. Unknown
+identities and failed recoveries leave their claims to expire; observe
+`fabric/observation.sweep()` for counts. No run context is stored by Fabric.
+
+Only expired leases are discoverable, so an automatic scan waits for expiry
+even after this store restarts. Explicit `fabric.recover` with a known run id
+can take over a prior local store process's lease immediately. Running tools
+become uncertain after a crash and are never replayed; reconcile their
+outcomes before the run continues. Family members have independent leases:
+a live parent keeps its context and reads a remotely recovered child's
+committed outcome.
+
 ## Settings
 
 - **`settings(connection, node:)`**: the node id names this VM among every VM
@@ -126,4 +157,5 @@ integrations/fabric_postgres/scripts/test-postgres.sh
 
 Run without the script, `gleam test` fails, since `FABRIC_TEST_DATABASE_URL`
 is unset. Fabric's own gate (the root package, `nix flake check`, CI) does
-not run these tests and needs no PostgreSQL.
+not run these tests and needs no PostgreSQL. The suite includes an isolated
+Erlang VM killed with SIGKILL to verify automatic recovery without tool replay.
