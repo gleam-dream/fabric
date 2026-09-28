@@ -20,7 +20,11 @@
 //// - Any other failure is `Unavailable(reason)`. A backend function that
 ////   crashes is treated as `Unavailable`. After an `Unavailable` write,
 ////   Fabric reads the run back: finding exactly the record it wrote at the
-////   revision it wrote confirms the write.
+////   revision it wrote confirms the write. Every record Fabric writes
+////   carries a fresh write token, so another writer's record is never
+////   mistaken for this one. A write that is still unconfirmed stays
+////   `Unavailable`: its outcome is unknown, since the backend may still
+////   perform it later.
 ////
 //// A `Store` value is a process linked to the process that opened it; it
 //// lives until that process exits or `close` is called. It calls the

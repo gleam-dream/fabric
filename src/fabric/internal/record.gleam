@@ -9,6 +9,12 @@
 ////  "phase": {"tag": "acting", ...}}
 //// ```
 ////
+//// Every encoding carries a fresh random `"write"` token, which decoding
+//// ignores. Two writers that encode the same state therefore write
+//// different records, so a writer that reads its write back after an
+//// `Unavailable` recognises its own write, never an identical one by
+//// another writer.
+////
 //// Sums are objects with a `"tag"`; an absent optional value is `null`.
 //// Decoding checks the format and version first: an unknown version is
 //// `UnsupportedVersion`, anything unreadable is `Corrupt`. Compatibility
@@ -46,10 +52,14 @@ pub type DecodeError {
 
 // --- encoding ------------------------------------------------------------------
 
+/// Encodes `state` with a fresh write token: two calls never return the
+/// same text. Encode once per write, and retry that write with the same
+/// text.
 pub fn encode(state: State) -> String {
   json.object([
     #("format", json.string(format)),
     #("version", json.int(version)),
+    #("write", json.string(write_token())),
     #("run", json.string(state.run)),
     #("agent", identity(state.agent)),
     #("incarnation", json.int(state.incarnation)),
@@ -88,6 +98,9 @@ pub fn encode(state: State) -> String {
   ])
   |> json.to_string
 }
+
+@external(erlang, "fabric_ffi", "random_id")
+fn write_token() -> String
 
 fn tag(name: String, fields: List(#(String, Json))) -> Json {
   json.object([#("tag", json.string(name)), ..fields])
