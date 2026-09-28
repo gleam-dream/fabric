@@ -16,6 +16,10 @@ pub type Fault {
   FailBefore
   /// Writes, then reports `Unavailable`.
   FailAfter
+  /// Reports `Unavailable` without writing, and writes just before the
+  /// run's next write: a write that lands after its caller, and a read
+  /// back, found it missing.
+  FailLate
 }
 
 type Message {
@@ -48,7 +52,10 @@ pub fn new() -> Flaky {
   process.spawn_unlinked(fn() {
     let subject = process.new_subject()
     process.send(ready, subject)
-    loop(subject, State(dict.new(), [], #(fn(_) { False }, []), NotHolding))
+    loop(
+      subject,
+      State(dict.new(), [], #(fn(_) { False }, []), NotHolding, dict.new()),
+    )
   })
   let assert Ok(subject) = process.receive(ready, 1000)
   Flaky(subject)
@@ -114,6 +121,8 @@ type State {
     faults: List(Fault),
     targeted: #(fn(String) -> Bool, List(Fault)),
     held: Held,
+    /// Writes that land before the next write of their run.
+    late: Dict(String, store.Stored),
   )
 }
 
@@ -154,7 +163,8 @@ fn loop(subject: Subject(Message), state: State) -> Nil {
       )
       loop(subject, state)
     }
-    Write(run, expected, record, reply) ->
+    Write(run, expected, record, reply) -> {
+      let state = land(state, run)
       case state.held {
         Holding(matches, notify) ->
           case matches(run) {
@@ -169,6 +179,20 @@ fn loop(subject: Subject(Message), state: State) -> Nil {
           }
         _ -> loop(subject, write(state, run, expected, record, reply))
       }
+    }
+  }
+}
+
+/// Performs the write of `run` that is landing late, if any.
+fn land(state: State, run: String) -> State {
+  case dict.get(state.late, run) {
+    Ok(stored) ->
+      State(
+        ..state,
+        records: dict.insert(state.records, run, stored),
+        late: dict.delete(state.late, run),
+      )
+    Error(Nil) -> state
   }
 }
 
@@ -195,12 +219,21 @@ fn write(
     Some(_), Ok(current) -> Error(store.Conflict(current.revision))
   }
   let unavailable = Error(store.Unavailable("the backend blinked"))
-  let #(reply_with, records) = case fault, outcome {
-    FailBefore, _ -> #(unavailable, records)
-    FailAfter, Ok(stored) -> #(unavailable, dict.insert(records, run, stored))
-    _, Ok(stored) -> #(Ok(Nil), dict.insert(records, run, stored))
-    _, Error(error) -> #(Error(error), records)
+  let #(reply_with, records, late) = case fault, outcome {
+    FailBefore, _ -> #(unavailable, records, state.late)
+    FailAfter, Ok(stored) -> #(
+      unavailable,
+      dict.insert(records, run, stored),
+      state.late,
+    )
+    FailLate, Ok(stored) -> #(
+      unavailable,
+      records,
+      dict.insert(state.late, run, stored),
+    )
+    _, Ok(stored) -> #(Ok(Nil), dict.insert(records, run, stored), state.late)
+    _, Error(error) -> #(Error(error), records, state.late)
   }
   process.send(reply, reply_with)
-  State(..state, records:, faults:, targeted:)
+  State(..state, records:, faults:, targeted:, late:)
 }

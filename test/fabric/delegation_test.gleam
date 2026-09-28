@@ -868,6 +868,20 @@ pub fn a_child_whose_first_insert_fails_still_starts_test() {
   probe.count(probe, "pay:bob") |> should.equal(1)
 }
 
+/// The child's first insert is reported unavailable and lands only
+/// afterwards, so the retried insert finds it already stored: the child has
+/// no runner yet, and the start takes it over instead of waiting for a
+/// recovery.
+pub fn a_child_whose_insert_lands_late_still_runs_test() {
+  let probe = probe.new()
+  let backend = flaky.new()
+  flaky.arm_where(backend, first_child, [flaky.FailLate])
+  let assert Ok(run) =
+    fabric.start(flaky.store(backend), eager_family(probe), Nil, "go")
+  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  probe.count(probe, "pay:bob") |> should.equal(1)
+}
+
 /// A child that cannot be stored at all is not reported started: the
 /// delegation is an uncertain effect naming the failure.
 pub fn a_child_that_cannot_be_stored_is_uncertain_test() {

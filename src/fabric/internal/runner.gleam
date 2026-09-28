@@ -820,6 +820,8 @@ fn store_started_child(
             child_state(child_setup, child, prompt, parent, id)
           case store_child(child_setup, state, effects, 0) {
             Ok(Nil) -> controller.ChildStarted(id)
+            Error(store.AlreadyExists) ->
+              adopt_child(child_setup, id, #(state, effects), 3)
             Error(error) ->
               controller.ChildEnded(
                 id,
@@ -835,7 +837,7 @@ fn store_started_child(
 
 /// Inserts and starts a child run, trying an `Unavailable` insert again
 /// after the runner's bounded backoff. `AlreadyExists` means an earlier
-/// attempt or start stored it.
+/// attempt or start stored it (see `adopt_child`).
 fn store_child(
   setup: Setup(context),
   state: State,
@@ -843,12 +845,54 @@ fn store_child(
   attempt: Int,
 ) -> Result(Nil, store.StoreError) {
   case launch(setup, None, state, effects) {
-    Ok(_) | Error(store.AlreadyExists) -> Ok(Nil)
+    Ok(_) -> Ok(Nil)
     Error(store.Unavailable(_)) if attempt < unavailable_retries -> {
       process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
       store_child(setup, state, effects, attempt + 1)
     }
     Error(error) -> Error(error)
+  }
+}
+
+/// The child run `first` was already stored: by an earlier insert of this
+/// start that was reported unavailable and landed afterwards, by an earlier
+/// start, or as a tombstone by a cancelling parent. A child that needs a
+/// runner and has none is given one: this start's own first record gets
+/// the runner it would have had (its first model call, no new
+/// incarnation), and any other record is taken over as a recovery would.
+/// An ended child's end is applied; a tombstone is left to the
+/// cancellation that stored it.
+fn adopt_child(
+  setup: Setup(context),
+  id: ActionId,
+  start: #(State, List(Effect)),
+  tries: Int,
+) -> controller.Event {
+  let #(first, first_effects) = start
+  let lost = fn(detail) {
+    controller.ChildEnded(id, controller.ChildLost(detail))
+  }
+  case load(setup.store, first.run) {
+    Error(problem) -> lost(describe_read(problem))
+    Ok(#(entry, stored)) ->
+      case live_runner(entry, stored), controller.child_result(stored) {
+        Some(_), _ | None, Ok(controller.ChildMissing) ->
+          controller.ChildStarted(id)
+        None, Ok(ended) -> controller.ChildEnded(id, ended)
+        None, Error(Nil) -> {
+          let #(next, effects) = case stored == first {
+            True -> #(first, first_effects)
+            False -> controller.recover(setup.env, stored)
+          }
+          case launch(setup, Some(#(entry.revision, stored)), next, effects) {
+            Ok(_) -> controller.ChildStarted(id)
+            Error(store.Conflict(_)) if tries > 1 ->
+              adopt_child(setup, id, start, tries - 1)
+            Error(error) ->
+              lost("it could not be started: " <> string.inspect(error))
+          }
+        }
+      }
   }
 }
 
