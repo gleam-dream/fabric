@@ -169,6 +169,15 @@ fn scan_inventory(member: Member, shelf: String) -> Result(Int, Nil) {
   Ok(string.length(shelf))
 }
 
+pub fn reserve_definition() -> tool.Definition(Reservation, Confirmation) {
+  tool.define(
+    "reserve_book",
+    "Reserve a book for the current member.",
+    reservation_codec(),
+    confirmation_codec(),
+  )
+}
+
 pub fn tools() -> List(tool.Tool(Member)) {
   [
     tool.define(
@@ -182,12 +191,7 @@ pub fn tools() -> List(tool.Tool(Member)) {
         tool.Explain("no book titled " <> title)
       }),
     // A refused reservation made no change; its detail stays hidden.
-    tool.define(
-      "reserve_book",
-      "Reserve a book for the current member.",
-      reservation_codec(),
-      confirmation_codec(),
-    )
+    reserve_definition()
       |> tool.bind(reserve_book, fn(error) {
         let AlreadyReserved = error
         tool.Explain("not reserved")
@@ -208,11 +212,12 @@ pub fn desk_policy(
   member: Member,
   action: policy.Action,
 ) -> Result(policy.Decision, String) {
-  case member.id, action.tool {
+  // Typed matching: `Ok(reservation)` only for a call of this definition.
+  case member.id, tool.input(reserve_definition(), action) {
     "", _ -> Error("member directory unavailable")
-    "guest", "reserve_book" -> Ok(policy.Deny("guests cannot reserve"))
+    "guest", Ok(_) -> Ok(policy.Deny("guests cannot reserve"))
     // A junior member's reservation waits for a guardian's approval.
-    "junior", "reserve_book" ->
+    "junior", Ok(Reservation(isbn: _)) ->
       Ok(policy.RequireApproval(run.Requirement("guardian", 1)))
     _, _ -> Ok(policy.Allow)
   }
@@ -339,21 +344,25 @@ pub fn purchasing_policy(
   _member: Member,
   action: policy.Action,
 ) -> Result(policy.Decision, String) {
-  case action.tool {
-    "order_book" -> Ok(policy.RequireApproval(run.Requirement("treasurer", 1)))
-    _ -> Ok(policy.Allow)
+  case tool.input(order_definition(), action) {
+    Ok(_) -> Ok(policy.RequireApproval(run.Requirement("treasurer", 1)))
+    Error(Nil) -> Ok(policy.Allow)
   }
+}
+
+pub fn order_definition() -> tool.Definition(Purchase, String) {
+  tool.define(
+    "order_book",
+    "Place a purchase order for a title.",
+    purchase_codec(),
+    codec.field("po", codec.string()),
+  )
 }
 
 /// Places a purchase order for a title.
 pub fn purchaser() -> Agent(Member) {
   let order =
-    tool.define(
-      "order_book",
-      "Place a purchase order for a title.",
-      purchase_codec(),
-      codec.field("po", codec.string()),
-    )
+    order_definition()
     |> tool.bind(
       fn(_member, purchase: Purchase) -> Result(String, Nil) {
         Ok("PO-" <> purchase.title)

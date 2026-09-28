@@ -7,6 +7,7 @@
 
 import fabric/internal/controller.{type State}
 import fabric/internal/invocation
+import fabric/model
 import fabric/observation.{ActionRef} as o
 import fabric/run.{type ActionId, type ActionRecord}
 import fabric/tool as fabric_tool
@@ -59,7 +60,7 @@ fn model_turn(before: Option(State), after: State) -> Nil {
             Some(result) ->
               emit(
                 o.model_turn(),
-                o.Tokens(
+                model.Usage(
                   after.usage.input_tokens - before.usage.input_tokens,
                   after.usage.output_tokens - before.usage.output_tokens,
                 ),
@@ -297,7 +298,7 @@ pub fn settlement_refused(
   let reason = case error {
     fabric_tool.AlreadyRecorded -> o.AlreadyRecorded
     fabric_tool.NotAwaited -> o.NotAwaited
-    fabric_tool.SettleFailed(_) -> o.NotReached
+    fabric_tool.SettleUnconfirmed(_) -> o.NotReached
   }
   emit(
     o.settlement_refused(),

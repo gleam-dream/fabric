@@ -58,7 +58,10 @@ fn settling_tool(
           Ok(Forecast("never"))
         }
         SettleOwn(settled) -> {
-          process.send(settled, tool.settle(settlement, Ok(Forecast("own"))))
+          process.send(
+            settled,
+            tool.settle(settlement, Ok(Forecast("own")), summary: ""),
+          )
           Ok(Forecast("sunny"))
         }
       }
@@ -100,13 +103,13 @@ fn only_state(run: fabric.Run(Nil)) -> run.ActionState {
 pub fn a_stopped_tool_is_settled_definitely_before_the_run_ends_test() {
   let #(run, handed) = start(process.new_subject(), Wait, 5000)
   let assert Ok(run.Working) = fabric.cancel(run)
-  tool.settle(handed.settlement, Ok(Forecast("cloudy")))
+  tool.settle(handed.settlement, Ok(Forecast("cloudy")), summary: "")
   |> should.equal(Ok(Nil))
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
   only_state(run) |> should.equal(run.Succeeded("{\"summary\":\"cloudy\"}"))
 
   // Exactly once: the action has its result, and nothing is lost.
-  tool.settle(handed.settlement, Error(tool.Explain("again")))
+  tool.settle(handed.settlement, Error(tool.Explain("again")), summary: "")
   |> should.equal(Error(tool.AlreadyRecorded))
 }
 
@@ -116,7 +119,11 @@ pub fn a_stopped_tool_can_settle_as_uncertain_test() {
   let #(run, handed) = start(process.new_subject(), Wait, 5000)
   let assert Ok(_) = fabric.cancel(run)
   let assert Ok(Nil) =
-    tool.settle(handed.settlement, Error(tool.Uncertain("undo failed")))
+    tool.settle(
+      handed.settlement,
+      Error(tool.Uncertain("undo failed")),
+      summary: "undo failed",
+    )
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
   only_state(run) |> should.equal(run.Uncertain("undo failed"))
 }
@@ -132,7 +139,7 @@ pub fn a_settlement_after_the_run_ended_is_refused_test() {
   string.contains(evidence, "no settlement") |> should.be_true
   let assert Ok(before) = fabric.snapshot(run)
 
-  tool.settle(handed.settlement, Ok(Forecast("cloudy")))
+  tool.settle(handed.settlement, Ok(Forecast("cloudy")), summary: "")
   |> should.equal(Error(tool.NotAwaited))
   fabric.snapshot(run) |> should.equal(Ok(before))
 }
@@ -146,7 +153,7 @@ pub fn a_settlement_while_the_task_runs_waits_for_its_report_test() {
   process.spawn(fn() {
     process.send(
       offered,
-      tool.settle(handed.settlement, Ok(Forecast("cloudy"))),
+      tool.settle(handed.settlement, Ok(Forecast("cloudy")), summary: ""),
     )
   })
   process.send(handed.release, Nil)
@@ -177,9 +184,17 @@ pub fn a_handler_settling_its_own_call_is_refused_test() {
 pub fn a_settlement_resolves_an_uncertain_effect_test() {
   let #(run, handed) = start(process.new_subject(), Die, 5000)
   let assert Ok(run.Suspended([], [_])) = fabric.await(run, 5000)
-  tool.settle(handed.settlement, Error(tool.Uncertain("still unknown")))
+  tool.settle(
+    handed.settlement,
+    Error(tool.Uncertain("still unknown")),
+    summary: "still unknown",
+  )
   |> should.equal(Error(tool.NotAwaited))
-  tool.settle(handed.settlement, Error(tool.Explain("no forecast today")))
+  tool.settle(
+    handed.settlement,
+    Error(tool.Explain("no forecast today")),
+    summary: "",
+  )
   |> should.equal(Ok(Nil))
   fabric.await(run, 5000)
   |> should.equal(
@@ -193,7 +208,7 @@ pub fn a_settlement_after_a_reconciliation_is_refused_test() {
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
   let assert Ok(_) =
     fabric.reconcile(run, uncertain.reference, "{\"summary\":\"?\"}")
-  tool.settle(handed.settlement, Ok(Forecast("cloudy")))
+  tool.settle(handed.settlement, Ok(Forecast("cloudy")), summary: "")
   |> should.equal(Error(tool.AlreadyRecorded))
   fabric.await(run, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("final: {\"summary\":\"?\"}"))))
@@ -279,10 +294,11 @@ fn states(run: fabric.Run(Nil)) -> List(run.ActionState) {
 pub fn a_settlement_is_accepted_once_per_action_test() {
   let #(run, a, b) = start_two(5000, 5000)
   let assert Ok(run.Working) = fabric.cancel(run)
-  tool.settle(a, Error(tool.Uncertain("unknown"))) |> should.equal(Ok(Nil))
-  tool.settle(a, Ok(Forecast("cloudy")))
+  tool.settle(a, Error(tool.Uncertain("unknown")), summary: "unknown")
+  |> should.equal(Ok(Nil))
+  tool.settle(a, Ok(Forecast("cloudy")), summary: "")
   |> should.equal(Error(tool.NotAwaited))
-  tool.settle(b, Ok(Forecast("rain"))) |> should.equal(Ok(Nil))
+  tool.settle(b, Ok(Forecast("rain")), summary: "") |> should.equal(Ok(Nil))
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
   states(run)
   |> should.equal([
@@ -312,16 +328,16 @@ pub fn a_settlement_after_the_bound_is_refused_while_stopping_test() {
   let assert Ok(Nil) = process.receive(lapsed, 5000)
   let _ = sinal.detach(attached)
 
-  tool.settle(a, Ok(Forecast("late"))) |> should.equal(Error(tool.NotAwaited))
+  tool.settle(a, Ok(Forecast("late")), summary: "")
+  |> should.equal(Error(tool.NotAwaited))
   let assert [run.Uncertain(evidence), run.Running] = states(run)
   string.contains(evidence, "no settlement") |> should.be_true
-  tool.settle(b, Ok(Forecast("rain"))) |> should.equal(Ok(Nil))
+  tool.settle(b, Ok(Forecast("rain")), summary: "") |> should.equal(Ok(Nil))
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
 }
 
 /// A refused settlement is observed with why and with the summary the tool
-/// gave for a person: an uncertain settlement's evidence, or the summary of
-/// `settle_summarized`.
+/// gave `settle` for a person.
 pub fn a_refused_settlement_is_observed_test() {
   let refused = process.new_subject()
   let assert Ok(id) =
@@ -336,9 +352,13 @@ pub fn a_refused_settlement_is_observed_test() {
   let assert Ok(_) = fabric.cancel(run)
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
 
-  tool.settle(handed.settlement, Error(tool.Uncertain("the bank did not say")))
+  tool.settle(
+    handed.settlement,
+    Error(tool.Uncertain("the bank did not say")),
+    summary: "the bank did not say",
+  )
   |> should.equal(Error(tool.NotAwaited))
-  tool.settle_summarized(
+  tool.settle(
     handed.settlement,
     Ok(Forecast("cloudy")),
     summary: "the service reported cloudy",

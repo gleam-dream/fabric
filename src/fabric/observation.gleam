@@ -83,13 +83,13 @@
 ////
 //// Metadata carries identifiers and closed kinds only, never arguments,
 //// tool results, or model text, with one exception: `settlement_refused`
-//// carries the refused settlement's summary as the tool gave it (an
-//// uncertain settlement's evidence, or `tool.settle_summarized`'s
-//// summary), so that a person can reconcile the action. A tool's summary
-//// and uncertain evidence must therefore not carry secrets; `fabric_saga`'s
+//// carries the refused settlement's summary as the tool gave it to
+//// `tool.settle`, so that a person can reconcile the action. A tool's
+//// summary must therefore not carry secrets; `fabric_saga`'s
 //// name outcome kinds and step addresses only. `turn` and `call_id`
 //// identify an action only within its `run`.
 
+import fabric/model.{type Usage, Usage}
 import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/erlang/atom
@@ -135,12 +135,6 @@ pub type TurnResult {
 
 pub type ModelTurn {
   ModelTurn(run: String, turn: Int, result: TurnResult)
-}
-
-/// Tokens the provider reported for this attempt (zero when it reported
-/// none).
-pub type Tokens {
-  Tokens(input_tokens: Int, output_tokens: Int)
 }
 
 pub type Answered {
@@ -206,9 +200,8 @@ pub type SettlementRefused {
     /// What the settlement offered.
     offered: Disposition,
     reason: SettlementRefusal,
-    /// What a person needs to reconcile the action, as the tool gave it:
-    /// an uncertain settlement's evidence, or the summary of
-    /// `tool.settle_summarized`; empty otherwise.
+    /// What a person needs to reconcile the action, as the tool gave it to
+    /// `tool.settle`.
     summary: String,
   )
 }
@@ -272,7 +265,9 @@ pub fn run_recovered() -> Event(Nil, RunRecovered) {
   )
 }
 
-pub fn model_turn() -> Event(Tokens, ModelTurn) {
+/// Its measurements are the tokens the provider reported for this attempt
+/// (zero when it reported none).
+pub fn model_turn() -> Event(Usage, ModelTurn) {
   event(
     ["model", "stop"],
     tokens(),
@@ -509,9 +504,9 @@ fn action_fields() -> Fields(ActionRef) {
   )
 }
 
-fn tokens() -> Fields(Tokens) {
+fn tokens() -> Fields(Usage) {
   both(int("input_tokens"), int("output_tokens"))
-  |> fields.imap(fn(values) { Tokens(values.0, values.1) }, fn(tokens) {
+  |> fields.imap(fn(values) { Usage(values.0, values.1) }, fn(tokens) {
     #(tokens.input_tokens, tokens.output_tokens)
   })
 }

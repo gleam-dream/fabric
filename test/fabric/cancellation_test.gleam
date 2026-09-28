@@ -668,7 +668,8 @@ pub fn cancel_stored_of_a_parent_with_a_settling_child_test() {
   string.contains(evidence, "cannot be continued") |> should.be_false
 
   let assert Ok(child) = fabric.child(run, support.child_id(fabric.id(run), 1))
-  tool.settle(settlement, Ok(apps.Forecast("cloudy"))) |> should.equal(Ok(Nil))
+  tool.settle(settlement, Ok(apps.Forecast("cloudy")), summary: "")
+  |> should.equal(Ok(Nil))
   fabric.await(child, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
   states(child) |> should.equal([run.Succeeded("{\"summary\":\"cloudy\"}")])
 }

@@ -1,6 +1,9 @@
 import fabric/internal/invocation
 import fabric/internal/registry
 import fabric/model
+import fabric/policy
+import fabric/run
+import fabric/support
 import fabric/support/apps
 import fabric/tool
 import gleam/option
@@ -148,4 +151,30 @@ pub fn a_typed_call_encodes_its_input_with_the_definition_test() {
 /// No late settlement is expected from these tools.
 fn unsettled(_, _) -> Result(Nil, tool.SettleError) {
   Error(tool.NotAwaited)
+}
+
+/// A policy matches an action on a tool's definition and reads its typed
+/// input; any other tool, or arguments the codec refuses, match nothing.
+pub fn a_policy_reads_the_typed_input_of_its_tool_test() {
+  let action = fn(tool, arguments) {
+    policy.Action(
+      support.id("run-1"),
+      run.ActionId(1, "t"),
+      tool,
+      arguments,
+      policy.InvokeTool,
+    )
+  }
+  tool.input(
+    apps.transfer_definition(),
+    action("transfer_funds", "{\"to\":\"bob\",\"amount\":10}"),
+  )
+  |> should.equal(Ok(apps.Transfer("bob", 10)))
+  tool.input(
+    apps.transfer_definition(),
+    action("lookup_weather", "{\"city\":\"Paris\"}"),
+  )
+  |> should.equal(Error(Nil))
+  tool.input(apps.transfer_definition(), action("transfer_funds", "{}"))
+  |> should.equal(Error(Nil))
 }

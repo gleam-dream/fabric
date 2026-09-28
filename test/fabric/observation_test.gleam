@@ -53,7 +53,7 @@ fn capture(subject: Subject(String)) -> List(sinal.Attachment) {
     attach_line(
       attach("model"),
       o.model_turn(),
-      fn(t: o.Tokens, m: o.ModelTurn) {
+      fn(t: model.Usage, m: o.ModelTurn) {
         "model_turn "
         <> m.run
         <> " "
