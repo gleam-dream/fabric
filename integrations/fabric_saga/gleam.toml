@@ -1,0 +1,18 @@
+# Fabric's optional Saga integration: a Saga workflow as one typed Fabric
+# tool. A separate package, so that Fabric itself does not depend on Saga.
+name = "fabric_saga"
+version = "0.1.0"
+target = "erlang"
+gleam = ">= 1.18.0"
+licenses = ["Apache-2.0"]
+description = "A Saga workflow as one typed Fabric tool."
+
+[dependencies]
+gleam_stdlib = ">= 0.70.0 and < 1.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+fabric = { path = "../.." }
+saga = { path = "../../../saga" }
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
+json_blueprint = { path = "../../../json_blueprint" }
