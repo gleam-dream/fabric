@@ -20,6 +20,9 @@ pub type Message {
   Executed(executor.Report)
   /// A linked process (the model task or the executor) exited.
   Exited(pid: Pid, reason: process.ExitReason)
+  /// An event the runner reports to itself after performing an effect (a
+  /// child run was started).
+  Apply(controller.Event)
   StoreDown
 }
 

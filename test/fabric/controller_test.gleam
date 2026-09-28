@@ -53,12 +53,25 @@ fn env() -> controller.Env(Nil) {
 }
 
 fn limits() -> controller.Limits {
-  controller.Limits(max_turns: 5, token_budget: None)
+  controller.Limits(
+    max_turns: 5,
+    token_budget: None,
+    max_children: 0,
+    max_depth: 0,
+  )
 }
 
 fn begin(env: controller.Env(Nil), limits: controller.Limits) -> State {
   let #(state, effects) =
-    controller.start(env, "run-1", run.Identity("bank", 1), limits, "hello")
+    controller.start(
+      env,
+      "run-1",
+      run.Identity("bank", 1),
+      limits,
+      "hello",
+      None,
+      0,
+    )
   let assert [CallModel(1, _)] = effects
   state
 }
@@ -122,7 +135,15 @@ fn states(state: State) -> List(run.ActionState) {
 
 pub fn start_requests_the_first_turn_with_declarations_test() {
   let #(_, effects) =
-    controller.start(env(), "run-1", run.Identity("bank", 1), limits(), "hello")
+    controller.start(
+      env(),
+      "run-1",
+      run.Identity("bank", 1),
+      limits(),
+      "hello",
+      None,
+      0,
+    )
   let assert [CallModel(1, request)] = effects
   request.messages |> should.equal([UserMessage("hello")])
   request.tools
@@ -292,7 +313,7 @@ pub fn uncertain_effect_blocks_until_reconciled_test() {
   controller.status(state)
   |> should.equal(
     run.Suspended([], [
-      run.UncertainAction(t, "transfer_funds", "gateway timed out"),
+      run.UncertainAction("run-1", t, "transfer_funds", "gateway timed out"),
     ]),
   )
   controller.step(env, state, controller.Reconcile(ActionId(1, "w"), "x"))
@@ -308,7 +329,16 @@ pub fn uncertain_effect_blocks_until_reconciled_test() {
 
 pub fn turn_limit_prevents_effects_that_cannot_be_continued_test() {
   let env = env()
-  let state = begin(env, controller.Limits(max_turns: 1, token_budget: None))
+  let state =
+    begin(
+      env,
+      controller.Limits(
+        max_turns: 1,
+        token_budget: None,
+        max_children: 0,
+        max_depth: 0,
+      ),
+    )
   let #(state, effects) = tools_requested(env, state, [weather("w", "Paris")])
   effects |> should.equal([])
   controller.status(state)
@@ -323,7 +353,16 @@ pub fn turn_limit_prevents_effects_that_cannot_be_continued_test() {
 /// budget, like any other attempt the budget refuses.
 pub fn every_model_attempt_counts_against_the_turn_limit_test() {
   let env = env()
-  let state = begin(env, controller.Limits(max_turns: 2, token_budget: None))
+  let state =
+    begin(
+      env,
+      controller.Limits(
+        max_turns: 2,
+        token_budget: None,
+        max_children: 0,
+        max_depth: 0,
+      ),
+    )
   let flaky = model.ModelError("connection reset", retryable: True)
   let #(state, effects) = step(env, state, controller.ModelFailed(1, flaky))
   let assert [CallModel(2, _)] = effects
@@ -346,7 +385,15 @@ pub fn non_retryable_model_failure_ends_the_run_test() {
 pub fn token_budget_uses_observed_usage_test() {
   let env = env()
   let state =
-    begin(env, controller.Limits(max_turns: 5, token_budget: Some(10)))
+    begin(
+      env,
+      controller.Limits(
+        max_turns: 5,
+        token_budget: Some(10),
+        max_children: 0,
+        max_depth: 0,
+      ),
+    )
   let #(state, effects) =
     step(
       env,
@@ -364,7 +411,15 @@ pub fn token_budget_uses_observed_usage_test() {
 pub fn missing_usage_under_a_token_budget_is_reported_test() {
   let env = env()
   let state =
-    begin(env, controller.Limits(max_turns: 5, token_budget: Some(100)))
+    begin(
+      env,
+      controller.Limits(
+        max_turns: 5,
+        token_budget: Some(100),
+        max_children: 0,
+        max_depth: 0,
+      ),
+    )
   let assert #(state, []) =
     step(
       env,

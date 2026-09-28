@@ -8,6 +8,7 @@ import fabric/model.{type Model}
 import fabric/policy.{type Policy}
 import fabric/run.{type Identity, Identity}
 import fabric/tool.{type Tool}
+import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -24,6 +25,10 @@ pub opaque type Agent(context) {
     token_budget: Option(Int),
     policy_timeout: Int,
     model_retry_delay: Int,
+    /// The sub-agent each delegation starts, by delegation name.
+    children: List(#(String, Agent(context))),
+    max_children: Int,
+    max_depth: Int,
   )
 }
 
@@ -40,6 +45,10 @@ pub type ConfigError {
   ModelRetryDelayNegative(Int)
   /// The name is empty or the version is not positive.
   InvalidIdentity(name: String, version: Int)
+  MaxChildrenNegative(Int)
+  MaxDepthNegative(Int)
+  /// The sub-agent of the delegation `name` is invalid.
+  InvalidChild(name: String, errors: List(ConfigError))
 }
 
 pub const default_max_turns = 8
@@ -51,6 +60,10 @@ pub const default_policy_timeout = 5000
 pub const default_model_retry_delay = 200
 
 pub const default_identity = Identity("agent", 1)
+
+pub const default_max_children = 4
+
+pub const default_max_depth = 1
 
 /// An agent with the given model, tools, and policy. The policy is required:
 /// there is no implicit allow (`policy.always_allow()` is the explicit one).
@@ -70,7 +83,51 @@ pub fn new(
     token_budget: None,
     policy_timeout: default_policy_timeout,
     model_retry_delay: default_model_retry_delay,
+    children: [],
+    max_children: default_max_children,
+    max_depth: default_max_depth,
   )
+}
+
+/// Lets the model delegate to a sub-agent: a call to `definition` (declared
+/// to the model like any tool) starts a run of `child` in the same store,
+/// with `prompt(input)` as its prompt, once the policy allows it. The
+/// policy sees `policy.StartAgent` as the action's target, and may require
+/// an approval like for any tool; no child run exists before it is
+/// allowed. The child is its own run with its own budgets and policy, and
+/// shares this agent's context type and store. Its approvals are this
+/// run's pending approvals (their references name the child run), and
+/// cancelling this run cancels it.
+///
+/// When the child finishes, `result(outcome)` is the call's result. A child
+/// that ended with effects of unknown status (for example cancelled while a
+/// tool ran) makes the call an uncertain effect whatever `result` says.
+pub fn with_sub_agent(
+  agent: Agent(context),
+  definition: tool.Definition(input, output),
+  to child: Agent(context),
+  prompt prompt: fn(input) -> String,
+  result result: fn(run.Outcome) -> Result(output, tool.Failure),
+) -> Agent(context) {
+  let delegation = tool.delegation(definition, child.identity, prompt, result)
+  Agent(
+    ..agent,
+    tools: list.append(agent.tools, [delegation]),
+    children: list.append(agent.children, [#(tool.name(delegation), child)]),
+  )
+}
+
+/// Limits how many sub-agent runs one run starts (default 4). A delegation
+/// beyond it is refused before the policy, and the model sees why.
+pub fn with_max_children(agent: Agent(context), limit: Int) -> Agent(context) {
+  Agent(..agent, max_children: limit)
+}
+
+/// Limits how many levels of sub-agents may exist below a run started with
+/// this agent (default 1: its children may not delegate in turn). A child
+/// is bounded by its own setting and by what its parent has left.
+pub fn with_max_depth(agent: Agent(context), levels: Int) -> Agent(context) {
+  Agent(..agent, max_depth: levels)
 }
 
 /// Names this agent definition. A stored run records the name and version
@@ -149,6 +206,10 @@ pub type Admitted(context) {
     token_budget: Option(Int),
     policy_timeout: Int,
     model_retry_delay: Int,
+    /// The admitted sub-agent of each delegation, by delegation name.
+    children: Dict(String, Admitted(context)),
+    max_children: Int,
+    max_depth: Int,
   )
 }
 
@@ -177,6 +238,8 @@ pub fn admit(
           Error(InvalidIdentity(name, version))
         Identity(..) -> Ok(Nil)
       },
+      not_negative(agent.max_children, MaxChildrenNegative),
+      not_negative(agent.max_depth, MaxDepthNegative),
     ]
     |> list.filter_map(fn(check) {
       case check {
@@ -184,6 +247,23 @@ pub fn admit(
         Error(error) -> Ok(error)
       }
     })
+  let children =
+    list.map(agent.children, fn(entry) {
+      let #(name, child) = entry
+      admit(child)
+      |> result.map(fn(admitted) { #(name, admitted) })
+      |> result.map_error(InvalidChild(name, _))
+    })
+  let limits =
+    list.append(
+      limits,
+      list.filter_map(children, fn(child) {
+        case child {
+          Ok(_) -> Error(Nil)
+          Error(error) -> Ok(error)
+        }
+      }),
+    )
   case registry, limits {
     Ok(registry), [] ->
       Ok(Admitted(
@@ -197,6 +277,9 @@ pub fn admit(
         token_budget: agent.token_budget,
         policy_timeout: agent.policy_timeout,
         model_retry_delay: agent.model_retry_delay,
+        children: children |> result.values |> dict.from_list,
+        max_children: agent.max_children,
+        max_depth: agent.max_depth,
       ))
     Ok(_), errors -> Error(errors)
     Error(tool_errors), errors -> Error(list.append(tool_errors, errors))
@@ -208,6 +291,16 @@ fn positive(
   error: fn(Int) -> ConfigError,
 ) -> Result(Nil, ConfigError) {
   case value > 0 {
+    True -> Ok(Nil)
+    False -> Error(error(value))
+  }
+}
+
+fn not_negative(
+  value: Int,
+  error: fn(Int) -> ConfigError,
+) -> Result(Nil, ConfigError) {
+  case value >= 0 {
     True -> Ok(Nil)
     False -> Error(error(value))
   }

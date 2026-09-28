@@ -183,6 +183,7 @@ pub fn uncertain_effect_blocks_until_reconciled_test() {
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
   uncertain
   |> should.equal(run.UncertainAction(
+    fabric.id(run),
     ActionId(1, "t"),
     "transfer_funds",
     "gateway timed out after sending",

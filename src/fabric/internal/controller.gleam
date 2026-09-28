@@ -11,12 +11,19 @@
 //// ```text
 //// AwaitingModel(turn) --reply--> Acting(batch) | Ended
 //// Acting(batch)       --all model-visible--> AwaitingModel(turn + 1)
-//// Acting(batch)       --cancel or host fault, tools running--> Stopping
-//// Stopping            --tools stopped--> Ended
+//// Acting(batch)       --cancel or host fault, tools or children active--> Stopping
+//// Stopping            --tools stopped and children ended--> Ended
 //// ```
 ////
 //// `answer` resolves an approval request of the current batch; `abandon`
 //// and `recover` take over a record whose runner was lost.
+////
+//// A delegation (a call that starts a sub-agent run) is admitted like a
+//// tool call, after checking the run's sub-agent budgets. When allowed it
+//// is committed `Running` with its child run id (the fence), the runner
+//// then stores the child and reports `ChildStarted` (`Delegated`), and the
+//// child's end arrives as `ChildEnded`. A delegated action needs no runner:
+//// the child run drives itself.
 
 import fabric/internal/invocation
 import fabric/internal/registry.{type Registry}
@@ -29,6 +36,7 @@ import fabric/run.{
   type HostFailure, type Identity, type Outcome, type Status, type TokenUsage,
   ActionRecord,
 }
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -45,8 +53,15 @@ pub type Env(context) {
   )
 }
 
+/// `max_depth` counts levels below the root run: a run at `depth` may start
+/// sub-agents while `depth < max_depth`.
 pub type Limits {
-  Limits(max_turns: Int, token_budget: Option(Int))
+  Limits(
+    max_turns: Int,
+    token_budget: Option(Int),
+    max_children: Int,
+    max_depth: Int,
+  )
 }
 
 pub type StopReason {
@@ -59,7 +74,8 @@ pub type Phase {
   AwaitingModel(turn: Int)
   /// The tool batch requested by the reply to `turn`.
   Acting(turn: Int, actions: List(ActionRecord))
-  /// Waiting for the executor to confirm that no tool of the batch runs.
+  /// Waiting for the executor to confirm that no tool of the batch runs,
+  /// and for every child run of the batch to end.
   Stopping(turn: Int, actions: List(ActionRecord), reason: StopReason)
   Ended(Outcome)
 }
@@ -70,6 +86,10 @@ pub type State {
     agent: Identity,
     /// Increases by one each time a lost runner's work is taken over.
     incarnation: Int,
+    /// The action that started this run, for a sub-agent run.
+    parent: Option(run.Parent),
+    /// Levels below the root run: 0 for a root run.
+    depth: Int,
     limits: Limits,
     turns_used: Int,
     usage: TokenUsage,
@@ -96,6 +116,21 @@ pub type Event {
   /// the environment the event is applied with.
   Answer(reference: ApprovalRef, answer: Answer, reviewer: Option(String))
   Cancel
+  /// The child run of a delegation is stored and runs.
+  ChildStarted(ActionId)
+  /// The child run of a delegation ended (or cannot be continued).
+  ChildEnded(ActionId, ChildResult)
+}
+
+/// What became of a delegation's child run.
+pub type ChildResult {
+  /// The child finished with `outcome`; `unknown_effects` when it left an
+  /// effect of unknown status (an unreconciled uncertain action).
+  ChildFinished(outcome: Outcome, unknown_effects: Bool)
+  /// The child's record cannot be read or continued.
+  ChildLost(detail: String)
+  /// The child was never stored (its start was cut short).
+  ChildMissing
 }
 
 pub type Effect {
@@ -103,6 +138,10 @@ pub type Effect {
   Dispatch(List(#(ActionId, ToolCall)))
   StopTools
   AbortModel
+  /// Store and start the child run `child` for the delegation `call`.
+  StartChild(id: ActionId, child: String, call: ToolCall)
+  /// Cancel these child runs (action, child run id).
+  CancelChildren(List(#(ActionId, String)))
 }
 
 pub type Rejection {
@@ -130,12 +169,16 @@ pub fn start(
   agent: Identity,
   limits: Limits,
   prompt: String,
+  parent: Option(run.Parent),
+  depth: Int,
 ) -> #(State, List(Effect)) {
   let state =
     State(
       run:,
       agent:,
       incarnation: 1,
+      parent:,
+      depth:,
       limits:,
       turns_used: 0,
       usage: run.TokenUsage(0, 0, 0),
@@ -199,6 +242,29 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
       )
       Ok(settle(env, State(..state, phase: Acting(turn, actions))))
     }
+    Acting(turn, actions), ChildStarted(id) -> {
+      use actions <- result.try(child_started(actions, id))
+      Ok(#(State(..state, phase: Acting(turn, actions)), []))
+    }
+    Acting(turn, actions), ChildEnded(id, ChildMissing) -> {
+      // A child that was never stored is started again by recovery; in a
+      // live batch this report is out of date.
+      let _ = #(turn, actions)
+      Error(ReportNotExpected(id))
+    }
+    Acting(turn, actions), ChildEnded(id, result) -> {
+      use #(actions, fault) <- result.try(child_ended(
+        actions,
+        id,
+        result,
+        settle_with(env),
+      ))
+      let state = State(..state, phase: Acting(turn, actions))
+      case fault {
+        Some(failure) -> Ok(stop(state, turn, actions, HostFault(failure)))
+        None -> Ok(settle(env, state))
+      }
+    }
     Acting(..), _ -> Error(StaleEvent)
 
     Stopping(turn, actions, reason), ToolReported(id, outcome) -> {
@@ -209,8 +275,26 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
       use actions <- result.try(update(actions, id, lose(id, why)))
       Ok(#(State(..state, phase: Stopping(turn, actions, reason)), []))
     }
-    Stopping(_, actions, reason), ToolsStopped ->
-      Ok(#(finish_stop(state, actions, reason, "stopped while running"), []))
+    Stopping(turn, actions, reason), ToolsStopped ->
+      Ok(
+        #(
+          finish_stop(state, turn, actions, reason, "stopped while running"),
+          [],
+        ),
+      )
+    Stopping(turn, actions, reason), ChildStarted(id) -> {
+      use actions <- result.try(child_started(actions, id))
+      Ok(#(State(..state, phase: Stopping(turn, actions, reason)), []))
+    }
+    Stopping(turn, actions, reason), ChildEnded(id, result) -> {
+      use #(actions, _) <- result.try(child_ended(
+        actions,
+        id,
+        result,
+        settle_with(env),
+      ))
+      Ok(#(stopped_when_idle(state, turn, actions, reason), []))
+    }
     Stopping(..), _ -> Error(StaleEvent)
   }
 }
@@ -228,29 +312,246 @@ pub fn cancel(state: State) -> Transition {
 
 /// Cancels a run whose runner was lost: its work is abandoned first. A
 /// stop the lost runner had begun is completed by abandoning it, and that
-/// ending is the cancellation.
+/// ending is the cancellation; one still waiting for child runs is asked
+/// to cancel them again.
 pub fn cancel_abandoned(state: State) -> Transition {
   case state.phase, abandon(state) {
     Stopping(..), State(phase: Ended(_), ..) as ended -> Ok(#(ended, []))
+    Stopping(..), State(phase: Stopping(_, actions, _), ..) as stopping ->
+      Ok(#(stopping, cancel_children(actions)))
     _, abandoned -> cancel(abandoned)
   }
 }
 
+/// Cancels a run with no agent and no runner (`fabric.cancel_stored`):
+/// the work of a lost runner is abandoned, the ends of its children (read
+/// by the caller after cancelling them) are applied with no delegation to
+/// map them, so each is recorded as uncertain unless it never started, and
+/// the run ends in this one transition.
+pub fn cancel_unattended(
+  state: State,
+  ended: List(#(ActionId, ChildResult)),
+) -> Transition {
+  let stopping = case state.phase {
+    Stopping(..) -> True
+    _ -> False
+  }
+  let state = case needs_runner(state) {
+    True -> abandon(state)
+    False -> state
+  }
+  let unmapped = fn(_, _) { Error(Nil) }
+  let apply = fn(actions) {
+    list.fold(ended, actions, fn(actions, entry) {
+      let #(id, result) = entry
+      case child_ended(actions, id, result, unmapped) {
+        Ok(#(actions, _)) -> actions
+        Error(_) -> actions
+      }
+    })
+  }
+  let state = case state.phase {
+    Acting(turn, actions) -> State(..state, phase: Acting(turn, apply(actions)))
+    Stopping(turn, actions, reason) ->
+      stopped_when_idle(state, turn, apply(actions), reason)
+    AwaitingModel(_) | Ended(_) -> state
+  }
+  case stopping, state.phase {
+    True, Ended(_) -> Ok(#(state, []))
+    _, _ -> cancel(state)
+  }
+}
+
+/// The executor has confirmed that no tool runs: running tools become
+/// uncertain, queued ones not started. The run ends unless child runs of
+/// the batch are still ending.
 fn finish_stop(
   state: State,
+  turn: Int,
   actions: List(ActionRecord),
   reason: StopReason,
   evidence: String,
 ) -> State {
   let actions =
     list.map(actions, fn(action) {
-      case action.state {
-        run.Running -> ActionRecord(..action, state: run.Uncertain(evidence))
-        run.Queued -> ActionRecord(..action, state: run.NotStarted)
-        _ -> action
+      case action.state, action.child {
+        run.Running, None ->
+          ActionRecord(..action, state: run.Uncertain(evidence))
+        run.Running, Some(_) -> ActionRecord(..action, state: run.Delegated)
+        run.Queued, _ -> ActionRecord(..action, state: run.NotStarted)
+        _, _ -> action
       }
     })
-  end(state, actions, stop_outcome(reason))
+  stopped_when_idle(state, turn, actions, reason)
+}
+
+/// Ends a stopping run once no tool runs and no child run is active.
+fn stopped_when_idle(
+  state: State,
+  turn: Int,
+  actions: List(ActionRecord),
+  reason: StopReason,
+) -> State {
+  case list.any(actions, fn(a) { tool_running(a) || child_active(a) }) {
+    True -> State(..state, phase: Stopping(turn, actions, reason))
+    False -> end(state, actions, stop_outcome(reason))
+  }
+}
+
+fn tool_running(action: ActionRecord) -> Bool {
+  action.state == run.Running && action.child == None
+}
+
+/// A delegation whose child run is being started or runs.
+fn child_active(action: ActionRecord) -> Bool {
+  case action.state, action.child {
+    run.Delegated, _ | run.Running, Some(_) -> True
+    _, _ -> False
+  }
+}
+
+fn cancel_children(actions: List(ActionRecord)) -> List(Effect) {
+  case
+    list.filter_map(actions, fn(action) {
+      case child_active(action), action.child {
+        True, Some(child) -> Ok(#(action.id, child))
+        _, _ -> Error(Nil)
+      }
+    })
+  {
+    [] -> []
+    children -> [CancelChildren(children)]
+  }
+}
+
+// --- sub-agents ----------------------------------------------------------------
+
+fn child_started(
+  actions: List(ActionRecord),
+  id: ActionId,
+) -> Result(List(ActionRecord), Rejection) {
+  update_record(actions, id, fn(action) {
+    case action.state, action.child {
+      run.Running, Some(_) -> Ok(ActionRecord(..action, state: run.Delegated))
+      _, _ -> Error(ReportNotExpected(id))
+    }
+  })
+}
+
+type Settle =
+  fn(String, Outcome) -> Result(invocation.Outcome, Nil)
+
+fn settle_with(env: Env(context)) -> Settle {
+  fn(name, outcome) { registry.settle(env.registry, name, outcome) }
+}
+
+/// Applies a child run's end to its delegation. A child that left effects
+/// of unknown status, or cannot be read, makes the delegation uncertain;
+/// otherwise the delegation maps the child's outcome.
+fn child_ended(
+  actions: List(ActionRecord),
+  id: ActionId,
+  result: ChildResult,
+  settle: Settle,
+) -> Result(#(List(ActionRecord), Option(HostFailure)), Rejection) {
+  use action <- result.try(
+    list.find(actions, fn(action) { action.id == id })
+    |> result.replace_error(UnknownAction(id)),
+  )
+  use child <- result.try(case child_active(action), action.child {
+    True, Some(child) -> Ok(child)
+    _, _ -> Error(ReportNotExpected(id))
+  })
+  let named = "the sub-agent run " <> child
+  let #(action_state, fault) = case result {
+    ChildMissing -> #(run.NotStarted, None)
+    ChildLost(detail) -> #(
+      run.Uncertain(named <> " cannot be continued: " <> detail),
+      None,
+    )
+    ChildFinished(_, True) -> #(
+      run.Uncertain(named <> " ended with effects of unknown status"),
+      None,
+    )
+    ChildFinished(outcome, False) ->
+      case settle(action.call.name, outcome) {
+        Ok(invocation.Returned(content)) -> #(run.Succeeded(content), None)
+        Ok(invocation.FailedVisibly(content)) -> #(
+          run.ToolFailed(content),
+          None,
+        )
+        Ok(invocation.EffectUncertain(evidence)) -> #(
+          run.Uncertain(evidence),
+          None,
+        )
+        Ok(invocation.OutputUnencodable(detail)) -> #(
+          run.Faulted(detail),
+          Some(run.OutputEncodingFailed(id, detail)),
+        )
+        Ok(invocation.ArgumentsRejected(detail)) -> #(
+          run.Faulted(detail),
+          Some(run.ToolChanged(id, detail)),
+        )
+        Error(Nil) -> #(
+          run.Uncertain(named <> " ended, and no delegation maps its outcome"),
+          None,
+        )
+      }
+  }
+  let actions =
+    list.map(actions, fn(other) {
+      case other.id == id {
+        True -> ActionRecord(..other, state: action_state)
+        False -> other
+      }
+    })
+  Ok(#(actions, fault))
+}
+
+/// How many sub-agent runs `records` started or may still start (awaiting
+/// an approval).
+fn children_reserved(env: Env(context), records: List(ActionRecord)) -> Int {
+  list.count(records, fn(record) {
+    case record.child, record.state {
+      Some(_), _ -> True
+      None, run.AwaitingApproval(..) ->
+        registry.is_delegation(env.registry, record.call.name)
+      None, _ -> False
+    }
+  })
+}
+
+/// The id of the next child run: the parent's id and a sequence number, so
+/// that it is deterministic and a valid run id.
+fn next_child(state: State, records: List(ActionRecord)) -> String {
+  let started = list.count(records, fn(record) { record.child != None })
+  state.run <> "-" <> int.to_string(started + 1)
+}
+
+fn start_children(actions: List(ActionRecord)) -> List(Effect) {
+  list.filter_map(actions, fn(action) {
+    case action.state, action.child {
+      run.Running, Some(child) -> Ok(StartChild(action.id, child, action.call))
+      _, _ -> Error(Nil)
+    }
+  })
+}
+
+fn update_record(
+  actions: List(ActionRecord),
+  id: ActionId,
+  change: fn(ActionRecord) -> Result(ActionRecord, Rejection),
+) -> Result(List(ActionRecord), Rejection) {
+  case list.any(actions, fn(action) { action.id == id }) {
+    False -> Error(UnknownAction(id))
+    True ->
+      list.try_map(actions, fn(action) {
+        case action.id == id {
+          False -> Ok(action)
+          True -> change(action)
+        }
+      })
+  }
 }
 
 // --- approvals -----------------------------------------------------------------
@@ -364,8 +665,13 @@ fn decide(
       let actions = replace(answered(run.Rejected(reason)))
       settle(env, State(..state, phase: Acting(turn, actions)))
     }
-    run.Approve ->
-      case gate(env, state.run, action.id, action.call) {
+    run.Approve -> {
+      let others =
+        list.append(
+          state.history,
+          list.filter(actions, fn(other) { other.id != action.id }),
+        )
+      case gate(env, state, action.id, action.call, others) {
         Error(failure) ->
           stop(state, turn, replace(answered(action.state)), HostFault(failure))
         Ok(Decided(policy.RequireApproval(required)))
@@ -386,18 +692,28 @@ fn decide(
           )
         }
         Ok(gated) -> {
+          // The approval answers the requirement the policy still asks for.
+          let gated = case gated {
+            Decided(policy.RequireApproval(_)) -> Decided(policy.Allow)
+            other -> other
+          }
+          let admitted =
+            admitted(env, state, action.id, action.call, gated, 0, others)
           let approved =
-            answered(case gated {
-              Refused(action_state) -> action_state
-              Decided(policy.Deny(reason)) -> run.Denied(reason)
-              Decided(policy.Allow) | Decided(policy.RequireApproval(_)) ->
-                run.Queued
-            })
+            ActionRecord(..answered(admitted.state), child: admitted.child)
           let state = State(..state, phase: Acting(turn, replace(approved)))
           let #(state, effects) = settle(env, state)
-          #(state, list.append(dispatch([approved]), effects))
+          #(
+            state,
+            list.flatten([
+              dispatch([approved]),
+              start_children([approved]),
+              effects,
+            ]),
+          )
         }
       }
+    }
   }
 }
 
@@ -458,7 +774,7 @@ fn tools_requested(
         )
       let withdrawn =
         list.map(calls, fn(call) {
-          ActionRecord(ActionId(turn, call.id), call, run.NotStarted, [])
+          ActionRecord(ActionId(turn, call.id), call, run.NotStarted, [], None)
         })
       case continuation_blocked(state, usage) {
         Some(outcome) -> #(end(state, withdrawn, outcome), [])
@@ -519,21 +835,25 @@ fn admit_batch(
     list.try_fold(calls, #(state.approvals_issued, []), fn(acc, call) {
       let #(issued, records) = acc
       let id = ActionId(turn, call.id)
-      use action_state <- result.map(admit(env, state.run, id, call, issued))
-      let issued = case action_state {
+      let others = list.append(state.history, records)
+      use gated <- result.map(gate(env, state, id, call, others))
+      let record = admitted(env, state, id, call, gated, issued, others)
+      let issued = case record.state {
         run.AwaitingApproval(..) -> issued + 1
         _ -> issued
       }
-      #(issued, [ActionRecord(id, call, action_state, []), ..records])
+      #(issued, list.append(records, [record]))
     })
   case admitted {
     Error(failure) -> #(end(state, withdrawn, run.Failed(failure)), [])
-    Ok(#(issued, records)) -> {
-      let actions = list.reverse(records)
+    Ok(#(issued, actions)) -> {
       let state =
         State(..state, approvals_issued: issued, phase: Acting(turn, actions))
       let #(state, effects) = settle(env, state)
-      #(state, list.append(dispatch(actions), effects))
+      #(
+        state,
+        list.flatten([dispatch(actions), start_children(actions), effects]),
+      )
     }
   }
 }
@@ -545,40 +865,79 @@ type Gated {
   Decided(policy.Decision)
 }
 
+/// `others` are the run's other actions, for the sub-agent budgets: a
+/// delegation is refused before the policy when the run is too deep or has
+/// reserved every child it may start.
 fn gate(
   env: Env(context),
-  run: String,
+  state: State,
   id: ActionId,
   call: ToolCall,
+  others: List(ActionRecord),
 ) -> Result(Gated, HostFailure) {
-  case registry.admit(env.registry, call.name, call.arguments_json) {
-    Error(registry.NotRegistered) -> Ok(Refused(run.UnknownTool))
-    Error(registry.MalformedArguments(detail)) ->
+  let target = registry.target(env.registry, call.name)
+  let limits = state.limits
+  case registry.admit(env.registry, call.name, call.arguments_json), target {
+    Error(registry.NotRegistered), _ -> Ok(Refused(run.UnknownTool))
+    Error(registry.MalformedArguments(detail)), _ ->
       Ok(Refused(run.InvalidArguments(detail)))
-    Ok(Nil) ->
-      env.policy(
-        env.context,
-        policy.Action(run, id, call.name, call.arguments_json),
-      )
-      |> result.map(Decided)
-      |> result.map_error(run.PolicyFailed(id, _))
+    Ok(Nil), policy.StartAgent(..) if state.depth >= limits.max_depth ->
+      Ok(Refused(run.LimitReached(run.DepthLimit(limits.max_depth))))
+    Ok(Nil), policy.StartAgent(..) ->
+      case children_reserved(env, others) >= limits.max_children {
+        True ->
+          Ok(Refused(run.LimitReached(run.ChildLimit(limits.max_children))))
+        False -> decide_policy(env, state.run, id, call, target)
+      }
+    Ok(Nil), policy.InvokeTool ->
+      decide_policy(env, state.run, id, call, target)
   }
 }
 
-fn admit(
+fn decide_policy(
   env: Env(context),
   run: String,
   id: ActionId,
   call: ToolCall,
+  target: policy.Target,
+) -> Result(Gated, HostFailure) {
+  env.policy(
+    env.context,
+    policy.Action(run, id, call.name, call.arguments_json, target),
+  )
+  |> result.map(Decided)
+  |> result.map_error(run.PolicyFailed(id, _))
+}
+
+/// The record of a gated call. An allowed tool is queued for the executor;
+/// an allowed delegation is committed running with its child run id, and
+/// the runner starts the child after the commit.
+fn admitted(
+  env: Env(context),
+  state: State,
+  id: ActionId,
+  call: ToolCall,
+  gated: Gated,
   issued: Int,
-) -> Result(ActionState, HostFailure) {
-  use gated <- result.map(gate(env, run, id, call))
+  others: List(ActionRecord),
+) -> ActionRecord {
+  let record = fn(action_state) {
+    ActionRecord(id, call, action_state, [], None)
+  }
   case gated {
-    Refused(action_state) -> action_state
-    Decided(policy.Allow) -> run.Queued
-    Decided(policy.Deny(reason)) -> run.Denied(reason)
+    Refused(action_state) -> record(action_state)
+    Decided(policy.Deny(reason)) -> record(run.Denied(reason))
     Decided(policy.RequireApproval(requirement)) ->
-      run.AwaitingApproval(requirement, issued + 1)
+      record(run.AwaitingApproval(requirement, issued + 1))
+    Decided(policy.Allow) ->
+      case registry.is_delegation(env.registry, call.name) {
+        False -> record(run.Queued)
+        True ->
+          ActionRecord(
+            ..record(run.Running),
+            child: Some(next_child(state, others)),
+          )
+      }
   }
 }
 
@@ -646,12 +1005,12 @@ fn stop(
         _ -> action
       }
     })
-  case list.any(actions, fn(action) { action.state == run.Running }) {
-    True -> #(State(..state, phase: Stopping(turn, actions, reason)), [
-      StopTools,
-    ])
-    False -> #(end(state, actions, stop_outcome(reason)), [])
+  let stop_tools = case list.any(actions, tool_running) {
+    True -> [StopTools]
+    False -> []
   }
+  let effects = list.append(stop_tools, cancel_children(actions))
+  #(stopped_when_idle(state, turn, actions, reason), effects)
 }
 
 fn stop_outcome(reason: StopReason) -> Outcome {
@@ -801,12 +1160,26 @@ pub fn model_content(action_state: ActionState) -> Result(String, Nil) {
     run.InvalidArguments(detail) ->
       Ok(invocation.error_detail_content("invalid_arguments", detail))
     run.UnknownTool -> Ok(invocation.error_content("unknown_tool"))
+    run.LimitReached(budget) ->
+      Ok(invocation.error_detail_content("limit_reached", describe(budget)))
     run.Queued
     | run.Running
     | run.AwaitingApproval(..)
     | run.Uncertain(_)
     | run.NotStarted
+    | run.Delegated
     | run.Faulted(_) -> Error(Nil)
+  }
+}
+
+fn describe(budget: run.Budget) -> String {
+  case budget {
+    run.ChildLimit(limit) ->
+      "at most " <> int.to_string(limit) <> " sub-agent runs per run"
+    run.DepthLimit(limit) ->
+      "sub-agents nest at most " <> int.to_string(limit) <> " levels deep"
+    run.TurnLimit(limit) -> "at most " <> int.to_string(limit) <> " model turns"
+    run.TokenLimit(limit, _) -> "at most " <> int.to_string(limit) <> " tokens"
   }
 }
 
@@ -827,16 +1200,19 @@ pub fn abandon(state: State) -> State {
         phase: Acting(
           turn,
           list.map(actions, fn(action) {
-            case action.state {
-              run.Running ->
+            case action.state, action.child {
+              run.Running, None ->
                 ActionRecord(..action, state: run.Uncertain(lost_evidence))
-              _ -> action
+              // The child run is durable: it exists, or recovery starts it.
+              run.Running, Some(_) ->
+                ActionRecord(..action, state: run.Delegated)
+              _, _ -> action
             }
           }),
         ),
       )
-    Stopping(_, actions, reason) ->
-      finish_stop(state, actions, reason, lost_evidence)
+    Stopping(turn, actions, reason) ->
+      finish_stop(state, turn, actions, reason, lost_evidence)
     AwaitingModel(_) | Ended(_) -> state
   }
 }
@@ -844,12 +1220,48 @@ pub fn abandon(state: State) -> State {
 /// `abandon`, then restarts the work that is safe to restart: queued
 /// actions are dispatched again and a lost model call is issued again as a
 /// new attempt against the turn budget.
+///
+/// Delegated actions are left to the runtime, which reattaches their child
+/// runs; a stop still waiting for child runs asks to cancel them again.
 pub fn recover(env: Env(context), state: State) -> #(State, List(Effect)) {
   let state = abandon(state)
   case state.phase {
     AwaitingModel(_) -> call_model(env, state)
     Acting(_, actions) -> #(state, dispatch(actions))
-    Stopping(..) | Ended(_) -> #(state, [])
+    Stopping(_, actions, _) -> #(state, cancel_children(actions))
+    Ended(_) -> #(state, [])
+  }
+}
+
+/// The delegations whose child run is active: (action, delegation name,
+/// child run id).
+pub fn active_children(state: State) -> List(#(ActionId, String, String)) {
+  case state.phase {
+    Acting(_, actions) | Stopping(_, actions, _) ->
+      list.filter_map(actions, fn(action) {
+        case child_active(action), action.child {
+          True, Some(child) -> Ok(#(action.id, action.call.name, child))
+          _, _ -> Error(Nil)
+        }
+      })
+    AwaitingModel(_) | Ended(_) -> []
+  }
+}
+
+/// What the run's end means for the delegation that started it.
+pub fn child_result(state: State) -> Result(ChildResult, Nil) {
+  case state.phase {
+    Ended(outcome) ->
+      Ok(ChildFinished(
+        outcome,
+        list.any(state.history, fn(action) {
+          case action.state {
+            run.Uncertain(_) -> True
+            _ -> False
+          }
+        }),
+      ))
+    AwaitingModel(_) | Acting(..) | Stopping(..) -> Error(Nil)
   }
 }
 
@@ -878,7 +1290,12 @@ pub fn status(state: State) -> Status {
             list.filter_map(actions, fn(action) {
               case action.state {
                 run.Uncertain(evidence) ->
-                  Ok(run.UncertainAction(action.id, action.call.name, evidence))
+                  Ok(run.UncertainAction(
+                    state.run,
+                    action.id,
+                    action.call.name,
+                    evidence,
+                  ))
                 _ -> Error(Nil)
               }
             }),
@@ -911,6 +1328,7 @@ pub fn snapshot(state: State) -> run.Snapshot {
     run: state.run,
     agent: state.agent,
     incarnation: state.incarnation,
+    parent: state.parent,
     status: status(state),
     turns_used: state.turns_used,
     max_turns: state.limits.max_turns,

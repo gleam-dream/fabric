@@ -106,7 +106,11 @@ pub fn restart_keeps_results_and_takes_over_running_and_queued_tools_test() {
   probe.release(queued)
   fabric.await(run, 5000)
   |> should.equal(
-    Ok(run.Suspended([], [run.UncertainAction(ActionId(1, "a"), "slow", lost)])),
+    Ok(
+      run.Suspended([], [
+        run.UncertainAction(fabric.id(run), ActionId(1, "a"), "slow", lost),
+      ]),
+    ),
   )
   states(run)
   |> should.equal([
@@ -294,7 +298,11 @@ pub fn a_runner_of_an_older_incarnation_cannot_commit_test() {
   states(taken) |> should.equal([run.Uncertain(lost)])
   fabric.status(taken)
   |> should.equal(
-    Ok(run.Suspended([], [run.UncertainAction(ActionId(1, "a"), "slow", lost)])),
+    Ok(
+      run.Suspended([], [
+        run.UncertainAction(fabric.id(run), ActionId(1, "a"), "slow", lost),
+      ]),
+    ),
   )
   restart.remove_dir(dir)
 }
@@ -573,7 +581,14 @@ pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
       run: "run-stopping",
       agent: run.Identity("agent", 1),
       incarnation: 1,
-      limits: controller.Limits(max_turns: 8, token_budget: None),
+      parent: None,
+      depth: 0,
+      limits: controller.Limits(
+        max_turns: 8,
+        token_budget: None,
+        max_children: 0,
+        max_depth: 0,
+      ),
       turns_used: 1,
       usage: run.TokenUsage(0, 0, 0),
       transcript: [model.UserMessage("go"), model.AssistantMessage("", [call])],
@@ -581,7 +596,7 @@ pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
       approvals_issued: 0,
       phase: controller.Stopping(
         1,
-        [run.ActionRecord(ActionId(1, "a"), call, run.Running, [])],
+        [run.ActionRecord(ActionId(1, "a"), call, run.Running, [], None)],
         controller.CancelRequested,
       ),
     )
