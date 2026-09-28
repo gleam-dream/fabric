@@ -53,6 +53,10 @@
 //// | `run_cancelled` | `[fabric, run, cancel]` | a cancellation was committed |
 //// | `run_finished` | `[fabric, run, stop]` | the run ended |
 ////
+//// A late settlement (`tool.bind_settling`) of a stopped action is
+//// observed as that action's `tool_settled`; one that resolves an
+//// uncertain effect emits nothing, like a reconciliation.
+////
 //// Metadata carries identifiers and closed kinds only, never arguments,
 //// tool results, or model text. `turn` and `call_id` identify an action
 //// only within its `run`.

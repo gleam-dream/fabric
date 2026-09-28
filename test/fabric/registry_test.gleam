@@ -66,7 +66,9 @@ pub fn admission_distinguishes_unknown_tools_and_malformed_arguments_test() {
 pub fn invocation_distinguishes_success_failure_and_uncertainty_test() {
   let assert Ok(tools) =
     registry.new([apps.weather_tool(), apps.transfer_tool()])
-  let invoke = fn(name, args) { registry.invoke(tools, Nil, name, args) }
+  let invoke = fn(name, args) {
+    registry.invoke(tools, Nil, name, args, unsettled)
+  }
   invoke("lookup_weather", "{\"city\":\"Paris\"}")
   |> should.equal(invocation.Returned("{\"summary\":\"sunny\"}"))
   invoke("lookup_weather", "{\"city\":\"Oslo\"}")
@@ -91,6 +93,7 @@ pub fn the_binding_classifies_every_typed_error_test() {
       Nil,
       "transfer_funds",
       "{\"to\":\"bob\",\"amount\":" <> amount <> "}",
+      unsettled,
     )
   }
   invoke("500")
@@ -107,7 +110,7 @@ pub fn handler_receives_context_separately_from_input_test() {
       fn(_: Nil) { tool.Explain("failed") },
     )
   let assert Ok(tools) = registry.new([echo_context])
-  registry.invoke(tools, "alice", "whoami", "{\"city\":\"Rome\"}")
+  registry.invoke(tools, "alice", "whoami", "{\"city\":\"Rome\"}", unsettled)
   |> should.equal(invocation.Returned("\"alice@Rome\""))
 }
 
@@ -124,7 +127,7 @@ pub fn unencodable_output_is_a_host_failure_test() {
     })
   let assert Ok(tools) = registry.new([broken])
   let assert invocation.OutputUnencodable(_) =
-    registry.invoke(tools, Nil, "broken", "{\"city\":\"Rome\"}")
+    registry.invoke(tools, Nil, "broken", "{\"city\":\"Rome\"}", unsettled)
 }
 
 /// A scripted model builds its calls from the same typed definitions the
@@ -140,4 +143,9 @@ pub fn a_typed_call_encodes_its_input_with_the_definition_test() {
       provider_state: option.None,
     )),
   )
+}
+
+/// No late settlement is expected from these tools.
+fn unsettled(_) -> Result(Nil, tool.SettleError) {
+  Error(tool.NotAwaited)
 }

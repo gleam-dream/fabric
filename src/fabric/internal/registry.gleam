@@ -8,6 +8,7 @@ import fabric/run
 import fabric/tool.{type Tool}
 import gleam/dict.{type Dict}
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import llm_wire/types
 
@@ -21,6 +22,8 @@ pub type RegistryError {
   InvalidName(String)
   /// The input codec has no JSON Schema to declare.
   SchemaUnavailable(String)
+  /// A tool bound with `tool.bind_settling` waits no positive time.
+  SettlementBoundNotPositive(name: String, within: Int)
 }
 
 pub type AdmissionError {
@@ -46,6 +49,13 @@ pub fn new(
           let errors = case tool.input_schema(tool) {
             Ok(_) -> errors
             Error(_) -> [SchemaUnavailable(name), ..errors]
+          }
+          let errors = case tool.settles_within(tool) {
+            Some(within) if within <= 0 -> [
+              SettlementBoundNotPositive(name, within),
+              ..errors
+            ]
+            _ -> errors
           }
           #(Registry([name, ..order], dict.insert(by_name, name, tool)), errors)
         }
@@ -87,15 +97,30 @@ pub fn admit(
 }
 
 /// Runs the handler in the calling process. The caller contains crashes.
+/// `late` receives a settlement of this invocation after its task was
+/// stopped (`tool.bind_settling`).
 pub fn invoke(
   registry: Registry(context),
   context: context,
   name: String,
   arguments: String,
+  late: tool.Late,
 ) -> Outcome {
   case dict.get(registry.tools, name) {
     Error(Nil) -> invocation.ArgumentsRejected("tool is not registered")
-    Ok(tool) -> tool.invoke(tool, context, arguments)
+    Ok(tool) -> tool.invoke(tool, context, arguments, late)
+  }
+}
+
+/// How long a stopped run waits for a settlement of `name`, for a tool
+/// bound with `tool.bind_settling`.
+pub fn settles_within(
+  registry: Registry(context),
+  name: String,
+) -> Option(Int) {
+  case dict.get(registry.tools, name) {
+    Ok(tool) -> tool.settles_within(tool)
+    Error(Nil) -> None
   }
 }
 
