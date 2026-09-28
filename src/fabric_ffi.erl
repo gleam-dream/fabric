@@ -1,7 +1,7 @@
 -module(fabric_ffi).
 -export([rescue/1, random_id/0, now_ms/0, ensure_directory/1, directory_get/2,
          directory_insert/3, directory_compare_and_set/4, claim_new/0,
-         claim_take/2]).
+         claim_take/2, exit_shutdown/0, factory_name/1]).
 
 %% Runs Body, turning any raised exception into {error, Description}.
 rescue(Body) ->
@@ -9,6 +9,15 @@ rescue(Body) ->
     catch Class:Reason ->
         {error, unicode:characters_to_binary(io_lib:format("~p: ~P", [Class, Reason, 20]))}
     end.
+
+%% Exits the calling process with reason `shutdown`: a supervisor it
+%% started stops its children in order, and no crash is logged.
+exit_shutdown() ->
+    exit(shutdown).
+
+%% The registered name of the runner factory of the store named Name.
+factory_name(Name) ->
+    binary_to_atom(<<(atom_to_binary(Name))/binary, "$runners">>).
 
 %% 128 random bits as lowercase hex; unique across VM restarts.
 random_id() ->

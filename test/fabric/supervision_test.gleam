@@ -98,6 +98,12 @@ pub fn a_restarted_store_leaves_its_runs_unattended_until_recovered_test() {
   fabric.await(run, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   probe.count(probe, "start:a") |> should.equal(1)
+
+  // The restarted subtree runs new runners.
+  let assert Ok(next) = fabric.start(runs, one_slow(probe), Nil, "again")
+  probe.release(probe.arrival(probe))
+  fabric.await(next, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   restart.remove_dir(dir)
 }
 

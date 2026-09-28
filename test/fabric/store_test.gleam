@@ -278,3 +278,16 @@ pub fn a_hung_backend_call_blocks_only_its_run_until_its_deadline_test() {
   let assert Ok(Error(store.Unavailable(reason))) = process.receive(hung, 5000)
   string.contains(reason, "200 ms") |> should.be_true
 }
+
+/// A store's drain window is how long its runners may finish their work
+/// when the application shuts down: it must be positive and fit a timer.
+pub fn a_drain_window_must_be_positive_and_fit_a_timer_test() {
+  let runs = store.in_memory(process.new_name("drained"))
+  let longest = 4_294_967_295
+  store.with_drain(runs, 0) |> should.equal(Error(store.DrainNotPositive(0)))
+  store.with_drain(runs, longest + 1)
+  |> should.equal(
+    Error(store.DrainTooLarge(value: longest + 1, limit: longest)),
+  )
+  store.with_drain(runs, longest) |> result.is_ok |> should.be_true
+}
