@@ -572,6 +572,43 @@ pub fn a_start_racing_an_ancestor_cancellation_never_runs_test() {
   probe.entries(probe) |> should.equal([])
 }
 
+/// A child whose root is stopping is recovered with a delegation whose
+/// grandchild was never stored: reattaching it finds the root stopping,
+/// stores no grandchild, and the child cancels itself.
+pub fn a_reattached_sub_agent_under_a_stopping_ancestor_never_starts_test() {
+  let probe = probe.new()
+  let store = store.in_memory()
+  store_stopping_root(store, "run-elders")
+  let r = scripted.call("r", "research", "{\"topic\":\"x\"}")
+  let child =
+    store_orphaned_child(
+      store,
+      "run-elders",
+      run.Identity("agent", 1),
+      [model.UserMessage("x"), model.AssistantMessage("", [r])],
+      controller.Acting(1, [
+        run.ActionRecord(
+          ActionId(1, "r"),
+          r,
+          run.Delegated,
+          [],
+          Some("run-elders-1-1"),
+        ),
+      ]),
+    )
+  let delegating = delegating(two_payments(probe, policy.always_allow()))
+
+  let assert Ok(recovered) = fabric.recover(store, delegating, Nil, child)
+  fabric.await(recovered, 5000)
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
+  probe.entries(probe) |> should.equal([])
+  // The grandchild is a tombstone: cancelled before it ever started.
+  let assert Ok(store.Entry(record: stored, ..)) =
+    store.get(store, child <> "-1")
+  let assert Ok(controller.State(phase: controller.NeverStarted, ..)) =
+    record.decode(stored)
+}
+
 // --- a settling child -----------------------------------------------------------
 
 /// A child whose tool hands its settlement to `handed` and waits.
