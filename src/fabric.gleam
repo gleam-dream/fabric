@@ -346,7 +346,11 @@ pub fn pending(
 ///
 /// An answer to a sub-agent run whose ancestor is stopping or has ended is
 /// refused with `RunEnded`, even if the sub-agent's own cancellation has
-/// not been committed yet.
+/// not been committed yet. An answer checked just before an ancestor's
+/// cancellation was committed may still commit, but nothing it approved
+/// starts: a sub-agent run checks its ancestors again before each tool or
+/// sub-agent start, and one that finds an ancestor stopping or ended starts
+/// nothing and cancels itself.
 ///
 /// `reviewer` is recorded with the answer as given. Fabric does not
 /// authenticate it: the application must authenticate and authorize whoever

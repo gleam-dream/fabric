@@ -13,7 +13,7 @@ import fabric/policy.{type ActionId}
 import fabric/run.{type PendingApproval, type Status}
 import fabric/store
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 
@@ -236,29 +236,7 @@ pub fn ancestors_open(
   use #(_, state) <- result.try(runner.load(store, id))
   case state.phase {
     controller.Ended(_) -> Ok(True)
-    _ -> parents_open(store, state.parent, max_links)
-  }
-}
-
-/// More parent links than a valid family has; a longer chain is corrupt.
-const max_links = 64
-
-fn parents_open(
-  store: store.Store,
-  parent: Option(run.Parent),
-  links: Int,
-) -> Result(Bool, ReadError) {
-  case parent, links {
-    None, _ -> Ok(True)
-    Some(_), 0 -> Error(runner.Corrupt("the chain of parent runs is too long"))
-    Some(parent), _ -> {
-      use #(_, above) <- result.try(runner.load(store, parent.run))
-      case above.phase {
-        controller.Stopping(..) | controller.Ended(_) -> Ok(False)
-        controller.Acting(..) | controller.AwaitingModel(_) ->
-          parents_open(store, above.parent, links - 1)
-      }
-    }
+    _ -> runner.read_ancestors(store, state.parent, 64, 0)
   }
 }
 
