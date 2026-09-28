@@ -231,10 +231,11 @@ pub type TakeOverError {
 
 /// Takes over the run `id` if work is in flight and no runner in this store
 /// drives it, then does the same for its children: a child that was never
-/// stored is started, a child that ended (and whose end the parent missed)
-/// is applied to the parent, an active child is taken over in turn, and a
-/// child that cannot be read or continued is an uncertain effect of the
-/// parent's delegation.
+/// stored is started (or, when an answer approved its start, the approval
+/// is asked for again: the context that passed its recheck is gone), a
+/// child that ended (and whose end the parent missed) is applied to the
+/// parent, an active child is taken over in turn, and a child that cannot
+/// be read or continued is an uncertain effect of the parent's delegation.
 pub fn take_over(
   setup: Setup(context),
   id: String,
@@ -296,6 +297,8 @@ fn reattach_child(
     Error(Nil) -> Nil
     Ok(child_setup) ->
       case runner.load(setup.store, child) {
+        Error(runner.NotFound) if action.approvals != [] ->
+          runner.notify_parent(child_setup, controller.ChildMissing)
         Error(runner.NotFound) ->
           case
             registry.prompt(

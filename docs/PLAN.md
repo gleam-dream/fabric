@@ -105,12 +105,33 @@ an idle run is data in the store with no process holding it.
   the `reviewer` it is given as is. The application authenticates and
   authorizes the reviewer before calling it; Fabric checks only that the
   reference is current and that the policy, run again with the context the
-  application passes, still allows the action. That context is for the
-  recheck only: the approved action runs with the run's own context (from
-  `start` or `recover`) whether or not a runner was live. This departs from
-  the design line "approved invocation retains the same context used by the
-  recheck" (oversight `fabric-design.md` §0), which the two paths did not
-  honour consistently; the design owner should confirm or restore it.
+  application passes, still allows the action.
+- **An approved action runs with the context that passed the recheck**
+  (oversight `fabric-design.md` §0, "approved invocation retains the same
+  context used by the recheck"). The approved tool's body, or the approved
+  sub-agent's child run, receives exactly the context given to `answer`,
+  whether a runner was live or the answer started one. It never becomes the
+  run's context: the run's other actions, and its later model turns, keep
+  the context the run was started or recovered with. Mechanism: the effects
+  of a step run with that step's context (`live.Work`); the runner applies
+  its own events with the run's.
+- **An approved action not yet started when its runner is lost is asked for
+  again.** The context is a live value and is never stored, so after a
+  restart an approved-but-queued tool, or an approved sub-agent start whose
+  child was never stored, has no context that passed a recheck. Recovery
+  does not run it with the `recover` context (a stored approval alone does
+  not authorize a later incarnation, §0): it becomes a new approval request
+  under the requirement last answered, the old reference is stale, and the
+  earlier answer stays in the action's approvals, authorizing nothing. This
+  was chosen over rechecking with a context passed to `recover`, which would
+  let whoever recovers stand in for the reviewer.
+- **A sub-agent's context after its first runner.** A child started by an
+  approved start runs with the approved context while its first runner
+  drives it. Work later started through a handle (an answer to the child's
+  own approval, a reconcile) runs with that handle's context, which for a
+  child is its parent handle's, as for any run whose runner a command
+  starts. Keeping the approved context for the child's whole life would
+  need a stored context, which the design excludes.
 - **A superseded answer is kept.** When the recheck asks for another
   requirement, the answer stays in the action's approvals (it authorizes
   nothing) and the new request is issued.
@@ -323,12 +344,16 @@ Implemented. Acceptance, each with its executed evidence:
    are distinct refusals that leave the pause intact; eight concurrent
    answers have one winner and the tool runs once; the policy checked at
    answer time wins over an approval; a changed requirement issues a new
-   request (`RequirementChanged`); the reviewer is recorded as given
-   (`approval_test`, `answer_test`).
+   request (`RequirementChanged`); the reviewer is recorded as given; the
+   approved tool runs with the context the recheck passed, with or without
+   a live runner, and the run's other actions keep the run's context
+   (`approval_test`, `answer_test`, `approved_context_test`).
 3. Restart against the directory store with every Fabric process killed:
    recovery bumps a trusted incarnation with compare-and-set; queued tools
    and a lost model call are issued again (the model call against the turn
-   budget); a running tool becomes an uncertain effect that needs
+   budget), except an approved queued tool, which is asked for again
+   (`an_approved_tool_not_started_before_a_restart_is_asked_for_again_test`);
+   a running tool becomes an uncertain effect that needs
    `reconcile` and is never retried, including when its effect happened and
    its result was never committed; completed results survive; a runner of an
    older incarnation cannot commit; duplicate and concurrent recoveries take
@@ -380,7 +405,7 @@ under process or VM loss. Its findings were fixed test-first:
 | Cancelling an orphaned stopping record did nothing                                                               | `controller.cancel_abandoned` (`cancelling_a_record_a_lost_runner_left_stopping_ends_it_test`).                                                                                                                                                                               |
 | Cancel through another Store left tool bodies running                                                            | Documented on `fabric.cancel`.                                                                                                                                                                                                                                                |
 | Directory store: directory entry not fsynced; O(n²) disk; stray temporary files; `ok = file:close`               | "Never retried" scoped in the `fabric` module documentation; old revisions emptied, stale temporary files swept (`the_directory_store_empties_revisions_older_than_the_previous_test`, `opening_a_directory_store_sweeps_stale_temporary_files_test`); close errors reported. |
-| The answer's context became the run context only without a live runner                                           | The answer's context is for the recheck only (`the_answer_context_is_for_the_recheck_and_the_tool_keeps_the_run_context_test`); see the decision above.                                                                                                                       |
+| The answer's context became the run context only without a live runner                                           | The approved action runs with the answer's context and the run keeps its own, with or without a live runner, and an approved action lost before it started is asked for again (`approved_context_test`); see the decisions above.                                             |
 | A changed requirement left no audit trail                                                                        | The superseded answer is kept (`a_changed_requirement_demands_a_new_answer_test`).                                                                                                                                                                                            |
 | A backend that committed then reported `Unavailable` gave `StartFailed`/`StoreFailed`                            | Store read-back, as above.                                                                                                                                                                                                                                                    |
 | ORACLE A13 said "VM restart"; CAPABILITIES excluded multi-node while the store claims cross-VM safety            | Relabelled and reconciled in ORACLE.md and CAPABILITIES.md.                                                                                                                                                                                                                   |
@@ -417,6 +442,7 @@ Implemented. Acceptance, each with its executed evidence
    start never creates the child and the model sees the rejection
    (`a_sub_agent_starts_only_after_approval_even_across_a_restart_test`,
    `a_rejected_sub_agent_never_starts_test`,
+   `an_approved_sub_agent_starts_with_the_recheck_context_test`,
    `an_allowed_delegation_names_its_child_before_the_child_exists_test`).
 2. **Child pauses surface (anti-oracle B1).** A child's pending approval is
    the parent's, its reference names the child run, answering it through the
@@ -437,8 +463,10 @@ Implemented. Acceptance, each with its executed evidence
    becomes the child's uncertain effect, reported through the parent and
    reconciled on `fabric.child`'s handle); a child record that cannot be
    read makes the delegation uncertain; a runner lost while starting a
-   child leaves it delegated, and recovery starts or reattaches the child
+   child leaves it delegated, and recovery starts or reattaches the child,
+   or asks again for an approved start whose child was never stored
    (`recovering_the_parent_recovers_its_child_test`,
+   `an_approved_sub_agent_never_stored_is_asked_for_again_test`,
    `an_unreadable_child_is_an_uncertain_effect_of_the_parent_test`,
    `recovery_keeps_delegations_waiting_on_their_children_test`).
 5. **Budgets.** `max_children` counts started children and those awaiting an

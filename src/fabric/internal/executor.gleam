@@ -8,10 +8,11 @@
 ////
 //// A task calls `fence` before running a body; the body runs only if the
 //// runner committed the action as running. Crashes inside the body are
-//// contained and reported as uncertain effects.
+//// contained and reported as uncertain effects. Each job carries its own
+//// body, bound to the context the action runs with, so one executor can
+//// run actions of the same run with different contexts.
 
 import fabric/internal/invocation.{type Outcome}
-import fabric/model.{type ToolCall}
 import fabric/policy.{type ActionId}
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
@@ -31,9 +32,13 @@ pub type Hooks {
     max_in_flight: Int,
     /// Called by a task before its body; `False` means do not run.
     fence: fn(ActionId) -> Bool,
-    invoke: fn(ToolCall) -> Outcome,
     report: fn(Report) -> Nil,
   )
+}
+
+/// An action and its tool body, bound to the context it runs with.
+pub type Job {
+  Job(id: ActionId, body: fn() -> Outcome)
 }
 
 pub opaque type Executor {
@@ -41,7 +46,7 @@ pub opaque type Executor {
 }
 
 type Message {
-  Submit(List(#(ActionId, ToolCall)))
+  Submit(List(Job))
   Stop
   Done(ActionId, Outcome)
   Exited(Pid, process.ExitReason)
@@ -52,7 +57,7 @@ type Loop {
     hooks: Hooks,
     parent: Pid,
     self: Subject(Message),
-    queue: List(#(ActionId, ToolCall)),
+    queue: List(Job),
     running: Dict(Pid, ActionId),
     reported: List(ActionId),
   )
@@ -76,8 +81,8 @@ pub fn pid(executor: Executor) -> Pid {
   executor.pid
 }
 
-pub fn submit(executor: Executor, actions: List(#(ActionId, ToolCall))) -> Nil {
-  process.send(executor.subject, Submit(actions))
+pub fn submit(executor: Executor, jobs: List(Job)) -> Nil {
+  process.send(executor.subject, Submit(jobs))
 }
 
 /// Kills every task, reports whatever finished first, then `Stopped`.
@@ -151,14 +156,14 @@ fn drain(state: Loop) -> Nil {
 
 fn fill(state: Loop) -> Loop {
   case state.queue, dict.size(state.running) < state.hooks.max_in_flight {
-    [#(id, call), ..rest], True -> {
+    [Job(id, body), ..rest], True -> {
       let hooks = state.hooks
       let self = state.self
       let pid =
         process.spawn(fn() {
           case hooks.fence(id) {
             False -> Nil
-            True -> process.send(self, Done(id, contained(hooks, call)))
+            True -> process.send(self, Done(id, contained(body)))
           }
         })
       fill(
@@ -170,8 +175,8 @@ fn fill(state: Loop) -> Loop {
 }
 
 /// A crash inside the body may already have caused its effect.
-fn contained(hooks: Hooks, call: ToolCall) -> Outcome {
-  case rescue(fn() { hooks.invoke(call) }) {
+fn contained(body: fn() -> Outcome) -> Outcome {
+  case rescue(body) {
     Ok(outcome) -> outcome
     Error(crash) -> invocation.EffectUncertain("tool crashed: " <> crash)
   }

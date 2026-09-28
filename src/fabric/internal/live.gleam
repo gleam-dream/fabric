@@ -3,15 +3,29 @@
 
 import fabric/internal/controller.{type Effect, type Rejection, type State}
 import fabric/internal/executor
-import fabric/model.{type ModelError, type Reply}
+import fabric/internal/invocation
+import fabric/model.{type ModelError, type Reply, type ToolCall}
 import fabric/policy.{type ActionId}
 import gleam/erlang/process.{type Pid, type Subject}
+import gleam/option.{type Option}
+
+/// The work a committed transition starts, bound to the context it runs
+/// with: how a dispatched tool's body is invoked, and how a delegation's
+/// child run (`parent` state, action, child run id, call) is started.
+pub type Work {
+  Work(
+    invoke: fn(ToolCall) -> invocation.Outcome,
+    start_child: fn(State, ActionId, String, ToolCall) -> Result(Nil, String),
+  )
+}
 
 pub type Message {
   /// A command from outside: the runner applies `step` to its current
-  /// state, commits the result, and answers.
+  /// state, commits the result, performs its effects with `work` (`None`:
+  /// the run's own), and answers.
   Command(
     step: fn(State) -> Result(#(State, List(Effect)), Rejection),
+    work: Option(Work),
     reply: Subject(CommandReply),
   )
   ModelDone(turn: Int, result: Result(Reply, ModelError))
