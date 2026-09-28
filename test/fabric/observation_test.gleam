@@ -223,11 +223,12 @@ pub fn a_run_is_observed_after_each_commit_test() {
   let attachments = capture(events)
   let agent =
     agent.new(
+      "desk",
       scripted.plan([pay_call()]),
       [apps.transfer_tool()],
       transfers_need_approval,
     )
-    |> agent.with_identity("desk", 1)
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "pay")
   let id = support.text(fabric.id(run))
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
@@ -271,12 +272,14 @@ pub fn a_failing_handler_does_not_affect_the_run_test() {
     })
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}"),
       ]),
       [apps.weather_tool()],
       policy.always_allow(),
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
   fabric.await(run, 5000)
   |> should.equal(
@@ -309,11 +312,12 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
   let probe = probe.new()
   let researcher =
     agent.new(
+      "researcher",
       scripted.plan([scripted.slow("s", "s")]),
       [scripted.gated_tool(probe)],
       policy.always_allow(),
     )
-    |> agent.with_identity("researcher", 1)
+    |> support.agent
   let research =
     tool.define(
       "research",
@@ -324,8 +328,7 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
     )
   let assert Ok(call) = tool.call(research, "r", Topic("gleam"))
   let parent =
-    agent.new(scripted.plan([call]), [], policy.always_allow())
-    |> agent.with_identity("lead", 1)
+    agent.new("lead", scripted.plan([call]), [], policy.always_allow())
     |> agent.with_sub_agent(
       research,
       to: researcher,
@@ -337,6 +340,7 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
         }
       },
     )
+    |> support.agent
   let dir = restart.temp_dir()
   let #(owner, #(old, run)) =
     restart.owned(fn() {
@@ -430,12 +434,17 @@ fn entered_by(
   }
 }
 
-fn weather_agent() -> agent.Agent(Nil) {
+fn weather_agent_spec() -> agent.Spec(Nil) {
   agent.new(
+    "agent",
     scripted.plan([scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}")]),
     [apps.weather_tool()],
     policy.always_allow(),
   )
+}
+
+fn weather_agent() -> agent.Agent(Nil) {
+  support.agent(weather_agent_spec())
 }
 
 /// With `[fabric]` routed through a forwarder, a blocked handler stalls
@@ -577,10 +586,12 @@ pub fn a_command_returns_before_its_handlers_run_test() {
     })
   let agent =
     agent.new(
+      "agent",
       scripted.plan([scripted.slow("s", "s")]),
       [scripted.gated_tool(probe)],
       policy.always_allow(),
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "go")
   let _ = probe.arrival(probe)
   let cancelled = fabric.cancel(run)
@@ -599,7 +610,12 @@ pub fn a_command_returns_before_its_handlers_run_test() {
 /// later.
 pub fn a_command_to_a_runner_held_by_a_handler_is_refused_test() {
   let #(entered, attachment) = blocking_model_turn("busy")
-  let agent = weather_agent() |> agent.with_command_timeout(20)
+  let agent =
+    weather_agent_spec()
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), command_timeout: 20),
+    )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
   let #(_, gate) = entered_by(entered, support.text(fabric.id(run)))
   let refused =

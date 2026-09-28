@@ -38,12 +38,14 @@ pub fn a_runner_started_by_a_command_works_while_its_handlers_run_test() {
   let started = process.new_subject()
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":1}"),
       ]),
       [announcing_transfer(started)],
       fn(_, _) { Ok(policy.RequireApproval(run.Requirement("t", 1))) },
     )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "pay")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
 
@@ -67,12 +69,14 @@ pub fn a_runner_started_by_a_command_works_while_its_handlers_run_test() {
 
 fn approval_agent() -> agent.Agent(Nil) {
   agent.new(
+    "agent",
     scripted.plan([
       scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":1}"),
     ]),
     [apps.transfer_tool()],
     fn(_, _) { Ok(policy.RequireApproval(run.Requirement("t", 1))) },
   )
+  |> support.agent
 }
 
 /// A cancellation of a suspended run is committed by its caller, which
@@ -106,6 +110,7 @@ pub fn a_handler_in_a_commands_caller_can_command_the_run_test() {
   let memory = store.in_memory()
   let agent =
     agent.new(
+      "agent",
       scripted.plan([
         scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":1}"),
       ]),
@@ -122,7 +127,10 @@ pub fn a_handler_in_a_commands_caller_can_command_the_run_test() {
       ],
       fn(_, _) { Ok(policy.RequireApproval(run.Requirement("t", 1))) },
     )
-    |> agent.with_command_timeout(300)
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), command_timeout: 300),
+    )
+    |> support.agent
   let assert Ok(run) = fabric.start(memory, agent, Nil, "pay")
   let assert Ok(run.Suspended([pending], _)) = fabric.await(run, 5000)
   let outcome = process.new_subject()
@@ -148,12 +156,14 @@ pub fn a_handler_in_a_commands_caller_can_command_the_run_test() {
 /// A run whose transfer timed out after sending: an uncertain effect.
 fn uncertain_transfer() -> agent.Agent(Nil) {
   agent.new(
+    "agent",
     scripted.plan([
       scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":5000}"),
     ]),
     [apps.transfer_tool()],
     policy.always_allow(),
   )
+  |> support.agent
 }
 
 /// A reconciliation names its effect by run and action, and only runs of

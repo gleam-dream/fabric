@@ -13,6 +13,7 @@ import fabric/model.{type Reply}
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/support
 import fabric/support/probe.{type Probe}
 import fabric/support/restart
 import fabric/support/scripted
@@ -247,8 +248,11 @@ fn run_scenario(
   max_turns: Int,
 ) -> #(fabric.Run(Nil), run.Status) {
   let agent =
-    agent.new(oracle_model(probe, rules), tools, policy.always_allow())
-    |> agent.with_max_turns(max_turns)
+    agent.new("agent", oracle_model(probe, rules), tools, policy.always_allow())
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), max_turns: max_turns),
+    )
+    |> support.agent
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "go")
   let assert Ok(status) = fabric.await(run, 5000)
   #(run, status)
@@ -386,7 +390,8 @@ fn hitl_agent(probe: Probe) -> agent.Agent(Nil) {
       _ -> final(seen)
     }
   }
-  agent.new(oracle_model(probe, rules), [pay(probe)], pay_needs_review)
+  agent.new("agent", oracle_model(probe, rules), [pay(probe)], pay_needs_review)
+  |> support.agent
 }
 
 /// Runs until the pause and observes it as a HITL fixture does.
@@ -528,9 +533,14 @@ fn delegation_agent(probe: Probe) -> agent.Agent(Nil) {
       fn(task) { task.description },
     )
   let researcher =
-    agent.new(delegation_model(probe), [lookup(probe)], policy.always_allow())
-    |> agent.with_identity("researcher", 1)
-  agent.new(delegation_model(probe), [], fn(_, action: policy.Action) {
+    agent.new(
+      "researcher",
+      delegation_model(probe),
+      [lookup(probe)],
+      policy.always_allow(),
+    )
+    |> support.agent
+  agent.new("agent", delegation_model(probe), [], fn(_, action: policy.Action) {
     case action.target {
       policy.StartAgent(..) ->
         Ok(policy.RequireApproval(run.Requirement("review", 1)))
@@ -548,6 +558,7 @@ fn delegation_agent(probe: Probe) -> agent.Agent(Nil) {
       }
     },
   )
+  |> support.agent
 }
 
 /// Approving the start of a sub-agent runs the child once (its model and

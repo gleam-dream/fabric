@@ -1,7 +1,9 @@
 //// Pure agent configuration.
 ////
-//// Building an `Agent` starts nothing. `validate` reports every problem at
-//// once; `fabric.start` validates again before it allocates a process.
+//// A `Spec` describes an agent: its name, model, tools, policy, and
+//// `Limits`. `build` checks it once and reports every problem at once; only
+//// `build` makes the `Agent` that `fabric.start` and `fabric.recover` take,
+//// so a run never starts under an invalid agent. Building starts nothing.
 
 import fabric/internal/registry.{type Registry}
 import fabric/model.{type Model}
@@ -13,23 +15,77 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
-pub opaque type Agent(context) {
-  Agent(
+/// An agent's description, checked by `build`.
+pub opaque type Spec(context) {
+  Spec(
     identity: Identity,
     model: Model,
     tools: List(Tool(context)),
     policy: Policy(context),
     system_prompt: Option(String),
-    max_turns: Int,
-    max_concurrency: Int,
-    token_budget: Option(Int),
-    policy_timeout: Int,
-    model_retry_delay: Int,
-    command_timeout: Int,
+    limits: Limits,
     /// The sub-agent each delegation starts, by delegation name.
     children: List(#(String, Agent(context))),
+  )
+}
+
+/// A checked agent. Only `build` makes one.
+pub opaque type Agent(context) {
+  Agent(admitted: Admitted(context))
+}
+
+/// The bounds of every run of an agent. Start from `default_limits()` and
+/// override what differs:
+///
+/// ```gleam
+/// agent.Limits(..agent.default_limits(), max_turns: 4)
+/// ```
+pub type Limits {
+  Limits(
+    /// Model attempts per run, counting the first request and every retry.
+    max_turns: Int,
+    /// Tool bodies of one run that execute at the same time.
+    max_concurrency: Int,
+    /// Input plus output tokens as reported by the provider. A reply without
+    /// usage then stops the run with `run.BudgetUnverifiable`.
+    token_budget: Option(Int),
+    /// Sub-agent runs one run starts, at most 999. A delegation beyond it is
+    /// refused before the policy, and the model sees why.
     max_children: Int,
+    /// Levels of sub-agents below a run of this agent, at most 16 (1: its
+    /// children may not delegate in turn). A child is bounded by its own
+    /// setting and by what its parent has left.
     max_depth: Int,
+    /// Milliseconds one policy decision may take. A policy that gives no
+    /// decision in time has failed: the run stops closed. The policy runs in
+    /// its own process.
+    policy_timeout: Int,
+    /// Milliseconds before the first retry of a retryable model failure. The
+    /// delay doubles with each consecutive retryable failure, up to 64 times
+    /// this value, and every attempt still counts against the turn limit. A
+    /// cancelled run does not wait for it.
+    model_retry_delay: Int,
+    /// Milliseconds a command (`approve`, `reject`, `cancel`, `reconcile`)
+    /// waits for the run's live runner to take it. A runner busy for longer
+    /// (for example held by a synchronous observation handler) refuses the
+    /// command with `fabric.RunnerBusy`, and never applies it later.
+    command_timeout: Int,
+  )
+}
+
+/// 8 turns, 4 concurrent tools, no token budget, 4 children one level deep,
+/// and 5000 ms for a policy decision and for a command; a first model retry
+/// after 200 ms.
+pub fn default_limits() -> Limits {
+  Limits(
+    max_turns: 8,
+    max_concurrency: 4,
+    token_budget: None,
+    max_children: 4,
+    max_depth: 1,
+    policy_timeout: 5000,
+    model_retry_delay: 200,
+    command_timeout: 5000,
   )
 }
 
@@ -55,61 +111,52 @@ pub type ConfigError {
   InvalidIdentity(name: String, version: Int)
   MaxChildrenNegative(Int)
   MaxDepthNegative(Int)
-  /// More sub-agent runs per run than `max_children_limit`.
-  MaxChildrenTooLarge(Int)
-  /// Deeper nesting than `max_depth_limit`.
-  MaxDepthTooLarge(Int)
-  /// The sub-agent of the delegation `name` is invalid.
-  InvalidChild(name: String, errors: List(ConfigError))
+  /// More sub-agent runs per run than `limit`. With the depth limit, it
+  /// keeps every child run id (the parent's id, `-`, and a sequence number)
+  /// within the 128 characters of a run id.
+  MaxChildrenTooLarge(value: Int, limit: Int)
+  /// Deeper nesting of sub-agent runs below a root run than `limit`.
+  MaxDepthTooLarge(value: Int, limit: Int)
 }
 
-pub const default_max_turns = 8
+const max_children_limit = 999
 
-pub const default_max_concurrency = 4
+const max_depth_limit = 16
 
-pub const default_policy_timeout = 5000
-
-pub const default_model_retry_delay = 200
-
-pub const default_command_timeout = 5000
-
-pub const default_identity = Identity("agent", 1)
-
-pub const default_max_children = 4
-
-pub const default_max_depth = 1
-
-/// The most sub-agent runs one run may start. With `max_depth_limit`, it
-/// keeps every child run id (the parent's id, `-`, and a sequence number)
-/// within the 128 characters of a run id.
-pub const max_children_limit = 999
-
-/// The deepest nesting of sub-agent runs below a root run.
-pub const max_depth_limit = 16
-
-/// An agent with the given model, tools, and policy. The policy is required:
-/// there is no implicit allow (`policy.always_allow()` is the explicit one).
+/// An agent named `name`, with the given model, tools, and policy, version
+/// 1 and `default_limits()`. A stored run records the name and version it
+/// started with and continues only under the same pair. The policy is
+/// required: there is no implicit allow (`policy.always_allow()` is the
+/// explicit one).
 pub fn new(
+  name: String,
   model: Model,
   tools: List(Tool(context)),
   policy: Policy(context),
-) -> Agent(context) {
-  Agent(
-    identity: default_identity,
+) -> Spec(context) {
+  Spec(
+    identity: Identity(name, 1),
     model:,
     tools:,
     policy:,
     system_prompt: None,
-    max_turns: default_max_turns,
-    max_concurrency: default_max_concurrency,
-    token_budget: None,
-    policy_timeout: default_policy_timeout,
-    model_retry_delay: default_model_retry_delay,
-    command_timeout: default_command_timeout,
+    limits: default_limits(),
     children: [],
-    max_children: default_max_children,
-    max_depth: default_max_depth,
   )
+}
+
+/// Changes the version a run records. Change it when a change to the agent
+/// must not continue older runs.
+pub fn with_version(spec: Spec(context), version: Int) -> Spec(context) {
+  Spec(..spec, identity: Identity(spec.identity.name, version))
+}
+
+pub fn with_system_prompt(spec: Spec(context), text: String) -> Spec(context) {
+  Spec(..spec, system_prompt: Some(text))
+}
+
+pub fn with_limits(spec: Spec(context), limits: Limits) -> Spec(context) {
+  Spec(..spec, limits:)
 }
 
 /// Lets the model delegate to a sub-agent: a call to `definition` (declared
@@ -117,7 +164,7 @@ pub fn new(
 /// with `prompt(input)` as its prompt, once the policy allows it. The
 /// policy sees `policy.StartAgent` as the action's target, and may require
 /// an approval like for any tool; no child run exists before it is
-/// allowed. The child is its own run with its own budgets and policy, and
+/// allowed. The child is its own run with its own limits and policy, and
 /// shares this agent's context type and store. It starts with the context
 /// its start was allowed with: this run's, or for an approved start, the
 /// context the answer was checked with. Its approvals are this
@@ -128,107 +175,25 @@ pub fn new(
 /// that ended with effects of unknown status (for example cancelled while a
 /// tool ran) makes the call an uncertain effect whatever `result` says.
 pub fn with_sub_agent(
-  agent: Agent(context),
+  spec: Spec(context),
   definition: tool.Definition(input, output),
   to child: Agent(context),
   prompt prompt: fn(input) -> String,
   result result: fn(run.Outcome) -> Result(output, tool.Failure),
-) -> Agent(context) {
-  let delegation = tool.delegation(definition, child.identity, prompt, result)
-  Agent(
-    ..agent,
-    tools: list.append(agent.tools, [delegation]),
-    children: list.append(agent.children, [#(tool.name(delegation), child)]),
+) -> Spec(context) {
+  let delegation =
+    tool.delegation(definition, child.admitted.identity, prompt, result)
+  Spec(
+    ..spec,
+    tools: list.append(spec.tools, [delegation]),
+    children: list.append(spec.children, [#(tool.name(delegation), child)]),
   )
 }
 
-/// Limits how many sub-agent runs one run starts (default 4, at most
-/// `max_children_limit`). A delegation beyond it is refused before the
-/// policy, and the model sees why.
-pub fn with_max_children(agent: Agent(context), limit: Int) -> Agent(context) {
-  Agent(..agent, max_children: limit)
-}
-
-/// Limits how many levels of sub-agents may exist below a run started with
-/// this agent (default 1: its children may not delegate in turn; at most
-/// `max_depth_limit`). A child is bounded by its own setting and by what
-/// its parent has left.
-pub fn with_max_depth(agent: Agent(context), levels: Int) -> Agent(context) {
-  Agent(..agent, max_depth: levels)
-}
-
-/// Names this agent definition. A stored run records the name and version
-/// it started with and continues only under the same pair: change the
-/// version when a change to the agent must not continue older runs.
-pub fn with_identity(
-  agent: Agent(context),
-  name: String,
-  version: Int,
-) -> Agent(context) {
-  Agent(..agent, identity: Identity(name, version))
-}
-
-pub fn with_system_prompt(
-  agent: Agent(context),
-  text: String,
-) -> Agent(context) {
-  Agent(..agent, system_prompt: Some(text))
-}
-
-/// Limits model attempts, counting the first request and every retry.
-pub fn with_max_turns(agent: Agent(context), limit: Int) -> Agent(context) {
-  Agent(..agent, max_turns: limit)
-}
-
-/// Limits how many tool bodies of one run execute at the same time.
-pub fn with_max_concurrency(
-  agent: Agent(context),
-  limit: Int,
-) -> Agent(context) {
-  Agent(..agent, max_concurrency: limit)
-}
-
-/// Limits input plus output tokens as reported by the provider. A reply
-/// without usage stops the run with `run.BudgetUnverifiable`.
-pub fn with_token_budget(agent: Agent(context), tokens: Int) -> Agent(context) {
-  Agent(..agent, token_budget: Some(tokens))
-}
-
-/// Bounds how long one policy decision may take, in milliseconds. A policy
-/// that gives no decision in time has failed: the run stops closed. The
-/// policy runs in its own process.
-pub fn with_policy_timeout(
-  agent: Agent(context),
-  milliseconds: Int,
-) -> Agent(context) {
-  Agent(..agent, policy_timeout: milliseconds)
-}
-
-/// Sets the delay before the first retry of a retryable model failure, in
-/// milliseconds (default 200). The delay doubles with each consecutive
-/// retryable failure, up to 64 times this value, and every attempt still
-/// counts against the turn limit. A cancelled run does not wait for it.
-pub fn with_model_retry_delay(
-  agent: Agent(context),
-  milliseconds: Int,
-) -> Agent(context) {
-  Agent(..agent, model_retry_delay: milliseconds)
-}
-
-/// Bounds how long a command (`approve`, `reject`, `cancel`, `reconcile`) waits
-/// for the run's live runner to take it, in milliseconds (default 5000). A
-/// runner busy for longer (for example held by a synchronous observation
-/// handler) refuses the command with `fabric.RunnerBusy`, and never applies it
-/// later.
-pub fn with_command_timeout(
-  agent: Agent(context),
-  milliseconds: Int,
-) -> Agent(context) {
-  Agent(..agent, command_timeout: milliseconds)
-}
-
-pub fn validate(agent: Agent(context)) -> Result(Nil, List(ConfigError)) {
-  admit(agent) |> result.replace(Nil)
+/// Checks `spec` and reports every problem at once. A sub-agent was checked
+/// by its own `build`.
+pub fn build(spec: Spec(context)) -> Result(Agent(context), List(ConfigError)) {
+  admit(spec) |> result.map(Agent)
 }
 
 /// A validated agent, ready for the runtime.
@@ -253,40 +218,53 @@ pub type Admitted(context) {
   )
 }
 
+/// The checked agent, for the runtime.
 @internal
-pub fn admit(
-  agent: Agent(context),
-) -> Result(Admitted(context), List(ConfigError)) {
+pub fn admitted(agent: Agent(context)) -> Admitted(context) {
+  agent.admitted
+}
+
+fn admit(spec: Spec(context)) -> Result(Admitted(context), List(ConfigError)) {
   let registry =
-    registry.new(agent.tools)
+    registry.new(spec.tools)
     |> result.map_error(list.map(_, tool_error))
-  let limits =
+  let Limits(
+    max_turns:,
+    max_concurrency:,
+    token_budget:,
+    max_children:,
+    max_depth:,
+    policy_timeout:,
+    model_retry_delay:,
+    command_timeout:,
+  ) = spec.limits
+  let problems =
     [
-      positive(agent.max_turns, MaxTurnsNotPositive),
-      positive(agent.max_concurrency, MaxConcurrencyNotPositive),
-      case agent.token_budget {
+      positive(max_turns, MaxTurnsNotPositive),
+      positive(max_concurrency, MaxConcurrencyNotPositive),
+      case token_budget {
         Some(tokens) -> positive(tokens, TokenBudgetNotPositive)
         None -> Ok(Nil)
       },
-      positive(agent.policy_timeout, PolicyTimeoutNotPositive),
-      positive(agent.command_timeout, CommandTimeoutNotPositive),
-      case agent.model_retry_delay >= 0 {
+      positive(policy_timeout, PolicyTimeoutNotPositive),
+      positive(command_timeout, CommandTimeoutNotPositive),
+      case model_retry_delay >= 0 {
         True -> Ok(Nil)
-        False -> Error(ModelRetryDelayNegative(agent.model_retry_delay))
+        False -> Error(ModelRetryDelayNegative(model_retry_delay))
       },
-      case agent.identity {
+      case spec.identity {
         Identity(name, version) if name == "" || version < 1 ->
           Error(InvalidIdentity(name, version))
         Identity(..) -> Ok(Nil)
       },
-      not_negative(agent.max_children, MaxChildrenNegative),
-      not_negative(agent.max_depth, MaxDepthNegative),
-      case agent.max_children > max_children_limit {
-        True -> Error(MaxChildrenTooLarge(agent.max_children))
+      not_negative(max_children, MaxChildrenNegative),
+      not_negative(max_depth, MaxDepthNegative),
+      case max_children > max_children_limit {
+        True -> Error(MaxChildrenTooLarge(max_children, max_children_limit))
         False -> Ok(Nil)
       },
-      case agent.max_depth > max_depth_limit {
-        True -> Error(MaxDepthTooLarge(agent.max_depth))
+      case max_depth > max_depth_limit {
+        True -> Error(MaxDepthTooLarge(max_depth, max_depth_limit))
         False -> Ok(Nil)
       },
     ]
@@ -296,40 +274,25 @@ pub fn admit(
         Error(error) -> Ok(error)
       }
     })
-  let children =
-    list.map(agent.children, fn(entry) {
-      let #(name, child) = entry
-      admit(child)
-      |> result.map(fn(admitted) { #(name, admitted) })
-      |> result.map_error(InvalidChild(name, _))
-    })
-  let limits =
-    list.append(
-      limits,
-      list.filter_map(children, fn(child) {
-        case child {
-          Ok(_) -> Error(Nil)
-          Error(error) -> Ok(error)
-        }
-      }),
-    )
-  case registry, limits {
+  case registry, problems {
     Ok(registry), [] ->
       Ok(Admitted(
-        identity: agent.identity,
-        model: agent.model,
+        identity: spec.identity,
+        model: spec.model,
         registry:,
-        policy: agent.policy,
-        system_prompt: agent.system_prompt,
-        max_turns: agent.max_turns,
-        max_concurrency: agent.max_concurrency,
-        token_budget: agent.token_budget,
-        policy_timeout: agent.policy_timeout,
-        model_retry_delay: agent.model_retry_delay,
-        command_timeout: agent.command_timeout,
-        children: children |> result.values |> dict.from_list,
-        max_children: agent.max_children,
-        max_depth: agent.max_depth,
+        policy: spec.policy,
+        system_prompt: spec.system_prompt,
+        max_turns:,
+        max_concurrency:,
+        token_budget:,
+        policy_timeout:,
+        model_retry_delay:,
+        command_timeout:,
+        children: spec.children
+          |> list.map(fn(entry) { #(entry.0, { entry.1 }.admitted) })
+          |> dict.from_list,
+        max_children:,
+        max_depth:,
       ))
     Ok(_), errors -> Error(errors)
     Error(tool_errors), errors -> Error(list.append(tool_errors, errors))

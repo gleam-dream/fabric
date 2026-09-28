@@ -62,8 +62,12 @@ fn paying_tool(probe: Probe) -> tool.Tool(ctx) {
 }
 
 /// Pays `one`, then `two`, then answers.
-fn two_payments(probe: Probe, policy: policy.Policy(ctx)) -> Agent(ctx) {
+fn two_payments_spec(
+  probe: Probe,
+  policy: policy.Policy(ctx),
+) -> agent.Spec(ctx) {
   agent.new(
+    "payer",
     scripted.model(fn(messages) {
       case scripted.results(messages) {
         [] -> model.ToolRequest("", [payment("t1", "one")], None)
@@ -74,7 +78,10 @@ fn two_payments(probe: Probe, policy: policy.Policy(ctx)) -> Agent(ctx) {
     [paying_tool(probe)],
     policy,
   )
-  |> agent.with_identity("payer", 1)
+}
+
+fn two_payments(probe: Probe, policy: policy.Policy(ctx)) -> Agent(ctx) {
+  support.agent(two_payments_spec(probe, policy))
 }
 
 fn payment(id: String, to: String) -> model.ToolCall {
@@ -83,6 +90,7 @@ fn payment(id: String, to: String) -> model.ToolCall {
 
 fn delegating(child: Agent(ctx)) -> Agent(ctx) {
   agent.new(
+    "agent",
     scripted.model(fn(messages) {
       case scripted.results(messages) {
         [] ->
@@ -108,6 +116,7 @@ fn delegating(child: Agent(ctx)) -> Agent(ctx) {
       }
     },
   )
+  |> support.agent
 }
 
 // --- a held runner -------------------------------------------------------------
@@ -169,8 +178,11 @@ pub fn a_held_child_is_cancelled_through_its_record_test() {
   let probe = probe.new()
   let #(holds, attached) = hold_runner(string.ends_with(_, "-1"))
   let child =
-    two_payments(probe, policy.always_allow())
-    |> agent.with_command_timeout(20)
+    two_payments_spec(probe, policy.always_allow())
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), command_timeout: 20),
+    )
+    |> support.agent
   let assert Ok(run) =
     fabric.start(store.in_memory(), delegating(child), Nil, "go")
   let assert Ok(held) = process.receive(holds, 5000)
@@ -203,8 +215,11 @@ pub fn a_held_run_is_cancelled_through_its_record_test() {
     let store = store.in_memory()
     let #(holds, attached) = hold_runner(fn(_) { True })
     let agent =
-      two_payments(probe, policy.always_allow())
-      |> agent.with_command_timeout(20)
+      two_payments_spec(probe, policy.always_allow())
+      |> agent.with_limits(
+        agent.Limits(..agent.default_limits(), command_timeout: 20),
+      )
+      |> support.agent
     let assert Ok(run) = fabric.start(store, agent, Nil, "go")
     let assert Ok(held) = process.receive(holds, 5000)
     let _ = sinal.detach(attached)
@@ -250,6 +265,7 @@ fn counted_payer(probe: Probe, slow: Bool) -> Agent(Nil) {
     False -> [payment("t1", "one")]
   }
   agent.new(
+    "payer",
     model.new(fn(request: model.Request) {
       probe.record(probe, "model")
       Ok(case scripted.results(request.messages) {
@@ -260,8 +276,10 @@ fn counted_payer(probe: Probe, slow: Bool) -> Agent(Nil) {
     [paying_tool(probe), scripted.gated_tool(probe)],
     policy.always_allow(),
   )
-  |> agent.with_identity("payer", 1)
-  |> agent.with_command_timeout(20)
+  |> agent.with_limits(
+    agent.Limits(..agent.default_limits(), command_timeout: 20),
+  )
+  |> support.agent
 }
 
 /// The held runner had committed the settlement of `t1`, which asks for
@@ -617,6 +635,7 @@ fn settling_child(
   handed: Subject(tool.Settlement(apps.Forecast)),
 ) -> Agent(Nil) {
   agent.new(
+    "forecaster",
     scripted.plan([scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}")]),
     [
       tool.bind_settling(
@@ -633,7 +652,7 @@ fn settling_child(
     ],
     policy.always_allow(),
   )
-  |> agent.with_identity("forecaster", 1)
+  |> support.agent
 }
 
 /// `cancel_stored` of a parent whose child waits for a stopped tool's

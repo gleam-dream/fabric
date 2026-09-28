@@ -273,8 +273,9 @@ pub fn scripted_librarian(messages: List(Message)) -> Reply {
 
 // --- agent --------------------------------------------------------------------
 
-pub fn librarian() -> Agent(Member) {
+pub fn librarian_spec() -> agent.Spec(Member) {
   agent.new(
+    "librarian",
     model.new(fn(request: model.Request) {
       Ok(scripted_librarian(request.messages))
     }),
@@ -282,17 +283,25 @@ pub fn librarian() -> Agent(Member) {
     desk_policy,
   )
   |> agent.with_system_prompt("You help library members.")
-  |> agent.with_max_turns(4)
-  |> agent.with_max_concurrency(2)
-  |> agent.with_token_budget(10_000)
+  |> agent.with_limits(
+    agent.Limits(
+      ..agent.default_limits(),
+      max_turns: 4,
+      max_concurrency: 2,
+      token_budget: Some(10_000),
+    ),
+  )
 }
 
-pub fn misconfigured() -> Agent(Member) {
-  librarian() |> agent.with_max_turns(0)
+/// Built once, at boot: every problem is reported before any run.
+pub fn librarian() -> Result(Agent(Member), List(agent.ConfigError)) {
+  agent.build(librarian_spec())
 }
 
-pub fn check(agent: Agent(Member)) -> Result(Nil, List(agent.ConfigError)) {
-  agent.validate(agent)
+pub fn misconfigured() -> Result(Agent(Member), List(agent.ConfigError)) {
+  librarian_spec()
+  |> agent.with_limits(agent.Limits(..agent.default_limits(), max_turns: 0))
+  |> agent.build
 }
 
 // --- acquisitions: a sub-agent ------------------------------------------------
@@ -351,23 +360,26 @@ pub fn purchaser() -> Agent(Member) {
       },
       fn(_) { tool.Explain("order failed") },
     )
-  agent.new(
-    model.new(fn(request: model.Request) {
-      let usage = Some(Usage(input_tokens: 4, output_tokens: 2))
-      Ok(case prompt(request.messages), results(request.messages) {
-        "buy " <> title, [] ->
-          ToolRequest(
-            "",
-            [call("o1", "order_book", "{\"title\":\"" <> title <> "\"}")],
-            usage,
-          )
-        _, seen -> FinalAnswer("ordered " <> string.join(seen, ", "), usage)
-      })
-    }),
-    [order],
-    purchasing_policy,
-  )
-  |> agent.with_identity("purchaser", 1)
+  let assert Ok(purchaser) =
+    agent.new(
+      "purchaser",
+      model.new(fn(request: model.Request) {
+        let usage = Some(Usage(input_tokens: 4, output_tokens: 2))
+        Ok(case prompt(request.messages), results(request.messages) {
+          "buy " <> title, [] ->
+            ToolRequest(
+              "",
+              [call("o1", "order_book", "{\"title\":\"" <> title <> "\"}")],
+              usage,
+            )
+          _, seen -> FinalAnswer("ordered " <> string.join(seen, ", "), usage)
+        })
+      }),
+      [order],
+      purchasing_policy,
+    )
+    |> agent.build
+  purchaser
 }
 
 /// Starting the purchaser needs the acquisitions committee's approval.
@@ -441,40 +453,47 @@ pub fn loan_tool() -> tool.Tool(Member) {
 /// Acquires a book through the purchaser, or borrows one through an
 /// interlibrary loan.
 pub fn front_desk() -> Agent(Member) {
-  agent.new(
-    model.new(fn(request: model.Request) {
-      let usage = Some(Usage(input_tokens: 10, output_tokens: 5))
-      Ok(case prompt(request.messages), results(request.messages) {
-        "acquire " <> title, [] ->
-          ToolRequest(
-            "",
-            [call("a1", "acquire", "{\"title\":\"" <> title <> "\"}")],
-            usage,
-          )
-        "borrow " <> title, [] ->
-          ToolRequest(
-            "",
-            [
-              call("l1", "interlibrary_loan", "{\"title\":\"" <> title <> "\"}"),
-            ],
-            usage,
-          )
-        _, seen -> FinalAnswer("done: " <> string.join(seen, " | "), usage)
-      })
-    }),
-    [loan_tool()],
-    front_desk_policy,
-  )
-  |> agent.with_identity("front-desk", 1)
-  |> agent.with_sub_agent(
-    acquire_definition(),
-    to: purchaser(),
-    prompt: fn(purchase: Purchase) { "buy " <> purchase.title },
-    result: fn(outcome) {
-      case outcome {
-        run.Completed(text) -> Ok(Order(text))
-        _ -> Error(tool.Explain("the purchase did not complete"))
-      }
-    },
-  )
+  let assert Ok(desk) =
+    agent.new(
+      "front-desk",
+      model.new(fn(request: model.Request) {
+        let usage = Some(Usage(input_tokens: 10, output_tokens: 5))
+        Ok(case prompt(request.messages), results(request.messages) {
+          "acquire " <> title, [] ->
+            ToolRequest(
+              "",
+              [call("a1", "acquire", "{\"title\":\"" <> title <> "\"}")],
+              usage,
+            )
+          "borrow " <> title, [] ->
+            ToolRequest(
+              "",
+              [
+                call(
+                  "l1",
+                  "interlibrary_loan",
+                  "{\"title\":\"" <> title <> "\"}",
+                ),
+              ],
+              usage,
+            )
+          _, seen -> FinalAnswer("done: " <> string.join(seen, " | "), usage)
+        })
+      }),
+      [loan_tool()],
+      front_desk_policy,
+    )
+    |> agent.with_sub_agent(
+      acquire_definition(),
+      to: purchaser(),
+      prompt: fn(purchase: Purchase) { "buy " <> purchase.title },
+      result: fn(outcome) {
+        case outcome {
+          run.Completed(text) -> Ok(Order(text))
+          _ -> Error(tool.Explain("the purchase did not complete"))
+        }
+      },
+    )
+    |> agent.build
+  desk
 }

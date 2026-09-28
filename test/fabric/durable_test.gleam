@@ -73,6 +73,7 @@ fn incarnation(run: fabric.Run(context)) -> Int {
 /// Three calls to the gated tool, run one at a time.
 fn three_slow(probe: Probe) -> Agent(Nil) {
   agent.new(
+    "agent",
     scripted.plan([
       scripted.slow("c", "c"),
       scripted.slow("a", "a"),
@@ -81,7 +82,10 @@ fn three_slow(probe: Probe) -> Agent(Nil) {
     [scripted.gated_tool(probe)],
     policy.always_allow(),
   )
-  |> agent.with_max_concurrency(1)
+  |> agent.with_limits(
+    agent.Limits(..agent.default_limits(), max_concurrency: 1),
+  )
+  |> support.agent
 }
 
 const lost = "the runner was lost while the tool ran; its effect may have happened"
@@ -150,10 +154,12 @@ pub fn an_effect_whose_result_was_never_committed_is_uncertain_test() {
   let probe = probe.new()
   let agent =
     agent.new(
+      "agent",
       scripted.plan([scripted.slow("a", "a")]),
       [scripted.gated_tool(probe)],
       policy.always_allow(),
     )
+    |> support.agent
   let #(owner, old, run) = start_owned(dir, agent, Nil, "go")
   let _effect_done = probe.arrival(probe)
   crash(owner, old, fabric.id(run))
@@ -177,7 +183,13 @@ pub fn restart_during_a_model_call_issues_it_again_against_the_turn_budget_test(
       Ok(model.FinalAnswer("never committed", None))
     })
   let #(owner, old, run) =
-    start_owned(dir, agent.new(blocking, [], policy.always_allow()), Nil, "hi")
+    start_owned(
+      dir,
+      agent.new("agent", blocking, [], policy.always_allow())
+        |> support.agent,
+      Nil,
+      "hi",
+    )
   let _ = probe.arrival(probe)
   crash(owner, old, fabric.id(run))
 
@@ -185,7 +197,8 @@ pub fn restart_during_a_model_call_issues_it_again_against_the_turn_budget_test(
   let assert Ok(run) =
     fabric.recover(
       reopen(dir),
-      agent.new(answering, [], policy.always_allow()),
+      agent.new("agent", answering, [], policy.always_allow())
+        |> support.agent,
       Nil,
       fabric.id(run),
     )
@@ -206,7 +219,9 @@ pub fn a_lost_model_call_is_not_issued_again_beyond_the_turn_budget_test() {
       Ok(model.FinalAnswer("never committed", None))
     })
   let limited = fn(model) {
-    agent.new(model, [], policy.always_allow()) |> agent.with_max_turns(1)
+    agent.new("agent", model, [], policy.always_allow())
+    |> agent.with_limits(agent.Limits(..agent.default_limits(), max_turns: 1))
+    |> support.agent
   }
   let #(owner, old, run) = start_owned(dir, limited(blocking), Nil, "hi")
   let _ = probe.arrival(probe)
@@ -227,11 +242,15 @@ pub fn concurrent_recoveries_take_the_run_over_once_test() {
   let probe = probe.new()
   let agent =
     agent.new(
+      "agent",
       scripted.plan([scripted.slow("a", "a"), scripted.slow("b", "b")]),
       [scripted.gated_tool(probe)],
       policy.always_allow(),
     )
-    |> agent.with_max_concurrency(1)
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), max_concurrency: 1),
+    )
+    |> support.agent
   let #(owner, old, run) = start_owned(dir, agent, Nil, "go")
   let _ = probe.arrival(probe)
   crash(owner, old, fabric.id(run))
@@ -264,10 +283,12 @@ pub fn recovering_a_finished_run_opens_it_unchanged_test() {
   let dir = restart.temp_dir()
   let agent =
     agent.new(
+      "agent",
       scripted.model(fn(_) { model.FinalAnswer("done", None) }),
       [],
       policy.always_allow(),
     )
+    |> support.agent
   let #(owner, old, run) = start_owned(dir, agent, Nil, "hi")
   fabric.await(run, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
@@ -291,10 +312,12 @@ pub fn a_runner_of_an_older_incarnation_cannot_commit_test() {
   let probe = probe.new()
   let agent =
     agent.new(
+      "agent",
       scripted.plan([scripted.slow("a", "a")]),
       [scripted.gated_tool(probe)],
       policy.always_allow(),
     )
+    |> support.agent
   let old_store = reopen(dir)
   let assert Ok(run) = fabric.start(old_store, agent, Nil, "go")
   let held = probe.arrival(probe)
@@ -340,7 +363,13 @@ fn transfer_call() -> model.ToolCall {
 }
 
 fn paying_agent(tools: List(tool.Tool(Nil))) -> Agent(Nil) {
-  agent.new(scripted.plan([transfer_call()]), tools, transfers_need_approval)
+  agent.new(
+    "agent",
+    scripted.plan([transfer_call()]),
+    tools,
+    transfers_need_approval,
+  )
+  |> support.agent
 }
 
 /// A run suspended on a transfer approval, with every process gone.
@@ -356,7 +385,14 @@ pub fn recovery_refuses_another_agent_definition_test() {
   let dir = restart.temp_dir()
   let id = suspended_on_disk(dir)
   let renamed =
-    paying_agent([apps.transfer_tool()]) |> agent.with_identity("payments", 2)
+    agent.new(
+      "payments",
+      scripted.plan([transfer_call()]),
+      [apps.transfer_tool()],
+      transfers_need_approval,
+    )
+    |> agent.with_version(2)
+    |> support.agent
   fabric.recover(reopen(dir), renamed, Nil, id)
   |> should.equal(
     Error(
@@ -445,10 +481,12 @@ pub fn recovery_reports_a_run_that_does_not_exist_test() {
 
 fn one_slow(probe: Probe) -> Agent(Nil) {
   agent.new(
+    "agent",
     scripted.plan([scripted.slow("a", "a")]),
     [scripted.gated_tool(probe)],
     policy.always_allow(),
   )
+  |> support.agent
 }
 
 /// Anti-oracle B5: BeamWeaver wedges a thread whose process died mid-tool.
@@ -518,10 +556,12 @@ pub fn await_reports_a_closed_store_test() {
 /// Both calls need an approval.
 fn two_reviewed(probe: Probe) -> Agent(Nil) {
   agent.new(
+    "agent",
     scripted.plan([scripted.slow("p", "p"), scripted.slow("q", "q")]),
     [scripted.gated_tool(probe)],
     fn(_, _) { Ok(policy.RequireApproval(run.Requirement("review", 1))) },
   )
+  |> support.agent
 }
 
 /// Store A drives the run; store B opened the same directory. A command
