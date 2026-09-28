@@ -864,8 +864,7 @@ type Loop {
     /// A leased store: per run with a live runner, the monotonic time until
     /// which its lease is surely held (see `valid_until`).
     valid: Dict(String, Int),
-    /// A renewal is in flight.
-    renewing: Bool,
+    renewal: Renewal,
     /// When the next `Fence` is due, if one is set.
     fence_at: Option(Int),
     /// The name of the factory its runners are started under.
@@ -882,6 +881,14 @@ type Loop {
     /// when it exits.
     starter: Option(Pid),
   )
+}
+
+/// Whether a renewal of a leased store is in flight.
+type Renewal {
+  Idle
+  /// `missed`: a tick came while it was in flight, so another renewal is
+  /// sent as soon as it completes.
+  Sending(missed: Bool)
 }
 
 /// How long one backend call may take, in milliseconds, before it is
@@ -926,7 +933,7 @@ fn run(
       lessee:,
       live: dict.new(),
       valid: dict.new(),
-      renewing: False,
+      renewal: Idle,
       fence_at: None,
       factory: factory_name(store.name),
       draining: None,
@@ -1311,7 +1318,8 @@ fn valid_until(lessee: Lessee, sent: Int) -> Int {
 
 /// Sends one renewal of the leases of every live runner, unless one is in
 /// flight; on the timer's tick, also sets the next one and kills the
-/// runners whose lease could have expired.
+/// runners whose lease could have expired. A tick that finds a renewal in
+/// flight is made up when that renewal completes.
 fn renew(state: Loop, tick: Bool) -> Loop {
   case state.lessee {
     None -> state
@@ -1326,9 +1334,10 @@ fn renew(state: Loop, tick: Bool) -> Loop {
       let runs =
         dict.to_list(state.live)
         |> list.map(fn(entry) { #(entry.0, entry.1.0) })
-      case state.renewing, runs {
-        True, _ | False, [] -> state
-        False, _ -> {
+      case state.renewal, runs {
+        Sending(_), _ if tick -> Loop(..state, renewal: Sending(True))
+        Sending(_), _ | Idle, [] -> state
+        Idle, _ -> {
           let backend = state.backend
           let subject = state.subject
           // A renewal slower than a third of the lease is as good as failed;
@@ -1347,7 +1356,7 @@ fn renew(state: Loop, tick: Bool) -> Loop {
                 })
               process.send(subject, Renewed(sent, runs, renewed))
             })
-          Loop(..state, renewing: True)
+          Loop(..state, renewal: Sending(False))
         }
       }
     }
@@ -1362,8 +1371,9 @@ fn renewed_leases(
   runs: List(#(String, Pid)),
   renewed: Result(List(String), StoreError),
 ) -> Loop {
-  let state = Loop(..state, renewing: False)
-  case state.lessee, renewed {
+  let missed = state.renewal == Sending(True)
+  let state = Loop(..state, renewal: Idle)
+  let state = case state.lessee, renewed {
     None, _ -> state
     Some(lessee), Error(_) -> {
       let runs = list.length(runs)
@@ -1387,6 +1397,10 @@ fn renewed_leases(
         }
       })
       |> schedule_fence
+  }
+  case missed {
+    True -> renew(state, False)
+    False -> state
   }
 }
 
