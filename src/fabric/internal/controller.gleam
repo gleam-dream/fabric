@@ -1458,6 +1458,28 @@ pub fn recover(env: Env(context), state: State) -> #(State, List(Effect)) {
   }
 }
 
+/// The record a draining runner leaves when it hands its run off: the work
+/// it had in flight has finished, and it started nothing new. A model call
+/// that was never issued gives its turn back, so that `recover` issues it
+/// as the same turn (`turns_used + 1`). A queued action that an answer
+/// approved asks for its approval again, as at recovery (`ask_again`);
+/// other queued actions stay queued. A stop keeps waiting for its child
+/// runs.
+pub fn hand_off(state: State) -> State {
+  case state.phase {
+    AwaitingModel(turn) -> State(..state, turns_used: turn - 1)
+    Acting(turn, actions) -> ask_again(state, turn, actions)
+    Stopping(..) | Ended(_) | NeverStarted -> state
+  }
+}
+
+/// Whether a tool body of the current batch runs, or was stopped and
+/// awaits its late settlement: an action committed running that started
+/// no child run.
+pub fn tools_running(state: State) -> Bool {
+  list.any(current(state), tool_running)
+}
+
 /// Queued actions that an answer approved ask for their approval again,
 /// under the requirement last answered, as new requests: the approval was
 /// checked with the answer's context, which a later incarnation does not

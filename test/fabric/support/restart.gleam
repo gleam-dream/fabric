@@ -5,8 +5,9 @@
 import fabric/run.{type RunId}
 import fabric/store.{type Store}
 import gleam/erlang/atom.{type Atom}
-import gleam/erlang/process.{type Pid}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/option.{None, Some}
+import gleam/otp/static_supervisor
 
 @external(erlang, "fabric_test_ffi", "temp_dir")
 pub fn temp_dir() -> String
@@ -98,3 +99,60 @@ pub fn resume(pid: Pid) -> Nil
 /// How many messages wait in `pid`'s mailbox.
 @external(erlang, "fabric_test_ffi", "queued")
 pub fn queued(pid: Pid) -> Int
+
+/// An application whose supervisor runs a store's subtree, owned by its own
+/// process, as an OTP application's top supervisor is.
+pub type Application {
+  Application(supervisor: Pid, stop: Subject(Nil))
+}
+
+/// Starts an application running `store`'s subtree (`store.supervised`).
+pub fn application(store: Store) -> Application {
+  let reply = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let assert Ok(started) =
+      static_supervisor.new(static_supervisor.OneForOne)
+      |> static_supervisor.add(store.supervised(store))
+      |> static_supervisor.start
+    let stop = process.new_subject()
+    process.send(reply, Application(started.pid, stop))
+    let assert Ok(Nil) = process.receive(stop, 60_000)
+    // As an application stops: its top supervisor's parent exits with
+    // `shutdown`, and the supervisor stops its children in reverse order.
+    exit_shutdown()
+  })
+  let assert Ok(application) = process.receive(reply, 5000)
+  application
+}
+
+/// Begins stopping `application`; `stopped` waits for the end.
+pub fn begin_stop(application: Application) -> Nil {
+  process.send(application.stop, Nil)
+}
+
+/// Waits until `application`'s supervisor has stopped, with everything
+/// under it.
+pub fn stopped(application: Application) -> Nil {
+  gone(application.supervisor)
+}
+
+/// Stops `application` and waits until everything under it has stopped.
+pub fn stop(application: Application) -> Nil {
+  begin_stop(application)
+  stopped(application)
+}
+
+/// Waits until `store`'s runners are draining: its process hands out no
+/// runner factory any more.
+pub fn draining(store: Store) -> Nil {
+  case store.runners(store) {
+    Error(Nil) -> Nil
+    Ok(_) -> {
+      process.sleep(1)
+      draining(store)
+    }
+  }
+}
+
+@external(erlang, "fabric_ffi", "exit_shutdown")
+fn exit_shutdown() -> Nil
