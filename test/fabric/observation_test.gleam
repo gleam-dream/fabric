@@ -497,3 +497,88 @@ pub fn an_unrouted_handler_runs_in_the_runner_test() {
     Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
   )
 }
+
+// --- handlers and commands --------------------------------------------------------
+
+/// A synchronous handler runs inside the runner, which cannot take a
+/// command until the handler returns: a handler that commands the run it
+/// observes is refused at once instead of deadlocking the runner, and the
+/// run goes on.
+pub fn a_handler_commanding_its_own_run_is_refused_test() {
+  let memory = store.in_memory()
+  let results = process.new_subject()
+  let assert Ok(id) =
+    sinal.handler_id(
+      "fabric-self-cancel-" <> int.to_string(int.random(1_000_000_000)),
+    )
+  let assert Ok(attachment) =
+    sinal.observe(id, o.tool_dispatched(), fn(_, m: o.ToolDispatched) {
+      process.send(results, fabric.cancel_stored(memory, m.action.run))
+    })
+  let assert Ok(run) = fabric.start(memory, weather_agent(), Nil, "weather")
+  let assert Ok(refused) = process.receive(results, 5000)
+  let finished = fabric.await(run, 5000)
+  let _ = sinal.detach(attachment)
+
+  refused |> should.equal(Error(fabric.RunnerBusy))
+  finished
+  |> should.equal(
+    Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
+  )
+}
+
+/// A command is answered once its commit is stored, before the handlers
+/// of that commit run: a blocked handler of the cancellation does not hold
+/// up `cancel`.
+pub fn a_command_returns_before_its_handlers_run_test() {
+  let probe = probe.new()
+  let entered = process.new_subject()
+  let assert Ok(id) =
+    sinal.handler_id(
+      "fabric-blocking-cancel-" <> int.to_string(int.random(1_000_000_000)),
+    )
+  let assert Ok(attachment) =
+    sinal.observe(id, o.run_cancelled(), fn(_, m: o.RunCancelled) {
+      let gate = process.new_subject()
+      process.send(entered, #(m.run, gate))
+      process.receive_forever(gate)
+    })
+  let agent =
+    agent.new(
+      scripted.plan([scripted.slow("s", "s")]),
+      [scripted.gated_tool(probe)],
+      policy.always_allow(),
+    )
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "go")
+  let _ = probe.arrival(probe)
+  let cancelled = fabric.cancel(run)
+  let assert Ok(#(cancelled_run, gate)) = process.receive(entered, 5000)
+  process.send(gate, Nil)
+  let finished = fabric.await(run, 5000)
+  let _ = sinal.detach(attachment)
+
+  cancelled |> should.equal(Ok(run.Working))
+  cancelled_run |> should.equal(fabric.id(run))
+  finished |> should.equal(Ok(run.Finished(run.Cancelled)))
+}
+
+/// A runner held by a blocked handler does not take a command in time: the
+/// command is refused as busy and never applied later.
+pub fn a_command_to_a_runner_held_by_a_handler_is_refused_test() {
+  let #(entered, attachment) = blocking_model_turn("busy")
+  let agent = weather_agent() |> agent.with_command_timeout(20)
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
+  let #(_, gate) = entered_by(entered, fabric.id(run))
+  let refused = fabric.cancel(run)
+  process.send(gate, Nil)
+  let #(_, gate) = entered_by(entered, fabric.id(run))
+  process.send(gate, Nil)
+  let finished = fabric.await(run, 5000)
+  let _ = sinal.detach(attachment)
+
+  refused |> should.equal(Error(fabric.RunnerBusy))
+  finished
+  |> should.equal(
+    Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
+  )
+}

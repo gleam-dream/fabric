@@ -25,6 +25,7 @@ pub opaque type Agent(context) {
     token_budget: Option(Int),
     policy_timeout: Int,
     model_retry_delay: Int,
+    command_timeout: Int,
     /// The sub-agent each delegation starts, by delegation name.
     children: List(#(String, Agent(context))),
     max_children: Int,
@@ -43,6 +44,7 @@ pub type ConfigError {
   TokenBudgetNotPositive(Int)
   PolicyTimeoutNotPositive(Int)
   ModelRetryDelayNegative(Int)
+  CommandTimeoutNotPositive(Int)
   /// The name is empty or the version is not positive.
   InvalidIdentity(name: String, version: Int)
   MaxChildrenNegative(Int)
@@ -58,6 +60,8 @@ pub const default_max_concurrency = 4
 pub const default_policy_timeout = 5000
 
 pub const default_model_retry_delay = 200
+
+pub const default_command_timeout = 5000
 
 pub const default_identity = Identity("agent", 1)
 
@@ -83,6 +87,7 @@ pub fn new(
     token_budget: None,
     policy_timeout: default_policy_timeout,
     model_retry_delay: default_model_retry_delay,
+    command_timeout: default_command_timeout,
     children: [],
     max_children: default_max_children,
     max_depth: default_max_depth,
@@ -190,6 +195,18 @@ pub fn with_model_retry_delay(
   Agent(..agent, model_retry_delay: milliseconds)
 }
 
+/// Bounds how long a command (`answer`, `cancel`, `reconcile`) waits for
+/// the run's live runner to take it, in milliseconds (default 5000). A
+/// runner busy for longer (for example held by a synchronous observation
+/// handler) refuses the command with `fabric.RunnerBusy`, and never applies
+/// it later.
+pub fn with_command_timeout(
+  agent: Agent(context),
+  milliseconds: Int,
+) -> Agent(context) {
+  Agent(..agent, command_timeout: milliseconds)
+}
+
 pub fn validate(agent: Agent(context)) -> Result(Nil, List(ConfigError)) {
   admit(agent) |> result.replace(Nil)
 }
@@ -208,6 +225,7 @@ pub type Admitted(context) {
     token_budget: Option(Int),
     policy_timeout: Int,
     model_retry_delay: Int,
+    command_timeout: Int,
     /// The admitted sub-agent of each delegation, by delegation name.
     children: Dict(String, Admitted(context)),
     max_children: Int,
@@ -231,6 +249,7 @@ pub fn admit(
         None -> Ok(Nil)
       },
       positive(agent.policy_timeout, PolicyTimeoutNotPositive),
+      positive(agent.command_timeout, CommandTimeoutNotPositive),
       case agent.model_retry_delay >= 0 {
         True -> Ok(Nil)
         False -> Error(ModelRetryDelayNegative(agent.model_retry_delay))
@@ -279,6 +298,7 @@ pub fn admit(
         token_budget: agent.token_budget,
         policy_timeout: agent.policy_timeout,
         model_retry_delay: agent.model_retry_delay,
+        command_timeout: agent.command_timeout,
         children: children |> result.values |> dict.from_list,
         max_children: agent.max_children,
         max_depth: agent.max_depth,

@@ -20,6 +20,15 @@
 //// A handler that fails (returns an error or raises) is detached by Sinal
 //// and telemetry and never affects the run.
 ////
+//// A command (`answer`, `cancel`, `reconcile`, `cancel_stored`) is answered
+//// once its commit is stored, before that commit's events are emitted. A
+//// synchronous handler running in a runner holds that runner: a command
+//// it sends to the run it observes is refused at once with
+//// `fabric.RunnerBusy`, and a command from elsewhere that the runner does
+//// not take within the agent's command timeout is refused the same way and
+//// never applied later. Handlers that call Fabric should run in a
+//// forwarder.
+////
 //// An event may be missing: a process that dies between its commit and
 //// its emit, or a commit made through a store in another VM, emits
 //// nothing here. A routed event is also dropped when its forwarder is full

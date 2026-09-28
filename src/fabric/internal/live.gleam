@@ -20,12 +20,15 @@ pub type Work {
 }
 
 pub type Message {
-  /// A command from outside: the runner applies `step` to its current
-  /// state, commits the result, performs its effects with `work` (`None`:
-  /// the run's own), and answers.
+  /// A command from outside. A runner that takes it by `accept_by`
+  /// (monotonic milliseconds) answers `Accepted`, applies `step` to its
+  /// current state, commits the result, answers, and then performs its
+  /// effects with `work` (`None`: the run's own). A runner that takes it
+  /// later drops it: the caller has given up.
   Command(
     step: fn(State) -> Result(#(State, List(Effect)), Rejection),
     work: Option(Work),
+    accept_by: Int,
     reply: Subject(CommandReply),
   )
   ModelDone(turn: Int, result: Result(Reply, ModelError))
@@ -41,6 +44,8 @@ pub type Message {
 }
 
 pub type CommandReply {
+  /// The runner took the command in time; its outcome follows.
+  Accepted
   /// The step was committed; this is the committed state.
   Applied(State)
   Refused(Rejection)
