@@ -110,7 +110,11 @@ pub fn restart_keeps_results_and_takes_over_running_and_queued_tools_test() {
   |> should.equal(
     Ok(
       run.Suspended([], [
-        run.UncertainAction(fabric.id(run), ActionId(1, "a"), "slow", lost),
+        run.UncertainAction(
+          run.ActionRef(fabric.id(run), ActionId(1, "a")),
+          "slow",
+          lost,
+        ),
       ]),
     ),
   )
@@ -122,7 +126,12 @@ pub fn restart_keeps_results_and_takes_over_running_and_queued_tools_test() {
   ])
   incarnation(run) |> should.equal(2)
 
-  let assert Ok(_) = fabric.reconcile(run, ActionId(1, "a"), "\"a\"")
+  let assert Ok(_) =
+    fabric.reconcile(
+      run,
+      run.ActionRef(fabric.id(run), ActionId(1, "a")),
+      "\"a\"",
+    )
   fabric.await(run, 5000)
   |> should.equal(
     Ok(run.Finished(run.Completed("final: \"c\" | \"a\" | \"b\""))),
@@ -151,7 +160,7 @@ pub fn an_effect_whose_result_was_never_committed_is_uncertain_test() {
 
   let assert Ok(run) = fabric.recover(reopen(dir), agent, Nil, fabric.id(run))
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
-  uncertain.id |> should.equal(ActionId(1, "a"))
+  uncertain.reference.id |> should.equal(ActionId(1, "a"))
   // The model is not called until the effect is reconciled.
   fabric.await(run, 0)
   |> should.equal(Ok(run.Suspended([], [uncertain])))
@@ -302,7 +311,11 @@ pub fn a_runner_of_an_older_incarnation_cannot_commit_test() {
   |> should.equal(
     Ok(
       run.Suspended([], [
-        run.UncertainAction(fabric.id(run), ActionId(1, "a"), "slow", lost),
+        run.UncertainAction(
+          run.ActionRef(fabric.id(run), ActionId(1, "a")),
+          "slow",
+          lost,
+        ),
       ]),
     ),
   )
@@ -454,13 +467,22 @@ pub fn a_killed_runner_is_reported_and_its_run_recovered_test() {
   let assert Ok(snapshot) = fabric.snapshot(run)
   snapshot.status |> should.equal(run.Unattended)
   // The stored action is still running, so it is not reconcilable yet.
-  fabric.reconcile(run, ActionId(1, "a"), "\"a\"")
+  fabric.reconcile(
+    run,
+    run.ActionRef(fabric.id(run), ActionId(1, "a")),
+    "\"a\"",
+  )
   |> should.equal(Error(fabric.NotReconcilable))
 
   let assert Ok(run) =
     fabric.recover(store, one_slow(probe), Nil, fabric.id(run))
   let assert Ok(run.Suspended([], [_])) = fabric.await(run, 0)
-  let assert Ok(_) = fabric.reconcile(run, ActionId(1, "a"), "\"a\"")
+  let assert Ok(_) =
+    fabric.reconcile(
+      run,
+      run.ActionRef(fabric.id(run), ActionId(1, "a")),
+      "\"a\"",
+    )
   fabric.await(run, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   probe.count(probe, "start:a") |> should.equal(1)

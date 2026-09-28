@@ -144,3 +144,48 @@ pub fn a_handler_in_a_commands_caller_can_command_the_run_test() {
   let assert Ok(Ok(_)) = process.receive(outcome, 0)
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
 }
+
+/// A run whose transfer timed out after sending: an uncertain effect.
+fn uncertain_transfer() -> agent.Agent(Nil) {
+  agent.new(
+    scripted.plan([
+      scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":5000}"),
+    ]),
+    [apps.transfer_tool()],
+    policy.always_allow(),
+  )
+}
+
+/// A reconciliation names its effect by run and action, and only runs of
+/// the handle's family are reconciled through it: another run's effect,
+/// or a run that does not exist, is refused and stays uncertain.
+pub fn a_foreign_effect_is_not_reconciled_test() {
+  let runs = store.in_memory()
+  let assert Ok(own) = fabric.start(runs, uncertain_transfer(), Nil, "pay")
+  let assert Ok(other) = fabric.start(runs, uncertain_transfer(), Nil, "pay")
+  let assert Ok(run.Suspended([], [mine])) = fabric.await(own, 5000)
+  let assert Ok(run.Suspended([], [theirs])) = fabric.await(other, 5000)
+  mine.reference
+  |> should.equal(run.ActionRef(fabric.id(own), run.ActionId(1, "t")))
+
+  fabric.reconcile(own, theirs.reference, "{\"receipt\":\"r\"}")
+  |> should.equal(Error(fabric.WrongReference))
+  fabric.reconcile(
+    own,
+    run.ActionRef(..mine.reference, run: support.id("run-nobody")),
+    "{\"receipt\":\"r\"}",
+  )
+  |> should.equal(Error(fabric.WrongReference))
+  fabric.reconcile(
+    own,
+    run.ActionRef(..mine.reference, id: run.ActionId(1, "nope")),
+    "{\"receipt\":\"r\"}",
+  )
+  |> should.equal(Error(fabric.WrongReference))
+  fabric.await(other, 0) |> should.equal(Ok(run.Suspended([], [theirs])))
+
+  let assert Ok(_) =
+    fabric.reconcile(own, mine.reference, "{\"receipt\":\"r\"}")
+  fabric.await(own, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: {\"receipt\":\"r\"}"))))
+}

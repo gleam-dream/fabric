@@ -47,7 +47,7 @@ import fabric/internal/controller.{type State}
 import fabric/internal/family
 import fabric/internal/runner
 import fabric/run.{
-  type ActionId, type Answer, type ApprovalRef, type Incompatibility,
+  type ActionRef, type Answer, type ApprovalRef, type Incompatibility,
   type PendingApproval, type RunId, type Snapshot, type Status, id_to_string,
   issued,
 }
@@ -514,26 +514,36 @@ pub fn cancel_stored(store: Store, id: RunId) -> Result(Status, CommandError) {
   |> result.map_error(command_error)
 }
 
-/// Records what actually happened for an uncertain effect of this run (for
-/// a sub-agent's, use its handle: `child`). `content` is what the model
-/// will see as that call's result. When nothing else is pending the run
-/// continues with its next model turn. Reconciliation does not consume a
-/// turn.
+/// Records what actually happened for an uncertain effect of the run or of
+/// one of its sub-agents (`UncertainAction.reference` names both the run and
+/// the action; it is routed through the family like `approve`). `content`
+/// is what the model will see as that call's result. When nothing else is
+/// pending the run continues with its next model turn. Reconciliation does
+/// not consume a turn.
+///
+/// An effect of a run outside this handle's family, or an action that the
+/// run's current tool batch does not have, is refused with
+/// `WrongReference`; an action that is not uncertain, or a run whose model
+/// is being called, with `NotReconcilable`. A sub-agent run whose ancestor
+/// is stopping or has ended accepts none (`RunEnded`).
 pub fn reconcile(
   run: Run(context),
-  action: ActionId,
+  effect: ActionRef,
   content: String,
 ) -> Result(Status, CommandError) {
-  use Nil <- result.try(open_to_commands(run, run.id))
-  runner.command(
-    run.setup,
-    run.id,
-    run.setup.env,
-    controller.Reconcile(action, content),
-    retries,
+  use #(target_id, target) <- result.try(locate(run, effect.run))
+  use Nil <- result.try(open_to_commands(run, target_id))
+  use state <- result.try(
+    runner.command(
+      target,
+      target_id,
+      target.env,
+      controller.Reconcile(effect.id, content),
+      retries,
+    )
+    |> result.map_error(command_error),
   )
-  |> result.map(status_after(run, _))
-  |> result.map_error(command_error)
+  family_status_after(run, target_id, state)
 }
 
 /// `RunEnded` when an ancestor of the run `id` is stopping or has ended:

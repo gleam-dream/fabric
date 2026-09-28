@@ -512,7 +512,14 @@ pub fn a_handler_commanding_its_own_run_is_refused_test() {
     sinal.observe(id, o.tool_dispatched(), fn(_, m: o.ToolDispatched) {
       let assert Ok(own) =
         fabric.recover(memory, weather_agent(), Nil, support.id(m.action.run))
-      process.send(results, fabric.reconcile(own, run.ActionId(1, "w"), "{}"))
+      process.send(
+        results,
+        fabric.reconcile(
+          own,
+          run.ActionRef(fabric.id(own), run.ActionId(1, "w")),
+          "{}",
+        ),
+      )
     })
   let assert Ok(run) = fabric.start(memory, weather_agent(), Nil, "weather")
   let assert Ok(refused) = process.receive(results, 5000)
@@ -595,7 +602,12 @@ pub fn a_command_to_a_runner_held_by_a_handler_is_refused_test() {
   let agent = weather_agent() |> agent.with_command_timeout(20)
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
   let #(_, gate) = entered_by(entered, support.text(fabric.id(run)))
-  let refused = fabric.reconcile(run, run.ActionId(1, "w"), "{}")
+  let refused =
+    fabric.reconcile(
+      run,
+      run.ActionRef(fabric.id(run), run.ActionId(1, "w")),
+      "{}",
+    )
   process.send(gate, Nil)
   let #(_, gate) = entered_by(entered, support.text(fabric.id(run)))
   process.send(gate, Nil)

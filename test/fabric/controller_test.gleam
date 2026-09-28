@@ -315,8 +315,7 @@ pub fn uncertain_effect_blocks_until_reconciled_test() {
   |> should.equal(
     run.Suspended([], [
       run.UncertainAction(
-        support.id("run-1"),
-        t,
+        run.ActionRef(support.id("run-1"), t),
         "transfer_funds",
         "gateway timed out",
       ),

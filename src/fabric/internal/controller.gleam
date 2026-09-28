@@ -1581,8 +1581,7 @@ pub fn status(state: State) -> Status {
               case action.state {
                 run.Uncertain(evidence) ->
                   Ok(run.UncertainAction(
-                    run.issued(state.run),
-                    action.id,
+                    run.ActionRef(run.issued(state.run), action.id),
                     action.call.name,
                     evidence,
                   ))

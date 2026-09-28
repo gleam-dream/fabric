@@ -123,10 +123,10 @@ pub type Incompatibility {
   ArgumentsNotAccepted(id: ActionId, tool: String, detail: String)
 }
 
-/// An effect of unknown status in `run`: this run, or one of its
-/// sub-agent runs (reconcile it on that run's handle, see `fabric.child`).
+/// An effect of unknown status. `reference` names its run (this run, or one
+/// of its sub-agent runs) and action; `fabric.reconcile` takes it.
 pub type UncertainAction {
-  UncertainAction(run: RunId, id: ActionId, tool: String, evidence: String)
+  UncertainAction(reference: ActionRef, tool: String, evidence: String)
 }
 
 pub type Outcome {

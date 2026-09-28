@@ -210,7 +210,7 @@ pub fn an_approved_tool_not_started_before_a_restart_is_asked_for_again_test() {
 
   let assert Ok(_) = approve(run, renewed, "dave")
   let assert Ok(run.Suspended([], [_])) = fabric.await(run, 5000)
-  let assert Ok(_) = fabric.reconcile(run, uncertain.id, "\"s\"")
+  let assert Ok(_) = fabric.reconcile(run, uncertain.reference, "\"s\"")
   fabric.await(run, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
   acts(probe)
