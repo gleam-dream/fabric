@@ -22,6 +22,7 @@ import fabric/tool
 import gleam/erlang/process.{type Pid}
 import gleam/list
 import gleam/option.{None}
+import gleam/result
 import gleeunit/should
 import json/blueprint/codec
 
@@ -768,6 +769,59 @@ pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
     store.get(store, "run-stopping")
   let assert Ok(controller.State(phase: controller.Ended(run.Cancelled), ..)) =
     record.decode(stored)
+}
+
+/// A backend over `memory` whose insert breaks the contract: it reports
+/// every run taken. With `stores` it stores the record first (a driver
+/// that retried an insert whose reply was lost); without, it stores
+/// nothing, and every read finds a record of someone else's.
+fn taken_backend(memory: Store, stores: Bool) -> Store {
+  store.new(
+    process.new_name("taken-store"),
+    get: fn(id) {
+      case stores {
+        False -> Ok(store.Stored(1, "someone else's run"))
+        True ->
+          store.get(memory, id)
+          |> result.map(fn(entry) { store.Stored(entry.revision, entry.record) })
+      }
+    },
+    insert: fn(id, record) {
+      case stores {
+        True -> {
+          let _ = store.insert(memory, id, record, store.Keep)
+          Nil
+        }
+        False -> Nil
+      }
+      Error(store.AlreadyExists)
+    },
+    compare_and_set: fn(id, expected, record) {
+      store.commit(memory, id, expected, record, store.Keep)
+      |> result.replace(Nil)
+    },
+  )
+  |> support.started
+}
+
+/// A backend that stored the first record and still reported the run
+/// taken: the start reads it back, finds its own record, and runs it.
+pub fn a_start_the_backend_stored_despite_reporting_it_taken_runs_test() {
+  let probe = probe.new()
+  let runs = taken_backend(support.store(), True)
+  let assert Ok(run) = fabric.start(runs, one_slow(probe), Nil, "go")
+  probe.release(probe.arrival(probe))
+  fabric.await(run, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
+}
+
+/// A first write reported taken by a record the start did not write is
+/// refused: the id is someone else's run, so the error does not name it,
+/// and nothing of this start was stored.
+pub fn a_start_whose_id_holds_another_record_is_refused_test() {
+  let runs = taken_backend(support.store(), False)
+  let assert Error(fabric.StartRefused(_)) =
+    fabric.start(runs, one_slow(probe.new()), Nil, "go")
 }
 
 /// A start whose first write the store does not confirm names the run it
