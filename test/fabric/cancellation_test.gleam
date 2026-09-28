@@ -109,12 +109,7 @@ fn delegating(child: Agent(ctx)) -> Agent(ctx) {
     research(),
     to: child,
     prompt: fn(topic: Topic) { topic.topic },
-    result: fn(outcome) {
-      case outcome {
-        run.Completed(text) -> Ok(Summary(text))
-        _ -> Error(tool.Explain("no"))
-      }
-    },
+    output: fn(text) { Ok(Summary(text)) },
   )
   |> support.agent
 }

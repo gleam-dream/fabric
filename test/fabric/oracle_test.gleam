@@ -551,12 +551,7 @@ fn delegation_agent(probe: Probe) -> agent.Agent(Nil) {
     tool.define("task", "Start a sub-agent", task_codec, codec.string()),
     to: researcher,
     prompt: fn(task: Task) { task.description },
-    result: fn(outcome) {
-      case outcome {
-        run.Completed(text) -> Ok(text)
-        _ -> Error(tool.Explain("the sub-agent did not complete"))
-      }
-    },
+    output: fn(text) { Ok(text) },
   )
   |> support.agent
 }

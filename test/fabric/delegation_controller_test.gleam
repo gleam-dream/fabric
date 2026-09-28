@@ -24,10 +24,10 @@ fn ask() -> tool.Tool(Nil) {
     tool.define("ask", "Ask a helper.", codec.string(), codec.string()),
     run.Identity("helper", 1),
     fn(question) { question },
-    fn(outcome) {
-      case outcome {
-        run.Completed(text) -> Ok(text)
-        _ -> Error(tool.Explain("no answer"))
+    output: fn(text) {
+      case text {
+        "?" -> Error("no answer")
+        _ -> Ok(text)
       }
     },
   )
@@ -137,6 +137,28 @@ pub fn a_child_end_is_mapped_by_the_delegation_test() {
   action(state, "a").state |> should.equal(run.Succeeded("\"because\""))
   action(state, "a").child |> should.equal(Some(support.id("run-p-1")))
   let assert [CallModel(2, _)] = effects
+}
+
+/// A completed answer the delegation cannot parse, and a child that ended
+/// without an answer, are definite failures the model sees.
+pub fn a_child_without_a_usable_answer_is_a_definite_failure_test() {
+  let ended = fn(outcome) {
+    let #(state, _) = acting([ask_call("a")], 4)
+    let #(state, _) = step(state, ChildStarted(ActionId(1, "a")))
+    let #(state, _) =
+      step(state, ChildEnded(ActionId(1, "a"), ChildFinished(outcome, False)))
+    action(state, "a").state
+  }
+  ended(run.Completed("?"))
+  |> should.equal(run.ToolFailed("{\"error\":\"no answer\"}"))
+  ended(run.Refused("nope"))
+  |> should.equal(run.ToolFailed("{\"error\":\"the sub-agent refused: nope\"}"))
+  ended(run.BudgetExhausted(run.TurnLimit(3)))
+  |> should.equal(run.ToolFailed(
+    "{\"error\":\"the sub-agent used its 3 model turns\"}",
+  ))
+  ended(run.Cancelled)
+  |> should.equal(run.ToolFailed("{\"error\":\"the sub-agent was cancelled\"}"))
 }
 
 pub fn a_child_with_unknown_effects_makes_the_delegation_uncertain_test() {
