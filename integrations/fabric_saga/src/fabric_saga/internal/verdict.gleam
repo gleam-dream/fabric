@@ -1,40 +1,42 @@
 //// What a Saga outcome proves about the workflow's effects.
 ////
-//// A result is definite only when Saga's report proves that no attempt of
-//// any step has an effect of unknown status. A typed error that a step's
-//// single attempt returned is known; a crash, an exit, a timeout, or an
-//// interruption is not. Saga reports a run's outcome and its settlement,
-//// and describes the workflow's steps (`saga.describe`). From these:
-////
-//// - A step with no recovery decider (`saga.compensate`) makes exactly one
-////   attempt. A typed error it returned is reported as `StepFailed`, a
-////   crash as `StepCrashed`, a timeout as `StepTimedOut`, a kill as
-////   `interrupted`.
-//// - A step with a recovery decider may have crashed or timed out on an
-////   attempt Saga does not report: its decider can retry, continue, or
-////   abort with a typed error (reported as `StepFailed`) after a crash, and
-////   Saga reports only a retried timeout (`CompletedWithUnknownEffects`).
-////   So any outcome in which such a step may have been attempted is
-////   uncertain.
-//// - A step may have been attempted unless it depends, directly or through
-////   other steps, on a step that failed: that step produced no output for
-////   it. Every step of a completed run was attempted.
+//// A result is definite only when Saga's report proves that every effect
+//// of the run is known and none is left in place. Saga records every step
+//// attempt, recovery decision and undo that ended without a result (it
+//// crashed or its process exited, it was killed at its time bound, or it
+//// was killed when the settle window closed) as an `UnknownEffect`, when
+//// it ended, whatever was decided afterwards: `execution.unknown_effects`
+//// is `[]` exactly when every action returned `Ok` or a typed error. A
+//// typed error of an undo or of a recovery decision's cleanup, a step with
+//// no undo, and a held step are known effects left in place, reported by
+//// the settlement.
 ////
 //// | Saga outcome | Result |
 //// | --- | --- |
-//// | `Completed(output)`, no step with a recovery decider | the output |
-//// | `Failed(StepFailed(step, error))` of a step with no recovery decider, every sibling failure such a typed error, nothing left in place, no step with a recovery decider attempted | definite: `explain(error)` |
-//// | `Failed(DeadlineExceeded)`, with the same conditions | definite |
+//// | `Completed(output)` | the output: every action returned |
+//// | `Failed(StepFailed(_, error))` or `Failed(RetryLimitReached(_, Returned(error)))`, no unknown effect, nothing left in place | definite: `explain(error)` |
+//// | `Failed(DeadlineExceeded)`, with the same conditions | definite: the workflow missed its deadline |
+//// | `Failed(OutputCrashed(_))`, with the same conditions | definite: the workflow could not compute its output |
 //// | `Cancelled`, with the same conditions | definite: cancelled, every completed step undone |
-//// | a step with a recovery decider that may have been attempted, a crash, timeout, or retry cause (as the cause or a sibling failure), an undo or compensation that failed, a step interrupted, held, or without an undo, `CompletedWithUnknownEffects`, `Unresolved` | uncertain, with a summary of Saga's report |
+//// | `CompletedWithUnknownEffects`, `Unresolved`, a `Failed` or `Cancelled` with an unknown effect or an effect left in place, a cause that is itself a crash or timeout | uncertain, with a summary of Saga's report |
 ////
-//// The summary names outcome kinds and step addresses only: never a step's
-//// typed error, output, or crash reason, which may carry application data.
+//// `OutputCrashed` is definite when nothing else is uncertain: the output
+//// transform (`saga.map`) is not an action and has no effect of its own,
+//// and Saga rolls back every completed step after it crashed. A cause that
+//// is a crash or timeout (`StepCrashed`, `StepTimedOut`, a retry cause
+//// whose last attempt crashed or timed out) names an action that Saga also
+//// lists as an unknown effect; it is uncertain on its own too, since it
+//// carries no typed error to explain. `RetrySuperseded(_, Returned(error))`
+//// is judged like `RetryLimitReached`.
+////
+//// The summary names outcome kinds, actions and step addresses only: never
+//// a step's typed error, output, or crash reason, which may carry
+//// application data.
 
+import gleam/int
 import gleam/list
-import gleam/set.{type Set}
 import gleam/string
-import saga.{type StepAddress, type StepDescriptor}
+import saga.{type StepAddress}
 import saga/execution
 
 /// Why the workflow did not produce its output.
@@ -45,75 +47,72 @@ pub type Stopped {
   Unknown(evidence: String)
 }
 
-/// The tool result that `outcome` proves, for a workflow whose steps are
-/// `steps` (`saga.describe`).
+/// The tool result that `outcome` proves.
 pub fn classify(
   outcome: execution.Outcome(output, error, undo_error),
-  steps: List(StepDescriptor),
   explain: fn(error) -> String,
 ) -> Result(output, Stopped) {
   let report = summary(outcome)
+  let effects = unknown_effects(execution.unknown_effects(outcome))
   case outcome {
-    execution.Completed(output) ->
-      case recoverable(steps, attempted(steps, [])) {
-        [] -> Ok(output)
-        risky -> Error(unknown([decided(risky)], report))
-      }
-    execution.CompletedWithUnknownEffects(_, interrupted) ->
-      Error(unknown(
-        [
-          "these steps were interrupted and their effect is unknown: "
-          <> addresses(interrupted),
-        ],
-        report,
-      ))
-    execution.Unresolved(step, _, _) ->
+    execution.Completed(output) -> Ok(output)
+    execution.CompletedWithUnknownEffects(..) -> Error(unknown(effects, report))
+    execution.Unresolved(step, _, settlement) ->
       Error(unknown(
         [
           "the workflow held the effects of step "
-          <> saga.address_to_string(step)
-          <> " unresolved",
+            <> saga.address_to_string(step)
+            <> " unresolved",
+          ..list.append(effects, left_in_place(settlement))
         ],
         report,
       ))
     execution.Failed(cause, settlement) ->
-      case stopped(steps, [cause, ..settlement.sibling_failures], settlement) {
-        [] ->
-          Error(
-            Definitely(case cause {
-              execution.StepFailed(_, error) -> explain(error)
-              _ -> "the workflow missed its deadline"
-            }),
-          )
-        reasons -> Error(unknown(reasons, report))
-      }
+      stopped(failure(cause, explain), effects, settlement, report)
     execution.Cancelled(_, settlement) ->
-      case stopped(steps, settlement.sibling_failures, settlement) {
-        [] ->
-          Error(Definitely(
-            "the workflow was cancelled; every completed step was undone",
-          ))
-        reasons -> Error(unknown(reasons, report))
-      }
+      stopped(
+        Ok("the workflow was cancelled; every completed step was undone"),
+        effects,
+        settlement,
+        report,
+      )
   }
 }
 
-/// Why a stopped run whose failures are `causes` left an effect unknown or
-/// in place; `[]` when nothing.
+/// A stopped run is definite when its cause has a `message` and nothing is
+/// unknown or left in place.
 fn stopped(
-  steps: List(StepDescriptor),
-  causes: List(execution.Cause(error)),
+  message: Result(String, Nil),
+  effects: List(String),
   settlement: execution.Settlement(error, undo_error),
-) -> List(String) {
-  let failed = list.filter_map(causes, cause_step)
-  list.flatten([
-    list.filter_map(causes, unknown_cause),
-    left_in_place(settlement),
-    case recoverable(steps, attempted(steps, failed)) {
-      [] -> []
-      risky -> [decided(risky)]
-    },
-  ])
+  report: String,
+) -> Result(output, Stopped) {
+  case message, list.append(effects, left_in_place(settlement)) {
+    Ok(message), [] -> Error(Definitely(message))
+    _, reasons -> Error(unknown(reasons, report))
+  }
+}
+
+/// What the model is told a known cause was; `Error(Nil)` for a cause that
+/// is itself a crash or timeout.
+fn failure(
+  cause: execution.Cause(error),
+  explain: fn(error) -> String,
+) -> Result(String, Nil) {
+  case cause {
+    execution.StepFailed(_, error)
+    | execution.RetryLimitReached(_, saga.Returned(error))
+    | execution.RetrySuperseded(_, saga.Returned(error)) -> Ok(explain(error))
+    execution.DeadlineExceeded -> Ok("the workflow missed its deadline")
+    execution.OutputCrashed(_) ->
+      Ok("the workflow could not compute its output")
+    execution.StepCrashed(..)
+    | execution.StepTimedOut(_)
+    | execution.RetryLimitReached(_, saga.Crashed(_))
+    | execution.RetryLimitReached(_, saga.TimedOut)
+    | execution.RetrySuperseded(_, saga.Crashed(_))
+    | execution.RetrySuperseded(_, saga.TimedOut) -> Error(Nil)
+  }
 }
 
 fn unknown(reasons: List(String), report: String) -> Stopped {
@@ -126,69 +125,61 @@ fn unknown(reasons: List(String), report: String) -> Stopped {
   )
 }
 
-fn decided(steps: List(StepAddress)) -> String {
-  "steps with a recovery decider may have crashed or timed out on an attempt Saga does not report: "
-  <> addresses(steps)
-}
-
-/// The step a cause names, if any.
-fn cause_step(cause: execution.Cause(error)) -> Result(StepAddress, Nil) {
-  case cause {
-    execution.StepFailed(step, _)
-    | execution.StepCrashed(step, _)
-    | execution.StepTimedOut(step)
-    | execution.RetryLimitReached(step, _)
-    | execution.RetrySuperseded(step, _) -> Ok(step)
-    execution.OutputCrashed(_) | execution.DeadlineExceeded -> Error(Nil)
+/// Each action that ended without a result, as one reason; `[]` when every
+/// action returned.
+fn unknown_effects(effects: List(execution.UnknownEffect)) -> List(String) {
+  case effects {
+    [] -> []
+    effects -> [
+      "these actions ended without a result, so their effect is unknown: "
+      <> string.join(list.map(effects, describe_effect), ", "),
+    ]
   }
 }
 
-/// Why a cause leaves an effect unknown; `Error(Nil)` for a typed error or
-/// a missed deadline, which are known. A typed error of a step with a
-/// recovery decider is judged by `recoverable`.
-fn unknown_cause(cause: execution.Cause(error)) -> Result(String, Nil) {
-  case cause {
-    execution.StepFailed(..) | execution.DeadlineExceeded -> Error(Nil)
-    execution.StepCrashed(step, _) | execution.StepTimedOut(step) ->
-      Ok(
-        "step "
-        <> saga.address_to_string(step)
-        <> " crashed or timed out; its effect is unknown",
-      )
-    execution.RetryLimitReached(step, _) | execution.RetrySuperseded(step, _) ->
-      Ok(
-        "step "
-        <> saga.address_to_string(step)
-        <> " failed after retries; an earlier attempt may have crashed or timed out",
-      )
-    execution.OutputCrashed(_) -> Ok("the workflow's output crashed")
+fn describe_effect(effect: execution.UnknownEffect) -> String {
+  let step = saga.address_to_string(effect.step)
+  let action = case effect.action {
+    execution.StepAttempt(n) ->
+      "attempt " <> int.to_string(n) <> " of step " <> step
+    execution.StepCompensation(n) ->
+      "the recovery decision on attempt "
+      <> int.to_string(n)
+      <> " of step "
+      <> step
+    execution.StepUndo -> "the undo of step " <> step
+  }
+  action
+  <> case effect.ending {
+    execution.ActionCrashed(_) -> " crashed"
+    execution.ActionTimedOut -> " timed out"
+    execution.ActionInterrupted -> " was interrupted"
   }
 }
 
-/// What the settlement left in place or of unknown status.
+/// The known effects the settlement left in place.
 fn left_in_place(
   settlement: execution.Settlement(error, undo_error),
 ) -> List(String) {
-  let undo_failed =
-    list.map(settlement.undo_failures, fn(failure) {
+  let not_undone =
+    list.filter_map(settlement.undo_failures, fn(failure) {
       case failure {
-        execution.UndoFailed(step, _)
-        | execution.UndoCrashed(step, _)
-        | execution.UndoTimedOut(step) -> step
+        execution.UndoFailed(step, _) -> Ok(step)
+        // Unknown effects, named by `unknown_effects`.
+        execution.UndoCrashed(..) | execution.UndoTimedOut(_) -> Error(Nil)
       }
     })
-  let compensation_failed =
-    list.map(settlement.compensation_failures, fn(failure) {
+  let not_cleaned_up =
+    list.filter_map(settlement.compensation_failures, fn(failure) {
       case failure {
-        execution.CleanupFailed(step, _)
-        | execution.CompensationCrashed(step, _)
-        | execution.CompensationTimedOut(step) -> step
+        execution.CleanupFailed(step, _) -> Ok(step)
+        execution.CompensationCrashed(..) | execution.CompensationTimedOut(_) ->
+          Error(Nil)
       }
     })
   [
-    #("not undone", undo_failed),
-    #("compensation failed", compensation_failed),
-    #("interrupted", settlement.interrupted),
+    #("not undone", not_undone),
+    #("not cleaned up", not_cleaned_up),
     #("held", settlement.held),
     #("without an undo", settlement.not_undoable),
   ]
@@ -200,58 +191,6 @@ fn left_in_place(
   })
 }
 
-/// The steps that may have been attempted: every step except those that
-/// depend, directly or through other steps, on a step in `failed`.
-fn attempted(
-  steps: List(StepDescriptor),
-  failed: List(StepAddress),
-) -> List(StepAddress) {
-  let blocked = downstream(steps, set.from_list(failed), set.new())
-  list.filter_map(steps, fn(step) {
-    case set.contains(blocked, step.address) {
-      True -> Error(Nil)
-      False -> Ok(step.address)
-    }
-  })
-}
-
-/// The steps that depend on `failed` or on a step in `blocked`, to a fixed
-/// point.
-fn downstream(
-  steps: List(StepDescriptor),
-  failed: Set(StepAddress),
-  blocked: Set(StepAddress),
-) -> Set(StepAddress) {
-  let next =
-    list.fold(steps, blocked, fn(blocked, step) {
-      case
-        list.any(step.depends_on, fn(dependency) {
-          set.contains(failed, dependency) || set.contains(blocked, dependency)
-        })
-      {
-        True -> set.insert(blocked, step.address)
-        False -> blocked
-      }
-    })
-  case set.size(next) == set.size(blocked) {
-    True -> next
-    False -> downstream(steps, failed, next)
-  }
-}
-
-/// The steps among `attempted` with a recovery decider.
-fn recoverable(
-  steps: List(StepDescriptor),
-  attempted: List(StepAddress),
-) -> List(StepAddress) {
-  list.filter_map(steps, fn(step) {
-    case step.compensates && list.contains(attempted, step.address) {
-      True -> Ok(step.address)
-      False -> Error(Nil)
-    }
-  })
-}
-
 /// Saga's report without application data: the outcome's kind, its cause's
 /// kind and step, and the settlement's steps.
 pub fn summary(
@@ -259,8 +198,9 @@ pub fn summary(
 ) -> String {
   case outcome {
     execution.Completed(_) -> "completed"
-    execution.CompletedWithUnknownEffects(_, steps) ->
-      "completed with unknown effects of " <> addresses(steps)
+    execution.CompletedWithUnknownEffects(_, effects) ->
+      "completed with unknown effects: "
+      <> string.join(list.map(effects, describe_effect), ", ")
     execution.Failed(cause, settlement) ->
       "failed: " <> describe_cause(cause) <> settled(settlement)
     execution.Cancelled(reason, settlement) ->
@@ -298,7 +238,16 @@ fn settled(settlement: execution.Settlement(error, undo_error)) -> String {
     #("undone", settlement.undone),
     #(
       "sibling failures",
-      list.filter_map(settlement.sibling_failures, cause_step),
+      list.filter_map(settlement.sibling_failures, fn(cause) {
+        case cause {
+          execution.StepFailed(step, _)
+          | execution.StepCrashed(step, _)
+          | execution.StepTimedOut(step)
+          | execution.RetryLimitReached(step, _)
+          | execution.RetrySuperseded(step, _) -> Ok(step)
+          execution.OutputCrashed(_) | execution.DeadlineExceeded -> Error(Nil)
+        }
+      }),
     ),
   ]
   |> list.filter_map(fn(entry) {
