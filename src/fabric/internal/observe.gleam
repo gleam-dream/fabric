@@ -26,6 +26,11 @@ pub fn committed(before: Option(State), after: State) -> Nil {
   finished(before, after)
 }
 
+/// A draining runner committed the handoff of `state`.
+pub fn handed_off(state: State) -> Nil {
+  emit(o.run_handed_off(), Nil, o.RunHandedOff(state.run, state.incarnation))
+}
+
 fn started(before: Option(State), after: State) -> Nil {
   case before {
     Some(_) -> Nil

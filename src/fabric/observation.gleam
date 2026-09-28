@@ -54,6 +54,8 @@
 //// (a sub-agent run names its parent) |
 //// | `run_recovered` | `[fabric, run, recover]` | a recovery took over lost
 //// work (new incarnation) |
+//// | `run_handed_off` | `[fabric, run, hand_off]` | a runner drained by a
+//// shutdown committed its run's handoff (see `store.supervised`) |
 //// | `model_turn` | `[fabric, model, stop]` | a model attempt's reply or
 //// failure was committed |
 //// | `approval_answered` | `[fabric, approval, answer]` | an answer was
@@ -116,6 +118,12 @@ pub type RunStarted {
 
 pub type RunRecovered {
   RunRecovered(run: String, incarnation: Int)
+}
+
+/// The incarnation whose runner handed the run off; `fabric.recover` goes
+/// on with the next.
+pub type RunHandedOff {
+  RunHandedOff(run: String, incarnation: Int)
 }
 
 /// What a model attempt produced.
@@ -262,6 +270,18 @@ pub fn run_recovered() -> Event(Nil, RunRecovered) {
       |> fields.imap(
         fn(values) { RunRecovered(values.0, values.1) },
         fn(recovered) { #(recovered.run, recovered.incarnation) },
+      ),
+  )
+}
+
+pub fn run_handed_off() -> Event(Nil, RunHandedOff) {
+  event(
+    ["run", "hand_off"],
+    fields.empty(),
+    both(text("run"), int("incarnation"))
+      |> fields.imap(
+        fn(values) { RunHandedOff(values.0, values.1) },
+        fn(handed) { #(handed.run, handed.incarnation) },
       ),
   )
 }
