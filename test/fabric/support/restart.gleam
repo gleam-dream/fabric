@@ -81,3 +81,14 @@ pub fn crash(owner: Pid, store: Store) -> Nil {
 /// Whether `pid` monitors `target` and is blocked in a receive.
 @external(erlang, "fabric_test_ffi", "waits_on")
 pub fn waits_on(pid: Pid, target: Pid) -> Bool
+
+/// Suspends `pid`: it runs nothing until `resume`, while messages queue.
+@external(erlang, "fabric_test_ffi", "suspend")
+pub fn suspend(pid: Pid) -> Nil
+
+@external(erlang, "fabric_test_ffi", "resume")
+pub fn resume(pid: Pid) -> Nil
+
+/// How many messages wait in `pid`'s mailbox.
+@external(erlang, "fabric_test_ffi", "queued")
+pub fn queued(pid: Pid) -> Int

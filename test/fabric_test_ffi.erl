@@ -1,5 +1,6 @@
 -module(fabric_test_ffi).
--export([temp_dir/0, remove_dir/1, list_dir/1, write_file/2, read_file/1, age_file/2, waits_on/2]).
+-export([temp_dir/0, remove_dir/1, list_dir/1, write_file/2, read_file/1, age_file/2, waits_on/2,
+         suspend/1, resume/1, queued/1]).
 
 %% A fresh, empty directory under the system temporary directory.
 temp_dir() ->
@@ -46,4 +47,18 @@ waits_on(Pid, Target) ->
         [{status, waiting}, {monitors, Monitors}] ->
             lists:member({process, Target}, Monitors);
         _ -> false
+    end.
+
+suspend(Pid) ->
+    true = erlang:suspend_process(Pid),
+    nil.
+
+resume(Pid) ->
+    true = erlang:resume_process(Pid),
+    nil.
+
+queued(Pid) ->
+    case erlang:process_info(Pid, message_queue_len) of
+        {message_queue_len, N} -> N;
+        undefined -> 0
     end.
