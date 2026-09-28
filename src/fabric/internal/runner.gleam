@@ -499,7 +499,17 @@ fn commit_answering(
     True -> store.Keep
     False -> store.Release(process.self())
   }
-  case persist(runner.setup.store, state, runner.revision, ownership, 0) {
+  let encoded = record.encode(state)
+  case
+    persist(
+      runner.setup.store,
+      state.run,
+      encoded,
+      runner.revision,
+      ownership,
+      0,
+    )
+  {
     Error(_) -> {
       answer(live.Superseded)
       Error(Superseded)
@@ -520,29 +530,31 @@ const unavailable_retries = 6
 
 const unavailable_backoff = 10
 
-/// Commits `state` over `expected`. A conflict means a newer owner exists:
+/// Commits the encoded state over `expected`, every attempt with the same
+/// text (one write token). A conflict means a newer owner exists:
 /// stop. `Unavailable` may be transient, so it is tried again after a
 /// bounded backoff (the store has already read back a write that happened
 /// despite the error).
 fn persist(
   store: Store,
-  state: State,
+  run: String,
+  encoded: String,
   expected: Int,
   ownership: store.Ownership,
   attempt: Int,
 ) -> Result(Int, store.StoreError) {
-  let encoded = record.encode(state)
-  case store.commit(store, state.run, expected, encoded, ownership) {
+  case store.commit(store, run, expected, encoded, ownership) {
     Error(store.Unavailable(_)) if attempt < unavailable_retries -> {
       process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
-      persist(store, state, expected, ownership, attempt + 1)
+      persist(store, run, encoded, expected, ownership, attempt + 1)
     }
     // An earlier attempt that was reported unavailable may have landed
-    // after all: the conflict is then with this runner's own write.
+    // after all: the conflict is then with this runner's own write, which
+    // its write token identifies.
     Error(store.Conflict(current)) as conflict
       if attempt > 0 && current == expected + 1
     ->
-      case store.get(store, state.run) {
+      case store.get(store, run) {
         Ok(entry) if entry.revision == current && entry.record == encoded ->
           Ok(current)
         _ -> conflict

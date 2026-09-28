@@ -10,6 +10,7 @@ import fabric/policy.{ActionId, Requirement}
 import fabric/run
 import fabric/store
 import fabric/support/apps
+import fabric/support/flaky
 import fabric/support/probe.{type Probe}
 import fabric/support/restart
 import fabric/support/scripted
@@ -347,4 +348,84 @@ pub fn cancelling_a_paused_run_after_a_restart_test() {
   approve(run, pending.reference) |> should.equal(Error(fabric.RunEnded))
   probe.count(probe, "pay:bob") |> should.equal(0)
   restart.remove_dir(dir)
+}
+
+// --- identical writes -------------------------------------------------------------
+
+/// Two stores apply the same answer to the same revision, so they write
+/// byte-identical records. One lands; the other's write is lost and
+/// reported unavailable. Reading back must not mistake the first writer's
+/// record for its own: only one of them performs the answer's effects.
+pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test() {
+  let probe = probe.new()
+  let backend = flaky.new()
+  let agent =
+    agent.new(
+      model.new(fn(request: model.Request) {
+        case scripted.results(request.messages) {
+          [] ->
+            Ok(model.ToolRequest(
+              "",
+              [
+                scripted.call(
+                  "t",
+                  "transfer_funds",
+                  "{\"to\":\"bob\",\"amount\":10}",
+                ),
+              ],
+              None,
+            ))
+          _ -> {
+            probe.gate(probe, "model")
+            Ok(model.FinalAnswer("done", None))
+          }
+        }
+      }),
+      [apps.transfer_tool()],
+      fn(_, action: policy.Action) {
+        case action.tool {
+          "transfer_funds" ->
+            Ok(policy.RequireApproval(Requirement("transfer", 1)))
+          _ -> Ok(policy.Allow)
+        }
+      },
+    )
+  let first = flaky.store(backend)
+  let assert Ok(run) = fabric.start(first, agent, Nil, "pay")
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let id = fabric.id(run)
+  let reject = run.Reject("not today")
+
+  // The second writer reads the record, and its write is held.
+  let held = flaky.hold(backend, fn(written) { written == id })
+  let second = process.new_subject()
+  let second_store = flaky.store(backend)
+  process.spawn(fn() {
+    let assert Ok(handle) = fabric.recover(second_store, agent, Nil, id)
+    process.send(
+      second,
+      fabric.answer(
+        handle,
+        pending.reference,
+        reject,
+        reviewer: None,
+        context: Nil,
+      ),
+    )
+  })
+  let assert Ok(_) = process.receive(held, 5000)
+  // The first writer's identical answer lands, and its model call waits.
+  let assert Ok(run.Working) =
+    fabric.answer(run, pending.reference, reject, reviewer: None, context: Nil)
+  let calling = probe.arrival(probe)
+  // The held write is lost.
+  flaky.drop_held(backend)
+  let assert Ok(outcome) = process.receive(second, 5000)
+  probe.release(calling)
+  fabric.await(run, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("done"))))
+
+  let assert Error(fabric.Unreadable(fabric.StoreFailed(store.Unavailable(_)))) =
+    outcome
+  process.receive(probe.arrivals, 0) |> should.equal(Error(Nil))
 }
