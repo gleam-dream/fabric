@@ -353,7 +353,11 @@ named supervisable store).
   until it notices, its commits reach the new process and are fenced by
   compare-and-set like any other owner's. Backend workers report to the
   process's own subject, never to the name, so a late report cannot reach
-  a later process of the same name. `await` follows a restarted process.
+  a later process of the same name. An `await` whose store process stops
+  waits, within its own deadline, for the supervisor to register the next
+  process and goes on through it, where work in flight reads `Unattended`;
+  only a process that is not registered again in time is
+  `StoreUnavailable`.
   `directory(name, path)` no longer fails when built: a directory that
   cannot be created, or a name already taken, fails `start`.
 - **`run.issued`** is an `@internal` constructor of `RunId` for ids Fabric

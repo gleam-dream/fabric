@@ -57,10 +57,10 @@ import fabric/run.{
   issued,
 }
 import fabric/store.{type Store}
-import gleam/erlang/process
+import gleam/erlang/process.{type Pid}
 import gleam/int
 import gleam/list
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 
 /// A handle on one run, for the agent and context it was started or
@@ -230,13 +230,15 @@ pub fn child(
 /// when the previous owner is known to be gone.
 ///
 /// It wakes on commits made through this run's store and when a runner exits.
-/// If a supervisor restarts the store's process meanwhile, it goes on through
-/// the new one, which knows no runner: work in flight then reads `Unattended`.
-/// With no store process running it is `StoreUnavailable`. A run whose
+/// If the store's process stops meanwhile, it waits, until `within` runs
+/// out, for a supervisor to register the next one, and goes on through it;
+/// that process knows no runner, so work in flight then reads `Unattended`.
+/// With no store process running when it starts, or none registered again
+/// in time, it is `StoreUnavailable`. A run whose
 /// sub-agents work is working; one waiting only on paused sub-agents is
 /// suspended on their approvals. `await(run, 0)` reads the status now.
 pub fn await(run: Run(context), within: Int) -> Result(Status, RecordError) {
-  attend(run, process.new_subject(), now() + within)
+  attend(run, process.new_subject(), now() + within, None)
 }
 
 /// What a wait ended with: an outcome, or the store process stopped (its
@@ -247,29 +249,54 @@ type Waited {
 }
 
 /// Waits through the store process running now, and again through the next
-/// one if a supervisor restarts it meanwhile.
+/// one if a supervisor restarts it meanwhile. `stopped` is the process
+/// that stopped last.
 fn attend(
   run: Run(context),
   watcher: process.Subject(Nil),
   deadline: Int,
+  stopped: Option(Pid),
 ) -> Result(Status, RecordError) {
-  case store.pid(run.setup.store) {
+  case store_process(run.setup.store, stopped, deadline) {
     Error(Nil) -> Error(StoreUnavailable("the store is not running"))
     Ok(pid) -> {
       let monitor = process.monitor(pid)
-      let waited = wait(run, watcher, monitor, [], deadline)
+      let waited = wait(run, watcher, pid, monitor, [], deadline)
       process.demonitor_process(monitor)
       case waited {
         Waited(outcome) -> outcome
-        StoreStopped -> attend(run, watcher, deadline)
+        StoreStopped -> attend(run, watcher, deadline, Some(pid))
       }
     }
+  }
+}
+
+/// The store's process. After `stopped` stopped, the next process
+/// registered under the store's name, waited for until `deadline`.
+fn store_process(
+  store: Store,
+  stopped: Option(Pid),
+  deadline: Int,
+) -> Result(Pid, Nil) {
+  case store.pid(store), stopped {
+    Ok(pid), Some(old) if pid != old -> Ok(pid)
+    Ok(pid), None -> Ok(pid)
+    Error(Nil), None -> Error(Nil)
+    _, Some(_) ->
+      case deadline - now() {
+        left if left > 0 -> {
+          process.sleep(int.min(left, 5))
+          store_process(store, stopped, deadline)
+        }
+        _ -> Error(Nil)
+      }
   }
 }
 
 fn wait(
   run: Run(context),
   watcher: process.Subject(Nil),
+  pid: Pid,
   monitor: process.Monitor,
   watched: List(String),
   deadline: Int,
@@ -278,8 +305,16 @@ fn wait(
     list.each(watched, store.unwatch(run.setup.store, _, watcher))
     Waited(outcome)
   }
+  // A store call that failed because the process stopped under it is the
+  // stop, not an outcome.
+  let failed = fn(error) {
+    case process.is_alive(pid) {
+      True -> done(Error(error))
+      False -> StoreStopped
+    }
+  }
   case family.load(run.setup.store, run.id) {
-    Error(problem) -> done(Error(record_error(problem)))
+    Error(problem) -> failed(record_error(problem))
     Ok(node) -> {
       // Watch every record of the family before deciding; a record seen
       // for the first time is read again after it is watched, so no
@@ -291,14 +326,21 @@ fn wait(
           store.watch(run.setup.store, id, watcher)
         })
       case watching, fresh, family.view(node) {
-        Error(error), _, _ -> done(Error(store_error(error)))
+        Error(error), _, _ -> failed(store_error(error))
         Ok(Nil), [_, ..], _ ->
-          wait(run, watcher, monitor, list.append(watched, fresh), deadline)
+          wait(
+            run,
+            watcher,
+            pid,
+            monitor,
+            list.append(watched, fresh),
+            deadline,
+          )
         // Unattended only when a second read finds the family unchanged.
         Ok(Nil), [], family.View(run.Working, False) ->
           case family.load(run.setup.store, run.id) {
             Ok(again) if again == node -> done(Ok(run.Unattended))
-            _ -> wait(run, watcher, monitor, watched, deadline)
+            _ -> wait(run, watcher, pid, monitor, watched, deadline)
           }
         Ok(Nil), [], family.View(run.Working, True) -> {
           let woken =
@@ -309,7 +351,7 @@ fn wait(
           case woken {
             Error(Nil) -> done(Ok(run.Working))
             Ok(Error(Nil)) -> StoreStopped
-            Ok(Ok(Nil)) -> wait(run, watcher, monitor, watched, deadline)
+            Ok(Ok(Nil)) -> wait(run, watcher, pid, monitor, watched, deadline)
           }
         }
         Ok(Nil), [], family.View(status, _) -> done(Ok(status))

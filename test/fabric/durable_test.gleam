@@ -538,13 +538,15 @@ pub fn a_run_whose_runner_was_killed_can_be_cancelled_without_recovery_test() {
   states(run) |> should.equal([run.Uncertain(lost)])
 }
 
+/// A store process that stops and is not started again within the wait is
+/// `StoreUnavailable`.
 pub fn await_reports_a_stopped_store_test() {
   let probe = probe.new()
   let #(owner, store) = restart.owned(support.store)
   let assert Ok(run) = fabric.start(store, one_slow(probe), Nil, "go")
   let _ = probe.arrival(probe)
   let awaited = process.new_subject()
-  process.spawn(fn() { process.send(awaited, fabric.await(run, 5000)) })
+  process.spawn(fn() { process.send(awaited, fabric.await(run, 200)) })
   restart.crash(owner, store)
   let assert Ok(Error(fabric.StoreUnavailable(_))) =
     process.receive(awaited, 5000)

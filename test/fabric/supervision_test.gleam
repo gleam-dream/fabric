@@ -99,3 +99,37 @@ pub fn a_restarted_store_leaves_its_runs_unattended_until_recovered_test() {
   probe.count(probe, "start:a") |> should.equal(1)
   restart.remove_dir(dir)
 }
+
+/// An `await` in progress when the supervisor restarts the store waits for
+/// the new process and goes on through it: the run's work in flight, which
+/// the new process knows no runner for, reads `Unattended`.
+pub fn an_await_follows_a_restarted_store_test() {
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let name = process.new_name("awaited")
+  let runs = store.directory(name, dir)
+  supervise(runs)
+  let assert Ok(run) = fabric.start(runs, one_slow(probe), Nil, "go")
+  let _ = probe.arrival(probe)
+
+  let assert Ok(old) = process.named(name)
+  let awaiter = process.self()
+  process.spawn(fn() {
+    blocked(awaiter, old)
+    process.kill(old)
+  })
+  fabric.await(run, 5000) |> should.equal(Ok(run.Unattended))
+  restart.remove_dir(dir)
+}
+
+/// Waits until `awaiter` monitors the store process `store` and is blocked
+/// in a receive.
+fn blocked(awaiter: Pid, store: Pid) -> Nil {
+  case restart.waits_on(awaiter, store) {
+    True -> Nil
+    False -> {
+      process.sleep(1)
+      blocked(awaiter, store)
+    }
+  }
+}

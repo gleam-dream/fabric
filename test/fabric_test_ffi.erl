@@ -1,5 +1,5 @@
 -module(fabric_test_ffi).
--export([temp_dir/0, remove_dir/1, list_dir/1, write_file/2, read_file/1, age_file/2]).
+-export([temp_dir/0, remove_dir/1, list_dir/1, write_file/2, read_file/1, age_file/2, waits_on/2]).
 
 %% A fresh, empty directory under the system temporary directory.
 temp_dir() ->
@@ -39,4 +39,11 @@ age_file(Path, Seconds) ->
     case file:change_time(Path, calendar:system_time_to_local_time(Then, second)) of
         ok -> {ok, nil};
         {error, _} -> {error, nil}
+    end.
+
+waits_on(Pid, Target) ->
+    case erlang:process_info(Pid, [status, monitors]) of
+        [{status, waiting}, {monitors, Monitors}] ->
+            lists:member({process, Target}, Monitors);
+        _ -> false
     end.
