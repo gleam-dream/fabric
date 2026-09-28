@@ -418,3 +418,39 @@ pub fn unparseable_arguments_replay_to_anthropic_as_an_object_test() {
   |> list.filter(fn(block) { block.0 == "tool_use" })
   |> should.equal([#("tool_use", "{\"city\": ")])
 }
+
+/// OpenAI carries a call's arguments as a string, so a call whose arguments
+/// were not JSON replays with the text the model sent, unwrapped.
+pub fn unparseable_arguments_replay_to_openai_verbatim_test() {
+  let script =
+    testing.start([
+      testing.Events([
+        function_call(0, "call_a", "lookup_weather", "{\"city\": ")
+        <> completed("resp_1", 3, 2),
+      ]),
+      testing.Events([
+        text("msg_1", "I will ask properly.") <> completed("resp_2", 5, 3),
+      ]),
+    ])
+  let agent =
+    agent.new(
+      llm.model(openai_settings(script), model_id()),
+      [apps.weather_tool()],
+      policy.always_allow(),
+    )
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
+  fabric.await(run, 10_000)
+  |> should.equal(Ok(run.Finished(run.Completed("I will ask properly."))))
+
+  let assert [_, second] = bodies(script)
+  let item = {
+    use kind <- decode.optional_field("type", "", decode.string)
+    use arguments <- decode.optional_field("arguments", "", decode.string)
+    decode.success(#(kind, arguments))
+  }
+  let assert Ok(items) =
+    json.parse(second, decode.at(["input"], decode.list(item)))
+  items
+  |> list.filter(fn(item) { item.0 == "function_call" })
+  |> should.equal([#("function_call", "{\"city\": ")])
+}
