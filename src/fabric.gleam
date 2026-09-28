@@ -45,7 +45,6 @@
 import fabric/agent.{type Agent, type ConfigError}
 import fabric/internal/controller.{type State}
 import fabric/internal/family
-import fabric/internal/live
 import fabric/internal/observe
 import fabric/internal/record
 import fabric/internal/runner
@@ -115,6 +114,13 @@ pub type CommandError {
   OwnerUnknown
   /// The command lost every retry against concurrent commits.
   Contended
+  /// The run's runner did not take the command within the agent's command
+  /// timeout (`agent.with_command_timeout`): a synchronous observation
+  /// handler holds it, or the command was sent from such a handler running
+  /// in the run's own runner. Nothing was changed, and the command will not
+  /// be applied later. Try again, or route Fabric's events through a
+  /// forwarder (see `fabric/observation`).
+  RunnerBusy
   Unreadable(RecordError)
 }
 
@@ -435,10 +441,18 @@ fn cancel_stored_loop(
   }
   case runner.live_runner(entry, state) {
     Some(mailbox) ->
-      case runner.send_live(mailbox, controller.cancel, None) {
-        Ok(live.Applied(state)) -> Ok(controller.status(state))
-        Ok(live.Refused(rejection)) -> Error(refusal(rejection))
-        Ok(live.Superseded) | Error(Nil) -> retry()
+      case
+        runner.send_live(
+          mailbox,
+          controller.cancel,
+          None,
+          agent.default_command_timeout,
+        )
+      {
+        Ok(state) -> Ok(controller.status(state))
+        Error(runner.LiveRefused(rejection)) -> Error(refusal(rejection))
+        Error(runner.LiveBusy) -> Error(RunnerBusy)
+        Error(runner.LiveGone) -> retry()
       }
     None -> {
       // Children first, so that the parent ends in one commit.
@@ -548,6 +562,7 @@ fn command_error(failure: runner.Failure) -> CommandError {
     runner.CommandRefused(rejection) -> refusal(rejection)
     runner.OwnerUnknown -> OwnerUnknown
     runner.Contended -> Contended
+    runner.Busy -> RunnerBusy
     runner.Unreadable(problem) -> Unreadable(record_error(problem))
   }
 }

@@ -56,6 +56,8 @@ pub type Setup(context) {
     /// The admitted sub-agent of each delegation, by delegation name.
     children: Dict(String, agent.Admitted(context)),
     policy_timeout: Int,
+    /// How long a command waits for this run's live runner to take it.
+    command_timeout: Int,
     /// For a sub-agent run: where its end is delivered.
     parent: Option(Parent(context)),
   )
@@ -93,6 +95,7 @@ pub fn setup(
     ),
     children: admitted.children,
     policy_timeout: admitted.policy_timeout,
+    command_timeout: admitted.command_timeout,
     parent:,
   )
 }
@@ -332,16 +335,16 @@ fn serve(runner: Runner(context)) -> Nil {
         })
       let next = case process.selector_receive_forever(selector) {
         live.StoreDown -> Error(Superseded)
-        live.Command(step, work, reply) -> {
-          let work = option.unwrap(work, runner.work)
-          let outcome = commit(runner, step(runner.state), work)
-          process.send(reply, case outcome {
-            Ok(runner) -> live.Applied(runner.state)
-            Error(Refused(rejection)) -> live.Refused(rejection)
-            Error(Superseded) -> live.Superseded
-          })
-          outcome
-        }
+        live.Command(step, work, accept_by, reply) ->
+          case now() > accept_by {
+            // The caller has given up: the command changes nothing.
+            True -> Ok(runner)
+            False -> {
+              process.send(reply, live.Accepted)
+              let work = option.unwrap(work, runner.work)
+              commit_answering(runner, step(runner.state), work, Some(reply))
+            }
+          }
         live.ModelDone(turn, result) -> {
           let model_failures = case result {
             Error(model.ModelError(retryable: True, ..)) ->
@@ -460,7 +463,31 @@ fn commit(
   transition: Result(#(State, List(Effect)), controller.Rejection),
   work: Work,
 ) -> Result(Runner(context), ApplyError) {
-  use #(state, effects) <- result.try(transition |> result.map_error(Refused))
+  commit_answering(runner, transition, work, None)
+}
+
+/// `commit`, answering a command's `reply` as soon as the outcome is
+/// known: right after the commit is stored, before its observations and
+/// effects, so that neither a slow handler nor an effect holds the caller.
+fn commit_answering(
+  runner: Runner(context),
+  transition: Result(#(State, List(Effect)), controller.Rejection),
+  work: Work,
+  reply: Option(Subject(live.CommandReply)),
+) -> Result(Runner(context), ApplyError) {
+  let answer = fn(message) {
+    case reply {
+      Some(reply) -> process.send(reply, message)
+      None -> Nil
+    }
+  }
+  use #(state, effects) <- result.try(
+    transition
+    |> result.map_error(fn(rejection) {
+      answer(live.Refused(rejection))
+      Refused(rejection)
+    }),
+  )
   // A sub-agent run that ended keeps its registration until it has
   // delivered its end to its parent and exited, so that nobody sees the
   // child ended, unreported, and without a runner.
@@ -473,8 +500,12 @@ fn commit(
     False -> store.Release(process.self())
   }
   case persist(runner.setup.store, state, runner.revision, ownership, 0) {
-    Error(_) -> Error(Superseded)
+    Error(_) -> {
+      answer(live.Superseded)
+      Error(Superseded)
+    }
     Ok(revision) -> {
+      answer(live.Applied(state))
       observe.committed(Some(runner.state), state)
       let runner = perform(Runner(..runner, state:, revision:), effects, work)
       deliver(runner.setup, state)
@@ -705,6 +736,7 @@ fn cancel_until_stopping(
     Error(Unreadable(_)) -> Ok(Nil)
     Error(Contended) -> again("every commit lost a race")
     Error(OwnerUnknown) -> again("no runner drives it")
+    Error(Busy) -> again("its runner is busy")
   }
 }
 
@@ -758,17 +790,26 @@ pub fn deliver(setup: Setup(context), state: State) -> Nil {
   }
 }
 
-/// Applies a child's end to its parent. A refusal (already applied, the
-/// parent ended) or an unreachable parent is left to recovery, which reads
-/// the child again.
+/// Applies a child's end to its parent. A parent runner that is busy is
+/// asked again a few times. A refusal (already applied, the parent ended)
+/// or an unreachable parent is left to recovery, which reads the child
+/// again.
 pub fn notify_parent(
   setup: Setup(context),
   result: controller.ChildResult,
 ) -> Nil {
+  notify_parent_tries(setup, result, 3)
+}
+
+fn notify_parent_tries(
+  setup: Setup(context),
+  result: controller.ChildResult,
+  tries: Int,
+) -> Nil {
   case setup.parent {
     None -> Nil
-    Some(link) -> {
-      let _ =
+    Some(link) ->
+      case
         command(
           link.setup,
           link.run,
@@ -776,8 +817,10 @@ pub fn notify_parent(
           controller.ChildEnded(link.action, result),
           16,
         )
-      Nil
-    }
+      {
+        Error(Busy) if tries > 1 -> notify_parent_tries(setup, result, tries - 1)
+        _ -> Nil
+      }
   }
 }
 
@@ -798,6 +841,9 @@ pub type Failure {
   /// not know.
   OwnerUnknown
   Contended
+  /// The run's live runner did not take the command in time (or the
+  /// command was sent from the runner's own process); nothing changed.
+  Busy
   Unreadable(ReadError)
 }
 
@@ -847,11 +893,13 @@ pub fn command(
           mailbox,
           fn(state) { controller.step(env, state, event) },
           Some(work),
+          setup.command_timeout,
         )
       {
-        Ok(live.Applied(state)) -> Ok(state)
-        Ok(live.Refused(rejection)) -> Error(CommandRefused(rejection))
-        Ok(live.Superseded) | Error(Nil) -> retry()
+        Ok(state) -> Ok(state)
+        Error(LiveRefused(rejection)) -> Error(CommandRefused(rejection))
+        Error(LiveBusy) -> Error(Busy)
+        Error(LiveGone) -> retry()
       }
     None -> {
       let orphaned = controller.needs_runner(state)
@@ -881,28 +929,66 @@ pub fn command(
   }
 }
 
-/// Applies `step` through the live runner; the effects of the step are
-/// performed with `work`, or with the run's own work (`None`). `Error(Nil)`
-/// when the runner exited before answering.
+pub type LiveError {
+  LiveRefused(controller.Rejection)
+  /// The runner did not take the command within the timeout, or the
+  /// caller is the runner itself (a synchronous observation handler): the
+  /// command was not and will not be applied.
+  LiveBusy
+  /// The runner exited or lost the run before answering: read the record
+  /// again.
+  LiveGone
+}
+
+/// How much longer than a command's `accept_by` its caller waits for
+/// `Accepted`. A runner answers `Accepted` only by `accept_by`, so the
+/// answer is already in the caller's mailbox when the caller stops
+/// waiting: a command is either accepted or never applied.
+const accept_margin = 100
+
+/// Applies `step` through the live runner and returns the committed state;
+/// the effects of the step are performed with `work`, or with the run's
+/// own work (`None`). The runner must take the command within `within`
+/// milliseconds; once it has, the caller waits for the outcome, which the
+/// runner sends as soon as the commit is stored.
 pub fn send_live(
   mailbox: Subject(live.Message),
   step: fn(State) ->
     Result(#(State, List(controller.Effect)), controller.Rejection),
   work: Option(Work),
-) -> Result(live.CommandReply, Nil) {
+  within: Int,
+) -> Result(State, LiveError) {
+  let caller = process.self()
   case process.subject_owner(mailbox) {
-    Error(Nil) -> Error(Nil)
+    Error(Nil) -> Error(LiveGone)
+    Ok(pid) if pid == caller -> Error(LiveBusy)
     Ok(pid) -> {
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
-      process.send(mailbox, live.Command(step, work, reply))
-      let answer =
-        process.new_selector()
-        |> process.select_map(reply, Ok)
-        |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
-        |> process.selector_receive_forever
+      process.send(mailbox, live.Command(step, work, now() + within, reply))
+      let receive = fn(timeout) {
+        let selector =
+          process.new_selector()
+          |> process.select_map(reply, Ok)
+          |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
+        case timeout {
+          Some(timeout) -> process.selector_receive(selector, timeout)
+          None -> Ok(process.selector_receive_forever(selector))
+        }
+      }
+      let outcome = case receive(Some(within + accept_margin)) {
+        Error(Nil) -> Error(LiveBusy)
+        Ok(Error(Nil)) -> Error(LiveGone)
+        Ok(Ok(live.Accepted)) ->
+          case receive(None) {
+            Ok(Ok(live.Applied(state))) -> Ok(state)
+            Ok(Ok(live.Refused(rejection))) -> Error(LiveRefused(rejection))
+            _ -> Error(LiveGone)
+          }
+        Ok(Ok(_)) -> Error(LiveGone)
+      }
       process.demonitor_process(monitor)
-      answer
+      outcome
     }
   }
 }
@@ -996,6 +1082,9 @@ fn start_executor(runner: Runner(context)) -> Executor {
     ),
   )
 }
+
+@external(erlang, "fabric_ffi", "now_ms")
+fn now() -> Int
 
 fn abort_model(runner: Runner(context)) -> Runner(context) {
   case runner.model_task {
