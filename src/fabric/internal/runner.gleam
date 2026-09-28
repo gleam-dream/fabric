@@ -455,24 +455,33 @@ fn serve(runner: Runner(context)) -> Nil {
             Error(error) -> controller.ModelFailed(turn, error)
           })
         }
-        // The body starts as soon as its start is stored: a handler of
-        // this commit does not hold it past a later cancellation.
+        // Nothing starts once an ancestor stops: a run that finds one
+        // stopping or ended cancels itself. The body starts as soon as its
+        // start is stored: a handler of this commit does not hold it past a
+        // later cancellation.
         live.Fence(id, reply) ->
-          commit_answering(
-            runner,
-            controller.step(
-              runner.setup.env,
-              runner.state,
-              controller.ToolStarting(id),
-            ),
-            runner.work,
-            fn(answer) {
-              process.send(reply, case answer {
-                live.Applied(_) -> True
-                _ -> False
-              })
-            },
-          )
+          case ancestors_open(runner.setup.store, runner.state.parent) {
+            False -> {
+              process.send(reply, False)
+              apply(runner, controller.Cancel)
+            }
+            True ->
+              commit_answering(
+                runner,
+                controller.step(
+                  runner.setup.env,
+                  runner.state,
+                  controller.ToolStarting(id),
+                ),
+                runner.work,
+                fn(answer) {
+                  process.send(reply, case answer {
+                    live.Applied(_) -> True
+                    _ -> False
+                  })
+                },
+              )
+          }
         live.Executed(executor.Reported(id, outcome)) ->
           apply(runner, controller.ToolReported(id, outcome))
         live.Executed(executor.Lost(id, reason)) ->
@@ -777,6 +786,23 @@ fn start_child(
   let rejected = fn(detail) {
     controller.ToolReported(id, invocation.ArgumentsRejected(detail))
   }
+  case ancestors_open(setup.store, parent.parent) {
+    // An ancestor stopped: the run cancels itself, and with it this start.
+    False -> controller.Cancel
+    True ->
+      store_started_child(setup, context, parent, id, child, call, rejected)
+  }
+}
+
+fn store_started_child(
+  setup: Setup(context),
+  context: context,
+  parent: State,
+  id: ActionId,
+  child: String,
+  call: model.ToolCall,
+  rejected: fn(String) -> controller.Event,
+) -> controller.Event {
   case child_setup(setup, call.name, parent.run, id) {
     Error(Nil) -> rejected("no sub-agent is delegated as " <> call.name)
     Ok(child_setup) ->
@@ -1080,6 +1106,50 @@ fn notify_parent_tries(
       {
         Error(Busy) if tries > 1 -> notify_parent_tries(setup, result, tries - 1)
         _ -> Nil
+      }
+  }
+}
+
+/// Whether every ancestor above `parent` (a run's parent link) still
+/// accepts its work: `False` once one is stopping or has ended. A chain
+/// that cannot be read after the store's bounded retries counts as closed:
+/// nothing starts that the ancestors may have stopped.
+pub fn ancestors_open(store: Store, parent: Option(run.Parent)) -> Bool {
+  case read_ancestors(store, parent, max_links, 0) {
+    Ok(open) -> open
+    Error(_) -> False
+  }
+}
+
+/// More parent links than a valid family has; a longer chain is corrupt.
+const max_links = 64
+
+/// Reads the ancestors above `parent`: whether each still accepts its
+/// work. A failed read is tried again after the runner's bounded backoff.
+pub fn read_ancestors(
+  store: Store,
+  parent: Option(run.Parent),
+  links: Int,
+  attempt: Int,
+) -> Result(Bool, ReadError) {
+  case parent, links {
+    None, _ -> Ok(True)
+    Some(_), 0 -> Error(Corrupt("the chain of parent runs is too long"))
+    Some(link), _ ->
+      case load(store, link.run) {
+        Error(StoreFailed(_)) if attempt < unavailable_retries -> {
+          process.sleep(
+            unavailable_backoff * int.bitwise_shift_left(1, attempt),
+          )
+          read_ancestors(store, parent, links, attempt + 1)
+        }
+        Error(problem) -> Error(problem)
+        Ok(#(_, above)) ->
+          case above.phase {
+            controller.Stopping(..) | controller.Ended(_) -> Ok(False)
+            controller.Acting(..) | controller.AwaitingModel(_) ->
+              read_ancestors(store, above.parent, links - 1, 0)
+          }
       }
   }
 }
