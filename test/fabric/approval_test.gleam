@@ -8,7 +8,6 @@ import fabric/agent.{type Agent}
 import fabric/model
 import fabric/policy
 import fabric/run.{ActionId, Requirement}
-import fabric/store
 import fabric/support
 import fabric/support/apps
 import fabric/support/flaky
@@ -72,7 +71,7 @@ fn paying_agent(probe: Probe) -> Agent(Desk) {
 
 fn suspended(probe: Probe) -> #(fabric.Run(Desk), run.PendingApproval) {
   let assert Ok(run) =
-    fabric.start(store.in_memory(), paying_agent(probe), open_desk(), "pay")
+    fabric.start(support.store(), paying_agent(probe), open_desk(), "pay")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   #(run, pending)
 }
@@ -91,16 +90,15 @@ pub fn an_approved_tool_runs_once_after_a_restart_test() {
   let probe = probe.new()
   let #(owner, #(old, id)) =
     restart.owned(fn() {
-      let assert Ok(store) = store.directory(dir)
+      let store = support.directory(dir)
       let assert Ok(run) =
         fabric.start(store, paying_agent(probe), open_desk(), "pay")
       let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
       #(store, fabric.id(run))
     })
-  restart.kill(owner)
-  restart.gone(store.pid(old))
+  restart.crash(owner, old)
 
-  let assert Ok(store) = store.directory(dir)
+  let store = support.directory(dir)
   let assert Ok(run) =
     fabric.recover(store, paying_agent(probe), open_desk(), id)
   let assert Ok([pending]) = fabric.pending(run)
@@ -172,8 +170,7 @@ pub fn a_rejection_never_runs_the_policy_test() {
       once,
     )
     |> support.agent
-  let assert Ok(run) =
-    fabric.start(store.in_memory(), agent, open_desk(), "pay")
+  let assert Ok(run) = fabric.start(support.store(), agent, open_desk(), "pay")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   process.receive(calls, 0) |> should.equal(Ok(ActionId(1, "t")))
 
@@ -331,7 +328,7 @@ pub fn an_answer_racing_a_cancel_has_a_defined_outcome_test() {
       })
     let assert Ok(run) =
       fabric.start(
-        store.in_memory(),
+        support.store(),
         agent.new("agent", model, [paying_tool(probe)], desk_policy)
           |> support.agent,
         open_desk(),
@@ -374,16 +371,15 @@ pub fn cancelling_a_paused_run_after_a_restart_test() {
   let probe = probe.new()
   let #(owner, #(old, id)) =
     restart.owned(fn() {
-      let assert Ok(store) = store.directory(dir)
+      let store = support.directory(dir)
       let assert Ok(run) =
         fabric.start(store, paying_agent(probe), open_desk(), "pay")
       let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
       #(store, fabric.id(run))
     })
-  restart.kill(owner)
-  restart.gone(store.pid(old))
+  restart.crash(owner, old)
 
-  let assert Ok(store) = store.directory(dir)
+  let store = support.directory(dir)
   let assert Ok(run) =
     fabric.recover(store, paying_agent(probe), open_desk(), id)
   let assert Ok([pending]) = fabric.pending(run)

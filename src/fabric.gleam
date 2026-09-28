@@ -227,16 +227,41 @@ pub fn child(
 /// when the previous owner is known to be gone.
 ///
 /// It wakes on commits made through this run's store and when a runner
-/// exits. A run whose sub-agents work is working; one waiting only on
+/// exits. If a supervisor restarts the store's process meanwhile, it goes on
+/// through the new one, which knows no runner: work in flight then reads
+/// `Unattended`. With no store process running it is `StoreUnavailable`. A run whose sub-agents work is working; one waiting only on
 /// paused sub-agents is suspended on their approvals. `await(run, 0)` reads
 /// the status now.
 pub fn await(run: Run(context), within: Int) -> Result(Status, RecordError) {
-  let watcher = process.new_subject()
-  let deadline = now() + within
-  let monitor = process.monitor(store.pid(run.setup.store))
-  let outcome = wait(run, watcher, monitor, [], deadline)
-  process.demonitor_process(monitor)
-  outcome
+  attend(run, process.new_subject(), now() + within)
+}
+
+/// What a wait ended with: an outcome, or the store process stopped (its
+/// watches are gone with it).
+type Waited {
+  Waited(Result(Status, RecordError))
+  StoreStopped
+}
+
+/// Waits through the store process running now, and again through the next
+/// one if a supervisor restarts it meanwhile.
+fn attend(
+  run: Run(context),
+  watcher: process.Subject(Nil),
+  deadline: Int,
+) -> Result(Status, RecordError) {
+  case store.pid(run.setup.store) {
+    Error(Nil) -> Error(StoreUnavailable("the store is not running"))
+    Ok(pid) -> {
+      let monitor = process.monitor(pid)
+      let waited = wait(run, watcher, monitor, [], deadline)
+      process.demonitor_process(monitor)
+      case waited {
+        Waited(outcome) -> outcome
+        StoreStopped -> attend(run, watcher, deadline)
+      }
+    }
+  }
 }
 
 fn wait(
@@ -245,10 +270,10 @@ fn wait(
   monitor: process.Monitor,
   watched: List(String),
   deadline: Int,
-) -> Result(Status, RecordError) {
+) -> Waited {
   let done = fn(outcome) {
     list.each(watched, store.unwatch(run.setup.store, _, watcher))
-    outcome
+    Waited(outcome)
   }
   case family.load(run.setup.store, run.id) {
     Error(problem) -> done(Error(record_error(problem)))
@@ -280,8 +305,7 @@ fn wait(
             |> process.selector_receive(int.max(0, deadline - now()))
           case woken {
             Error(Nil) -> done(Ok(run.Working))
-            Ok(Error(Nil)) ->
-              done(Error(StoreUnavailable("the store is closed")))
+            Ok(Error(Nil)) -> StoreStopped
             Ok(Ok(Nil)) -> wait(run, watcher, monitor, watched, deadline)
           }
         }

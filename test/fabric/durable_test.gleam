@@ -36,7 +36,7 @@ fn start_owned(
 ) -> #(Pid, Store, fabric.Run(context)) {
   let #(owner, #(store, run)) =
     restart.owned(fn() {
-      let assert Ok(store) = store.directory(dir)
+      let store = support.directory(dir)
       let assert Ok(run) = fabric.start(store, agent, context, prompt)
       #(store, run)
     })
@@ -47,8 +47,7 @@ fn start_owned(
 /// only the files remain.
 fn crash(owner: Pid, store: Store, id: RunId) -> Nil {
   let runner = restart.runner(store, id)
-  restart.kill(owner)
-  restart.gone(store.pid(store))
+  restart.crash(owner, store)
   case runner {
     Ok(pid) -> restart.gone(pid)
     Error(Nil) -> Nil
@@ -56,7 +55,7 @@ fn crash(owner: Pid, store: Store, id: RunId) -> Nil {
 }
 
 fn reopen(dir: String) -> Store {
-  let assert Ok(store) = store.directory(dir)
+  let store = support.directory(dir)
   store
 }
 
@@ -494,7 +493,7 @@ fn one_slow(probe: Probe) -> Agent(Nil) {
 /// commands that would start work ask for recovery first.
 pub fn a_killed_runner_is_reported_and_its_run_recovered_test() {
   let probe = probe.new()
-  let store = store.in_memory()
+  let store = support.store()
   let assert Ok(run) = fabric.start(store, one_slow(probe), Nil, "go")
   let _ = probe.arrival(probe)
   let assert Ok(runner) = restart.runner(store, fabric.id(run))
@@ -528,7 +527,7 @@ pub fn a_killed_runner_is_reported_and_its_run_recovered_test() {
 
 pub fn a_run_whose_runner_was_killed_can_be_cancelled_without_recovery_test() {
   let probe = probe.new()
-  let store = store.in_memory()
+  let store = support.store()
   let assert Ok(run) = fabric.start(store, one_slow(probe), Nil, "go")
   let _ = probe.arrival(probe)
   let assert Ok(runner) = restart.runner(store, fabric.id(run))
@@ -539,14 +538,14 @@ pub fn a_run_whose_runner_was_killed_can_be_cancelled_without_recovery_test() {
   states(run) |> should.equal([run.Uncertain(lost)])
 }
 
-pub fn await_reports_a_closed_store_test() {
+pub fn await_reports_a_stopped_store_test() {
   let probe = probe.new()
-  let store = store.in_memory()
+  let #(owner, store) = restart.owned(support.store)
   let assert Ok(run) = fabric.start(store, one_slow(probe), Nil, "go")
   let _ = probe.arrival(probe)
   let awaited = process.new_subject()
   process.spawn(fn() { process.send(awaited, fabric.await(run, 5000)) })
-  store.close(store)
+  restart.crash(owner, store)
   let assert Ok(Error(fabric.StoreUnavailable(_))) =
     process.receive(awaited, 5000)
 }
@@ -572,7 +571,7 @@ fn two_reviewed(probe: Probe) -> Agent(Nil) {
 pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let assert Ok(a) = store.directory(dir)
+  let a = support.directory(dir)
   let assert Ok(run_a) = fabric.start(a, two_reviewed(probe), Nil, "go")
   let assert Ok(run.Suspended([p, q], [])) = fabric.await(run_a, 5000)
 
@@ -625,7 +624,7 @@ pub fn a_stranded_run_is_cancelled_without_an_agent_test() {
 /// A run whose runner is live in this store is cancelled through it.
 pub fn cancel_stored_stops_a_live_run_through_its_runner_test() {
   let probe = probe.new()
-  let store = store.in_memory()
+  let store = support.store()
   let assert Ok(run) = fabric.start(store, one_slow(probe), Nil, "go")
   let _ = probe.arrival(probe)
   let assert Ok(run.Working) = fabric.cancel_stored(store, fabric.id(run))
@@ -637,7 +636,7 @@ pub fn cancel_stored_stops_a_live_run_through_its_runner_test() {
 /// the runner died before its tools were confirmed stopped): cancelling it
 /// commits the ended run instead of refusing because it already ended.
 pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
-  let store = store.in_memory()
+  let store = support.store()
   let call = scripted.slow("a", "a")
   let stopping =
     controller.State(

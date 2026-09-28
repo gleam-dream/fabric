@@ -9,6 +9,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/otp/static_supervisor
 import gleam/string
 import gleeunit
 import gleeunit/should
@@ -20,12 +21,7 @@ pub fn main() -> Nil {
 
 pub fn a_member_finds_and_reserves_a_book_test() {
   let assert Ok(run) =
-    fabric.start(
-      store.in_memory(),
-      librarian(),
-      app.member("ada"),
-      "reserve Dune",
-    )
+    fabric.start(memory(), librarian(), app.member("ada"), "reserve Dune")
   fabric.await(run, 5000)
   |> should.equal(
     Ok(
@@ -39,7 +35,7 @@ pub fn a_member_finds_and_reserves_a_book_test() {
 pub fn a_missing_book_is_explained_to_the_model_test() {
   let assert Ok(run) =
     fabric.start(
-      store.in_memory(),
+      memory(),
       librarian(),
       app.member("ada"),
       "reserve Necronomicon",
@@ -56,12 +52,7 @@ pub fn a_missing_book_is_explained_to_the_model_test() {
 
 pub fn the_policy_denies_guests_with_a_visible_reason_test() {
   let assert Ok(run) =
-    fabric.start(
-      store.in_memory(),
-      librarian(),
-      app.member("guest"),
-      "reserve Dune",
-    )
+    fabric.start(memory(), librarian(), app.member("guest"), "reserve Dune")
   let assert Ok(run.Finished(run.Completed(answer))) = fabric.await(run, 5000)
   answer
   |> should.equal(
@@ -71,7 +62,7 @@ pub fn the_policy_denies_guests_with_a_visible_reason_test() {
 
 pub fn an_unavailable_member_directory_is_a_host_failure_test() {
   let assert Ok(run) =
-    fabric.start(store.in_memory(), librarian(), app.member(""), "reserve Dune")
+    fabric.start(memory(), librarian(), app.member(""), "reserve Dune")
   let assert Ok(run.Finished(run.Failed(run.PolicyFailed(_, reason)))) =
     fabric.await(run, 5000)
   reason |> should.equal("member directory unavailable")
@@ -81,7 +72,7 @@ pub fn a_long_inventory_scan_can_be_cancelled_test() {
   let arrivals = process.new_subject()
   let assert Ok(run) =
     fabric.start(
-      store.in_memory(),
+      memory(),
       librarian(),
       app.member_with_scan_gate("ada", arrivals),
       "scan the inventory",
@@ -105,12 +96,7 @@ pub fn the_configuration_is_checked_before_anything_starts_test() {
 
 pub fn a_guardian_approves_a_junior_reservation_test() {
   let assert Ok(run) =
-    fabric.start(
-      store.in_memory(),
-      librarian(),
-      app.member("junior"),
-      "reserve Dune",
-    )
+    fabric.start(memory(), librarian(), app.member("junior"), "reserve Dune")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   pending.tool |> should.equal("reserve_book")
   let assert Ok(_) =
@@ -132,12 +118,7 @@ pub fn a_guardian_approves_a_junior_reservation_test() {
 
 pub fn a_rejected_reservation_is_explained_to_the_model_test() {
   let assert Ok(run) =
-    fabric.start(
-      store.in_memory(),
-      librarian(),
-      app.member("junior"),
-      "reserve Dune",
-    )
+    fabric.start(memory(), librarian(), app.member("junior"), "reserve Dune")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   let assert Ok(_) =
     fabric.reject(
@@ -158,12 +139,7 @@ pub fn a_rejected_reservation_is_explained_to_the_model_test() {
 
 pub fn a_paused_reservation_can_be_cancelled_test() {
   let assert Ok(run) =
-    fabric.start(
-      store.in_memory(),
-      librarian(),
-      app.member("junior"),
-      "reserve Dune",
-    )
+    fabric.start(memory(), librarian(), app.member("junior"), "reserve Dune")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   fabric.cancel(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.approve(
@@ -185,7 +161,8 @@ pub fn a_paused_reservation_survives_a_restart_test() {
   let started = process.new_subject()
   let owner =
     process.spawn_unlinked(fn() {
-      let assert Ok(store) = store.directory(dir)
+      let store = store.directory(process.new_name("desk-store"), dir)
+      let assert Ok(Nil) = store.start(store)
       let assert Ok(run) =
         fabric.start(store, librarian(), app.member("junior"), "reserve Dune")
       let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
@@ -200,7 +177,8 @@ pub fn a_paused_reservation_survives_a_restart_test() {
     |> process.select_specific_monitor(monitor, fn(_) { Nil })
     |> process.selector_receive(5000)
 
-  let assert Ok(store) = store.directory(dir)
+  let store = store.directory(process.new_name("desk-store"), dir)
+  let assert Ok(Nil) = store.start(store)
   let assert Ok(run) =
     fabric.recover(store, librarian(), app.member("junior"), id)
   let assert Ok([pending]) = fabric.pending(run)
@@ -237,12 +215,7 @@ fn getenv(name: String) -> Result(String, Nil)
 /// desk, naming the purchaser's run. Both are answered through the desk.
 pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
   let assert Ok(desk) =
-    fabric.start(
-      store.in_memory(),
-      app.front_desk(),
-      app.member("ada"),
-      "acquire Dune",
-    )
+    fabric.start(memory(), app.front_desk(), app.member("ada"), "acquire Dune")
   let assert Ok(run.Suspended([committee], [])) = fabric.await(desk, 5000)
   committee.tool |> should.equal("acquire")
   committee.reference.run |> should.equal(fabric.id(desk))
@@ -278,12 +251,7 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
 /// the purchaser too; its pending order is void.
 pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
   let assert Ok(desk) =
-    fabric.start(
-      store.in_memory(),
-      app.front_desk(),
-      app.member("ada"),
-      "acquire Dune",
-    )
+    fabric.start(memory(), app.front_desk(), app.member("ada"), "acquire Dune")
   let assert Ok(run.Suspended([committee], [])) = fabric.await(desk, 5000)
   let assert Ok(_) =
     fabric.approve(
@@ -311,12 +279,7 @@ pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
 
 pub fn an_interlibrary_loan_runs_as_one_tool_test() {
   let assert Ok(loan) =
-    fabric.start(
-      store.in_memory(),
-      app.front_desk(),
-      app.member("ada"),
-      "borrow Dune",
-    )
+    fabric.start(memory(), app.front_desk(), app.member("ada"), "borrow Dune")
   fabric.await(loan, 5000)
   |> should.equal(
     Ok(run.Finished(run.Completed("done: {\"delivery\":\"REQ-Dune/COURIER\"}"))),
@@ -325,7 +288,7 @@ pub fn an_interlibrary_loan_runs_as_one_tool_test() {
   // No courier: the request was cancelled, so the failure is definite.
   let assert Ok(lost) =
     fabric.start(
-      store.in_memory(),
+      memory(),
       app.front_desk(),
       app.member("ada"),
       "borrow Lost Scroll",
@@ -372,12 +335,7 @@ pub fn observations_show_what_a_run_did_test() {
     })
 
   let assert Ok(desk) =
-    fabric.start(
-      store.in_memory(),
-      app.front_desk(),
-      app.member("ada"),
-      "acquire Dune",
-    )
+    fabric.start(memory(), app.front_desk(), app.member("ada"), "acquire Dune")
   let assert Ok(run.Suspended([committee], [])) = fabric.await(desk, 5000)
   let assert Ok(_) =
     fabric.approve(
@@ -426,4 +384,38 @@ fn receive_until(
 fn librarian() -> Agent(app.Member) {
   let assert Ok(librarian) = app.librarian()
   librarian
+}
+
+/// An in-memory store for one test, linked to it.
+fn memory() -> store.Store {
+  let runs = store.in_memory(process.new_name("app-runs"))
+  let assert Ok(Nil) = store.start(runs)
+  runs
+}
+
+/// A request handler starts a run and exits; the supervised store, not the
+/// handler, owns the run's runner, so the run still finishes. The reference
+/// names its run with a typed id; a string from a link parses back to it.
+pub fn a_run_outlives_the_request_that_started_it_test() {
+  let runs = store.in_memory(process.new_name("supervised-runs"))
+  let assert Ok(_) =
+    static_supervisor.new(static_supervisor.OneForOne)
+    |> static_supervisor.add(store.supervised(runs))
+    |> static_supervisor.start
+  let handed = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let assert Ok(run) =
+      fabric.start(runs, librarian(), app.member("junior"), "reserve Dune")
+    process.send(handed, fabric.id(run))
+  })
+  let assert Ok(id) = process.receive(handed, 5000)
+  let assert Ok(run) =
+    fabric.recover(runs, librarian(), app.member("junior"), id)
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  run.parse_id(run.id_to_string(pending.reference.run))
+  |> should.equal(Ok(fabric.id(run)))
+  run.parse_id("../etc") |> should.equal(Error(Nil))
+  let assert Ok(_) =
+    fabric.reject(run, pending.reference, reason: "not today", reviewer: None)
+  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
 }

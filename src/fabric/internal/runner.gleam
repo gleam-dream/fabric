@@ -410,16 +410,23 @@ fn prepare(setup: Setup(context)) -> #(Pid, Subject(Message), Subject(Go)) {
       let self = process.new_subject()
       let go = process.new_subject()
       process.send(ready, #(self, go))
-      let _ = process.monitor(store.pid(setup.store))
-      let caller_monitor = process.monitor(caller)
-      let first =
-        process.new_selector()
-        |> process.select_map(go, Ok)
-        |> process.select_monitors(fn(_) { Error(Nil) })
-        |> process.selector_receive_forever
+      // The runner belongs to the store process running now: once that
+      // process stops, even if a supervisor restarts it, the runner stops.
+      // With no store process running, the first write fails.
+      let first = case store.pid(setup.store) {
+        Error(Nil) -> Error(Nil)
+        Ok(store_pid) -> {
+          let _ = process.monitor(store_pid)
+          let caller_monitor = process.monitor(caller)
+          process.new_selector()
+          |> process.select_map(go, fn(go) { Ok(#(go, caller_monitor)) })
+          |> process.select_monitors(fn(_) { Error(Nil) })
+          |> process.selector_receive_forever
+        }
+      }
       case first {
         Error(Nil) -> Nil
-        Ok(Go(revision, state, effects, first)) -> {
+        Ok(#(Go(revision, state, effects, first), caller_monitor)) -> {
           process.demonitor_process(caller_monitor)
           process.trap_exits(True)
           let own = work(setup, setup.env.context)

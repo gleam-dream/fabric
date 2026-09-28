@@ -26,23 +26,34 @@
 ////   `Unavailable`: its outcome is unknown, since the backend may still
 ////   perform it later.
 ////
-//// A `Store` value is a process linked to the process that opened it; it
-//// lives until that process exits or `close` is called. It calls the
-//// backend one request at a time, tracks which runner currently drives
-//// each run in this VM, and wakes `fabric.await` on commits made through
-//// it. Runners stop when their store goes. Several `Store` values may open
-//// the same backend (for example the same directory): the backend's
+//// A `Store` value names a store process and starts nothing: it is plain
+//// data that any process may hold and use. Start its process once, under
+//// a supervisor (`supervised`) or linked to the caller (`start`, for
+//// scripts and tests). The process calls the backend one request at a time
+//// per run, tracks which runner currently drives each run in this VM, and
+//// wakes `fabric.await` on commits made through it. A run outlives the
+//// process that started it, which only uses the store.
+////
+//// Runners stop when their store process stops. A restarted store process
+//// (for example by its supervisor) knows no runner, so every run with work
+//// in flight reads as `Unattended` until `fabric.recover` takes it over. An
+//// in-memory store keeps its records in its process, so a restart loses
+//// them; a directory or application backend keeps them. Several stores may
+//// open the same backend (for example the same directory): the backend's
 //// compare-and-set keeps their commits safe, but each only knows its own
 //// runners.
 
 import fabric/internal/bounded
 import fabric/internal/live
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Pid, type Subject}
+import gleam/erlang/process.{type Name, type Pid, type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/otp/actor
+import gleam/otp/supervision
 import gleam/result
+import gleam/string
 
 pub type StoreError {
   NotFound
@@ -56,31 +67,55 @@ pub type Stored {
   Stored(revision: Int, record: String)
 }
 
+/// A named store: the name of its process and the backend that process
+/// opens when it starts.
 pub opaque type Store {
-  Store(pid: Pid, subject: Subject(Request))
+  Store(name: Name(Message), open: fn() -> Result(Backend, String))
 }
 
-/// Opens a store over application-supplied backend functions (for example
-/// a database table). See the module documentation for the contract.
+/// What the store process receives.
+pub opaque type Message {
+  Get(run: String, reply: Subject(Result(Entry, StoreError)))
+  Write(
+    run: String,
+    expected: Option(Int),
+    record: String,
+    ownership: Ownership,
+    reply: Subject(Result(Int, StoreError)),
+  )
+  Watch(run: String, watcher: Subject(Nil), reply: Subject(Nil))
+  Unwatch(run: String, watcher: Subject(Nil))
+  Down(pid: Pid)
+  /// A worker finished the backend call of the run's current request.
+  Finished(run: String, done: Done)
+  SetTimeout(milliseconds: Int)
+}
+
+/// A store over application-supplied backend functions (for example a
+/// database table), registered as `name`. See the module documentation for
+/// the contract.
 pub fn new(
+  name: Name(Message),
   get get: fn(String) -> Result(Stored, StoreError),
   insert insert: fn(String, String) -> Result(Nil, StoreError),
   compare_and_set compare_and_set: fn(String, Int, String) ->
     Result(Nil, StoreError),
 ) -> Store {
-  open(fn() { Backend(get:, insert:, compare_and_set:) })
+  Store(name, fn() { Ok(Backend(get:, insert:, compare_and_set:)) })
 }
 
-/// A store that keeps records in memory. They are lost when the store
-/// closes or its owner exits.
-pub fn in_memory() -> Store {
-  open(memory_backend)
+/// A store that keeps records in its own process, registered as `name`.
+/// They are lost when that process stops, also when a supervisor restarts
+/// it.
+pub fn in_memory(name: Name(Message)) -> Store {
+  Store(name, fn() { Ok(memory_backend()) })
 }
 
-/// A durable store in `path`, created if missing. Each run is a directory
+/// A durable store in `path`, registered as `name`; the directory is
+/// created when the store starts, if missing. Each run is a directory
 /// holding one file per revision, `<revision>.json`. Every revision name is
 /// kept, but revisions older than the previous one are emptied, so disk use
-/// follows the latest record rather than every record written. Opening the
+/// follows the latest record rather than every record written. Starting the
 /// store removes temporary files older than ten minutes that a crashed
 /// writer left behind.
 ///
@@ -95,9 +130,9 @@ pub fn in_memory() -> Store {
 /// revisions may be missing, and since an older revision is emptied once
 /// two newer ones are published, the run may then read as `Unavailable`.
 /// Network filesystems without atomic hard links are not supported.
-pub fn directory(path: String) -> Result(Store, StoreError) {
-  use Nil <- result.map(ensure_directory(path) |> result.map_error(Unavailable))
-  open(fn() {
+pub fn directory(name: Name(Message), path: String) -> Store {
+  Store(name, fn() {
+    use Nil <- result.map(ensure_directory(path))
     Backend(
       get: directory_get(path, _),
       insert: fn(run, record) { directory_insert(path, run, record) },
@@ -108,10 +143,28 @@ pub fn directory(path: String) -> Result(Store, StoreError) {
   })
 }
 
-/// Stops the store. Its runners stop at their next step; stored records are
-/// kept by the backend.
-pub fn close(store: Store) -> Nil {
-  process.send(store.subject, Close)
+/// The store's process as a supervised worker. A restart forgets its
+/// runners (see the module documentation).
+pub fn supervised(store: Store) -> supervision.ChildSpecification(Nil) {
+  supervision.worker(fn() {
+    run(store) |> result.map(fn(started) { actor.Started(started.pid, Nil) })
+  })
+}
+
+/// Starts the store's process linked to the caller, for scripts and tests;
+/// it stops when the caller does. `Unavailable` when its backend could not
+/// be opened or its name is taken.
+pub fn start(store: Store) -> Result(Nil, StoreError) {
+  run(store)
+  |> result.replace(Nil)
+  |> result.map_error(fn(error) {
+    Unavailable(case error {
+      actor.InitFailed(reason) -> reason
+      actor.InitTimeout -> "the store did not start in time"
+      actor.InitExited(reason) ->
+        "the store exited while starting: " <> string.inspect(reason)
+    })
+  })
 }
 
 // --- Fabric's side of the store ---------------------------------------------------
@@ -138,9 +191,10 @@ pub type Ownership {
   Claim(Pid, Live)
 }
 
+/// The store's process, while one is registered under its name.
 @internal
-pub fn pid(store: Store) -> Pid {
-  store.pid
+pub fn pid(store: Store) -> Result(Pid, Nil) {
+  process.named(store.name)
 }
 
 @internal
@@ -186,7 +240,7 @@ pub fn watch(
 
 @internal
 pub fn unwatch(store: Store, run: String, watcher: Subject(Nil)) -> Nil {
-  process.send(store.subject, Unwatch(run, watcher))
+  process.send(process.named_subject(store.name), Unwatch(run, watcher))
 }
 
 // --- the store process -----------------------------------------------------------
@@ -199,24 +253,6 @@ type Backend {
   )
 }
 
-type Request {
-  Get(run: String, reply: Subject(Result(Entry, StoreError)))
-  Write(
-    run: String,
-    expected: Option(Int),
-    record: String,
-    ownership: Ownership,
-    reply: Subject(Result(Int, StoreError)),
-  )
-  Watch(run: String, watcher: Subject(Nil), reply: Subject(Nil))
-  Unwatch(run: String, watcher: Subject(Nil))
-  Down(pid: Pid)
-  /// A worker finished the backend call of the run's current request.
-  Finished(run: String, done: Done)
-  SetTimeout(milliseconds: Int)
-  Close
-}
-
 type Done {
   Got(Result(Stored, StoreError))
   Wrote(Result(Int, StoreError))
@@ -224,14 +260,16 @@ type Done {
 
 type Loop {
   Loop(
-    subject: Subject(Request),
+    /// This process's own subject for its workers' reports: unlike the
+    /// named subject, it never reaches a later process of the same name.
+    subject: Subject(Message),
     backend: Backend,
     live: Dict(String, #(Pid, Live)),
     watchers: Dict(String, List(#(Pid, Subject(Nil)))),
     monitored: List(Pid),
     /// Per run: the request whose backend call is in flight, and the
     /// requests waiting behind it, oldest first.
-    busy: Dict(String, #(Request, List(Request))),
+    busy: Dict(String, #(Message, List(Message))),
     timeout: Int,
   )
 }
@@ -240,72 +278,84 @@ type Loop {
 /// abandoned and reported `Unavailable`.
 const default_backend_timeout = 5000
 
-/// Starts the store process linked to the caller; it builds its backend
-/// itself, so a backend process is linked to the store.
-fn open(backend: fn() -> Backend) -> Store {
-  let ready = process.new_subject()
-  let pid =
-    process.spawn(fn() {
-      let subject = process.new_subject()
-      process.send(ready, subject)
-      serve(Loop(
-        subject:,
-        backend: backend(),
-        live: dict.new(),
-        watchers: dict.new(),
-        monitored: [],
-        busy: dict.new(),
-        timeout: default_backend_timeout,
-      ))
-    })
-  let subject = process.receive_forever(ready)
-  Store(pid, subject)
+/// Starts the store process, registered under the store's name and linked
+/// to the caller. It opens its backend itself, so a backend process is
+/// linked to the store process.
+fn run(store: Store) -> Result(actor.Started(Nil), actor.StartError) {
+  actor.new_with_initialiser(default_backend_timeout, fn(named) {
+    use backend <- result.map(store.open())
+    let subject = process.new_subject()
+    let selector =
+      process.new_selector()
+      |> process.select(named)
+      |> process.select(subject)
+      |> process.select_monitors(fn(down) {
+        case down {
+          process.ProcessDown(pid:, ..) -> Down(pid)
+          process.PortDown(..) -> Down(process.self())
+        }
+      })
+    Loop(
+      subject:,
+      backend:,
+      live: dict.new(),
+      watchers: dict.new(),
+      monitored: [],
+      busy: dict.new(),
+      timeout: default_backend_timeout,
+    )
+    |> actor.initialised
+    |> actor.selecting(selector)
+  })
+  |> actor.named(store.name)
+  |> actor.on_message(fn(state, message) {
+    actor.continue(serve(state, message))
+  })
+  |> actor.start
 }
 
 /// Sets how long one backend call may take (default 5000 ms). For tests.
 @internal
 pub fn with_backend_timeout(store: Store, milliseconds: Int) -> Store {
-  process.send(store.subject, SetTimeout(milliseconds))
+  process.send(process.named_subject(store.name), SetTimeout(milliseconds))
   store
 }
 
+/// Sends a request to the store process and waits for its reply. A store
+/// that is not running, or stops before replying, is `Unavailable`: a write
+/// sent to it has an unknown outcome.
 fn call(
   store: Store,
-  request: fn(Subject(reply)) -> Request,
+  request: fn(Subject(reply)) -> Message,
 ) -> Result(reply, StoreError) {
-  let reply = process.new_subject()
-  let monitor = process.monitor(store.pid)
-  process.send(store.subject, request(reply))
-  let answer =
-    process.new_selector()
-    |> process.select_map(reply, Ok)
-    |> process.select_specific_monitor(monitor, fn(_) {
-      Error(Unavailable("the store is closed"))
-    })
-    |> process.selector_receive_forever
-  process.demonitor_process(monitor)
-  answer
+  case process.named(store.name) {
+    Error(Nil) -> Error(Unavailable("the store is not running"))
+    Ok(pid) -> {
+      let reply = process.new_subject()
+      let monitor = process.monitor(pid)
+      process.send(process.named_subject(store.name), request(reply))
+      let answer =
+        process.new_selector()
+        |> process.select_map(reply, Ok)
+        |> process.select_specific_monitor(monitor, fn(_) {
+          Error(Unavailable("the store stopped"))
+        })
+        |> process.selector_receive_forever
+      process.demonitor_process(monitor)
+      answer
+    }
+  }
 }
 
 /// The store process never calls the backend itself. Backend calls run in
 /// worker processes, one run at a time in arrival order, each bounded by
 /// the backend timeout, so a slow or hung call holds up only its own run.
-fn serve(state: Loop) -> Nil {
-  let selector =
-    process.new_selector()
-    |> process.select(state.subject)
-    |> process.select_monitors(fn(down) {
-      case down {
-        process.ProcessDown(pid:, ..) -> Down(pid)
-        process.PortDown(..) -> Down(process.self())
-      }
-    })
-  case process.selector_receive_forever(selector) {
-    Close -> Nil
-    SetTimeout(milliseconds) -> serve(Loop(..state, timeout: milliseconds))
+fn serve(state: Loop, message: Message) -> Loop {
+  case message {
+    SetTimeout(milliseconds) -> Loop(..state, timeout: milliseconds)
     Get(run, ..) as request | Write(run, ..) as request ->
-      serve(enqueue(state, run, request))
-    Finished(run, done) -> serve(finish(state, run, done))
+      enqueue(state, run, request)
+    Finished(run, done) -> finish(state, run, done)
     Watch(run, watcher, reply) -> {
       let state = case process.subject_owner(watcher) {
         Error(Nil) -> state
@@ -318,17 +368,15 @@ fn serve(state: Loop) -> Nil {
           )
       }
       process.send(reply, Nil)
-      serve(state)
+      state
     }
     Unwatch(run, watcher) ->
-      serve(
-        Loop(
-          ..state,
-          watchers: dict.upsert(state.watchers, run, fn(existing) {
-            option.unwrap(existing, [])
-            |> list.filter(fn(entry) { entry.1 != watcher })
-          }),
-        ),
+      Loop(
+        ..state,
+        watchers: dict.upsert(state.watchers, run, fn(existing) {
+          option.unwrap(existing, [])
+          |> list.filter(fn(entry) { entry.1 != watcher })
+        }),
       )
     Down(pid) -> {
       let #(released, live) =
@@ -350,12 +398,12 @@ fn serve(state: Loop) -> Nil {
           monitored: list.filter(state.monitored, fn(p) { p != pid }),
         )
       list.each(released, notify(state, _))
-      serve(state)
+      state
     }
   }
 }
 
-fn enqueue(state: Loop, run: String, request: Request) -> Loop {
+fn enqueue(state: Loop, run: String, request: Message) -> Loop {
   case dict.get(state.busy, run) {
     Ok(#(current, waiting)) ->
       Loop(
@@ -373,7 +421,7 @@ fn enqueue(state: Loop, run: String, request: Request) -> Loop {
 }
 
 /// Starts the backend call of `request` in a worker linked to the store.
-fn begin(state: Loop, run: String, request: Request) -> Nil {
+fn begin(state: Loop, run: String, request: Message) -> Nil {
   let backend = state.backend
   let timeout = state.timeout
   let subject = state.subject

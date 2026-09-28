@@ -66,3 +66,14 @@ pub fn runner(store: Store, id: RunId) -> Result(Pid, Nil) {
     Ok(store.Entry(live: None, ..)) | Error(_) -> Error(Nil)
   }
 }
+
+/// Kills `owner` and waits until `store`, whose process it started, is
+/// gone with it.
+pub fn crash(owner: Pid, store: Store) -> Nil {
+  let store_process = store.pid(store)
+  kill(owner)
+  case store_process {
+    Ok(pid) -> gone(pid)
+    Error(Nil) -> Nil
+  }
+}

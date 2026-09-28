@@ -7,7 +7,6 @@ import fabric/internal/runner
 import fabric/model.{AssistantMessage, ToolResultMessage, UserMessage}
 import fabric/policy
 import fabric/run.{ActionId}
-import fabric/store
 import fabric/support
 import fabric/support/apps
 import fabric/support/flaky
@@ -50,7 +49,7 @@ pub fn run_completes_with_two_typed_tools_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let held = store.in_memory()
+  let held = support.store()
   let assert Ok(run) = fabric.start(held, agent, Nil, "weather, then pay bob")
   let assert Ok(run.Finished(run.Completed(answer))) = fabric.await(run, 5000)
   answer
@@ -81,7 +80,7 @@ pub fn typed_failure_is_visible_to_the_model_test() {
     )
     |> support.agent
   let assert Ok(run) =
-    fabric.start(store.in_memory(), agent, Nil, "weather in Oslo")
+    fabric.start(support.store(), agent, Nil, "weather in Oslo")
   fabric.await(run, 5000)
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"error\":\"unknown city: Oslo\"}"))),
@@ -107,7 +106,7 @@ pub fn tool_concurrency_is_bounded_per_run_test() {
     )
     |> support.agent
   let assert Ok(run) =
-    fabric.start(store.in_memory(), agent, Nil, "three slow things")
+    fabric.start(support.store(), agent, Nil, "three slow things")
   let first = probe.arrival(probe)
   let second = probe.arrival(probe)
   // Two bodies are blocked; the third may only start after one ends.
@@ -131,7 +130,7 @@ pub fn approval_suspends_the_run_as_data_test() {
       transfers_need_approval,
     )
     |> support.agent
-  let held = store.in_memory()
+  let held = support.store()
   let assert Ok(run) = fabric.start(held, agent, Nil, "pay bob")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   pending.reference.id |> should.equal(ActionId(1, "t"))
@@ -159,7 +158,7 @@ pub fn cancel_kills_running_tools_and_records_them_uncertain_test() {
       agent.Limits(..agent.default_limits(), max_concurrency: 1),
     )
     |> support.agent
-  let held = store.in_memory()
+  let held = support.store()
   let assert Ok(run) = fabric.start(held, agent, Nil, "two slow things")
   let first = probe.arrival(probe)
   first.name |> should.equal("a")
@@ -181,7 +180,7 @@ pub fn cancel_while_the_model_is_called_test() {
   let agent =
     agent.new("agent", blocking, [], policy.always_allow())
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "think")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "think")
   let _ = probe.arrival(probe)
   fabric.cancel(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
@@ -198,7 +197,7 @@ pub fn uncertain_effect_blocks_until_reconciled_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let held = store.in_memory()
+  let held = support.store()
   let assert Ok(run) = fabric.start(held, agent, Nil, "pay bob a lot")
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
   uncertain
@@ -228,7 +227,7 @@ pub fn crash_after_the_fence_is_an_uncertain_effect_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "crash")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "crash")
   let assert Ok(run.Suspended([], [crashed])) = fabric.await(run, 5000)
   string.starts_with(crashed.evidence, "tool crashed") |> should.be_true
   probe.count(probe, "crash:boom") |> should.equal(1)
@@ -246,7 +245,7 @@ pub fn policy_failure_is_a_host_failure_test() {
       failing,
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
   fabric.await(run, 5000)
   |> should.equal(
     Ok(
@@ -271,7 +270,7 @@ pub fn crashing_policy_fails_closed_test() {
       crashing,
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
   let assert Ok(run.Finished(run.Failed(run.PolicyFailed(_, reason)))) =
     fabric.await(run, 5000)
   string.starts_with(reason, "policy crashed") |> should.be_true
@@ -318,7 +317,7 @@ pub fn handler_receives_the_run_context_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, "alice", "hi")
+  let assert Ok(run) = fabric.start(support.store(), agent, "alice", "hi")
   fabric.await(run, 5000)
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"alice in Rome\"}"))),
@@ -348,7 +347,7 @@ pub fn concurrent_cancels_of_a_suspended_run_have_one_winner_test() {
       transfers_need_approval,
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "pay bob")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "pay bob")
   let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
   let results = process.new_subject()
   list.each(list.repeat(Nil, 8), fn(_) {
@@ -383,7 +382,7 @@ pub fn a_policy_that_never_answers_fails_closed_at_its_deadline_test() {
       agent.Limits(..agent.default_limits(), policy_timeout: 50),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
   fabric.await(run, 5000)
   |> should.equal(
     Ok(
@@ -427,7 +426,7 @@ pub fn model_retries_back_off_test() {
     )
     |> support.agent
   let started = now()
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "hi")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "hi")
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Completed("ok"))))
   // Two retries: 40 ms, then 80 ms.
   { now() - started >= 120 } |> should.be_true
@@ -491,7 +490,7 @@ pub fn a_runner_retries_a_commit_the_store_could_not_make_test() {
 /// having no runner.
 pub fn an_exit_signal_from_outside_stops_the_runner_test() {
   let probe = probe.new()
-  let store = store.in_memory()
+  let store = support.store()
   let agent =
     agent.new(
       "agent",
@@ -522,7 +521,7 @@ pub fn a_run_id_that_fabric_never_issues_is_not_found_test() {
   run.id_to_string(id) |> should.equal("run-A_1")
 
   let dir = restart.temp_dir()
-  let assert Ok(store) = store.directory(dir)
+  let store = support.directory(dir)
   runner.load(store, "../escape") |> should.equal(Error(runner.NotFound))
   runner.load(store, "") |> should.equal(Error(runner.NotFound))
   restart.remove_dir(dir)

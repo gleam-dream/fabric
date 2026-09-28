@@ -2,6 +2,8 @@
 
 import fabric/agent.{type Agent, type Spec}
 import fabric/run.{type RunId}
+import fabric/store.{type Store}
+import gleam/erlang/process
 import gleam/int
 
 /// The run id `text`, which must have the shape Fabric issues.
@@ -24,4 +26,20 @@ pub fn child_id(parent: RunId, n: Int) -> RunId {
 pub fn agent(spec: Spec(context)) -> Agent(context) {
   let assert Ok(agent) = agent.build(spec)
   agent
+}
+
+/// A started in-memory store, linked to the caller.
+pub fn store() -> Store {
+  started(store.in_memory(process.new_name("fabric-test-store")))
+}
+
+/// A started directory store over `path`, linked to the caller.
+pub fn directory(path: String) -> Store {
+  started(store.directory(process.new_name("fabric-test-store"), path))
+}
+
+/// `store`, started and linked to the caller.
+pub fn started(store: Store) -> Store {
+  let assert Ok(Nil) = store.start(store)
+  store
 }

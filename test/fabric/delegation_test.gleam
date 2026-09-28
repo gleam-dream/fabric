@@ -211,7 +211,7 @@ fn start_owned(
 ) -> #(Pid, Store, fabric.Run(Nil)) {
   let #(owner, #(store, run)) =
     restart.owned(fn() {
-      let assert Ok(store) = store.directory(dir)
+      let store = support.directory(dir)
       let assert Ok(run) = fabric.start(store, agent, Nil, prompt)
       #(store, run)
     })
@@ -219,12 +219,11 @@ fn start_owned(
 }
 
 fn crash(owner: Pid, store: Store) -> Nil {
-  restart.kill(owner)
-  restart.gone(store.pid(store))
+  restart.crash(owner, store)
 }
 
 fn reopen(dir: String) -> Store {
-  let assert Ok(store) = store.directory(dir)
+  let store = support.directory(dir)
   store
 }
 
@@ -308,7 +307,7 @@ pub fn a_rejected_sub_agent_never_starts_test() {
       quick_researcher(probe),
       review_delegation(probe),
     )
-  let assert Ok(run) = fabric.start(store.in_memory(), parent, Nil, "go")
+  let assert Ok(run) = fabric.start(support.store(), parent, Nil, "go")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   let assert Ok(_) =
     fabric.reject(
@@ -355,7 +354,7 @@ fn paying_family(probe: Probe) -> Agent(Nil) {
 pub fn a_child_pause_surfaces_to_the_parent_and_is_answered_through_it_test() {
   let probe = probe.new()
   let assert Ok(run) =
-    fabric.start(store.in_memory(), paying_family(probe), Nil, "go")
+    fabric.start(support.store(), paying_family(probe), Nil, "go")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   let assert Some(child_id) = only_action(run).child
   pending.reference.run |> should.equal(child_id)
@@ -388,7 +387,7 @@ pub fn a_child_pause_surfaces_to_the_parent_and_is_answered_through_it_test() {
 pub fn cancelling_the_parent_cancels_a_paused_child_test() {
   let probe = probe.new()
   let assert Ok(run) =
-    fabric.start(store.in_memory(), paying_family(probe), Nil, "go")
+    fabric.start(support.store(), paying_family(probe), Nil, "go")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   let child = child_of(run)
 
@@ -420,7 +419,7 @@ pub fn cancelling_the_parent_stops_an_active_child_test() {
       ),
       policy.always_allow(),
     )
-  let assert Ok(run) = fabric.start(store.in_memory(), parent, Nil, "go")
+  let assert Ok(run) = fabric.start(support.store(), parent, Nil, "go")
   let running = probe.arrival(probe)
   running.name |> should.equal("s")
   let child = child_of(run)
@@ -457,7 +456,7 @@ pub fn a_child_reply_after_the_parent_was_cancelled_is_discarded_test() {
       slow_child,
       policy.always_allow(),
     )
-  let assert Ok(run) = fabric.start(store.in_memory(), parent, Nil, "go")
+  let assert Ok(run) = fabric.start(support.store(), parent, Nil, "go")
   let replying = probe.arrival(probe)
   let child = child_of(run)
   let assert Ok(_) = fabric.cancel(run)
@@ -615,7 +614,7 @@ pub fn delegations_beyond_the_child_limit_are_refused_test() {
       agent.Limits(..agent.default_limits(), max_children: 2),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), parent, Nil, "go")
+  let assert Ok(run) = fabric.start(support.store(), parent, Nil, "go")
   let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
   let assert Ok(snapshot) = fabric.snapshot(run)
   list.map(snapshot.actions, fn(action) { action.state })
@@ -657,13 +656,13 @@ pub fn nested_delegation_is_bounded_by_the_root_depth_test() {
     |> support.agent
   }
 
-  let assert Ok(shallow) = fabric.start(store.in_memory(), root(1), Nil, "go")
+  let assert Ok(shallow) = fabric.start(support.store(), root(1), Nil, "go")
   let assert Ok(run.Finished(run.Completed(_))) = fabric.await(shallow, 5000)
   let assert Ok(snapshot) = fabric.snapshot(child_of(shallow))
   list.map(snapshot.actions, fn(action) { action.state })
   |> should.equal([run.LimitReached(run.DepthLimit(1))])
 
-  let assert Ok(deep) = fabric.start(store.in_memory(), root(2), Nil, "go")
+  let assert Ok(deep) = fabric.start(support.store(), root(2), Nil, "go")
   let assert Ok(run.Finished(run.Completed(_))) = fabric.await(deep, 5000)
   let assert Ok(snapshot) = fabric.snapshot(child_of(deep))
   list.map(snapshot.actions, fn(action) { action.state })
@@ -732,7 +731,7 @@ pub fn delegation_limits_keep_child_ids_valid_test() {
 /// agent maps the child's outcome.
 pub fn cancel_stored_cancels_the_children_first_test() {
   let probe = probe.new()
-  let store = store.in_memory()
+  let store = support.store()
   let assert Ok(run) = fabric.start(store, paying_family(probe), Nil, "go")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   let child = child_of(run)
@@ -943,7 +942,7 @@ pub fn a_child_that_cannot_be_stored_is_uncertain_test() {
 /// uncertain, and the family ends.
 pub fn cancelling_does_not_depend_on_the_current_delegations_test() {
   let probe = probe.new()
-  let store = store.in_memory()
+  let store = support.store()
   let assert Ok(run) = fabric.start(store, paying_family(probe), Nil, "go")
   let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
   let child = child_of(run)

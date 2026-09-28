@@ -12,7 +12,6 @@ import fabric/agent
 import fabric/model.{type Reply}
 import fabric/policy
 import fabric/run
-import fabric/store
 import fabric/support
 import fabric/support/probe.{type Probe}
 import fabric/support/restart
@@ -253,7 +252,7 @@ fn run_scenario(
       agent.Limits(..agent.default_limits(), max_turns: max_turns),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "go")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "go")
   let assert Ok(status) = fabric.await(run, 5000)
   #(run, status)
 }
@@ -407,7 +406,7 @@ fn paused(run: fabric.Run(Nil), probe: Probe) -> #(Pause, run.PendingApproval) {
 pub fn an_approved_call_matches_beamweaver_test() {
   let probe = probe.new()
   let assert Ok(run) =
-    fabric.start(store.in_memory(), hitl_agent(probe), Nil, "go")
+    fabric.start(support.store(), hitl_agent(probe), Nil, "go")
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("hitl_approve"))
   let assert Ok(_) = fabric.approve(run, pending.reference, None, Nil)
@@ -423,7 +422,7 @@ pub fn an_approved_call_matches_beamweaver_test() {
 pub fn a_rejected_call_matches_beamweaver_test() {
   let probe = probe.new()
   let assert Ok(run) =
-    fabric.start(store.in_memory(), hitl_agent(probe), Nil, "go")
+    fabric.start(support.store(), hitl_agent(probe), Nil, "go")
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("hitl_reject"))
   let assert Ok(_) =
@@ -458,16 +457,15 @@ pub fn an_approval_after_a_restart_matches_beamweaver_test() {
   let probe = probe.new()
   let #(owner, #(old, run)) =
     restart.owned(fn() {
-      let assert Ok(store) = store.directory(dir)
+      let store = support.directory(dir)
       let assert Ok(run) = fabric.start(store, hitl_agent(probe), Nil, "go")
       #(store, run)
     })
   let #(pause, _) = paused(run, probe)
   pause |> should.equal(pause_fixture("hitl_cold_restart"))
-  restart.kill(owner)
-  restart.gone(store.pid(old))
+  restart.crash(owner, old)
 
-  let assert Ok(store) = store.directory(dir)
+  let store = support.directory(dir)
   let assert Ok(run) =
     fabric.recover(store, hitl_agent(probe), Nil, fabric.id(run))
   let assert Ok([pending]) = fabric.pending(run)
@@ -562,7 +560,7 @@ fn delegation_agent(probe: Probe) -> agent.Agent(Nil) {
 pub fn an_approved_sub_agent_start_matches_beamweaver_test() {
   let probe = probe.new()
   let assert Ok(run) =
-    fabric.start(store.in_memory(), delegation_agent(probe), Nil, "go")
+    fabric.start(support.store(), delegation_agent(probe), Nil, "go")
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("subagent_gate_approve"))
   let assert Ok(_) = fabric.approve(run, pending.reference, None, Nil)
@@ -576,7 +574,7 @@ pub fn an_approved_sub_agent_start_matches_beamweaver_test() {
 pub fn a_rejected_sub_agent_start_matches_beamweaver_test() {
   let probe = probe.new()
   let assert Ok(run) =
-    fabric.start(store.in_memory(), delegation_agent(probe), Nil, "go")
+    fabric.start(support.store(), delegation_agent(probe), Nil, "go")
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("subagent_gate_reject"))
   let assert Ok(_) =

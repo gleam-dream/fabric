@@ -37,17 +37,29 @@ pub fn new() -> Watched {
   Watched(subject)
 }
 
+/// A store over the backend, started and linked to the caller.
 pub fn store(watched: Watched) -> Store {
   let subject = watched.subject
-  store.new(
-    get: fn(run) { process.call_forever(subject, Get(run, _)) },
-    insert: fn(run, record) {
-      process.call_forever(subject, Write(run, None, record, _))
-    },
-    compare_and_set: fn(run, expected, record) {
-      process.call_forever(subject, Write(run, Some(expected), record, _))
-    },
-  )
+  let opened =
+    store.new(
+      process.new_name("watched-store"),
+      get: fn(run) { process.call_forever(subject, Get(run, _)) },
+      insert: fn(run, record) {
+        process.call_forever(subject, Write(run, None, record, _))
+      },
+      compare_and_set: fn(run, expected, record) {
+        process.call_forever(subject, Write(run, Some(expected), record, _))
+      },
+    )
+  let assert Ok(Nil) = store.start(opened)
+  opened
+}
+
+/// A started in-memory store, linked to the caller.
+pub fn memory() -> Store {
+  let opened = store.in_memory(process.new_name("memory-store"))
+  let assert Ok(Nil) = store.start(opened)
+  opened
 }
 
 /// How many writes were performed.

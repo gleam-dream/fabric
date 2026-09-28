@@ -14,7 +14,6 @@ import fabric/agent.{type Agent}
 import fabric/model
 import fabric/policy
 import fabric/run.{Requirement}
-import fabric/store
 import fabric/support
 import fabric/support/apps
 import fabric/support/flaky
@@ -137,7 +136,7 @@ pub fn an_approved_tool_runs_with_the_recheck_context_without_a_runner_test() {
   let probe = probe.new()
   let assert Ok(run) =
     fabric.start(
-      store.in_memory(),
+      support.store(),
       paying_agent(probe, [transfer_call()]),
       "carol",
       "pay",
@@ -158,7 +157,7 @@ pub fn an_approved_tool_runs_with_the_recheck_context_without_a_runner_test() {
 /// the run's context for everything else.
 pub fn an_approved_tool_runs_with_the_recheck_context_under_a_live_runner_test() {
   let probe = probe.new()
-  let store = store.in_memory()
+  let store = support.store()
   let assert Ok(run) =
     fabric.start(
       store,
@@ -197,7 +196,7 @@ pub fn an_approved_tool_not_started_before_a_restart_is_asked_for_again_test() {
     |> support.agent
   let #(owner, #(old, run)) =
     restart.owned(fn() {
-      let assert Ok(store) = store.directory(dir)
+      let store = support.directory(dir)
       let assert Ok(run) = fabric.start(store, agent, "carol", "pay")
       #(store, run)
     })
@@ -207,10 +206,9 @@ pub fn an_approved_tool_not_started_before_a_restart_is_asked_for_again_test() {
   let assert Ok(snapshot) = fabric.snapshot(run)
   list.map(snapshot.actions, fn(action) { action.state })
   |> should.equal([run.Running, run.Queued])
-  restart.kill(owner)
-  restart.gone(store.pid(old))
+  restart.crash(owner, old)
 
-  let assert Ok(store) = store.directory(dir)
+  let store = support.directory(dir)
   let assert Ok(run) = fabric.recover(store, agent, "carol", fabric.id(run))
   let assert Ok(run.Suspended([renewed], [uncertain])) = fabric.await(run, 0)
   uncertain.tool |> should.equal("slow")
@@ -291,7 +289,7 @@ fn delegating(probe: Probe) -> Agent(String) {
 pub fn an_approved_sub_agent_starts_with_the_recheck_context_test() {
   let probe = probe.new()
   let assert Ok(run) =
-    fabric.start(store.in_memory(), delegating(probe), "carol", "look it up")
+    fabric.start(support.store(), delegating(probe), "carol", "look it up")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   let assert Ok(_) = approve(run, pending, "alice")
   fabric.await(run, 5000)
@@ -323,8 +321,7 @@ pub fn an_approved_sub_agent_never_stored_is_asked_for_again_test() {
   let held = flaky.hold(backend, string.ends_with(_, "-1"))
   let assert Ok(_) = approve(run, pending, "alice")
   let assert Ok(_) = process.receive(held, 5000)
-  restart.kill(owner)
-  restart.gone(store.pid(first))
+  restart.crash(owner, first)
   flaky.drop_held(backend)
 
   let store = flaky.store(backend)
