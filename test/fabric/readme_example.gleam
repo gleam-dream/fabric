@@ -1,22 +1,3 @@
-# fabric
-
-A bounded, typed LLM agent runtime for Gleam: typed application tools, an explicit policy gate, a pure agent controller, and a thin OTP runner with cancellation. It consumes llm_wire for providers and json_blueprint for tool codecs; typed workflows (DAGs) belong to Saga.
-
-Status: slice 1 (bounded agent execution), slice 2a (durable pause, approval, resume, cancellation, and restart), slice 2b (approval-gated sub-agents, Sinal observations, and Saga workflows as tools), and the public API ergonomics pass (a built agent, one policy gate, typed run ids, a named supervisable store) implemented; see [docs/PLAN.md](docs/PLAN.md), [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [docs/ORACLE.md](docs/ORACLE.md). Design: see [fabric-design.md](https://github.com/gleam-dream/oversight/blob/master/fabric-design.md) in [gleam-dream/oversight](https://github.com/gleam-dream/oversight). Not yet published to Hex.
-
-Behavioural oracle: BeamWeaver (partial migration of its agent loop).
-
-Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
-
-## Usage
-
-A payment desk: a typed tool whose large transfers wait for a treasurer's
-approval, a supervised durable store, a request that starts a run, and a
-later request that opens the run by its id to approve, reject, or
-reconcile it. The block is `test/fabric/readme_example.gleam` verbatim;
-`test/fabric/readme_test.gleam` checks that and runs it.
-
-```gleam
 import fabric
 import fabric/agent.{type Agent}
 import fabric/model.{type Model}
@@ -248,31 +229,3 @@ pub fn settling_transfer(
     within: 5000,
   )
 }
-```
-
-A Saga workflow is one typed tool too, from the separate package
-`integrations/fabric_saga`: `fabric_saga.tool(definition, workflow,
-execution.config(), explain:, rollback_within:)`. A cancelled call waits up
-to `rollback_within` ms for Saga's rollback: every completed step undone is
-a definite failure, anything left in place an uncertain effect.
-`consumers/app` uses it.
-
-Observations: attach Sinal handlers to the events of `fabric/observation`.
-They run in the committing process unless the application routes `[fabric]`
-through a `sinal/forwarder` (`forwarder.route` at start, `forwarder.unroute`
-at shutdown), which keeps a slow handler from holding up a run; handlers that
-call Fabric should run there.
-
-`consumers/app` is a complete external application using public imports only.
-
-## Development
-
-```sh
-nix develop
-gleam format --check src test
-gleam build --warnings-as-errors
-gleam test
-(cd consumers/app && gleam test)
-(cd integrations/fabric_saga && gleam test)
-nix flake check
-```
