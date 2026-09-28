@@ -461,7 +461,7 @@ pub fn an_exit_signal_from_outside_stops_the_runner_test() {
     process.new_selector()
     |> process.select_specific_monitor(monitor, fn(_) { Nil })
     |> process.selector_receive(5000)
-  fabric.await(run, 5000) |> should.equal(Error(fabric.NoRunner))
+  fabric.await(run, 5000) |> should.equal(Ok(run.Unattended))
 }
 
 /// A string in another shape never becomes a run id, and a stored-run read

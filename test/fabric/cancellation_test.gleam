@@ -179,7 +179,7 @@ pub fn a_held_child_is_cancelled_through_its_record_test() {
   let assert Ok(_) = fabric.cancel(run)
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert Ok(child_run) = fabric.child(run, support.id(held.run))
-  fabric.status(child_run) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child_run, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert [run.Uncertain(_)] = states(run)
   let assert Ok(before) = fabric.snapshot(child_run)
   let assert [run.Uncertain(_)] = states(child_run)
@@ -333,7 +333,7 @@ pub fn a_runner_whose_handler_cancelled_its_run_calls_no_model_test() {
   let _ = sinal.detach(attached)
 
   cancelled |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.status(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   probe.count(probe, "model") |> should.equal(1)
 }
 

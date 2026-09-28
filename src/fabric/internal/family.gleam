@@ -61,7 +61,9 @@ pub type View {
 pub fn view(node: Node) -> View {
   case controller.status(node.state) {
     run.Finished(_) as finished -> View(finished, True)
-    run.Working ->
+    // The record alone never reads unattended: this is where the store's
+    // runners are consulted.
+    run.Working | run.Unattended ->
       View(run.Working, runner.live_runner(node.entry, node.state) != None)
     run.Suspended(approvals, uncertain) -> {
       let views = list.map(node.children, child_view)
@@ -93,6 +95,15 @@ pub fn view(node: Node) -> View {
           )
       }
     }
+  }
+}
+
+/// The family's status as a caller sees it: work in flight that no runner
+/// of this store drives is `Unattended`.
+pub fn status(node: Node) -> Status {
+  case view(node) {
+    View(run.Working, False) -> run.Unattended
+    View(status, _) -> status
   }
 }
 

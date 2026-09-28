@@ -313,7 +313,7 @@ pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
 
   let assert Ok(_) = fabric.cancel(desk)
   fabric.await(desk, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.status(purchaser) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(purchaser, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.answer(
     desk,
     treasurer.reference,

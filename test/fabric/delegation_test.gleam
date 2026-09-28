@@ -348,7 +348,7 @@ pub fn a_child_pause_surfaces_to_the_parent_and_is_answered_through_it_test() {
   pending.reference.run |> should.equal(child_id)
   pending.tool |> should.equal("transfer_funds")
   fabric.pending(run) |> should.equal(Ok([pending]))
-  fabric.status(run) |> should.equal(Ok(run.Suspended([pending], [])))
+  fabric.await(run, 0) |> should.equal(Ok(run.Suspended([pending], [])))
   only_action(run).state |> should.equal(run.Delegated)
   probe.count(probe, "parent:model") |> should.equal(1)
   probe.count(probe, "pay:bob") |> should.equal(0)
@@ -393,7 +393,7 @@ pub fn cancelling_the_parent_cancels_a_paused_child_test() {
 
   let assert Ok(_) = fabric.cancel(run)
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   child_states(child) |> should.equal([run.NotStarted])
   only_action(run).state
   |> should.equal(run.ToolFailed("{\"error\":\"research did not complete\"}"))
@@ -432,7 +432,7 @@ pub fn cancelling_the_parent_stops_an_active_child_test() {
 
   let assert Ok(run.Working) = fabric.cancel(run)
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   child_states(child) |> should.equal([run.Uncertain("stopped while running")])
   let assert run.Uncertain(evidence) = only_action(run).state
   string.contains(evidence, support.text(fabric.id(child))) |> should.be_true
@@ -466,7 +466,7 @@ pub fn a_child_reply_after_the_parent_was_cancelled_is_discarded_test() {
   let assert Ok(_) = fabric.cancel(run)
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
   probe.release(replying)
-  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   only_action(run).state
   |> should.equal(run.ToolFailed("{\"error\":\"research did not complete\"}"))
   probe.count(probe, "parent:model") |> should.equal(1)
@@ -502,7 +502,7 @@ pub fn recovering_the_parent_recovers_its_child_test() {
   crash(owner, old)
 
   let assert Ok(run) = fabric.recover(reopen(dir), parent, Nil, fabric.id(run))
-  fabric.status(run)
+  fabric.await(run, 0)
   |> should.equal(
     Ok(
       run.Suspended([], [
@@ -540,7 +540,7 @@ pub fn an_unreadable_child_is_an_uncertain_effect_of_the_parent_test() {
 
   let assert Ok(run) =
     fabric.recover(reopen(dir), paying_family(probe), Nil, fabric.id(run))
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.status(run)
+  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 0)
   uncertain.run |> should.equal(fabric.id(run))
   uncertain.tool |> should.equal("research")
   string.contains(uncertain.evidence, support.text(pending.reference.run))
@@ -697,7 +697,7 @@ pub fn cancel_stored_cancels_the_children_first_test() {
   let child = child_of(run)
   fabric.cancel_stored(store, fabric.id(run))
   |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert run.Uncertain(_) = only_action(run).state
   fabric.answer(
     run,
@@ -725,7 +725,7 @@ pub fn a_transient_store_failure_does_not_leave_a_child_uncancelled_test() {
 
   let assert Ok(_) = fabric.cancel(run)
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.pending(run) |> should.equal(Ok([]))
   fabric.answer(
     run,
@@ -817,7 +817,7 @@ pub fn a_child_stored_after_its_parent_was_cancelled_never_runs_test() {
     |> process.selector_receive(5000)
 
   let assert Ok(child) = fabric.child(run, support.id(child_id))
-  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   only_action(run).state |> should.equal(run.NotStarted)
   probe.count(probe, "child:model") |> should.equal(0)
   probe.count(probe, "pay:bob") |> should.equal(0)
@@ -857,7 +857,7 @@ pub fn recovery_does_not_start_a_child_after_its_parent_was_cancelled_test() {
   let assert Ok(Ok(recovered)) = process.receive(recovering, 5000)
 
   let assert Ok(child) = fabric.child(recovered, support.id(child_id))
-  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   only_action(recovered).state |> should.equal(run.NotStarted)
   probe.count(probe, "child:model") |> should.equal(0)
   probe.count(probe, "pay:bob") |> should.equal(0)
@@ -947,7 +947,7 @@ pub fn cancelling_does_not_depend_on_the_current_delegations_test() {
   let assert Ok(_) = fabric.cancel(reopened)
   fabric.await(reopened, 5000)
   |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert run.Uncertain(_) = only_action(run).state
   probe.count(probe, "pay:bob") |> should.equal(0)
 }

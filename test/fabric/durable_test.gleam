@@ -13,6 +13,7 @@ import fabric/run.{type RunId, ActionId}
 import fabric/store.{type Store}
 import fabric/support
 import fabric/support/apps
+import fabric/support/flaky
 import fabric/support/probe.{type Probe}
 import fabric/support/restart
 import fabric/support/scripted
@@ -152,7 +153,7 @@ pub fn an_effect_whose_result_was_never_committed_is_uncertain_test() {
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
   uncertain.id |> should.equal(ActionId(1, "a"))
   // The model is not called until the effect is reconciled.
-  fabric.status(run)
+  fabric.await(run, 0)
   |> should.equal(Ok(run.Suspended([], [uncertain])))
   probe.count(probe, "start:a") |> should.equal(1)
   restart.remove_dir(dir)
@@ -205,7 +206,7 @@ pub fn a_lost_model_call_is_not_issued_again_beyond_the_turn_budget_test() {
   let answering = scripted.model(fn(_) { model.FinalAnswer("hello", None) })
   let assert Ok(run) =
     fabric.recover(reopen(dir), limited(answering), Nil, fabric.id(run))
-  fabric.status(run)
+  fabric.await(run, 0)
   |> should.equal(Ok(run.Finished(run.BudgetExhausted(run.TurnLimit(1)))))
   restart.remove_dir(dir)
 }
@@ -264,7 +265,7 @@ pub fn recovering_a_finished_run_opens_it_unchanged_test() {
   crash(owner, old, fabric.id(run))
 
   let assert Ok(run) = fabric.recover(reopen(dir), agent, Nil, fabric.id(run))
-  fabric.status(run) |> should.equal(Ok(run.Finished(run.Completed("done"))))
+  fabric.await(run, 0) |> should.equal(Ok(run.Finished(run.Completed("done"))))
   let assert Ok(snapshot) = fabric.snapshot(run)
   snapshot.incarnation |> should.equal(1)
   snapshot.turns_used |> should.equal(1)
@@ -297,7 +298,7 @@ pub fn a_runner_of_an_older_incarnation_cannot_commit_test() {
 
   probe.count(probe, "end:a") |> should.equal(1)
   states(taken) |> should.equal([run.Uncertain(lost)])
-  fabric.status(taken)
+  fabric.await(taken, 0)
   |> should.equal(
     Ok(
       run.Suspended([], [
@@ -346,7 +347,7 @@ pub fn recovery_refuses_another_agent_definition_test() {
   fabric.recover(reopen(dir), renamed, Nil, id)
   |> should.equal(
     Error(
-      fabric.RecoverUnreadable(
+      fabric.Unreadable(
         fabric.IncompatibleAgent([run.OtherAgent(run.Identity("agent", 1))]),
       ),
     ),
@@ -360,7 +361,7 @@ pub fn recovery_refuses_an_agent_without_a_pending_tool_test() {
   fabric.recover(reopen(dir), paying_agent([apps.weather_tool()]), Nil, id)
   |> should.equal(
     Error(
-      fabric.RecoverUnreadable(
+      fabric.Unreadable(
         fabric.IncompatibleAgent([
           run.ToolNotRegistered(ActionId(1, "t"), "transfer_funds"),
         ]),
@@ -383,7 +384,7 @@ pub fn recovery_refuses_a_tool_that_no_longer_accepts_pending_arguments_test() {
       codec.string(),
     )
     |> tool.bind(fn(_, memo) { Ok(memo) }, fn(_: Nil) { tool.Explain("no") })
-  let assert Error(fabric.RecoverUnreadable(fabric.IncompatibleAgent([
+  let assert Error(fabric.Unreadable(fabric.IncompatibleAgent([
     run.ArgumentsNotAccepted(id: ActionId(1, "t"), tool: "transfer_funds", ..),
   ]))) = fabric.recover(reopen(dir), paying_agent([stricter]), Nil, id)
   restart.remove_dir(dir)
@@ -398,9 +399,7 @@ pub fn recovery_reports_an_unsupported_record_version_test() {
       "{\"format\":\"fabric.run\",\"version\":99}",
     )
   fabric.recover(reopen(dir), paying_agent([apps.transfer_tool()]), Nil, id)
-  |> should.equal(
-    Error(fabric.RecoverUnreadable(fabric.UnsupportedVersion(99))),
-  )
+  |> should.equal(Error(fabric.Unreadable(fabric.UnsupportedVersion(99))))
   restart.remove_dir(dir)
 }
 
@@ -412,7 +411,7 @@ pub fn recovery_reports_a_corrupt_record_test() {
       dir <> "/" <> support.text(id) <> "/99999999999999999999.json",
       "{\"format\":\"fabric.run\",\"version\":1,\"run\":",
     )
-  let assert Error(fabric.RecoverUnreadable(fabric.CorruptRecord(_))) =
+  let assert Error(fabric.Unreadable(fabric.CorruptRecord(_))) =
     fabric.recover(reopen(dir), paying_agent([apps.transfer_tool()]), Nil, id)
   restart.remove_dir(dir)
 }
@@ -425,7 +424,7 @@ pub fn recovery_reports_a_run_that_does_not_exist_test() {
     Nil,
     support.id("run-nope"),
   )
-  |> should.equal(Error(fabric.RecoverUnreadable(fabric.RunNotFound)))
+  |> should.equal(Error(fabric.Unreadable(fabric.RunNotFound)))
   restart.remove_dir(dir)
 }
 
@@ -450,15 +449,17 @@ pub fn a_killed_runner_is_reported_and_its_run_recovered_test() {
   let assert Ok(runner) = restart.runner(store, fabric.id(run))
   restart.kill(runner)
 
-  fabric.await(run, 5000) |> should.equal(Error(fabric.NoRunner))
-  fabric.status(run) |> should.equal(Ok(run.Working))
+  fabric.await(run, 5000) |> should.equal(Ok(run.Unattended))
+  // The snapshot does not report the orphaned work as working.
+  let assert Ok(snapshot) = fabric.snapshot(run)
+  snapshot.status |> should.equal(run.Unattended)
   // The stored action is still running, so it is not reconcilable yet.
   fabric.reconcile(run, ActionId(1, "a"), "\"a\"")
-  |> should.equal(Error(fabric.NotReconcilable(ActionId(1, "a"))))
+  |> should.equal(Error(fabric.NotReconcilable))
 
   let assert Ok(run) =
     fabric.recover(store, one_slow(probe), Nil, fabric.id(run))
-  let assert Ok(run.Suspended([], [_])) = fabric.status(run)
+  let assert Ok(run.Suspended([], [_])) = fabric.await(run, 0)
   let assert Ok(_) = fabric.reconcile(run, ActionId(1, "a"), "\"a\"")
   fabric.await(run, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
@@ -472,7 +473,7 @@ pub fn a_run_whose_runner_was_killed_can_be_cancelled_without_recovery_test() {
   let _ = probe.arrival(probe)
   let assert Ok(runner) = restart.runner(store, fabric.id(run))
   restart.kill(runner)
-  fabric.await(run, 5000) |> should.equal(Error(fabric.NoRunner))
+  fabric.await(run, 5000) |> should.equal(Ok(run.Unattended))
 
   fabric.cancel(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
   states(run) |> should.equal([run.Uncertain(lost)])
@@ -486,9 +487,8 @@ pub fn await_reports_a_closed_store_test() {
   let awaited = process.new_subject()
   process.spawn(fn() { process.send(awaited, fabric.await(run, 5000)) })
   store.close(store)
-  let assert Ok(Error(fabric.AwaitUnreadable(fabric.StoreFailed(store.Unavailable(
-    _,
-  ))))) = process.receive(awaited, 5000)
+  let assert Ok(Error(fabric.StoreUnavailable(_))) =
+    process.receive(awaited, 5000)
 }
 
 // --- several stores over one directory ------------------------------------------
@@ -525,7 +525,7 @@ pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
   fabric.answer(run_b, p.reference, run.Approve, reviewer: None, context: Nil)
   |> should.equal(Error(fabric.AlreadyAnswered))
   fabric.answer(run_b, q.reference, run.Approve, reviewer: None, context: Nil)
-  |> should.equal(Error(fabric.OwnerUnknown))
+  |> should.equal(Error(fabric.RunUnattended))
 
   probe.release(started)
   let assert Ok(run.Suspended([_], [])) = fabric.await(run_a, 5000)
@@ -545,7 +545,7 @@ pub fn a_stranded_run_is_cancelled_without_an_agent_test() {
   let dir = restart.temp_dir()
   let id = suspended_on_disk(dir)
   let store = reopen(dir)
-  let assert Error(fabric.RecoverUnreadable(fabric.IncompatibleAgent(_))) =
+  let assert Error(fabric.Unreadable(fabric.IncompatibleAgent(_))) =
     fabric.recover(store, paying_agent([apps.weather_tool()]), Nil, id)
 
   fabric.cancel_stored(store, id)
@@ -610,4 +610,24 @@ pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
     store.get(store, "run-stopping")
   let assert Ok(controller.State(phase: controller.Ended(run.Cancelled), ..)) =
     record.decode(stored)
+}
+
+/// A start whose first write the store does not confirm names the run it
+/// tried to store: the write may land later, as a run with work in flight
+/// and no runner, and the caller can then end it.
+pub fn an_unconfirmed_start_names_its_run_test() {
+  let backend = flaky.new()
+  let runs = flaky.store(backend)
+  flaky.arm(backend, [flaky.FailLate])
+  let assert Error(fabric.StartUnconfirmed(id, reason)) =
+    fabric.start(runs, one_slow(probe.new()), Nil, "go")
+  reason |> should.equal("the backend blinked")
+  fabric.cancel_stored(runs, id)
+  |> should.equal(Error(fabric.Unreadable(fabric.RunNotFound)))
+
+  // The write lands late, before the next write of the run.
+  let assert Error(store.AlreadyExists) =
+    store.insert(runs, support.text(id), "{}", store.Keep)
+  fabric.cancel_stored(runs, id)
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
 }
