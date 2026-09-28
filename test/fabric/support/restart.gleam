@@ -156,3 +156,15 @@ pub fn draining(store: Store) -> Nil {
 
 @external(erlang, "fabric_ffi", "exit_shutdown")
 fn exit_shutdown() -> Nil
+
+/// Whether `application`'s supervisor stops, with everything under it,
+/// within `milliseconds`.
+pub fn stopped_within(application: Application, milliseconds: Int) -> Bool {
+  let monitor = process.monitor(application.supervisor)
+  let stopped =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_) { Nil })
+    |> process.selector_receive(milliseconds)
+  process.demonitor_process(monitor)
+  stopped == Ok(Nil)
+}

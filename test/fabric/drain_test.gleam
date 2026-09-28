@@ -353,3 +353,149 @@ pub fn a_child_run_drains_on_its_own_and_is_recovered_with_its_parent_test() {
   restart.stop(app)
   restart.remove_dir(dir)
 }
+
+fn research() -> tool.Definition(String, String) {
+  tool.define(
+    "research",
+    "Delegate research on a topic.",
+    codec.field("topic", codec.string()),
+    codec.string(),
+  )
+}
+
+/// A parent that calls `calls` at once, with the gated tool and a
+/// delegation to a researcher that answers at once, under `policy`, which
+/// may take up to a minute to decide.
+fn delegating(
+  probe: Probe,
+  calls: List(model.ToolCall),
+  policy: policy.Policy(Nil),
+) -> Agent(Nil) {
+  let researcher =
+    agent.new(
+      "researcher",
+      scripted.model(fn(_) { model.FinalAnswer("found", None) }),
+      [],
+      policy.always_allow(),
+    )
+    |> support.agent
+  agent.new(
+    "parent",
+    scripted.model(fn(messages) {
+      case scripted.results(messages) {
+        [] -> model.ToolRequest("", calls, None)
+        seen -> model.FinalAnswer("done: " <> string.join(seen, ","), None)
+      }
+    }),
+    [scripted.gated_tool(probe)],
+    policy,
+  )
+  |> agent.with_limits(
+    agent.Limits(..agent.default_limits(), policy_timeout: 60_000),
+  )
+  |> agent.with_sub_agent(
+    research(),
+    to: researcher,
+    prompt: fn(topic) { topic },
+    output: fn(answer) { Ok(answer) },
+  )
+  |> support.agent
+}
+
+/// Waits until `pid` has at least `count` messages queued.
+fn queued(pid: process.Pid, count: Int) -> Nil {
+  case restart.queued(pid) >= count {
+    True -> Nil
+    False -> {
+      process.sleep(1)
+      queued(pid, count)
+    }
+  }
+}
+
+/// An approval of a delegation that reaches the runner ahead of its
+/// shutdown starts the child run while the factory is already stopping:
+/// the start does not wait for the factory (the child is stored with no
+/// runner), so the drain goes on, the running tool's result is committed,
+/// and the run is handed off long before the window ends.
+pub fn a_delegation_approved_ahead_of_the_stop_does_not_hold_up_the_drain_test() {
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let assert Ok(runs) = store.with_drain(directory_store(dir), 60_000)
+  let assert Ok(delegation) = testing.call(research(), "r", "weather")
+  let policy = fn(_context, action: policy.Action) {
+    case action.tool {
+      "research" -> Ok(policy.RequireApproval(Requirement("review", 1)))
+      _ -> Ok(policy.Allow)
+    }
+  }
+  let parent = delegating(probe, [scripted.slow("a", "a"), delegation], policy)
+  let app = restart.application(runs)
+  let assert Ok(run) = fabric.start(runs, parent, Nil, "go")
+  let running = probe.arrival(probe)
+  let assert Ok(run.Working) = fabric.await(run, 0)
+  let assert Ok([pending]) = fabric.pending(run)
+  let assert Ok(runner) = restart.runner(runs, fabric.id(run))
+  restart.suspend(runner)
+  let approved = process.new_subject()
+  process.spawn(fn() {
+    process.send(
+      approved,
+      fabric.approve(run, pending.reference, reviewer: None, context: Nil),
+    )
+  })
+  queued(runner, 1)
+  restart.begin_stop(app)
+  // The runner's shutdown is queued behind the approval.
+  queued(runner, 2)
+  restart.resume(runner)
+  let assert Ok(Ok(_)) = process.receive(approved, 5000)
+  probe.release(running)
+  restart.stopped_within(app, 5000) |> should.be_true
+
+  let app = restart.application(runs)
+  let assert Ok(run) = fabric.open(runs, parent, Nil, fabric.id(run))
+  states(run) |> should.equal([run.Succeeded("\"a\""), run.Delegated])
+  let assert Ok(run) = fabric.recover(runs, parent, Nil, fabric.id(run))
+  fabric.await(run, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("done: \"a\",\"found\""))))
+  probe.count(probe, "start:a") |> should.equal(1)
+  restart.stop(app)
+  restart.remove_dir(dir)
+}
+
+/// A runner held in a policy decision when the application stops starts
+/// its child run once the decision comes: the start does not wait for the
+/// stopping factory, and the run is handed off long before the window
+/// ends.
+pub fn a_delegation_decided_during_the_stop_does_not_hold_up_the_drain_test() {
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let gate = probe.new()
+  let assert Ok(runs) = store.with_drain(directory_store(dir), 60_000)
+  let assert Ok(delegation) = testing.call(research(), "r", "weather")
+  let policy = fn(_context, action: policy.Action) {
+    case action.tool {
+      "research" -> probe.gate(gate, "policy")
+      _ -> Nil
+    }
+    Ok(policy.Allow)
+  }
+  let parent = delegating(probe, [delegation], policy)
+  let app = restart.application(runs)
+  let assert Ok(run) = fabric.start(runs, parent, Nil, "go")
+  let deciding = probe.arrival(gate)
+  restart.begin_stop(app)
+  restart.draining(runs)
+  probe.release(deciding)
+  restart.stopped_within(app, 5000) |> should.be_true
+
+  let app = restart.application(runs)
+  let assert Ok(run) = fabric.open(runs, parent, Nil, fabric.id(run))
+  states(run) |> should.equal([run.Delegated])
+  let assert Ok(run) = fabric.recover(runs, parent, Nil, fabric.id(run))
+  fabric.await(run, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("done: \"found\""))))
+  restart.stop(app)
+  restart.remove_dir(dir)
+}

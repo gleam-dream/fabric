@@ -164,9 +164,6 @@ pub opaque type Store {
     name: Name(Message),
     open: fn() -> Result(Backend, String),
     pinned: Option(Subject(Message)),
-    /// The name of the factory its runners are started under, derived from
-    /// `name`: every `Store` value of one name reaches the same factory.
-    factory: Name(FactoryMessage),
     /// Milliseconds each runner may take to finish its work when the
     /// store's subtree shuts down (`with_drain`).
     drain: Int,
@@ -197,11 +194,10 @@ pub opaque type Message {
   /// A worker finished the backend call of the run's current request.
   Finished(run: String, done: Done)
   SetTimeout(milliseconds: Int)
-  /// This process's own subject and the runner factory's process, if it
-  /// runs and takes runners.
+  /// This process's own subject, and the name and process of its runner
+  /// factory, if it runs and takes runners.
   Runners(
-    factory: Name(FactoryMessage),
-    reply: Subject(Result(#(Subject(Message), Pid), Nil)),
+    reply: Subject(Result(#(Subject(Message), Name(FactoryMessage), Pid), Nil)),
   )
   /// A runner of the factory `pid` received its shutdown: the factory takes
   /// no more runners.
@@ -210,7 +206,8 @@ pub opaque type Message {
 
 /// A store over application-supplied backend functions (for example a
 /// database table), registered as `name`. See the module documentation for
-/// the contract.
+/// the contract. Its runner factory is registered as `name` followed by
+/// `$runners`, so no store's name may end with that suffix.
 pub fn new(
   name: Name(Message),
   get get: fn(String) -> Result(Stored, StoreError),
@@ -222,7 +219,6 @@ pub fn new(
     name,
     fn() { Ok(Backend(get:, insert:, compare_and_set:)) },
     None,
-    factory_name(name),
     default_drain,
   )
 }
@@ -231,13 +227,7 @@ pub fn new(
 /// They are lost when that process stops, also when a supervisor restarts
 /// it.
 pub fn in_memory(name: Name(Message)) -> Store {
-  Store(
-    name,
-    fn() { Ok(memory_backend()) },
-    None,
-    factory_name(name),
-    default_drain,
-  )
+  Store(name, fn() { Ok(memory_backend()) }, None, default_drain)
 }
 
 /// A store in the directory `path`, registered as `name`, for development,
@@ -280,7 +270,6 @@ pub fn directory(name: Name(Message), path: String) -> Store {
       )
     },
     None,
-    factory_name(name),
     default_drain,
   )
 }
@@ -314,7 +303,9 @@ pub fn with_drain(
 /// runs with work in flight are `Unattended` until recovered (see the
 /// module documentation); the restarted process takes new runners at once.
 ///
-/// On shutdown the runners stop first, the store's process last. Each
+/// On shutdown the store's process is told first that its runners are
+/// draining, so that it starts no runner meanwhile; then the runners stop,
+/// and the store's process last. Each
 /// runner drains within the store's drain window (`with_drain`, default
 /// 25 000 ms): it starts no tool body, model call or sub-agent, waits for
 /// the tool bodies running and a model reply in flight, commits their
@@ -406,15 +397,18 @@ fn exit_shutdown() -> Nil
 fn exit_with(reason: dynamic.Dynamic) -> Nil
 
 /// The store's process first, then its runner factory, so that runners
-/// stop before the process they commit through. With a `starter`, the
-/// store's process stops when it exits and reports a failure to start to
-/// its subject.
+/// stop before the process they commit through, and last a sentinel, which
+/// stops first and tells the store's process that its runners are about
+/// to drain, before any runner is told. With a `starter`, the store's
+/// process stops when it exits and reports a failure to start to its
+/// subject.
 fn subtree(
   store: Store,
   starter: Option(#(Pid, Subject(String))),
   restart: supervision.Restart,
 ) -> static_supervisor.Builder {
   let store = Store(..store, pinned: None)
+  let factory = factory_name(store.name)
   static_supervisor.new(static_supervisor.OneForOne)
   |> static_supervisor.restart_tolerance(intensity: 3, period: 5)
   |> static_supervisor.add(
@@ -440,9 +434,51 @@ fn subtree(
     })
     |> factory_supervisor.restart_strategy(supervision.Temporary)
     |> factory_supervisor.timeout(ms: store.drain)
-    |> factory_supervisor.named(store.factory)
+    |> factory_supervisor.named(factory)
     |> factory_supervisor.supervised,
   )
+  |> static_supervisor.add(
+    supervision.worker(fn() { sentinel(store.name, factory) })
+    |> supervision.restart(restart),
+  )
+}
+
+/// A process that does nothing until its supervisor stops it, and then
+/// tells the store's process (`name`) that the runners of `factory` are
+/// about to drain: it stops before the factory, so the store's process
+/// hands the factory out no more before any runner receives its shutdown.
+fn sentinel(
+  name: Name(Message),
+  factory: Name(FactoryMessage),
+) -> Result(actor.Started(Nil), actor.StartError) {
+  let ready = process.new_subject()
+  let pid =
+    process.spawn(fn() {
+      process.trap_exits(True)
+      process.send(ready, Nil)
+      let exit =
+        process.new_selector()
+        |> process.select_trapped_exits(fn(exit) { exit })
+        |> process.selector_receive_forever
+      // The store's process may be gone already (it failed to start).
+      case process.named(factory), process.named(name) {
+        Ok(pid), Ok(_) -> {
+          let _ =
+            executor.rescue(fn() {
+              process.send(process.named_subject(name), Draining(pid))
+            })
+          Nil
+        }
+        _, _ -> Nil
+      }
+      case exit.reason {
+        process.Normal -> Nil
+        process.Killed -> process.kill(process.self())
+        process.Abnormal(reason) -> exit_with(reason)
+      }
+    })
+  process.receive_forever(ready)
+  Ok(actor.Started(pid, Nil))
 }
 
 fn describe_start(error: actor.StartError) -> String {
@@ -506,23 +542,28 @@ pub type FactoryMessage =
 pub type Factory =
   factory_supervisor.Supervisor(fn(Pid) -> Pid, Nil)
 
-/// The factory's name for a store named `name`.
+/// The factory's name for a store named `name`: the name's text followed
+/// by `$runners`, a suffix no store name should end with. Made when the
+/// store's subtree starts, never for a `Store` value that only sends
+/// requests.
 @external(erlang, "fabric_ffi", "factory_name")
 fn factory_name(name: Name(Message)) -> Name(FactoryMessage)
 
 /// `store` pinned to the process registered under its name now, with that
-/// process's runner factory. Every call through the pinned store reaches
-/// that process or, once it stopped, fails as a stopped store would, even
-/// after a supervisor registers another process under the name. A runner
-/// uses its store pinned to the process it monitors. `Error` when no store
-/// process runs, or its factory takes no runners (it is shutting down).
+/// process's runner factory and the factory's process. Every call through
+/// the pinned store reaches that process or, once it stopped, fails as a
+/// stopped store would, even after a supervisor registers another process
+/// under the name. A runner uses its store pinned to the process it
+/// monitors. `Error` when no store process runs, or its factory takes no
+/// runners (it is shutting down).
 @internal
-pub fn runners(store: Store) -> Result(#(Store, Factory), Nil) {
-  case call(store, Runners(store.factory, _)) {
-    Ok(Ok(#(subject, _))) ->
+pub fn runners(store: Store) -> Result(#(Store, Factory, Pid), Nil) {
+  case call(store, Runners) {
+    Ok(Ok(#(subject, factory, pid))) ->
       Ok(#(
         Store(..store, pinned: Some(subject)),
-        factory_supervisor.get_by_name(store.factory),
+        factory_supervisor.get_by_name(factory),
+        pid,
       ))
     _ -> Error(Nil)
   }
@@ -627,6 +668,8 @@ type Loop {
     subject: Subject(Message),
     backend: Backend,
     live: Dict(String, #(Pid, Live)),
+    /// The name of the factory its runners are started under.
+    factory: Name(FactoryMessage),
     /// The runner factory process that reported it is shutting down.
     draining: Option(Pid),
     watchers: Dict(String, List(#(Pid, Subject(Nil)))),
@@ -671,6 +714,7 @@ fn run(
       subject:,
       backend:,
       live: dict.new(),
+      factory: factory_name(store.name),
       draining: None,
       watchers: dict.new(),
       monitored: [],
@@ -734,9 +778,10 @@ fn call(
 fn serve(state: Loop, message: Message) -> Loop {
   case message {
     SetTimeout(milliseconds) -> Loop(..state, timeout: milliseconds)
-    Runners(factory, reply) -> {
-      process.send(reply, case process.named(factory) {
-        Ok(pid) if state.draining != Some(pid) -> Ok(#(state.subject, pid))
+    Runners(reply) -> {
+      process.send(reply, case process.named(state.factory) {
+        Ok(pid) if state.draining != Some(pid) ->
+          Ok(#(state.subject, state.factory, pid))
         _ -> Error(Nil)
       })
       state

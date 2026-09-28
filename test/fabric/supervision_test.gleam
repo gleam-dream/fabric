@@ -183,3 +183,21 @@ fn reported(runner: Pid) -> Nil {
     }
   }
 }
+
+/// Two `Store` values built from one name, one given to the supervisor and
+/// one for requests, reach the same store process and runner factory: a
+/// run started through the second gets a runner and finishes.
+pub fn two_store_values_of_one_name_share_the_runners_test() {
+  let probe = probe.new()
+  let name = process.new_name("shared")
+  let supervised = store.in_memory(name)
+  let requests = store.in_memory(name)
+  supervise(supervised)
+  let assert Ok(run) = fabric.start(requests, one_slow(probe), Nil, "go")
+  let running = probe.arrival(probe)
+  fabric.await(run, 0) |> should.equal(Ok(run.Working))
+  let assert Ok(_) = restart.runner(requests, fabric.id(run))
+  probe.release(running)
+  fabric.await(run, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
+}
