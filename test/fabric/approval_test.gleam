@@ -150,8 +150,9 @@ pub fn a_rejected_tool_never_runs_and_the_model_sees_the_reason_test() {
   probe.count(probe, "pay:bob") |> should.equal(0)
 }
 
-/// A rejection is not checked again: it takes no context, never runs the
-/// policy (here one that would now fail), and the rejected tool never runs.
+/// A rejection is not checked again: it takes no context and never runs
+/// the policy, which here reports every call and runs only once, for the
+/// admission; the rejected tool never runs.
 pub fn a_rejection_never_runs_the_policy_test() {
   let probe = probe.new()
   let calls = process.new_subject()
