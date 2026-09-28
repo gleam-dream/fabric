@@ -385,12 +385,20 @@ fn wait(
             _ -> wait(run, watcher, pid, monitor, watched, deadline)
           }
         Ok(Nil), [], family.View(run.Working, True) -> {
+          // Commits made through another node's store wake no watcher here:
+          // a leased store reads the family again at least every poll.
+          let wake = case store.poll_interval(run.setup.store) {
+            Some(poll) -> int.min(deadline, now() + poll)
+            None -> deadline
+          }
           let woken =
             process.new_selector()
             |> process.select_map(watcher, Ok)
             |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
-            |> receive_until(deadline)
+            |> receive_until(wake)
           case woken {
+            Error(Nil) if wake < deadline ->
+              wait(run, watcher, pid, monitor, watched, deadline)
             Error(Nil) -> done(Ok(run.Working))
             Ok(Error(Nil)) -> StoreStopped
             Ok(Ok(Nil)) -> wait(run, watcher, pid, monitor, watched, deadline)

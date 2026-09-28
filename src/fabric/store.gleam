@@ -1436,6 +1436,16 @@ fn lose(
   state
 }
 
+/// How often a wait on a run of a leased store reads the run again, since
+/// another node's commits wake no watcher here: a third of the lease, at
+/// least 10 and at most 1000 ms. `None` for an unleased store.
+@internal
+pub fn poll_interval(store: Store) -> Option(Int) {
+  option.map(store.leasing, fn(leasing) {
+    int.clamp(leasing.ttl / 3, min: 10, max: 1000)
+  })
+}
+
 /// Sends the store's process a renewal now, for tests.
 @internal
 pub fn renew_now(store: Store) -> Nil {

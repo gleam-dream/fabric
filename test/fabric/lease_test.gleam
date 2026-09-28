@@ -401,6 +401,56 @@ pub fn a_restarted_store_takes_its_earlier_processes_lease_at_once_test() {
   release(events)
 }
 
+/// An `await` on another node sees the run's end, although the commits
+/// that end it are made through the node that drives it: it reads the run
+/// again at least every third of the lease.
+pub fn an_await_on_another_node_sees_the_end_of_the_run_test() {
+  let probe = probe.new()
+  let memory = store.leased_memory()
+  let a = nodes.node(memory.backend, "a", 300)
+  let b = nodes.node(memory.backend, "b", 300)
+  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let running = probe.arrival(probe)
+  let assert Ok(seen) = fabric.open(b, one_slow(probe), Nil, fabric.id(run))
+  let awaited = process.new_subject()
+  process.spawn(fn() { process.send(awaited, fabric.await(seen, 60_000)) })
+  probe.release(running)
+  process.receive(awaited, 5000)
+  |> should.equal(Ok(Ok(run.Finished(run.Completed("final: \"a\"")))))
+}
+
+/// A node that stops drains its runners, and each handoff releases the
+/// run's lease as already expired: another node reads the run
+/// `Unattended` and recovers it at once, with nothing uncertain.
+pub fn a_handoff_releases_the_lease_as_already_expired_test() {
+  let probe = probe.new()
+  let memory = store.leased_memory()
+  let assert Ok(a) =
+    store.leased(
+      process.new_name("draining"),
+      node: "a",
+      lease: nodes.long,
+      backend: memory.backend,
+    )
+  let app = restart.application(a)
+  let b = nodes.node(memory.backend, "b", nodes.long)
+  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let running = probe.arrival(probe)
+  restart.begin_stop(app)
+  restart.draining(a)
+  probe.release(running)
+  restart.stopped(app)
+
+  nodes.holding(memory.backend, fabric.id(run))
+  |> should.equal(Ok(#("a", False)))
+  let assert Ok(there) = fabric.open(b, one_slow(probe), Nil, fabric.id(run))
+  fabric.await(there, 0) |> should.equal(Ok(run.Unattended))
+  let assert Ok(there) = fabric.recover(b, one_slow(probe), Nil, fabric.id(run))
+  fabric.await(there, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
+  probe.count(probe, "start:a") |> should.equal(1)
+}
+
 /// A runner commits only while its store holds the run's lease: once
 /// another owner claimed the expired lease, the runner's next commit, the
 /// fence of a tool's start, is refused, and the tool's body never starts.
