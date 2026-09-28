@@ -31,3 +31,4 @@ gleam_stdlib = { version = ">= 0.70.0 and < 1.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 json_blueprint = { path = "../../../json_blueprint" }
 saga = { path = "../../../saga" }
+sinal = { path = "../../../sinal" }

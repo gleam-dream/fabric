@@ -16,3 +16,4 @@ saga = { path = "../../../saga" }
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
 json_blueprint = { path = "../../../json_blueprint" }
+sinal = { path = "../../../sinal" }

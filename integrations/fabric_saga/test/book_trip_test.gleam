@@ -6,7 +6,10 @@
 ////
 //// A declined charge is retried a minute later, so a cancellation after
 //// the decline finds no step in flight: Saga undoes every completed step
-//// and settles the stopped call with how that ended.
+//// and settles the stopped call with how that ended. Saga does not report
+//// whether an attempt of a step with a recovery decider crashed, so an
+//// outcome after the charge was attempted is uncertain; the `plain`
+//// workflow charges with no recovery decider.
 
 import fabric
 import fabric/agent
@@ -61,6 +64,12 @@ fn report(reports: Subject(Report), entry: String) -> Nil {
   }
 }
 
+/// Whether the charge has a recovery decider.
+type Decider {
+  Plain
+  Retrying
+}
+
 /// `Atlantis` has no hotel; in `Mordor` there is no hotel and the flight
 /// cannot be released; in `Slowtown` the charge waits for the test. In
 /// `Latetown`, `Latemordor`, and `Lateslow` the card is declined and the
@@ -68,6 +77,7 @@ fn report(reports: Subject(Report), entry: String) -> Nil {
 /// `Latemordor`, and the hotel's release waits for the test in `Lateslow`.
 fn book_trip(
   reports: Subject(Report),
+  decider: Decider,
 ) -> saga.Workflow(Trip, Itinerary, TripError, UndoError) {
   let reserve_flight =
     saga.step("reserve_flight", fn(trip: Trip) {
@@ -116,16 +126,21 @@ fn book_trip(
         False -> Ok(Itinerary(flight, hotel, "CH-1"))
       }
     })
-    |> saga.compensate(max_attempts: 2, with: fn(pair, _, _) {
-      let #(#(trip, _), _) = pair
-      case trip.city {
-        "Retrytown" -> saga.Retry
-        _ -> {
-          report(reports, "charge:retry-later")
-          saga.RetryAfter(60_000)
+  let charge = case decider {
+    Plain -> charge
+    Retrying ->
+      charge
+      |> saga.compensate(max_attempts: 2, with: fn(pair, _, _) {
+        let #(#(trip, _), _) = pair
+        case trip.city {
+          "Retrytown" -> saga.Retry
+          _ -> {
+            report(reports, "charge:retry-later")
+            saga.RetryAfter(60_000)
+          }
         }
-      }
-    })
+      })
+  }
   let assert Ok(workflow) =
     saga.define("book_trip", fn(trip) {
       let flight = saga.perform(trip, reserve_flight)
@@ -154,11 +169,15 @@ fn trip_definition() -> tool.Definition(Trip, Itinerary) {
   )
 }
 
-fn trip_tool(reports: Subject(Report), rollback_within: Int) -> tool.Tool(Nil) {
+fn trip_tool(
+  reports: Subject(Report),
+  decider: Decider,
+  rollback_within: Int,
+) -> tool.Tool(Nil) {
   let assert Ok(tool) =
     fabric_saga.tool(
       trip_definition(),
-      book_trip(reports),
+      book_trip(reports, decider),
       // A cancelled run lets an in-flight step settle this long before
       // killing it and undoing what completed.
       execution.Config(
@@ -196,19 +215,20 @@ fn traveller(city: String) -> model.Model {
 }
 
 fn start(city: String, reports: Subject(Report)) -> fabric.Run(Nil) {
-  start_in(store.in_memory(), city, reports, 5000)
+  start_in(store.in_memory(), city, reports, Retrying, 5000)
 }
 
 fn start_in(
   store: store.Store,
   city: String,
   reports: Subject(Report),
+  decider: Decider,
   rollback_within: Int,
 ) -> fabric.Run(Nil) {
   let agent =
     agent.new(
       traveller(city),
-      [trip_tool(reports, rollback_within)],
+      [trip_tool(reports, decider, rollback_within)],
       policy.always_allow(),
     )
   let assert Ok(run) = fabric.start(store, agent, Nil, "book")
@@ -237,7 +257,7 @@ fn action_state(run: fabric.Run(Nil)) -> run.ActionState {
 
 pub fn a_completed_workflow_is_the_tool_result_test() {
   let reports = process.new_subject()
-  let run = start("Porto", reports)
+  let run = start_in(store.in_memory(), "Porto", reports, Plain, 5000)
   fabric.await(run, 5000)
   |> should.equal(
     Ok(
@@ -250,8 +270,23 @@ pub fn a_completed_workflow_is_the_tool_result_test() {
   |> should.equal(["flight:reserve:Porto", "hotel:reserve:Porto", "charge"])
 }
 
+/// A completed workflow whose charge has a recovery decider may hide a
+/// charge attempt that crashed after its effect and was retried: the call
+/// is an uncertain effect naming the charge.
+pub fn a_completed_workflow_with_a_recovery_decider_is_uncertain_test() {
+  let reports = process.new_subject()
+  let run = start("Porto", reports)
+  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  string.contains(uncertain.evidence, "recovery decider") |> should.be_true
+  string.contains(uncertain.evidence, "charge") |> should.be_true
+  reported(reports)
+  |> should.equal(["flight:reserve:Porto", "hotel:reserve:Porto", "charge"])
+}
+
 /// A failed step whose completed steps were all undone is a definite,
-/// typed failure: the model sees the application's explanation.
+/// typed failure: the model sees the application's explanation. The
+/// charge, which has a recovery decider, depends on the hotel that failed,
+/// so it was never attempted.
 pub fn a_failure_with_compensation_completed_is_a_typed_failure_test() {
   let reports = process.new_subject()
   let run = start("Atlantis", reports)
@@ -328,20 +363,23 @@ fn declined(reports: Subject(Report), city: String) -> Nil {
   next(reports).entry |> should.equal("charge:retry-later")
 }
 
-/// Cancelled while no step is in flight, Saga undoes every completed step:
-/// the stopped call settles as a definite failure, and the run ends once it
-/// has.
-pub fn a_cancellation_that_undid_every_step_is_definite_test() {
+/// Cancelled while no step is in flight, Saga undoes every completed step,
+/// but the charge was attempted and has a recovery decider: Saga does not
+/// report whether an attempt of it crashed after its effect. The stopped
+/// call settles as an uncertain effect that names it and the undone steps,
+/// and the run ends once it has. (A cancellation that proves every effect
+/// undone is definite: `verdict_test`.)
+pub fn a_cancellation_after_a_recovery_decider_ran_is_uncertain_test() {
   let reports = process.new_subject()
   let run = start("Latetown", reports)
   declined(reports, "Latetown")
 
   let assert Ok(_) = fabric.cancel(run)
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
-  action_state(run)
-  |> should.equal(run.ToolFailed(
-    "{\"error\":\"the workflow was cancelled; every completed step was undone\"}",
-  ))
+  let assert run.Uncertain(evidence) = action_state(run)
+  string.contains(evidence, "recovery decider") |> should.be_true
+  string.contains(evidence, "undone reserve_hotel, reserve_flight")
+  |> should.be_true
   reported(reports)
   |> should.equal(["hotel:release:HT-Latetown", "flight:release:FL-Latetown"])
 }
@@ -366,7 +404,7 @@ pub fn a_cancellation_whose_undo_failed_is_uncertain_test() {
 pub fn an_outcome_after_the_run_ended_is_refused_test() {
   let reports = process.new_subject()
   let backend = watched.new()
-  let run = start_in(watched.store(backend), "Lateslow", reports, 20)
+  let run = start_in(watched.store(backend), "Lateslow", reports, Retrying, 20)
   declined(reports, "Lateslow")
 
   let assert Ok(_) = fabric.cancel(run)
@@ -390,7 +428,7 @@ pub fn an_invalid_config_is_refused_before_anything_runs_test() {
   let reports = process.new_subject()
   fabric_saga.tool(
     trip_definition(),
-    book_trip(reports),
+    book_trip(reports, Retrying),
     execution.Config(..execution.config(), max_concurrency: 0),
     explain: fn(_) { "" },
     rollback_within: 5000,
