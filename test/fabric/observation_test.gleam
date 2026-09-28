@@ -486,7 +486,7 @@ pub fn an_unrouted_handler_runs_in_the_runner_test() {
   let assert Ok(store.Entry(live: Some(store.Live(_, mailbox)), ..)) =
     store.get(memory, support.text(fabric.id(run)))
   let runner = process.subject_owner(mailbox)
-  let waiting = fabric.status(run)
+  let waiting = fabric.await(run, 0)
   process.send(gate, Nil)
   let #(_, gate) = entered_by(entered, support.text(fabric.id(run)))
   process.send(gate, Nil)

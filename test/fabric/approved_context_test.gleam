@@ -206,7 +206,7 @@ pub fn an_approved_tool_not_started_before_a_restart_is_asked_for_again_test() {
 
   let assert Ok(store) = store.directory(dir)
   let assert Ok(run) = fabric.recover(store, agent, "carol", fabric.id(run))
-  let assert Ok(run.Suspended([renewed], [uncertain])) = fabric.status(run)
+  let assert Ok(run.Suspended([renewed], [uncertain])) = fabric.await(run, 0)
   uncertain.tool |> should.equal("slow")
   renewed.reference.id |> should.equal(pending.reference.id)
   renewed.reference.requirement |> should.equal(pending.reference.requirement)
@@ -326,7 +326,7 @@ pub fn an_approved_sub_agent_never_stored_is_asked_for_again_test() {
   let store = flaky.store(backend)
   let assert Ok(run) =
     fabric.recover(store, delegating(probe), "rita", fabric.id(run))
-  let assert Ok(run.Suspended([renewed], [])) = fabric.status(run)
+  let assert Ok(run.Suspended([renewed], [])) = fabric.await(run, 0)
   renewed.reference.id |> should.equal(pending.reference.id)
   { renewed.reference.revision > pending.reference.revision }
   |> should.be_true

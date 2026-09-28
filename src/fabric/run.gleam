@@ -60,8 +60,13 @@ pub type Requirement {
 }
 
 pub type Status {
-  /// A model call or a tool is in flight.
+  /// A model call or a tool is in flight, driven by a runner.
   Working
+  /// Work is in flight but no runner known to this store drives it: its
+  /// runner was lost, or the run is driven through another `Store`.
+  /// `fabric.recover` takes it over; call it only when the previous owner is
+  /// known to be gone.
+  Unattended
   /// Nothing is in flight and the run cannot continue without outside
   /// input: approvals to answer or uncertain effects to reconcile.
   Suspended(approvals: List(PendingApproval), uncertain: List(UncertainAction))

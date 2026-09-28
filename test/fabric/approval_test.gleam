@@ -426,7 +426,6 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
   fabric.await(run, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
 
-  let assert Error(fabric.Unreadable(fabric.StoreFailed(store.Unavailable(_)))) =
-    outcome
+  let assert Error(fabric.Unreadable(fabric.StoreUnavailable(_))) = outcome
   process.receive(probe.arrivals, 0) |> should.equal(Error(Nil))
 }

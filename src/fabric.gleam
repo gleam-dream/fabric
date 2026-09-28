@@ -66,17 +66,21 @@ pub opaque type Run(context) {
 }
 
 pub type StartError {
+  /// The agent is invalid; nothing was stored.
   InvalidAgent(List(ConfigError))
-  /// The store refused the first record. `Unavailable` means the outcome
-  /// is unknown: the backend may still store the record later, as a run
-  /// with work in flight and no runner (`await` then reports `NoRunner`).
-  StartFailed(store.StoreError)
+  /// The store did not confirm the run's first record, so its outcome is
+  /// unknown: the backend may still store it later, as the run `id` with
+  /// work in flight and no runner (`await` then reports `Unattended`).
+  /// `cancel_stored(store, id)` ends such a run if it lands.
+  StartUnconfirmed(id: RunId, reason: String)
 }
 
 /// Why a stored run could not be read or continued.
 pub type RecordError {
   RunNotFound
-  StoreFailed(store.StoreError)
+  /// The store failed. A write it reported unavailable has an unknown
+  /// outcome: the backend may still perform it later.
+  StoreUnavailable(reason: String)
   /// The record was written by a Fabric version this one cannot read.
   UnsupportedVersion(found: Int)
   CorruptRecord(detail: String)
@@ -85,20 +89,16 @@ pub type RecordError {
 }
 
 pub type CommandError {
+  /// The agent is invalid; nothing was read or changed.
+  AgentInvalid(List(ConfigError))
   /// The run has finished (completed, failed, or cancelled); nothing more
   /// can change it. A pending approval of a cancelled run is void. Also
   /// returned for a sub-agent run one of whose ancestors is stopping or has
   /// ended: cancelling an ancestor wins over answering or reconciling its
   /// descendants.
   RunEnded
-  /// No action with this identity exists in the current tool batch.
-  UnknownAction(ActionId)
-  /// The action is not an uncertain effect.
-  NotReconcilable(ActionId)
-  /// The run is in a phase that does not accept this command (for example
-  /// reconciling while the model is being called).
-  WrongPhase
-  /// No approval request of this run matches the reference.
+  /// No approval request, or no action of the current tool batch, of this
+  /// run matches the reference.
   WrongReference
   /// The action's approval request has another revision or requirement.
   StaleReference
@@ -107,13 +107,14 @@ pub type CommandError {
   /// The current policy now requires another approval for the action; the
   /// answer was not applied. Answer the new request.
   RequirementChanged(PendingApproval)
+  /// The action is not an uncertain effect, or the run is in a phase that
+  /// accepts no reconciliation (for example while the model is called).
+  NotReconcilable
   /// The command is valid for the stored record, but work is in flight
   /// and no runner known to this store drives it: its runner was lost, or
   /// the run is driven through another `Store` (possibly in another VM).
   /// Nothing was changed. `cancel` never needs a runner.
-  OwnerUnknown
-  /// The command lost every retry against concurrent commits.
-  Contended
+  RunUnattended
   /// The run's runner did not take the command within the agent's command
   /// timeout (`agent.with_command_timeout`): a synchronous observation
   /// handler holds it, or the command was sent from such a handler running
@@ -122,28 +123,12 @@ pub type CommandError {
   /// forwarder (see `fabric/observation`). `cancel` and `cancel_stored`
   /// never return it: they commit the cancellation to the record instead.
   RunnerBusy
-  /// The record could not be read or written. A write the store reports
-  /// `Unavailable` (as `Unreadable(StoreFailed(Unavailable(_)))`) has an
-  /// unknown outcome: the backend may still perform it later.
+  /// The command lost every retry against concurrent commits.
+  Contended
+  /// The record could not be read or written. A write the store reported
+  /// unavailable (`Unreadable(StoreUnavailable(_))`) has an unknown
+  /// outcome: the backend may still perform it later.
   Unreadable(RecordError)
-}
-
-pub type AwaitError {
-  /// The run was still working when the time ran out.
-  StillWorking
-  /// Work is in flight but no runner known to this store drives it: the
-  /// runner was lost, or the run is driven through another `Store`. Only
-  /// the application knows which: `recover` takes the run over, so call it
-  /// only when the previous owner is known to be gone.
-  NoRunner
-  AwaitUnreadable(RecordError)
-}
-
-pub type RecoverError {
-  RecoverInvalidAgent(List(ConfigError))
-  RecoverUnreadable(RecordError)
-  /// Recovery lost every retry against concurrent commits.
-  RecoverContended
 }
 
 const retries = 3
@@ -160,12 +145,24 @@ pub fn start(
     agent.admit(agent) |> result.map_error(InvalidAgent),
   )
   let setup = runner.setup(store, admitted, context, None)
+  start_with(setup, prompt, retries)
+}
+
+/// Stores the first record under a fresh id. An id that exists already (a
+/// collision of random ids) is replaced by another.
+fn start_with(
+  setup: runner.Setup(context),
+  prompt: String,
+  tries: Int,
+) -> Result(Run(context), StartError) {
   let id = "run-" <> random_id()
   let #(state, effects) = runner.root_state(setup, id, prompt)
-  use _ <- result.map(
-    runner.launch(setup, None, state, effects) |> result.map_error(StartFailed),
-  )
-  Run(id:, setup:)
+  case runner.launch(setup, None, state, effects) {
+    Ok(_) -> Ok(Run(id:, setup:))
+    Error(store.AlreadyExists) if tries > 1 ->
+      start_with(setup, prompt, tries - 1)
+    Error(error) -> Error(StartUnconfirmed(issued(id), describe_store(error)))
+  }
 }
 
 /// Opens the stored run `id` under `agent` and `context`. When work was in
@@ -198,17 +195,17 @@ pub fn recover(
   agent: Agent(context),
   context: context,
   id: RunId,
-) -> Result(Run(context), RecoverError) {
+) -> Result(Run(context), CommandError) {
   let id = id_to_string(id)
   use admitted <- result.try(
-    agent.admit(agent) |> result.map_error(RecoverInvalidAgent),
+    agent.admit(agent) |> result.map_error(AgentInvalid),
   )
   let setup = runner.setup(store, admitted, context, None)
   case family.take_over(setup, id, retries) {
     Ok(Nil) -> Ok(Run(id:, setup:))
-    Error(family.TakeOverContended) -> Error(RecoverContended)
+    Error(family.TakeOverContended) -> Error(Contended)
     Error(family.TakeOverUnreadable(problem)) ->
-      Error(RecoverUnreadable(record_error(problem)))
+      Error(Unreadable(record_error(problem)))
   }
 }
 
@@ -229,12 +226,19 @@ pub fn child(
   |> result.map_error(record_error)
 }
 
-/// Blocks until the run is no longer `Working` (suspended or finished), or
-/// until `within` milliseconds pass. It wakes on commits made through this
-/// run's store and when a runner exits. A run whose sub-agents work is
-/// working; one waiting only on paused sub-agents is suspended on their
-/// approvals.
-pub fn await(run: Run(context), within: Int) -> Result(Status, AwaitError) {
+/// Blocks until the run is no longer `Working`, or until `within`
+/// milliseconds pass, and returns its status: `Working` when the time ran
+/// out, `Suspended` or `Finished`, or `Unattended` when work is in flight
+/// but no runner known to this store drives it. `Unattended` means the
+/// runner was lost, or the run is driven through another `Store`; only the
+/// application knows which. `recover` takes the run over, so call it only
+/// when the previous owner is known to be gone.
+///
+/// It wakes on commits made through this run's store and when a runner
+/// exits. A run whose sub-agents work is working; one waiting only on
+/// paused sub-agents is suspended on their approvals. `await(run, 0)` reads
+/// the status now.
+pub fn await(run: Run(context), within: Int) -> Result(Status, RecordError) {
   let watcher = process.new_subject()
   let deadline = now() + within
   let monitor = process.monitor(store.pid(run.setup.store))
@@ -249,13 +253,13 @@ fn wait(
   monitor: process.Monitor,
   watched: List(String),
   deadline: Int,
-) -> Result(Status, AwaitError) {
+) -> Result(Status, RecordError) {
   let done = fn(outcome) {
     list.each(watched, store.unwatch(run.setup.store, _, watcher))
     outcome
   }
   case family.load(run.setup.store, run.id) {
-    Error(problem) -> done(Error(AwaitUnreadable(record_error(problem))))
+    Error(problem) -> done(Error(record_error(problem)))
     Ok(node) -> {
       // Watch every record of the family before deciding; a record seen
       // for the first time is read again after it is watched, so no
@@ -267,12 +271,13 @@ fn wait(
           store.watch(run.setup.store, id, watcher)
         })
       case watching, fresh, family.view(node) {
-        Error(error), _, _ -> done(Error(AwaitUnreadable(StoreFailed(error))))
+        Error(error), _, _ -> done(Error(store_error(error)))
         Ok(Nil), [_, ..], _ ->
           wait(run, watcher, monitor, list.append(watched, fresh), deadline)
+        // Unattended only when a second read finds the family unchanged.
         Ok(Nil), [], family.View(run.Working, False) ->
           case family.load(run.setup.store, run.id) {
-            Ok(again) if again == node -> done(Error(NoRunner))
+            Ok(again) if again == node -> done(Ok(run.Unattended))
             _ -> wait(run, watcher, monitor, watched, deadline)
           }
         Ok(Nil), [], family.View(run.Working, True) -> {
@@ -282,15 +287,9 @@ fn wait(
             |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
             |> process.selector_receive(int.max(0, deadline - now()))
           case woken {
-            Error(Nil) -> done(Error(StillWorking))
+            Error(Nil) -> done(Ok(run.Working))
             Ok(Error(Nil)) ->
-              done(
-                Error(
-                  AwaitUnreadable(
-                    StoreFailed(store.Unavailable("the store is closed")),
-                  ),
-                ),
-              )
+              done(Error(StoreUnavailable("the store is closed")))
             Ok(Ok(Nil)) -> wait(run, watcher, monitor, watched, deadline)
           }
         }
@@ -300,22 +299,13 @@ fn wait(
   }
 }
 
-/// The status of the run and its sub-agents (see `await`).
-pub fn status(run: Run(context)) -> Result(Status, RecordError) {
-  family.load(run.setup.store, run.id)
-  |> result.map(fn(node) { family.view(node).status })
-  |> result.map_error(record_error)
-}
-
-/// The run's own record; `status` covers its sub-agents too.
+/// The run's own record, with the status of the run and its sub-agents
+/// (see `await`).
 pub fn snapshot(run: Run(context)) -> Result(Snapshot, RecordError) {
   use node <- result.map(
     family.load(run.setup.store, run.id) |> result.map_error(record_error),
   )
-  run.Snapshot(
-    ..controller.snapshot(node.state),
-    status: family.view(node).status,
-  )
+  run.Snapshot(..controller.snapshot(node.state), status: family.status(node))
 }
 
 /// The approval requests waiting for an answer: the run's own, oldest
@@ -394,7 +384,10 @@ pub fn answer(
   case reissued, target_id == run.id {
     Ok(pending), _ -> Error(RequirementChanged(pending))
     Error(Nil), True -> Ok(status_after(run, state))
-    Error(Nil), False -> status(run) |> result.map_error(Unreadable)
+    Error(Nil), False ->
+      family.load(run.setup.store, run.id)
+      |> result.map(family.status)
+      |> result.map_error(fn(problem) { Unreadable(record_error(problem)) })
   }
 }
 
@@ -438,7 +431,7 @@ pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
 /// recovered because its agent changed (another identity, or a pending tool
 /// that no longer exists). Cancelling a sub-agent run this way does not
 /// apply its end to its parent, which needs its agent to map it: `recover`
-/// the parent to apply it (`await` on the parent reports `NoRunner` until
+/// the parent to apply it (`await` on the parent reports `Unattended` until
 /// then). A run whose runner is live in this store is cancelled through
 /// that runner, as `cancel` would, which must take it within
 /// `agent.default_command_timeout` (there is no agent to configure it);
@@ -452,13 +445,9 @@ pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
 /// that was never stored is stored as cancelled before it started (naming
 /// no agent), and its delegation is recorded as not started.
 pub fn cancel_stored(store: Store, id: RunId) -> Result(Status, CommandError) {
-  runner.cancel_unattended(
-    store,
-    id_to_string(id),
-    agent.default_command_timeout,
-    retries,
-  )
-  |> result.map(controller.status)
+  let id = id_to_string(id)
+  runner.cancel_unattended(store, id, agent.default_command_timeout, retries)
+  |> result.map(committed_status(store, id, _))
   |> result.map_error(command_error)
 }
 
@@ -501,9 +490,14 @@ fn open_to_commands(
 /// The family's status right after `state` of this run was committed, with
 /// its children read now.
 fn status_after(run: Run(context), state: State) -> Status {
-  case store.get(run.setup.store, run.id) {
-    Ok(entry) ->
-      family.view(family.with_children(run.setup.store, run.id, entry, state)).status
+  committed_status(run.setup.store, run.id, state)
+}
+
+/// The family's status right after `state` of the run `id` was committed,
+/// with its children and its runner read now.
+fn committed_status(store: Store, id: String, state: State) -> Status {
+  case store.get(store, id) {
+    Ok(entry) -> family.status(family.with_children(store, id, entry, state))
     Error(_) -> controller.status(state)
   }
 }
@@ -511,8 +505,9 @@ fn status_after(run: Run(context), state: State) -> Status {
 fn command_error(failure: runner.Failure) -> CommandError {
   case failure {
     runner.CommandRefused(rejection) -> refusal(rejection)
-    runner.OwnerUnknown -> OwnerUnknown
-    runner.Contended -> Contended
+    runner.OwnerUnknown -> RunUnattended
+    runner.Contended
+    | runner.Unreadable(runner.StoreFailed(store.Conflict(_))) -> Contended
     runner.Busy -> RunnerBusy
     runner.Unreadable(problem) -> Unreadable(record_error(problem))
   }
@@ -521,26 +516,49 @@ fn command_error(failure: runner.Failure) -> CommandError {
 fn refusal(rejection: controller.Rejection) -> CommandError {
   case rejection {
     controller.RunEnded -> RunEnded
-    controller.UnknownAction(id) | controller.ReportNotExpected(id) ->
-      UnknownAction(id)
-    controller.NotReconcilable(id) -> NotReconcilable(id)
-    controller.StaleEvent -> WrongPhase
-    controller.WrongReference -> WrongReference
+    controller.UnknownAction(_)
+    | controller.ReportNotExpected(_)
+    | controller.WrongReference -> WrongReference
+    controller.NotReconcilable(_)
+    | controller.StaleEvent
+    | controller.SettlementNotAwaited(_)
+    | controller.SettlementEarly(_)
+    | controller.SettlementRecorded(_) -> NotReconcilable
     controller.StaleReference -> StaleReference
     controller.AlreadyAnswered -> AlreadyAnswered
-    controller.SettlementNotAwaited(id)
-    | controller.SettlementEarly(id)
-    | controller.SettlementRecorded(id) -> NotReconcilable(id)
   }
 }
 
 fn record_error(problem: runner.ReadError) -> RecordError {
   case problem {
     runner.NotFound -> RunNotFound
-    runner.StoreFailed(error) -> StoreFailed(error)
+    runner.StoreFailed(error) -> store_error(error)
     runner.UnsupportedVersion(found) -> UnsupportedVersion(found)
     runner.Corrupt(detail) -> CorruptRecord(detail)
     runner.Incompatible(problems) -> IncompatibleAgent(problems)
+  }
+}
+
+/// A store failure a caller sees. Only `Unavailable` reaches here in
+/// practice: a conflict is retried (and reported `Contended`), and a read
+/// reports a missing record as not found. A backend that breaks its
+/// contract is reported unavailable with what it said.
+fn store_error(error: store.StoreError) -> RecordError {
+  case error {
+    store.NotFound -> RunNotFound
+    store.Unavailable(reason) -> StoreUnavailable(reason)
+    store.AlreadyExists | store.Conflict(_) ->
+      StoreUnavailable(describe_store(error))
+  }
+}
+
+fn describe_store(error: store.StoreError) -> String {
+  case error {
+    store.Unavailable(reason) -> reason
+    store.NotFound -> "the run does not exist"
+    store.AlreadyExists -> "the run already exists"
+    store.Conflict(current) ->
+      "the run moved on to revision " <> int.to_string(current)
   }
 }
 
