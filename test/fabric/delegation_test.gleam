@@ -881,3 +881,35 @@ pub fn a_child_that_cannot_be_stored_is_uncertain_test() {
   |> should.be_true
   probe.count(probe, "child:model") |> should.equal(0)
 }
+
+/// The run is reopened under an agent whose `research` is a plain tool, not
+/// a delegation. Cancelling it still cancels the child it started: the
+/// child's end is applied with no delegation to map it, so the action is
+/// uncertain, and the family ends.
+pub fn cancelling_does_not_depend_on_the_current_delegations_test() {
+  let probe = probe.new()
+  let store = store.in_memory()
+  let assert Ok(run) = fabric.start(store, paying_family(probe), Nil, "go")
+  let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
+  let child = child_of(run)
+  let plain =
+    agent.new(
+      scripted.plan([]),
+      [
+        research()
+        |> tool.bind(
+          fn(_, topic: Topic) { Ok(Summary(topic.topic)) },
+          fn(_: Nil) { tool.Explain("no") },
+        ),
+      ],
+      policy.always_allow(),
+    )
+  let assert Ok(reopened) = fabric.recover(store, plain, Nil, fabric.id(run))
+
+  let assert Ok(_) = fabric.cancel(reopened)
+  fabric.await(reopened, 5000)
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  let assert run.Uncertain(_) = only_action(run).state
+  probe.count(probe, "pay:bob") |> should.equal(0)
+}
