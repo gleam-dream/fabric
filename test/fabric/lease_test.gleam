@@ -323,6 +323,40 @@ pub fn a_slow_lease_event_handler_does_not_hold_up_the_store_test() {
   Nil
 }
 
+/// A tick that comes while a renewal is still in flight is made up as
+/// soon as that renewal completes, not a third of a lease later: a slow
+/// renewal never leaves the next one to start after the fence.
+pub fn a_tick_during_a_renewal_is_made_up_when_it_completes_test() {
+  let probe = probe.new()
+  let memory = store.leased_memory()
+  let calls = process.new_subject()
+  let slow =
+    store.LeasedBackend(..memory.backend, renew: fn(owner, runs, ttl) {
+      let release = process.new_subject()
+      process.send(calls, release)
+      let _ = process.receive(release, 1000)
+      memory.backend.renew(owner, runs, ttl)
+    })
+  // Ticks every 500 ms; a renewal may take up to 500 ms.
+  let a = nodes.node(slow, "a", 1500)
+  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let running = probe.arrival(probe)
+  // A tick's renewal, at once.
+  let assert Ok(first) = process.receive(calls, 2000)
+  process.send(first, Nil)
+  // Another, sent between ticks, still in flight at the next tick.
+  process.sleep(300)
+  store.renew_now(a)
+  let assert Ok(second) = process.receive(calls, 1000)
+  process.sleep(300)
+  process.send(second, Nil)
+  let assert Ok(third) = process.receive(calls, 150)
+  process.send(third, Nil)
+  probe.release(running)
+  fabric.await(run, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
+}
+
 /// A healthy store renews its runners' leases in time: a tool that runs
 /// through several lease durations keeps its lease and finishes.
 pub fn renewals_keep_a_lease_live_past_its_duration_test() {
