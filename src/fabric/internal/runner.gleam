@@ -565,27 +565,61 @@ fn prepare(
       False, Error(Nil) -> Nil
     }
   })
-  case await_or_shutdown(answer, factory_pid) {
-    Ok(started) -> started
-    Error(Nil) -> {
-      requeue_shutdown(factory_pid)
-      case claim.withdraw(wanted) {
-        True -> {
-          store.draining(pinned, factory_pid)
-          Error(Nil)
-        }
-        // The helper answered first: its answer is on the way.
-        False -> process.receive_forever(answer)
+  await_start(answer, wanted, pinned, factory_pid)
+}
+
+/// Waits for the helper's `answer`. The start is given up (`Error`) when
+/// the caller, a runner of the factory, receives the factory's shutdown,
+/// which is put back for the caller's receive loop; or when the store's
+/// process reports that its runners drain (checked every 100 ms), since a
+/// start that reached the factory after it began stopping waits for the
+/// factory, which may wait for the caller: a tool body of one of its
+/// runners, say.
+fn await_start(
+  answer: Subject(Result(a, Nil)),
+  wanted: claim.Claim,
+  pinned: Store,
+  factory_pid: Pid,
+) -> Result(a, Nil) {
+  let give_up = fn() {
+    case claim.withdraw(wanted) {
+      True -> {
+        store.draining(pinned, factory_pid)
+        Error(Nil)
       }
+      // The helper answered first: its answer is on the way.
+      False -> process.receive_forever(answer)
     }
+  }
+  case await_or_shutdown(answer, factory_pid, 100) {
+    Answered(started) -> started
+    ShutDown -> {
+      requeue_shutdown(factory_pid)
+      give_up()
+    }
+    StillWaiting ->
+      case store.runners(pinned) {
+        Ok(_) -> await_start(answer, wanted, pinned, factory_pid)
+        Error(Nil) -> give_up()
+      }
   }
 }
 
+type Awaited(a) {
+  Answered(a)
+  ShutDown
+  StillWaiting
+}
+
 /// Receives from `answer`, or the caller's own trapped exit signal
-/// `shutdown` from `factory` (`Error`), whichever comes first; any other
-/// message stays queued.
+/// `shutdown` from `factory`, whichever comes first within `timeout` ms;
+/// any other message stays queued.
 @external(erlang, "fabric_ffi", "await_or_shutdown")
-fn await_or_shutdown(answer: Subject(a), factory: Pid) -> Result(a, Nil)
+fn await_or_shutdown(
+  answer: Subject(a),
+  factory: Pid,
+  timeout: Int,
+) -> Awaited(a)
 
 /// Queues the exit signal `shutdown` from `factory` to the caller again, as
 /// the message its receive loop takes.

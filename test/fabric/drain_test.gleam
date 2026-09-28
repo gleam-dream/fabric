@@ -597,3 +597,69 @@ pub fn a_shutdown_queued_behind_a_report_is_taken_first_test() {
   restart.stop(app)
   restart.remove_dir(dir)
 }
+
+/// A tool body that starts a run while the application stops does not
+/// hold up the drain, even when its start reaches the factory after the
+/// factory began stopping (here: the store's process answers the body's
+/// request for the factory only after it learned of the drain). The start
+/// is given up and the run is stored with no runner; the body returns, and
+/// the parent is handed off long before the window ends.
+pub fn a_tool_body_starting_a_run_during_the_stop_does_not_hold_up_the_drain_test() {
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let assert Ok(runs) = store.with_drain(directory_store(dir), 60_000)
+  let child =
+    agent.new(
+      "child",
+      scripted.model(fn(_) { model.FinalAnswer("child done", None) }),
+      [],
+      policy.always_allow(),
+    )
+    |> support.agent
+  let starter =
+    tool.define(
+      "starter",
+      "Starts a run.",
+      codec.field("x", codec.string()),
+      codec.string(),
+    )
+    |> tool.bind(
+      fn(_context, x: String) -> Result(String, Nil) {
+        probe.gate(probe, x)
+        case fabric.start(runs, child, Nil, "sub") {
+          Ok(started) -> Ok(run.id_to_string(fabric.id(started)))
+          Error(_) -> Ok("refused")
+        }
+      },
+      fn(_) { tool.Explain("failed") },
+    )
+  let parent =
+    agent.new(
+      "parent",
+      scripted.plan([scripted.call("s", "starter", "{\"x\":\"s\"}")]),
+      [starter],
+      policy.always_allow(),
+    )
+    |> support.agent
+  let app = restart.application(runs)
+  let assert Ok(run) = fabric.start(runs, parent, Nil, "go")
+  let running = probe.arrival(probe)
+  let assert Ok(store_process) = store.pid(runs)
+  restart.suspend(store_process)
+  probe.release(running)
+  // The body waits for the store's answer; the stop begins meanwhile.
+  queued(store_process, 1)
+  restart.begin_stop(app)
+  queued(store_process, 3)
+  restart.resume(store_process)
+  restart.stopped_within(app, 5000) |> should.be_true
+
+  let app = restart.application(runs)
+  let assert Ok(run) = fabric.open(runs, parent, Nil, fabric.id(run))
+  let assert [run.Succeeded(started)] = states(run)
+  let assert Ok(id) = run.parse_id(string.replace(started, "\"", ""))
+  let assert Ok(sub) = fabric.open(runs, child, Nil, id)
+  fabric.await(sub, 0) |> should.equal(Ok(run.Unattended))
+  restart.stop(app)
+  restart.remove_dir(dir)
+}

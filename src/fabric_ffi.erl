@@ -2,7 +2,7 @@
 -export([rescue/1, random_id/0, now_ms/0, ensure_directory/1, directory_get/2,
          directory_insert/3, directory_compare_and_set/4, claim_new/0,
          claim_take/2, exit_shutdown/0, factory_name/1,
-         await_or_shutdown/2, requeue_shutdown/1, take_shutdown/1]).
+         await_or_shutdown/3, requeue_shutdown/1, take_shutdown/1]).
 
 %% Runs Body, turning any raised exception into {error, Description}.
 rescue(Body) ->
@@ -17,12 +17,13 @@ exit_shutdown() ->
     exit(shutdown).
 
 %% Waits for a message on the subject, or for the caller's own trapped exit
-%% signal `shutdown` from Factory, whichever comes first; any other message
-%% stays queued.
-await_or_shutdown({subject, _Owner, Tag}, Factory) ->
+%% signal `shutdown` from Factory, whichever comes first within Timeout ms;
+%% any other message stays queued.
+await_or_shutdown({subject, _Owner, Tag}, Factory, Timeout) ->
     receive
-        {Tag, Message} -> {ok, Message};
-        {'EXIT', Factory, shutdown} -> {error, nil}
+        {Tag, Message} -> {answered, Message};
+        {'EXIT', Factory, shutdown} -> shut_down
+    after Timeout -> still_waiting
     end.
 
 %% Queues the exit signal `shutdown` from Factory to the caller again, as
