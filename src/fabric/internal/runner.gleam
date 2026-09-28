@@ -112,7 +112,7 @@ pub fn work(setup: Setup(context), context: context) -> Work {
         context,
         call.name,
         call.arguments_json,
-        fn(outcome) { settle_late(setup, run, id, outcome, 3) },
+        fn(outcome) { settle_late(setup, run, id, call.name, outcome) },
       )
     },
     start_child: fn(parent, id, child, call) {
@@ -121,20 +121,57 @@ pub fn work(setup: Setup(context), context: context) -> Work {
   )
 }
 
-/// Applies a late settlement of the action `id` of `run`
-/// (`tool.bind_settling`). A runner busy past the command timeout is asked
-/// again a few times.
+/// Applies a late settlement of the action `id` of `run`, a call of the
+/// tool `name` (`tool.bind_settling`). A settlement that arrives while the
+/// run is stopping and before the executor confirmed that the action's task
+/// no longer runs is offered again after each commit of the run; it is
+/// given up when no commit comes within the tool's bound. A runner busy
+/// past the command timeout is asked again a few times.
 fn settle_late(
   setup: Setup(context),
   run: String,
   id: ActionId,
+  name: String,
   outcome: invocation.Outcome,
+) -> Result(Nil, tool.SettleError) {
+  let within =
+    registry.settles_within(setup.env.registry, name) |> option.unwrap(0)
+  let watcher = process.new_subject()
+  let settled =
+    offer_settlement(setup, run, id, outcome, watcher, False, within, 3)
+  store.unwatch(setup.store, run, watcher)
+  settled
+}
+
+fn offer_settlement(
+  setup: Setup(context),
+  run: String,
+  id: ActionId,
+  outcome: invocation.Outcome,
+  watcher: Subject(Nil),
+  watching: Bool,
+  within: Int,
   tries: Int,
 ) -> Result(Nil, tool.SettleError) {
+  let again = fn(watching, tries) {
+    offer_settlement(setup, run, id, outcome, watcher, watching, within, tries)
+  }
   case command(setup, run, setup.env, controller.Settled(id, outcome), 8) {
     Ok(_) -> Ok(Nil)
+    // Watch the run first, then offer again, so that the commit that
+    // confirms the stop is never missed.
+    Error(CommandRefused(controller.SettlementEarly(_))) if !watching ->
+      case store.watch(setup.store, run, watcher) {
+        Ok(Nil) -> again(True, tries)
+        Error(error) -> Error(tool.SettleFailed(string.inspect(error)))
+      }
+    Error(CommandRefused(controller.SettlementEarly(_))) ->
+      case process.receive(watcher, within) {
+        Ok(Nil) -> again(True, tries)
+        Error(Nil) -> Error(tool.NotAwaited)
+      }
     Error(CommandRefused(_)) -> Error(tool.NotAwaited)
-    Error(Busy) if tries > 1 -> settle_late(setup, run, id, outcome, tries - 1)
+    Error(Busy) if tries > 1 -> again(watching, tries - 1)
     Error(Busy) -> Error(tool.SettleFailed("the run's runner is busy"))
     Error(Contended) -> Error(tool.SettleFailed("every commit lost a race"))
     Error(OwnerUnknown) ->
@@ -444,7 +481,7 @@ fn lose_all(
   reason: String,
 ) -> Result(Runner(context), ApplyError) {
   let held = case runner.state.phase {
-    controller.Acting(_, actions) | controller.Stopping(_, actions, _) ->
+    controller.Acting(_, actions) | controller.Stopping(actions:, ..) ->
       list.filter(actions, fn(action) {
         action.child == None
         && { action.state == run.Queued || action.state == run.Running }

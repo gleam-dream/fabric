@@ -6,6 +6,7 @@
 
 import fabric
 import fabric/agent
+import fabric/observation as o
 import fabric/policy
 import fabric/run
 import fabric/store
@@ -13,8 +14,11 @@ import fabric/support/apps.{type City, type Forecast, Forecast}
 import fabric/support/scripted
 import fabric/tool
 import gleam/erlang/process.{type Subject}
+import gleam/int
+import gleam/list
 import gleam/string
 import gleeunit/should
+import sinal
 
 /// What the tool body does after handing its settlement to the test.
 type Then {
@@ -176,4 +180,109 @@ pub fn a_settlement_bound_must_be_positive_test() {
   |> should.equal(
     Error([agent.SettlementBoundNotPositive("lookup_weather", 0)]),
   )
+}
+
+// --- two stopped tools ----------------------------------------------------------
+
+type Named {
+  Named(name: String, settlement: tool.Settlement(Forecast))
+}
+
+/// A tool `name` whose body hands its settlement to `handed` and waits
+/// until it is stopped.
+fn named_settling(
+  name: String,
+  handed: Subject(Named),
+  within: Int,
+) -> tool.Tool(Nil) {
+  tool.define(name, "weather", apps.city_codec(), apps.forecast_codec())
+  |> tool.bind_settling(
+    fn(_, _city: City, settlement) {
+      process.send(handed, Named(name, settlement))
+      let never = process.new_subject()
+      let _ = process.receive_forever(never)
+      Ok(Forecast("never"))
+    },
+    fn(_: Nil) { tool.Explain("failed") },
+    within:,
+  )
+}
+
+/// Runs `wa` (bound `a_within`) and `wb` (bound `b_within`) in one batch
+/// and returns their settlements once both bodies run.
+fn start_two(
+  a_within: Int,
+  b_within: Int,
+) -> #(fabric.Run(Nil), tool.Settlement(Forecast), tool.Settlement(Forecast)) {
+  let handed = process.new_subject()
+  let agent =
+    agent.new(
+      scripted.plan([
+        scripted.call("a", "wa", "{\"city\":\"Paris\"}"),
+        scripted.call("b", "wb", "{\"city\":\"Paris\"}"),
+      ]),
+      [
+        named_settling("wa", handed, a_within),
+        named_settling("wb", handed, b_within),
+      ],
+      policy.always_allow(),
+    )
+  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "go")
+  let assert Ok(first) = process.receive(handed, 5000)
+  let assert Ok(second) = process.receive(handed, 5000)
+  case first.name {
+    "wa" -> #(run, first.settlement, second.settlement)
+    _ -> #(run, second.settlement, first.settlement)
+  }
+}
+
+fn states(run: fabric.Run(Nil)) -> List(run.ActionState) {
+  let assert Ok(snapshot) = fabric.snapshot(run)
+  list.map(snapshot.actions, fn(action) { action.state })
+}
+
+/// An action accepts one settlement: an uncertain one is recorded, and a
+/// definite one offered afterwards is refused, while the other tool keeps
+/// the run stopping.
+pub fn a_settlement_is_accepted_once_per_action_test() {
+  let #(run, a, b) = start_two(5000, 5000)
+  let assert Ok(run.Working) = fabric.cancel(run)
+  tool.settle(a, Error(tool.Uncertain("unknown"))) |> should.equal(Ok(Nil))
+  tool.settle(a, Ok(Forecast("cloudy")))
+  |> should.equal(Error(tool.NotAwaited))
+  tool.settle(b, Ok(Forecast("rain"))) |> should.equal(Ok(Nil))
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  states(run)
+  |> should.equal([
+    run.Uncertain("unknown"),
+    run.Succeeded("{\"summary\":\"rain\"}"),
+  ])
+}
+
+/// Past its tool's bound the action is an uncertain effect; a settlement
+/// that arrives afterwards, while the other tool keeps the run stopping, is
+/// refused and changes nothing.
+pub fn a_settlement_after_the_bound_is_refused_while_stopping_test() {
+  let lapsed = process.new_subject()
+  let assert Ok(id) =
+    sinal.handler_id(
+      "settlement-lapsed-" <> int.to_string(int.random(1_000_000)),
+    )
+  let assert Ok(attached) =
+    sinal.observe(id, o.tool_settled(), fn(_, settled: o.ToolSettled) {
+      case settled.action.tool, settled.disposition {
+        "wa", o.EffectUncertain -> process.send(lapsed, Nil)
+        _, _ -> Nil
+      }
+    })
+  let #(run, a, b) = start_two(20, 5000)
+  let assert Ok(run.Working) = fabric.cancel(run)
+  let assert Ok(Nil) = process.receive(lapsed, 5000)
+  let _ = sinal.detach(attached)
+
+  tool.settle(a, Ok(Forecast("late"))) |> should.equal(Error(tool.NotAwaited))
+  let assert [run.Uncertain(evidence), run.Running] = states(run)
+  string.contains(evidence, "no settlement") |> should.be_true
+  tool.settle(b, Ok(Forecast("rain"))) |> should.equal(Ok(Nil))
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
 }

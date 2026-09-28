@@ -218,7 +218,7 @@ pub fn locate(
 
 fn actions(state: State) -> List(run.ActionRecord) {
   case state.phase {
-    controller.Acting(_, actions) | controller.Stopping(_, actions, _) ->
+    controller.Acting(_, actions) | controller.Stopping(actions:, ..) ->
       list.append(state.history, actions)
     controller.AwaitingModel(_) | controller.Ended(_) -> state.history
   }

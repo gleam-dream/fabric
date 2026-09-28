@@ -93,7 +93,7 @@ fn turn_result(turn: Int, after: State) -> Option(o.TurnResult) {
 
 fn every_action(state: State) -> List(ActionRecord) {
   case state.phase {
-    controller.Acting(_, actions) | controller.Stopping(_, actions, _) ->
+    controller.Acting(_, actions) | controller.Stopping(actions:, ..) ->
       list.append(state.history, actions)
     controller.AwaitingModel(_) | controller.Ended(_) -> state.history
   }
@@ -222,7 +222,7 @@ fn disposition(state: run.ActionState) -> Option(o.Disposition) {
 fn cancelled(before: Option(State), after: State) -> Nil {
   let cancelling = fn(state: State) {
     case state.phase {
-      controller.Stopping(_, _, controller.CancelRequested)
+      controller.Stopping(reason: controller.CancelRequested, ..)
       | controller.Ended(run.Cancelled) -> True
       _ -> False
     }

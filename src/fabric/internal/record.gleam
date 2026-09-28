@@ -25,6 +25,11 @@
 //// states `delegated` and `limit_reached`. A version 1 record is read as a
 //// root run (no parent, depth 0) that may start no sub-agents (both limits
 //// 0) and whose actions started none; it is written back as version 2.
+////
+//// The `stopping` phase records `tools_stopped`, whether the executor
+//// confirmed that no tool task runs. A record without it reads as not yet
+//// confirmed, which refuses late settlements until recovery completes the
+//// stop.
 
 import fabric/internal/controller.{type Phase, type State, State}
 import fabric/internal/registry.{type Registry}
@@ -227,10 +232,11 @@ fn phase(phase: Phase) -> Json {
         #("turn", json.int(turn)),
         #("actions", json.array(actions, action)),
       ])
-    controller.Stopping(turn, actions, reason) ->
+    controller.Stopping(turn, actions, reason, tools_stopped) ->
       tag("stopping", [
         #("turn", json.int(turn)),
         #("actions", json.array(actions, action)),
+        #("tools_stopped", json.bool(tools_stopped)),
         #("reason", case reason {
           controller.CancelRequested -> tag("cancel_requested", [])
           controller.HostFault(failure) ->
@@ -321,7 +327,7 @@ fn linked(state: State) -> Result(State, DecodeError) {
     None -> True
   }
   let actions = case state.phase {
-    controller.Acting(_, actions) | controller.Stopping(_, actions, _) ->
+    controller.Acting(_, actions) | controller.Stopping(actions:, ..) ->
       list.append(state.history, actions)
     controller.AwaitingModel(_) | controller.Ended(_) -> state.history
   }
@@ -631,7 +637,14 @@ fn phase_decoder(version: Int) -> Decoder(Phase) {
             _ -> Error(Nil)
           }
         })
-        decode.success(controller.Stopping(turn, actions, reason))
+        // Absent before settlements were awaited: read as not yet
+        // confirmed, which refuses settlements; recovery confirms it.
+        use tools_stopped <- decode.optional_field(
+          "tools_stopped",
+          False,
+          decode.bool,
+        )
+        decode.success(controller.Stopping(turn, actions, reason, tools_stopped))
       })
     "ended" ->
       Ok(
@@ -734,8 +747,7 @@ pub fn check(
     False -> [run.OtherAgent(state.agent)]
   }
   let current = case state.phase {
-    controller.Acting(_, actions) | controller.Stopping(_, actions, _) ->
-      actions
+    controller.Acting(_, actions) | controller.Stopping(actions:, ..) -> actions
     controller.AwaitingModel(_) | controller.Ended(_) -> []
   }
   let tools =
