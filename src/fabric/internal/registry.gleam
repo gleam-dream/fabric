@@ -24,7 +24,12 @@ pub type RegistryError {
   SchemaUnavailable(String)
   /// A tool bound with `tool.bind_settling` waits no positive time.
   SettlementBoundNotPositive(name: String, within: Int)
+  /// A tool bound with `tool.bind_settling` waits longer than a timer can.
+  SettlementBoundTooLarge(name: String, within: Int)
 }
+
+/// The longest timer the runtime sets, in milliseconds (2^32 - 1).
+pub const max_settlement_bound = 4_294_967_295
 
 pub type AdmissionError {
   NotRegistered
@@ -53,6 +58,10 @@ pub fn new(
           let errors = case tool.settles_within(tool) {
             Some(within) if within <= 0 -> [
               SettlementBoundNotPositive(name, within),
+              ..errors
+            ]
+            Some(within) if within > max_settlement_bound -> [
+              SettlementBoundTooLarge(name, within),
               ..errors
             ]
             _ -> errors

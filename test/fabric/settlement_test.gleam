@@ -347,3 +347,17 @@ pub fn a_refused_settlement_is_observed_test() {
   first.action
   |> should.equal(o.ActionRef(fabric.id(run), 1, "w", "lookup_weather"))
 }
+
+/// A bound past the longest timer the runtime can set would never fire,
+/// leaving a stopped run waiting forever: it is refused up front.
+pub fn a_settlement_bound_must_fit_a_timer_test() {
+  agent.new(
+    scripted.plan([]),
+    [settling_tool(process.new_subject(), Wait, 5_000_000_000)],
+    policy.always_allow(),
+  )
+  |> agent.validate
+  |> should.equal(
+    Error([agent.SettlementBoundTooLarge("lookup_weather", 5_000_000_000)]),
+  )
+}
