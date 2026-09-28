@@ -342,6 +342,39 @@ fn launch_with(
   launch_encoded(setup, work, before, state, record.encode(state), effects)
 }
 
+/// Stores and starts the new root run `state`. A backend that reports the
+/// run taken is read back: finding exactly the record this call wrote (a
+/// backend that stored it and still reported it taken) confirms the
+/// insert, and the run is started over it. Any other record is another
+/// run's, and the error stays `AlreadyExists`.
+pub fn launch_new(
+  setup: Setup(context),
+  state: State,
+  effects: List(Effect),
+) -> Result(Int, store.StoreError) {
+  let work = work(setup, setup.env.context)
+  let encoded = record.encode(state)
+  case launch_encoded(setup, work, None, state, encoded, effects) {
+    Error(store.AlreadyExists) ->
+      case store.get(setup.store, state.run) {
+        Ok(store.Entry(revision: 1, record: stored, live: None))
+          if stored == encoded
+        ->
+          launch_over(
+            setup,
+            work,
+            Some(1),
+            None,
+            state,
+            record.encode(state),
+            effects,
+          )
+        _ -> Error(store.AlreadyExists)
+      }
+    other -> other
+  }
+}
+
 /// `launch_with`, writing `state` as `encoded` (`record.encode(state)`),
 /// so that every attempt of one write carries one write token.
 fn launch_encoded(
@@ -354,6 +387,21 @@ fn launch_encoded(
 ) -> Result(Int, store.StoreError) {
   let expected = option.map(before, fn(before) { before.0 })
   let observed = option.map(before, fn(before) { before.1 })
+  launch_over(setup, work, expected, observed, state, encoded, effects)
+}
+
+/// Writes `state` as `encoded` over the revision `expected` (`None`: a new
+/// run) and starts its runner if it needs one. `observed` is the state the
+/// observations of the transition start from.
+fn launch_over(
+  setup: Setup(context),
+  work: Work,
+  expected: Option(Int),
+  observed: Option(State),
+  state: State,
+  encoded: String,
+  effects: List(Effect),
+) -> Result(Int, store.StoreError) {
   case controller.needs_runner(state) {
     False -> {
       use revision <- result.map(write(

@@ -81,6 +81,11 @@ pub type StartError {
   /// work in flight and no runner (`await` then reports `Unattended`).
   /// `cancel_stored(store, id)` ends such a run if it lands.
   StartUnconfirmed(id: RunId, reason: String)
+  /// The store reported the new run's fresh id taken, and the record under
+  /// it is not the one this start wrote: a backend that breaks its
+  /// contract (random ids do not collide). The id names someone else's
+  /// record, so it is not given; this start stored nothing.
+  StartRefused(reason: String)
 }
 
 /// Why a stored run could not be read or continued.
@@ -139,8 +144,8 @@ pub type CommandError {
 
 const retries = 3
 
-/// Starts a run of `agent` in `store`: stores its first record and hands the
-/// first model call to a new runner.
+/// Starts a run of `agent` in `store`: stores its first record under a
+/// fresh id and hands the first model call to a new runner.
 pub fn start(
   store: Store,
   agent: Agent(context),
@@ -148,22 +153,12 @@ pub fn start(
   prompt: String,
 ) -> Result(Run(context), StartError) {
   let setup = runner.setup(store, agent.admitted(agent), context, None)
-  start_with(setup, prompt, retries)
-}
-
-/// Stores the first record under a fresh id. An id that exists already (a
-/// collision of random ids) is replaced by another.
-fn start_with(
-  setup: runner.Setup(context),
-  prompt: String,
-  tries: Int,
-) -> Result(Run(context), StartError) {
   let id = "run-" <> random_id()
   let #(state, effects) = runner.root_state(setup, id, prompt)
-  case runner.launch(setup, None, state, effects) {
+  case runner.launch_new(setup, state, effects) {
     Ok(_) -> Ok(Run(id:, setup:))
-    Error(store.AlreadyExists) if tries > 1 ->
-      start_with(setup, prompt, tries - 1)
+    Error(store.AlreadyExists) ->
+      Error(StartRefused("the store reported the new run id taken"))
     Error(error) -> Error(StartUnconfirmed(issued(id), describe_store(error)))
   }
 }

@@ -201,7 +201,7 @@ unchanged: the same tags, no version bump.
 ```gleam
 // fabric — runs and the commands on them
 pub opaque type Run(context)
-pub type StartError { StartUnconfirmed(id: RunId, reason: String) }
+pub type StartError { StartUnconfirmed(id: RunId, reason: String)  StartRefused(reason: String) }
 pub type RecordError { RunNotFound  StoreUnavailable(reason: String)  UnsupportedVersion(found: Int)
                        CorruptRecord(detail: String)  IncompatibleAgent(List(Incompatibility)) }
 pub type CommandError { RunEnded  WrongReference  StaleReference  AlreadyAnswered
@@ -301,8 +301,9 @@ pub fn start(store: Store) -> Result(Nil, StoreError)   // linked to the caller:
 ```
 
 Errors by operation: `agent.build` returns every `ConfigError` at once;
-`start` only `StartUnconfirmed`, whose run may land later and can then be
-ended with `cancel_stored`; `await`, `snapshot` and `pending` the four
+`start` `StartUnconfirmed`, whose run may land later and can then be
+ended with `cancel_stored`, or `StartRefused` when a backend reports the
+fresh id taken by a record the start did not write; `await`, `snapshot` and `pending` the four
 read errors, `open` and `child` those and `IncompatibleAgent`; `recover` `Contended`
 or `Unreadable`; `approve` every `CommandError` but `NotReconcilable`;
 `reject` the same without `RequirementChanged`; `reconcile` `RunEnded`,
@@ -343,9 +344,12 @@ named supervisable store).
   status with the store's runner registry, so a lost runner's run reads
   `Unattended` there too. `cancel_stored` used to report the committed
   record's status alone.
-- **A colliding run id is replaced.** `start` retries an `AlreadyExists`
-  first write (a collision of random ids) under a fresh id; only a write
-  whose outcome is unknown is `StartUnconfirmed`.
+- **A first write reported taken is read back.** Random ids do not
+  collide, so `start` does not retry under another id. An `AlreadyExists`
+  first write is read back: the start's own record (a backend that stored
+  it and still reported it taken) is adopted and run; any other record is
+  `StartRefused(reason)`, which names no id, since the id is someone
+  else's. Only a write whose outcome is unknown is `StartUnconfirmed`.
 - **Fabric names every other ending of a sub-agent.** With `output:`, a
   refused, output-limited, budget-exhausted, unverifiable, cancelled or
   failed child is a definite failure whose text names the ending (for
