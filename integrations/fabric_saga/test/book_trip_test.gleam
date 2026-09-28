@@ -201,7 +201,7 @@ fn traveller(city: String) -> model.Model {
 }
 
 fn start(city: String, reports: Subject(Report)) -> fabric.Run(Nil) {
-  start_in(store.in_memory(), city, reports, 5000)
+  start_in(watched.memory(), city, reports, 5000)
 }
 
 fn start_in(

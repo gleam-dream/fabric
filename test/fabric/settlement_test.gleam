@@ -9,7 +9,6 @@ import fabric/agent
 import fabric/observation as o
 import fabric/policy
 import fabric/run
-import fabric/store
 import fabric/support
 import fabric/support/apps.{type City, type Forecast, Forecast}
 import fabric/support/scripted
@@ -86,7 +85,7 @@ fn start(
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
   let assert Ok(handed) = process.receive(handed, 5000)
   #(run, handed)
 }
@@ -274,7 +273,7 @@ fn start_two(
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "go")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "go")
   let assert Ok(first) = process.receive(handed, 5000)
   let assert Ok(second) = process.receive(handed, 5000)
   case first.name {

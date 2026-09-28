@@ -2,6 +2,7 @@
 //// directory store's durability.
 
 import fabric/store.{type Store}
+import fabric/support
 import fabric/support/flaky
 import fabric/support/restart
 import gleam/erlang/process
@@ -33,13 +34,13 @@ fn contract(open: fn() -> Store) -> Nil {
 }
 
 pub fn the_in_memory_store_meets_the_port_contract_test() {
-  contract(store.in_memory)
+  contract(support.store)
 }
 
 pub fn the_directory_store_meets_the_port_contract_test() {
   let dir = restart.temp_dir()
   contract(fn() {
-    let assert Ok(store) = store.directory(dir)
+    let store = support.directory(dir)
     store
   })
   restart.remove_dir(dir)
@@ -71,7 +72,7 @@ fn race(stores: List(Store)) -> Nil {
 }
 
 pub fn concurrent_commits_of_one_revision_have_one_winner_in_memory_test() {
-  let store = store.in_memory()
+  let store = support.store()
   race(list.repeat(store, 8))
 }
 
@@ -81,7 +82,7 @@ pub fn concurrent_commits_through_separate_directory_stores_have_one_winner_test
   let dir = restart.temp_dir()
   race(
     list.map(list.repeat(Nil, 8), fn(_) {
-      let assert Ok(store) = store.directory(dir)
+      let store = support.directory(dir)
       store
     }),
   )
@@ -92,13 +93,13 @@ pub fn the_directory_store_keeps_every_revision_on_disk_test() {
   let dir = restart.temp_dir()
   let #(owner, _) =
     restart.owned(fn() {
-      let assert Ok(store) = store.directory(dir)
+      let store = support.directory(dir)
       let assert Ok(1) = store.insert(store, "run-d", "first", store.Keep)
       let assert Ok(2) = store.commit(store, "run-d", 1, "second", store.Keep)
       Nil
     })
   restart.kill(owner)
-  let assert Ok(reopened) = store.directory(dir)
+  let reopened = support.directory(dir)
   let assert Ok(store.Entry(revision: 2, record: "second", ..)) =
     store.get(reopened, "run-d")
   // No temporary file is left behind.
@@ -114,7 +115,7 @@ pub fn the_directory_store_keeps_every_revision_on_disk_test() {
 /// grows with the latest record, not with every record ever written.
 pub fn the_directory_store_empties_revisions_older_than_the_previous_test() {
   let dir = restart.temp_dir()
-  let assert Ok(store) = store.directory(dir)
+  let store = support.directory(dir)
   let assert Ok(1) = store.insert(store, "run-p", "first", store.Keep)
   let assert Ok(2) = store.commit(store, "run-p", 1, "second", store.Keep)
   let assert Ok(3) = store.commit(store, "run-p", 2, "third", store.Keep)
@@ -136,12 +137,12 @@ pub fn the_directory_store_empties_revisions_older_than_the_previous_test() {
 /// left behind, once they are old enough not to belong to a live writer.
 pub fn opening_a_directory_store_sweeps_stale_temporary_files_test() {
   let dir = restart.temp_dir()
-  let assert Ok(store) = store.directory(dir)
+  let store = support.directory(dir)
   let assert Ok(1) = store.insert(store, "run-t", "first", store.Keep)
   let assert Ok(Nil) = restart.write_file(dir <> "/run-t/.tmp-stale", "x")
   let assert Ok(Nil) = restart.age_file(dir <> "/run-t/.tmp-stale", 3600)
   let assert Ok(Nil) = restart.write_file(dir <> "/run-t/.tmp-fresh", "x")
-  let assert Ok(_) = store.directory(dir)
+  let _ = support.directory(dir)
   restart.list_dir(dir <> "/run-t")
   |> should.equal(Ok([".tmp-fresh", "00000000000000000001.json"]))
   restart.remove_dir(dir)
@@ -149,7 +150,7 @@ pub fn opening_a_directory_store_sweeps_stale_temporary_files_test() {
 
 pub fn the_directory_store_refuses_run_ids_that_are_not_names_test() {
   let dir = restart.temp_dir()
-  let assert Ok(store) = store.directory(dir <> "/nested/root")
+  let store = support.directory(dir <> "/nested/root")
   store.insert(store, "../escape", "x", store.Keep)
   |> should.equal(Error(store.Unavailable("invalid run id")))
   let assert Error(store.Unavailable(_)) = store.get(store, "a/b")
@@ -159,20 +160,43 @@ pub fn the_directory_store_refuses_run_ids_that_are_not_names_test() {
 pub fn a_crashing_backend_is_unavailable_not_fatal_test() {
   let broken =
     store.new(
+      process.new_name("broken-store"),
       get: fn(_) { panic as "database driver bug" },
       insert: fn(_, _) { Error(store.Unavailable("read-only replica")) },
       compare_and_set: fn(_, _, _) { Ok(Nil) },
     )
+    |> support.started
   let assert Error(store.Unavailable(reason)) = store.get(broken, "run-x")
   string.contains(reason, "database driver bug") |> should.be_true
   store.insert(broken, "run-x", "r", store.Keep)
   |> should.equal(Error(store.Unavailable("read-only replica")))
 }
 
-pub fn a_closed_store_is_unavailable_test() {
-  let store = store.in_memory()
-  store.close(store)
-  let assert Error(store.Unavailable(_)) = store.get(store, "run-x")
+/// A store whose process is not running, or has stopped, is unavailable.
+pub fn a_store_that_is_not_running_is_unavailable_test() {
+  let never = store.in_memory(process.new_name("never-started"))
+  store.get(never, "run-x")
+  |> should.equal(Error(store.Unavailable("the store is not running")))
+
+  let #(owner, stopped) = restart.owned(support.store)
+  restart.crash(owner, stopped)
+  store.get(stopped, "run-x")
+  |> should.equal(Error(store.Unavailable("the store is not running")))
+}
+
+/// A store's name is its process: a second start under a taken name, or a
+/// directory that cannot be created, fails to start.
+pub fn a_store_that_cannot_open_does_not_start_test() {
+  let runs = support.store()
+  let assert Error(store.Unavailable(_)) = store.start(runs)
+  let dir = restart.temp_dir()
+  let assert Ok(Nil) = restart.write_file(dir <> "/file", "x")
+  let assert Error(store.Unavailable(_)) =
+    store.start(store.directory(
+      process.new_name("unopenable"),
+      dir <> "/file/runs",
+    ))
+  restart.remove_dir(dir)
 }
 
 /// A backend that committed but reported `Unavailable` is read back: the
@@ -194,10 +218,11 @@ pub fn a_write_the_backend_made_despite_an_error_is_confirmed_test() {
 /// `Unavailable`, while calls for other runs complete meanwhile.
 pub fn a_hung_backend_call_blocks_only_its_run_until_its_deadline_test() {
   let entered = process.new_subject()
-  let memory = store.in_memory()
+  let memory = support.store()
   let hanging =
     store.with_backend_timeout(
       store.new(
+        process.new_name("hanging-store"),
         get: fn(run) {
           case run {
             "run-hung" -> {
@@ -219,7 +244,8 @@ pub fn a_hung_backend_call_blocks_only_its_run_until_its_deadline_test() {
           store.commit(memory, run, expected, record, store.Keep)
           |> result.replace(Nil)
         },
-      ),
+      )
+        |> support.started,
       200,
     )
   let hung = process.new_subject()

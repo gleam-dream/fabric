@@ -10,9 +10,9 @@ import fabric/agent
 import fabric/model
 import fabric/policy
 import fabric/run
-import fabric/store
 import fabric/tool
 import fabric_saga
+import fabric_saga/support/watched
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -75,7 +75,7 @@ fn start(
   let assert Ok(agent) =
     agent.new("agent", model_once(), [tool], policy.always_allow())
     |> agent.build
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "go")
+  let assert Ok(run) = fabric.start(watched.memory(), agent, Nil, "go")
   run
 }
 

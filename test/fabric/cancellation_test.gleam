@@ -179,7 +179,7 @@ pub fn a_held_child_is_cancelled_through_its_record_test() {
     )
     |> support.agent
   let assert Ok(run) =
-    fabric.start(store.in_memory(), delegating(child), Nil, "go")
+    fabric.start(support.store(), delegating(child), Nil, "go")
   let assert Ok(held) = process.receive(holds, 5000)
   let _ = sinal.detach(attached)
 
@@ -207,7 +207,7 @@ pub fn a_held_run_is_cancelled_through_its_record_test() {
       Result(run.Status, fabric.CommandError),
   ) {
     let probe = probe.new()
-    let store = store.in_memory()
+    let store = support.store()
     let #(holds, attached) = hold_runner(fn(_) { True })
     let agent =
       two_payments_spec(probe, policy.always_allow())
@@ -284,7 +284,7 @@ pub fn a_held_runner_calls_no_model_after_its_cancellation_test() {
   let probe = probe.new()
   let #(holds, attached) = hold_on_settled()
   let assert Ok(run) =
-    fabric.start(store.in_memory(), counted_payer(probe, False), Nil, "go")
+    fabric.start(support.store(), counted_payer(probe, False), Nil, "go")
   let assert Ok(held) = process.receive(holds, 5000)
   let _ = sinal.detach(attached)
   probe.count(probe, "model") |> should.equal(1)
@@ -303,7 +303,7 @@ pub fn a_held_runners_running_body_dies_with_it_test() {
   let probe = probe.new()
   let #(holds, attached) = hold_on_settled()
   let assert Ok(run) =
-    fabric.start(store.in_memory(), counted_payer(probe, True), Nil, "go")
+    fabric.start(support.store(), counted_payer(probe, True), Nil, "go")
   let arrival = probe.arrival(probe)
   let assert Ok(held) = process.receive(holds, 5000)
   let _ = sinal.detach(attached)
@@ -325,7 +325,7 @@ pub fn a_held_runners_running_body_dies_with_it_test() {
 /// its own process, and it calls no model once its record moved on.
 pub fn a_runner_whose_handler_cancelled_its_run_calls_no_model_test() {
   let probe = probe.new()
-  let memory = store.in_memory()
+  let memory = support.store()
   let runners = process.new_subject()
   let assert Ok(id) =
     sinal.handler_id("self-cancel-" <> int.to_string(int.random(1_000_000_000)))
@@ -432,7 +432,7 @@ fn store_orphaned_child(
 /// itself.
 pub fn a_tool_under_a_stopping_ancestor_never_starts_test() {
   let probe = probe.new()
-  let store = store.in_memory()
+  let store = support.store()
   store_stopping_root(store, "run-ancestor")
   let t1 = payment("t1", "one")
   let child =
@@ -464,7 +464,7 @@ pub fn a_tool_under_a_stopping_ancestor_never_starts_test() {
 /// cancels itself.
 pub fn a_sub_agent_under_a_stopping_ancestor_never_starts_test() {
   let probe = probe.new()
-  let store = store.in_memory()
+  let store = support.store()
   store_stopping_root(store, "run-elder")
   let child =
     store_orphaned_child(
@@ -509,7 +509,7 @@ pub fn an_answer_racing_the_parent_cancellation_starts_nothing_test() {
     }
     let assert Ok(run) =
       fabric.start(
-        store.in_memory(),
+        support.store(),
         delegating(two_payments(probe, child_policy)),
         "run",
         "go",
@@ -591,7 +591,7 @@ pub fn a_start_racing_an_ancestor_cancellation_never_runs_test() {
 /// stores no grandchild, and the child cancels itself.
 pub fn a_reattached_sub_agent_under_a_stopping_ancestor_never_starts_test() {
   let probe = probe.new()
-  let store = store.in_memory()
+  let store = support.store()
   store_stopping_root(store, "run-elders")
   let r = scripted.call("r", "research", "{\"topic\":\"x\"}")
   let child =
@@ -655,7 +655,7 @@ fn settling_child(
 /// stopping (not that it was lost), and the child then ends with its
 /// settlement.
 pub fn cancel_stored_of_a_parent_with_a_settling_child_test() {
-  let store = store.in_memory()
+  let store = support.store()
   let handed = process.new_subject()
   let assert Ok(run) =
     fabric.start(store, delegating(settling_child(handed)), Nil, "go")

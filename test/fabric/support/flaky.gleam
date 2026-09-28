@@ -108,17 +108,23 @@ pub fn arm_where(
   process.send(flaky.subject, ArmWhere(matches, faults))
 }
 
+/// A store over the backend, started and linked to the caller. Each call
+/// opens another store over the same records.
 pub fn store(flaky: Flaky) -> Store {
   let subject = flaky.subject
-  store.new(
-    get: fn(run) { process.call_forever(subject, Get(run, _)) },
-    insert: fn(run, record) {
-      process.call_forever(subject, Write(run, None, record, _))
-    },
-    compare_and_set: fn(run, expected, record) {
-      process.call_forever(subject, Write(run, Some(expected), record, _))
-    },
-  )
+  let opened =
+    store.new(
+      process.new_name("flaky-store"),
+      get: fn(run) { process.call_forever(subject, Get(run, _)) },
+      insert: fn(run, record) {
+        process.call_forever(subject, Write(run, None, record, _))
+      },
+      compare_and_set: fn(run, expected, record) {
+        process.call_forever(subject, Write(run, Some(expected), record, _))
+      },
+    )
+  let assert Ok(Nil) = store.start(opened)
+  opened
 }
 
 type State {

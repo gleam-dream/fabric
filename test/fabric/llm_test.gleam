@@ -9,7 +9,6 @@ import fabric/llm
 import fabric/model
 import fabric/policy
 import fabric/run
-import fabric/store
 import fabric/support
 import fabric/support/apps
 import gleam/dynamic/decode
@@ -183,7 +182,7 @@ pub fn two_tool_calls_round_trip_through_llm_wire_test() {
     )
     |> support.agent
   let assert Ok(run) =
-    fabric.start(store.in_memory(), agent, Nil, "weather, then pay bob")
+    fabric.start(support.store(), agent, Nil, "weather, then pay bob")
   fabric.await(run, 10_000)
   |> should.equal(
     Ok(run.Finished(run.Completed("Sunny in Paris; bob is paid."))),
@@ -236,7 +235,7 @@ pub fn invalid_calls_through_llm_wire_get_per_call_feedback_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
   fabric.await(run, 10_000)
   |> should.equal(Ok(run.Finished(run.Completed("I will ask properly."))))
   let assert Ok(snapshot) = fabric.snapshot(run)
@@ -265,12 +264,12 @@ pub fn refusal_and_truncation_through_llm_wire_end_the_run_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(refused) = fabric.start(store.in_memory(), agent, Nil, "a")
+  let assert Ok(refused) = fabric.start(support.store(), agent, Nil, "a")
   fabric.await(refused, 10_000)
   |> should.equal(Ok(run.Finished(run.Refused("not allowed"))))
   let assert Ok(snapshot) = fabric.snapshot(refused)
   snapshot.usage |> should.equal(run.TokenUsage(3, 1, 0))
-  let assert Ok(limited) = fabric.start(store.in_memory(), agent, Nil, "b")
+  let assert Ok(limited) = fabric.start(support.store(), agent, Nil, "b")
   fabric.await(limited, 10_000)
   |> should.equal(Ok(run.Finished(run.OutputLimited("partial ans"))))
 }
@@ -291,7 +290,7 @@ pub fn http_statuses_through_llm_wire_are_classified_for_retry_test() {
       agent.Limits(..agent.default_limits(), model_retry_delay: 0),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "hi")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "hi")
   fabric.await(run, 10_000)
   |> should.equal(Ok(run.Finished(run.Completed("recovered"))))
 
@@ -304,7 +303,7 @@ pub fn http_statuses_through_llm_wire_are_classified_for_retry_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "hi")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "hi")
   let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =
     fabric.await(run, 10_000)
   error.retryable |> should.be_false
@@ -402,7 +401,7 @@ pub fn unparseable_arguments_replay_to_anthropic_as_an_object_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
   fabric.await(run, 10_000)
   |> should.equal(Ok(run.Finished(run.Completed("I will ask properly."))))
 
@@ -457,7 +456,7 @@ pub fn unparseable_arguments_replay_to_openai_verbatim_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
   fabric.await(run, 10_000)
   |> should.equal(Ok(run.Finished(run.Completed("I will ask properly."))))
 

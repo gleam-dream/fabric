@@ -7,7 +7,6 @@ import fabric/agent
 import fabric/observation as o
 import fabric/policy
 import fabric/run
-import fabric/store
 import fabric/support
 import fabric/support/apps
 import fabric/support/scripted
@@ -46,7 +45,7 @@ pub fn a_runner_started_by_a_command_works_while_its_handlers_run_test() {
       fn(_, _) { Ok(policy.RequireApproval(run.Requirement("t", 1))) },
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "pay")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "pay")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
 
   let seen = process.new_subject()
@@ -84,7 +83,7 @@ fn approval_agent() -> agent.Agent(Nil) {
 /// runs in the caller.
 pub fn a_command_with_no_runner_emits_its_events_in_the_caller_test() {
   let assert Ok(run) =
-    fabric.start(store.in_memory(), approval_agent(), Nil, "pay")
+    fabric.start(support.store(), approval_agent(), Nil, "pay")
   let assert Ok(run.Suspended(_, _)) = fabric.await(run, 5000)
   let ran_in = process.new_subject()
   let assert Ok(id) =
@@ -107,7 +106,7 @@ pub fn a_command_with_no_runner_emits_its_events_in_the_caller_test() {
 /// that runner is already serving, so the cancellation is applied, not
 /// refused as busy.
 pub fn a_handler_in_a_commands_caller_can_command_the_run_test() {
-  let memory = store.in_memory()
+  let memory = support.store()
   let agent =
     agent.new(
       "agent",
@@ -170,7 +169,7 @@ fn uncertain_transfer() -> agent.Agent(Nil) {
 /// the handle's family are reconciled through it: another run's effect,
 /// or a run that does not exist, is refused and stays uncertain.
 pub fn a_foreign_effect_is_not_reconciled_test() {
-  let runs = store.in_memory()
+  let runs = support.store()
   let assert Ok(own) = fabric.start(runs, uncertain_transfer(), Nil, "pay")
   let assert Ok(other) = fabric.start(runs, uncertain_transfer(), Nil, "pay")
   let assert Ok(run.Suspended([], [mine])) = fabric.await(own, 5000)

@@ -229,7 +229,7 @@ pub fn a_run_is_observed_after_each_commit_test() {
       transfers_need_approval,
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "pay")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "pay")
   let id = support.text(fabric.id(run))
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   let paused = until(events, "approval_requested")
@@ -280,7 +280,7 @@ pub fn a_failing_handler_does_not_affect_the_run_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
   fabric.await(run, 5000)
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
@@ -339,16 +339,15 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
   let dir = restart.temp_dir()
   let #(owner, #(old, run)) =
     restart.owned(fn() {
-      let assert Ok(store) = store.directory(dir)
+      let store = support.directory(dir)
       let assert Ok(run) = fabric.start(store, parent, Nil, "go")
       #(store, run)
     })
   let _ = probe.arrival(probe)
   let started = until(events, "tool_dispatched")
-  restart.kill(owner)
-  restart.gone(store.pid(old))
+  restart.crash(owner, old)
 
-  let assert Ok(store) = store.directory(dir)
+  let store = support.directory(dir)
   let assert Ok(run) = fabric.recover(store, parent, Nil, fabric.id(run))
   let recovered = until(events, "tool_settled")
   let assert Ok(_) = fabric.cancel(run)
@@ -455,7 +454,7 @@ pub fn a_routed_handler_runs_in_the_forwarder_and_does_not_stall_the_run_test() 
   let #(entered, attachment) = blocking_model_turn("routed")
 
   let assert Ok(run) =
-    fabric.start(store.in_memory(), weather_agent(), Nil, "weather")
+    fabric.start(support.store(), weather_agent(), Nil, "weather")
   let #(first, gate) = entered_by(entered, support.text(fabric.id(run)))
   let finished = fabric.await(run, 5000)
   process.send(gate, Nil)
@@ -478,7 +477,7 @@ pub fn a_routed_handler_runs_in_the_forwarder_and_does_not_stall_the_run_test() 
 /// for it.
 pub fn an_unrouted_handler_runs_in_the_runner_test() {
   let #(entered, attachment) = blocking_model_turn("unrouted")
-  let memory = store.in_memory()
+  let memory = support.store()
   let assert Ok(run) = fabric.start(memory, weather_agent(), Nil, "weather")
   let #(handler, gate) = entered_by(entered, support.text(fabric.id(run)))
   let assert Ok(store.Entry(live: Some(store.Live(_, mailbox)), ..)) =
@@ -506,7 +505,7 @@ pub fn an_unrouted_handler_runs_in_the_runner_test() {
 /// observes (other than cancelling it) is refused at once instead of
 /// deadlocking the runner, and the run goes on.
 pub fn a_handler_commanding_its_own_run_is_refused_test() {
-  let memory = store.in_memory()
+  let memory = support.store()
   let results = process.new_subject()
   let assert Ok(id) =
     sinal.handler_id(
@@ -541,7 +540,7 @@ pub fn a_handler_commanding_its_own_run_is_refused_test() {
 /// its runner drives commits the cancellation to the record, and the
 /// runner stops at its next commit.
 pub fn a_handler_cancelling_its_own_run_commits_the_cancellation_test() {
-  let memory = store.in_memory()
+  let memory = support.store()
   let results = process.new_subject()
   let assert Ok(id) =
     sinal.handler_id(
@@ -587,7 +586,7 @@ pub fn a_command_returns_before_its_handlers_run_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "go")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "go")
   let _ = probe.arrival(probe)
   let cancelled = fabric.cancel(run)
   let assert Ok(#(cancelled_run, gate)) = process.receive(entered, 5000)
@@ -611,7 +610,7 @@ pub fn a_command_to_a_runner_held_by_a_handler_is_refused_test() {
       agent.Limits(..agent.default_limits(), command_timeout: 20),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
   let #(_, gate) = entered_by(entered, support.text(fabric.id(run)))
   let refused =
     fabric.reconcile(
