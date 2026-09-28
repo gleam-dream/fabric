@@ -728,7 +728,21 @@ fn cancel_child(
     Error(Nil) -> Error(Nil)
   }
   case child_setup {
-    Error(Nil) -> Nil
+    // This agent no longer delegates the call (it may be a plain tool
+    // now): the child is cancelled with no agent, and its end is applied
+    // with nothing to map it.
+    Error(Nil) -> {
+      let ended = end_child(setup.store, parent, action, child, 3)
+      let _ =
+        command(
+          setup,
+          parent.run,
+          setup.env,
+          controller.ChildEnded(action, ended),
+          16,
+        )
+      Nil
+    }
     Ok(child_setup) ->
       case cancel_until_stopping(child_setup, parent, action, child, 0) {
         Error(detail) ->
@@ -818,6 +832,95 @@ fn report_cancelled(child_setup: Setup(context), child: String) -> Nil {
         Ok(result) -> notify_parent(child_setup, result)
         // Still stopping: its runner delivers its end.
         Error(Nil) -> Nil
+      }
+  }
+}
+
+/// Cancels the stored run `id` with no agent (`fabric.cancel_stored`): through
+/// its live runner in this store, or else by abandoning a lost runner's
+/// work, ending its children first (`end_child`), and ending the run in one
+/// commit. Returns the state committed.
+pub fn cancel_unattended(
+  store: Store,
+  id: String,
+  tries: Int,
+) -> Result(State, Failure) {
+  use #(entry, state) <- result.try(
+    load(store, id) |> result.map_error(Unreadable),
+  )
+  let retry = fn() {
+    case tries > 1 {
+      True -> cancel_unattended(store, id, tries - 1)
+      False -> Error(Contended)
+    }
+  }
+  case live_runner(entry, state) {
+    Some(mailbox) ->
+      case
+        send_live(
+          mailbox,
+          controller.cancel,
+          None,
+          agent.default_command_timeout,
+        )
+      {
+        Ok(state) -> Ok(state)
+        Error(LiveRefused(rejection)) -> Error(CommandRefused(rejection))
+        Error(LiveBusy) -> Error(Busy)
+        Error(LiveGone) -> retry()
+      }
+    None -> {
+      // Children first, so that the parent ends in one commit.
+      let ended =
+        list.map(controller.active_children(state), fn(active) {
+          let #(action, _, child) = active
+          #(action, end_child(store, state, action, child, tries))
+        })
+      use #(next, _) <- result.try(
+        controller.cancel_unattended(state, ended)
+        |> result.map_error(CommandRefused),
+      )
+      case
+        store.commit(store, id, entry.revision, record.encode(next), store.Keep)
+      {
+        Ok(_) -> {
+          observe.committed(Some(state), next)
+          Ok(next)
+        }
+        Error(store.Conflict(_)) -> retry()
+        Error(error) -> Error(Unreadable(StoreFailed(error)))
+      }
+    }
+  }
+}
+
+/// Cancels the child run `child` of `parent`'s delegation `action` with no
+/// agent, and reads its end. A child that does not exist is buried in
+/// place (`bury`, naming no agent), so that a start or recovery racing this
+/// cancellation never runs it; one that appears meanwhile is cancelled in
+/// turn.
+pub fn end_child(
+  store: Store,
+  parent: State,
+  action: ActionId,
+  child: String,
+  tries: Int,
+) -> controller.ChildResult {
+  let _ = cancel_unattended(store, child, tries)
+  case load(store, child) {
+    Error(NotFound) ->
+      case bury(store, parent, action, child, run.Identity("", 0)) {
+        Ok(Buried) -> controller.ChildMissing
+        Ok(Exists) if tries > 1 ->
+          end_child(store, parent, action, child, tries - 1)
+        Ok(Exists) -> controller.ChildLost("it was being stored")
+        Error(error) -> controller.ChildLost(describe_read(StoreFailed(error)))
+      }
+    Error(problem) -> controller.ChildLost(describe_read(problem))
+    Ok(#(_, child_state)) ->
+      case controller.child_result(child_state) {
+        Ok(result) -> result
+        Error(Nil) -> controller.ChildLost("it did not end")
       }
   }
 }
