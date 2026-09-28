@@ -93,9 +93,14 @@ pub type Outcome {
   Failed(HostFailure)
 }
 
+/// The run-wide budget that ended a run.
 pub type Budget {
   TurnLimit(limit: Int)
   TokenLimit(limit: Int, used: Int)
+}
+
+/// The sub-agent limit that refused one delegation; the run continues.
+pub type DelegationLimit {
   /// A run starts at most `limit` sub-agent runs.
   ChildLimit(limit: Int)
   /// Sub-agents nest at most `limit` levels below the root run.
@@ -139,8 +144,8 @@ pub type ActionState {
   /// becomes this action's result.
   Delegated
   /// A delegation refused before the policy because it would exceed a
-  /// sub-agent budget; the model sees why.
-  LimitReached(Budget)
+  /// sub-agent limit; the model sees why.
+  LimitReached(DelegationLimit)
   /// The host could not complete the action: its output could not be
   /// encoded, or its tool changed after admission. The run stopped.
   Faulted(detail: String)
