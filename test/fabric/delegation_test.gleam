@@ -7,6 +7,7 @@
 
 import fabric
 import fabric/agent.{type Agent}
+import fabric/internal/record
 import fabric/model
 import fabric/policy.{ActionId, Requirement}
 import fabric/run
@@ -879,6 +880,24 @@ pub fn a_child_whose_insert_lands_late_still_runs_test() {
   let assert Ok(run) =
     fabric.start(flaky.store(backend), eager_family(probe), Nil, "go")
   let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  probe.count(probe, "pay:bob") |> should.equal(1)
+}
+
+/// Another writer stored the child's identical first record, with its own
+/// write token: the start does not take that record for its own, and
+/// recovers it as a new incarnation rather than making its first model
+/// call as the same one.
+pub fn an_identical_child_record_by_another_writer_is_recovered_test() {
+  let probe = probe.new()
+  let backend = flaky.new()
+  flaky.arm_where(backend, first_child, [flaky.StoredByAnother])
+  let assert Ok(run) =
+    fabric.start(flaky.store(backend), eager_family(probe), Nil, "go")
+  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  let assert Ok(store.Entry(record: stored, ..)) =
+    store.get(flaky.store(backend), fabric.id(run) <> "-1")
+  let assert Ok(child) = record.decode(stored)
+  child.incarnation |> should.equal(2)
   probe.count(probe, "pay:bob") |> should.equal(1)
 }
 

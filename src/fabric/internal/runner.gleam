@@ -336,7 +336,19 @@ fn launch_with(
   state: State,
   effects: List(Effect),
 ) -> Result(Int, store.StoreError) {
-  let encoded = record.encode(state)
+  launch_encoded(setup, work, before, state, record.encode(state), effects)
+}
+
+/// `launch_with`, writing `state` as `encoded` (`record.encode(state)`),
+/// so that every attempt of one write carries one write token.
+fn launch_encoded(
+  setup: Setup(context),
+  work: Work,
+  before: Option(#(Int, State)),
+  state: State,
+  encoded: String,
+  effects: List(Effect),
+) -> Result(Int, store.StoreError) {
   let expected = option.map(before, fn(before) { before.0 })
   let observed = option.map(before, fn(before) { before.1 })
   case controller.needs_runner(state) {
@@ -869,10 +881,11 @@ fn store_started_child(
             )
           let #(state, effects) =
             child_state(child_setup, child, prompt, parent, id)
-          case store_child(child_setup, state, effects, 0) {
+          let encoded = record.encode(state)
+          case store_child(child_setup, state, encoded, effects, 0) {
             Ok(Nil) -> controller.ChildStarted(id)
             Error(store.AlreadyExists) ->
-              adopt_child(child_setup, id, #(state, effects), 3)
+              adopt_child(child_setup, id, #(state, encoded, effects), 3)
             Error(error) ->
               controller.ChildEnded(
                 id,
@@ -886,20 +899,23 @@ fn store_started_child(
   }
 }
 
-/// Inserts and starts a child run, trying an `Unavailable` insert again
-/// after the runner's bounded backoff. `AlreadyExists` means an earlier
-/// attempt or start stored it (see `adopt_child`).
+/// Inserts and starts a child run, as `encoded`, trying an `Unavailable`
+/// insert again after the runner's bounded backoff with the same text.
+/// `AlreadyExists` means an earlier attempt, an earlier start, or another
+/// writer stored it (see `adopt_child`).
 fn store_child(
   setup: Setup(context),
   state: State,
+  encoded: String,
   effects: List(Effect),
   attempt: Int,
 ) -> Result(Nil, store.StoreError) {
-  case launch(setup, None, state, effects) {
+  let work = work(setup, setup.env.context)
+  case launch_encoded(setup, work, None, state, encoded, effects) {
     Ok(_) -> Ok(Nil)
     Error(store.Unavailable(_)) if attempt < unavailable_retries -> {
       process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
-      store_child(setup, state, effects, attempt + 1)
+      store_child(setup, state, encoded, effects, attempt + 1)
     }
     Error(error) -> Error(error)
   }
@@ -907,19 +923,20 @@ fn store_child(
 
 /// The child run `first` was already stored: by an earlier insert of this
 /// start that was reported unavailable and landed afterwards, by an earlier
-/// start, or as a tombstone by a cancelling parent. A child that needs a
-/// runner and has none is given one: this start's own first record gets
-/// the runner it would have had (its first model call, no new
-/// incarnation), and any other record is taken over as a recovery would.
-/// An ended child's end is applied; a tombstone is left to the
-/// cancellation that stored it.
+/// start, by another writer, or as a tombstone by a cancelling parent. A
+/// child that needs a runner and has none is given one: this start's own
+/// first record, which carries its write token (`encoded`), gets the
+/// runner it would have had (its first model call, no new incarnation);
+/// any other record, even one equal to `first` written by someone else, is
+/// taken over as a recovery would, as a new incarnation. An ended child's
+/// end is applied; a tombstone is left to the cancellation that stored it.
 fn adopt_child(
   setup: Setup(context),
   id: ActionId,
-  start: #(State, List(Effect)),
+  start: #(State, String, List(Effect)),
   tries: Int,
 ) -> controller.Event {
-  let #(first, first_effects) = start
+  let #(first, encoded, first_effects) = start
   let lost = fn(detail) {
     controller.ChildEnded(id, controller.ChildLost(detail))
   }
@@ -931,7 +948,7 @@ fn adopt_child(
           controller.ChildStarted(id)
         None, Ok(ended) -> controller.ChildEnded(id, ended)
         None, Error(Nil) -> {
-          let #(next, effects) = case stored == first {
+          let #(next, effects) = case entry.record == encoded {
             True -> #(first, first_effects)
             False -> controller.recover(setup.env, stored)
           }

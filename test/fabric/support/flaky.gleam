@@ -4,6 +4,7 @@
 //// hold one write until the test releases it, while serving every other
 //// request, to order a write after a concurrent one.
 
+import fabric/internal/record
 import fabric/store.{type Store}
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -20,6 +21,9 @@ pub type Fault {
   /// run's next write: a write that lands after its caller, and a read
   /// back, found it missing.
   FailLate
+  /// Another writer inserted the same record first, with its own write
+  /// token: an insert finds it and reports `AlreadyExists`.
+  StoredByAnother
 }
 
 type Message {
@@ -231,6 +235,18 @@ fn write(
       records,
       dict.insert(state.late, run, stored),
     )
+    StoredByAnother, Ok(store.Stored(revision, written)) -> {
+      let assert Ok(decoded) = record.decode(written)
+      #(
+        Error(store.AlreadyExists),
+        dict.insert(
+          records,
+          run,
+          store.Stored(revision, record.encode(decoded)),
+        ),
+        state.late,
+      )
+    }
     _, Ok(stored) -> #(Ok(Nil), dict.insert(records, run, stored), state.late)
     _, Error(error) -> #(Error(error), records, state.late)
   }
