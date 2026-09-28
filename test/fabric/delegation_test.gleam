@@ -746,3 +746,91 @@ pub fn a_child_that_cannot_be_cancelled_can_no_longer_act_test() {
   |> should.equal(Error(fabric.RunEnded))
   probe.count(probe, "pay:bob") |> should.equal(0)
 }
+
+/// A family whose child pays as soon as it runs.
+fn eager_family(probe: Probe) -> Agent(Nil) {
+  delegating(
+    probe,
+    [research_call("r", "gleam")],
+    working_researcher(
+      probe,
+      [transfer_call()],
+      [paying_tool(probe)],
+      policy.always_allow(),
+    ),
+    policy.always_allow(),
+  )
+}
+
+/// Whether `run` is the first child run of some run.
+fn first_child(run: String) -> Bool {
+  string.ends_with(run, "-1")
+}
+
+/// A cancellation through another store while the parent's runner is
+/// storing its child finds no child, and leaves a cancelled record in its
+/// place: the child the runner stores afterwards is refused and never runs.
+pub fn a_child_stored_after_its_parent_was_cancelled_never_runs_test() {
+  let probe = probe.new()
+  let backend = flaky.new()
+  let held = flaky.hold(backend, first_child)
+  let owner = flaky.store(backend)
+  let assert Ok(run) = fabric.start(owner, eager_family(probe), Nil, "go")
+  let assert Ok(child_id) = process.receive(held, 5000)
+  let assert Ok(runner) = restart.runner(owner, fabric.id(run))
+  let runner_exit = process.monitor(runner)
+
+  fabric.cancel_stored(flaky.store(backend), fabric.id(run))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
+  flaky.release_held(backend)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(runner_exit, fn(down) { down })
+    |> process.selector_receive(5000)
+
+  let assert Ok(child) = fabric.child(run, child_id)
+  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  only_action(run).state |> should.equal(run.NotStarted)
+  probe.count(probe, "child:model") |> should.equal(0)
+  probe.count(probe, "pay:bob") |> should.equal(0)
+}
+
+/// Recovery reattaches a delegation whose child was never stored while a
+/// cancellation through another store runs: the child recovery stores
+/// afterwards finds the canceller's record and never runs.
+pub fn recovery_does_not_start_a_child_after_its_parent_was_cancelled_test() {
+  let probe = probe.new()
+  let backend = flaky.new()
+  let held = flaky.hold(backend, first_child)
+  let #(owner, #(first, run)) =
+    restart.owned(fn() {
+      let store = flaky.store(backend)
+      let assert Ok(run) = fabric.start(store, eager_family(probe), Nil, "go")
+      #(store, run)
+    })
+  let assert Ok(_) = process.receive(held, 5000)
+  crash(owner, first)
+  flaky.drop_held(backend)
+
+  let held = flaky.hold(backend, first_child)
+  let second = flaky.store(backend)
+  let id = fabric.id(run)
+  let recovering = process.new_subject()
+  process.spawn(fn() {
+    process.send(
+      recovering,
+      fabric.recover(second, eager_family(probe), Nil, id),
+    )
+  })
+  let assert Ok(child_id) = process.receive(held, 5000)
+  fabric.cancel_stored(flaky.store(backend), id)
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
+  flaky.release_held(backend)
+  let assert Ok(Ok(recovered)) = process.receive(recovering, 5000)
+
+  let assert Ok(child) = fabric.child(recovered, child_id)
+  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  only_action(recovered).state |> should.equal(run.NotStarted)
+  probe.count(probe, "child:model") |> should.equal(0)
+  probe.count(probe, "pay:bob") |> should.equal(0)
+}

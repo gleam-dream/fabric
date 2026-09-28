@@ -659,7 +659,7 @@ fn cancel_child(
   case child_setup {
     Error(Nil) -> Nil
     Ok(child_setup) ->
-      case cancel_until_stopping(child_setup, child, 0) {
+      case cancel_until_stopping(child_setup, parent, action, child, 0) {
         Error(detail) ->
           notify_parent(
             child_setup,
@@ -670,40 +670,66 @@ fn cancel_child(
   }
 }
 
-/// Cancels `child` until its record reads stopping or ended. A failure
-/// that may be transient (the store failed, or every retry lost a race) is
-/// tried again after a bounded backoff; `Error` describes the last one.
+/// Cancels `child` until its record reads stopping or ended; a child that
+/// does not exist is buried (`bury`). A failure that may be transient (the
+/// store failed, every retry lost a race, or the child appeared meanwhile)
+/// is tried again after a bounded backoff; `Error` describes the last one.
 fn cancel_until_stopping(
   setup: Setup(context),
+  parent: State,
+  action: ActionId,
   child: String,
   attempt: Int,
 ) -> Result(Nil, String) {
+  let again = fn(detail) {
+    case attempt < unavailable_retries {
+      True -> {
+        process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
+        cancel_until_stopping(setup, parent, action, child, attempt + 1)
+      }
+      False -> Error(detail)
+    }
+  }
   case command(setup, child, setup.env, controller.Cancel, 8) {
     // Committed, or already ended.
     Ok(_) | Error(CommandRefused(_)) -> Ok(Nil)
+    Error(Unreadable(NotFound)) ->
+      case bury(setup.store, parent, action, child, setup.identity) {
+        Ok(Buried) -> Ok(Nil)
+        Ok(Exists) -> again("the child run was being stored")
+        Error(error) -> again(describe_read(StoreFailed(error)))
+      }
     Error(Unreadable(StoreFailed(_) as problem)) ->
-      retry_cancel(setup, child, attempt, describe_read(problem))
-    // Missing or unreadable: reported as such once read.
+      again(describe_read(problem))
+    // Unreadable: reported as such once read.
     Error(Unreadable(_)) -> Ok(Nil)
-    Error(Contended) ->
-      retry_cancel(setup, child, attempt, "every commit lost a race")
-    Error(OwnerUnknown) ->
-      retry_cancel(setup, child, attempt, "no runner drives it")
+    Error(Contended) -> again("every commit lost a race")
+    Error(OwnerUnknown) -> again("no runner drives it")
   }
 }
 
-fn retry_cancel(
-  setup: Setup(context),
+pub type Burial {
+  Buried
+  /// The child run exists after all: cancel it instead.
+  Exists
+}
+
+/// Stores the record of a child run that was cancelled before it was ever
+/// stored (`controller.never_started`), unless a record exists. A start or
+/// recovery of the child that races the cancellation then finds the run
+/// ended and never runs it; the tombstone reads as a missing child.
+pub fn bury(
+  store: Store,
+  parent: State,
+  action: ActionId,
   child: String,
-  attempt: Int,
-  detail: String,
-) -> Result(Nil, String) {
-  case attempt < unavailable_retries {
-    True -> {
-      process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
-      cancel_until_stopping(setup, child, attempt + 1)
-    }
-    False -> Error(detail)
+  agent: run.Identity,
+) -> Result(Burial, store.StoreError) {
+  let state = controller.never_started(parent, action, child, agent)
+  case store.insert(store, child, record.encode(state), store.Keep) {
+    Ok(_) -> Ok(Buried)
+    Error(store.AlreadyExists) -> Ok(Exists)
+    Error(error) -> Error(error)
   }
 }
 

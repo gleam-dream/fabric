@@ -1315,9 +1315,38 @@ pub fn active_children(state: State) -> List(#(ActionId, String, String)) {
   }
 }
 
-/// What the run's end means for the delegation that started it.
+/// The record of the child run `child` of `parent`'s delegation `action`
+/// that was cancelled before it was ever stored: a cancelling parent
+/// stores it (insert-if-absent) in place of a child it could not find, so
+/// that a start or a recovery racing the cancellation finds the run ended
+/// and never runs it. It has no transcript.
+pub fn never_started(
+  parent: State,
+  action: ActionId,
+  child: String,
+  agent: Identity,
+) -> State {
+  State(
+    run: child,
+    agent:,
+    incarnation: 1,
+    parent: Some(run.Parent(parent.run, action)),
+    depth: parent.depth + 1,
+    limits: parent.limits,
+    turns_used: 0,
+    usage: run.TokenUsage(0, 0, 0),
+    transcript: [],
+    history: [],
+    approvals_issued: 0,
+    phase: Ended(run.Cancelled),
+  )
+}
+
+/// What the run's end means for the delegation that started it. A run
+/// cancelled before it started (`never_started`) is missing.
 pub fn child_result(state: State) -> Result(ChildResult, Nil) {
   case state.phase {
+    Ended(_) if state.transcript == [] -> Ok(ChildMissing)
     Ended(outcome) ->
       Ok(ChildFinished(
         outcome,
