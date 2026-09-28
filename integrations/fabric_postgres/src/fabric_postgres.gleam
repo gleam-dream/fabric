@@ -202,6 +202,55 @@ pub fn store(
   )
 }
 
+/// Why `prune` deleted nothing.
+pub type PruneError {
+  PruneAgeNegative(Int)
+  PruneLimitNotPositive(Int)
+  /// The database was unreachable or refused the statement (`reason`);
+  /// nothing was deleted.
+  PruneFailed(reason: String)
+}
+
+/// Deletes finished runs, a whole family at a time: up to `limit` root
+/// runs that ended at least `ended_for` milliseconds ago (by the
+/// database's clock), each with every sub-agent run of its family, and
+/// only when every run of the family has ended (or never started) and
+/// none holds a live lease. An ended sub-agent run is never deleted on its
+/// own, since recovering its parent would start it again. Returns how many
+/// runs it deleted, sub-agent runs included. Safe to call from several
+/// nodes at once: each family is deleted by one of them.
+pub fn prune(
+  settings: Settings,
+  ended_for milliseconds: Int,
+  limit limit: Int,
+) -> Result(Int, PruneError) {
+  let table = table(settings)
+  case milliseconds < 0, limit < 1 {
+    True, _ -> Error(PruneAgeNegative(milliseconds))
+    _, True -> Error(PruneLimitNotPositive(limit))
+    False, False ->
+      pog.query(
+        "WITH roots AS (SELECT r.run_id FROM "
+        <> table
+        <> " AS r WHERE r.phase = 'ended' AND r.root_id = r.run_id"
+        <> " AND r.updated_at <= clock_timestamp() - $1::bigint * interval '1 millisecond'"
+        <> " AND NOT EXISTS (SELECT 1 FROM "
+        <> table
+        <> " AS m WHERE m.root_id = r.run_id AND (m.phase IS NULL"
+        <> " OR m.phase NOT IN ('ended', 'never_started') OR m.lease_until > clock_timestamp()))"
+        <> " ORDER BY r.updated_at LIMIT $2 FOR UPDATE SKIP LOCKED)"
+        <> " DELETE FROM "
+        <> table
+        <> " AS d USING roots WHERE d.root_id = roots.run_id",
+      )
+      |> pog.parameter(pog.int(milliseconds))
+      |> pog.parameter(pog.int(limit))
+      |> pog.execute(settings.connection)
+      |> result.map(fn(returned) { returned.count })
+      |> result.map_error(fn(error) { PruneFailed(backend.describe(error)) })
+  }
+}
+
 fn table(settings: Settings) -> String {
   quoted(settings.schema) <> ".fabric_runs"
 }
