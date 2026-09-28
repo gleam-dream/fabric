@@ -118,10 +118,10 @@ fn phases() -> List(controller.Phase) {
     [
       controller.AwaitingModel(1),
       controller.Acting(2, every_action()),
-      controller.Stopping(2, every_action(), controller.CancelRequested),
+      controller.Stopping(2, every_action(), controller.CancelRequested, True),
     ],
     list.map(failures, fn(failure) {
-      controller.Stopping(1, [], controller.HostFault(failure))
+      controller.Stopping(1, [], controller.HostFault(failure), False)
     }),
     list.map(outcomes, controller.Ended),
   ])

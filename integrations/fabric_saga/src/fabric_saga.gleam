@@ -26,8 +26,9 @@
 //// forwards the outcome to it; once the task was stopped, the receiver
 //// settles the call with the outcome (`tool.bind_settling`), and the
 //// stopped Fabric run waits for that settlement, up to `rollback_within`
-//// milliseconds, before it ends. A settlement that arrives later is refused
-//// and changes nothing; the action stays an uncertain effect.
+//// milliseconds after the call's task was confirmed stopped, before it
+//// ends. A settlement that arrives later is refused and changes nothing;
+//// the action stays an uncertain effect.
 
 import fabric/tool
 import fabric_saga/internal/verdict.{type Stopped, Definitely, Unknown}

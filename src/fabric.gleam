@@ -500,7 +500,8 @@ fn refusal(rejection: controller.Rejection) -> CommandError {
     controller.WrongReference -> WrongReference
     controller.StaleReference -> StaleReference
     controller.AlreadyAnswered -> AlreadyAnswered
-    controller.SettlementNotAwaited(id) -> NotReconcilable(id)
+    controller.SettlementNotAwaited(id) | controller.SettlementEarly(id) ->
+      NotReconcilable(id)
   }
 }
 

@@ -17,8 +17,12 @@
 ////
 //// A stopped tool bound with `tool.bind_settling` stays running after the
 //// executor stops until its late settlement (`Settled`) arrives or its
-//// bound passes (`SettlementDue`). An uncertain action accepts one
-//// definite settlement, like a reconciliation.
+//// bound passes (`SettlementDue`). A stopping run accepts that settlement
+//// only in that window: before `ToolsStopped` it is early (the task may
+//// still act), after the bound it is refused. An action that became
+//// uncertain in a run that is not stopping accepts one definite
+//// settlement, like a reconciliation. Either way an action accepts at most
+//// one settlement: the first moves it out of the state that awaits one.
 ////
 //// `answer` resolves an approval request of the current batch; `abandon`
 //// and `recover` take over a record whose runner was lost.
@@ -86,9 +90,16 @@ pub type Phase {
   AwaitingModel(turn: Int)
   /// The tool batch requested by the reply to `turn`.
   Acting(turn: Int, actions: List(ActionRecord))
-  /// Waiting for the executor to confirm that no tool of the batch runs,
-  /// and for every child run of the batch to end.
-  Stopping(turn: Int, actions: List(ActionRecord), reason: StopReason)
+  /// Waiting for the executor to confirm that no tool of the batch runs
+  /// (`tools_stopped`), for the late settlements of stopped tools, and for
+  /// every child run of the batch to end. Once `tools_stopped`, a tool
+  /// action still `Running` is a stopped tool awaiting its settlement.
+  Stopping(
+    turn: Int,
+    actions: List(ActionRecord),
+    reason: StopReason,
+    tools_stopped: Bool,
+  )
   Ended(Outcome)
 }
 
@@ -177,6 +188,9 @@ pub type Rejection {
   AlreadyAnswered
   /// The action does not await a late settlement.
   SettlementNotAwaited(ActionId)
+  /// The run is stopping and the action's task may still run: a
+  /// settlement is awaited only once the executor confirmed the stop.
+  SettlementEarly(ActionId)
 }
 
 type Transition =
@@ -295,15 +309,15 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
     }
     Acting(..), _ -> Error(StaleEvent)
 
-    Stopping(turn, actions, reason), ToolReported(id, outcome) -> {
+    Stopping(turn, actions, reason, halted), ToolReported(id, outcome) -> {
       use actions <- result.try(update(actions, id, accept_report(id, outcome)))
-      Ok(#(State(..state, phase: Stopping(turn, actions, reason)), []))
+      Ok(#(State(..state, phase: Stopping(turn, actions, reason, halted)), []))
     }
-    Stopping(turn, actions, reason), ToolLost(id, why) -> {
+    Stopping(turn, actions, reason, halted), ToolLost(id, why) -> {
       use actions <- result.try(update(actions, id, lose(id, why)))
-      Ok(#(State(..state, phase: Stopping(turn, actions, reason)), []))
+      Ok(#(State(..state, phase: Stopping(turn, actions, reason, halted)), []))
     }
-    Stopping(turn, actions, reason), ToolsStopped -> {
+    Stopping(turn, actions, reason, _), ToolsStopped -> {
       // A stopped tool that can settle late keeps running until its
       // settlement arrives or its bound passes.
       let awaiting =
@@ -331,20 +345,27 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
         list.map(awaiting, fn(entry) { AwaitSettlement(entry.0, entry.1) }),
       ))
     }
-    Stopping(turn, actions, reason), Settled(id, outcome) -> {
+    // A settlement is accepted once, while the action awaits it: after the
+    // executor confirmed that its task no longer runs, and before its
+    // bound passed.
+    Stopping(turn, actions, reason, halted), Settled(id, outcome) -> {
       use actions <- result.try(
-        update(actions, id, fn(action_state) {
-          case action_state, settled_state(outcome) {
-            run.Running, Definite(settled) | run.Running, Indefinite(settled) ->
-              Ok(settled)
-            run.Uncertain(_), Definite(settled) -> Ok(settled)
-            _, _ -> Error(SettlementNotAwaited(id))
+        update_record(actions, id, fn(action) {
+          case action.state, action.child, halted {
+            run.Running, None, True ->
+              Ok(
+                ActionRecord(..action, state: case settled_state(outcome) {
+                  Definite(settled) | Indefinite(settled) -> settled
+                }),
+              )
+            run.Running, None, False -> Error(SettlementEarly(id))
+            _, _, _ -> Error(SettlementNotAwaited(id))
           }
         }),
       )
-      Ok(#(stopped_when_idle(state, turn, actions, reason), []))
+      Ok(#(stopped_when_idle(state, turn, actions, reason, halted), []))
     }
-    Stopping(turn, actions, reason), SettlementDue(id) -> {
+    Stopping(turn, actions, reason, halted), SettlementDue(id) -> {
       use actions <- result.try(
         update(actions, id, fn(action_state) {
           case action_state {
@@ -353,20 +374,20 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
           }
         }),
       )
-      Ok(#(stopped_when_idle(state, turn, actions, reason), []))
+      Ok(#(stopped_when_idle(state, turn, actions, reason, halted), []))
     }
-    Stopping(turn, actions, reason), ChildStarted(id) -> {
+    Stopping(turn, actions, reason, halted), ChildStarted(id) -> {
       use actions <- result.try(child_started(actions, id))
-      Ok(#(State(..state, phase: Stopping(turn, actions, reason)), []))
+      Ok(#(State(..state, phase: Stopping(turn, actions, reason, halted)), []))
     }
-    Stopping(turn, actions, reason), ChildEnded(id, result) -> {
+    Stopping(turn, actions, reason, halted), ChildEnded(id, result) -> {
       use #(actions, _) <- result.try(child_ended(
         actions,
         id,
         result,
         settle_with(env),
       ))
-      Ok(#(stopped_when_idle(state, turn, actions, reason), []))
+      Ok(#(stopped_when_idle(state, turn, actions, reason, halted), []))
     }
     Stopping(..), _ -> Error(StaleEvent)
   }
@@ -381,7 +402,7 @@ pub fn cancel(state: State) -> Transition {
     AwaitingModel(_) ->
       Ok(#(State(..state, phase: Ended(run.Cancelled)), [AbortModel]))
     Acting(turn, actions) -> Ok(stop(state, turn, actions, CancelRequested))
-    Stopping(_, actions, _) -> Ok(#(state, cancel_children(actions)))
+    Stopping(actions:, ..) -> Ok(#(state, cancel_children(actions)))
   }
 }
 
@@ -392,7 +413,7 @@ pub fn cancel(state: State) -> Transition {
 pub fn cancel_abandoned(state: State) -> Transition {
   case state.phase, abandon(state) {
     Stopping(..), State(phase: Ended(_), ..) as ended -> Ok(#(ended, []))
-    Stopping(..), State(phase: Stopping(_, actions, _), ..) as stopping ->
+    Stopping(..), State(phase: Stopping(actions:, ..), ..) as stopping ->
       Ok(#(stopping, cancel_children(actions)))
     _, abandoned -> cancel(abandoned)
   }
@@ -427,8 +448,8 @@ pub fn cancel_unattended(
   }
   let state = case state.phase {
     Acting(turn, actions) -> State(..state, phase: Acting(turn, apply(actions)))
-    Stopping(turn, actions, reason) ->
-      stopped_when_idle(state, turn, apply(actions), reason)
+    Stopping(turn, actions, reason, halted) ->
+      stopped_when_idle(state, turn, apply(actions), reason, halted)
     AwaitingModel(_) | Ended(_) -> state
   }
   case stopping, state.phase {
@@ -484,18 +505,22 @@ fn finish_stop(
         _, _ -> action
       }
     })
-  stopped_when_idle(state, turn, actions, reason)
+  stopped_when_idle(state, turn, actions, reason, True)
 }
 
-/// Ends a stopping run once no tool runs and no child run is active.
+/// Ends a stopping run once no tool runs, no settlement is awaited, and no
+/// child run is active. `tools_stopped`: the executor confirmed that no
+/// tool task runs.
 fn stopped_when_idle(
   state: State,
   turn: Int,
   actions: List(ActionRecord),
   reason: StopReason,
+  tools_stopped: Bool,
 ) -> State {
   case list.any(actions, fn(a) { tool_running(a) || child_active(a) }) {
-    True -> State(..state, phase: Stopping(turn, actions, reason))
+    True ->
+      State(..state, phase: Stopping(turn, actions, reason, tools_stopped))
     False -> end(state, actions, stop_outcome(reason))
   }
 }
@@ -700,7 +725,7 @@ fn answer_approval(
   case reference.run == state.run, state.phase {
     False, _ -> Error(WrongReference)
     True, Ended(_) -> Error(after_end(state.history, reference))
-    True, Stopping(_, actions, _) ->
+    True, Stopping(actions:, ..) ->
       Error(after_end(list.append(state.history, actions), reference))
     True, Acting(turn, actions) ->
       case find(actions) {
@@ -1136,12 +1161,13 @@ fn stop(
         _ -> action
       }
     })
-  let stop_tools = case list.any(actions, tool_running) {
+  let running = list.any(actions, tool_running)
+  let stop_tools = case running {
     True -> [StopTools]
     False -> []
   }
   let effects = list.append(stop_tools, cancel_children(actions))
-  #(stopped_when_idle(state, turn, actions, reason), effects)
+  #(stopped_when_idle(state, turn, actions, reason, !running), effects)
 }
 
 fn stop_outcome(reason: StopReason) -> Outcome {
@@ -1357,7 +1383,7 @@ pub fn abandon(state: State) -> State {
           }),
         ),
       )
-    Stopping(turn, actions, reason) ->
+    Stopping(turn, actions, reason, _) ->
       finish_stop(state, turn, actions, reason, lost_evidence, [])
     AwaitingModel(_) | Ended(_) -> state
   }
@@ -1378,7 +1404,7 @@ pub fn recover(env: Env(context), state: State) -> #(State, List(Effect)) {
       let state = ask_again(state, turn, actions)
       #(state, dispatch(current(state)))
     }
-    Stopping(_, actions, _) -> #(state, cancel_children(actions))
+    Stopping(actions:, ..) -> #(state, cancel_children(actions))
     Ended(_) -> #(state, [])
   }
 }
@@ -1407,7 +1433,7 @@ fn ask_again(state: State, turn: Int, actions: List(ActionRecord)) -> State {
 /// The actions of the current batch.
 fn current(state: State) -> List(ActionRecord) {
   case state.phase {
-    Acting(_, actions) | Stopping(_, actions, _) -> actions
+    Acting(_, actions) | Stopping(actions:, ..) -> actions
     AwaitingModel(_) | Ended(_) -> []
   }
 }
@@ -1416,7 +1442,7 @@ fn current(state: State) -> List(ActionRecord) {
 /// child run id).
 pub fn active_children(state: State) -> List(#(ActionId, String, String)) {
   case state.phase {
-    Acting(_, actions) | Stopping(_, actions, _) ->
+    Acting(_, actions) | Stopping(actions:, ..) ->
       list.filter_map(actions, fn(action) {
         case child_active(action), action.child {
           True, Some(child) -> Ok(#(action.id, action.call.name, child))

@@ -598,6 +598,7 @@ pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
         1,
         [run.ActionRecord(ActionId(1, "a"), call, run.Running, [], None)],
         controller.CancelRequested,
+        False,
       ),
     )
   let assert Ok(1) =

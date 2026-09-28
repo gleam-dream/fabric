@@ -13,21 +13,28 @@
 //// handle with which its result can be settled after the invocation's task
 //// was stopped (a cancellation, a host fault in another action, or a task
 //// that died), for a tool whose effect outlives its task, such as a
-//// workflow that compensates after it is cancelled. A settlement is
-//// accepted at most once per action, and only while the action awaits it:
+//// workflow that compensates after it is cancelled. The run accepts at most
+//// one settlement per action, and only while the action awaits one:
 ////
-//// - The run is stopping and the action's task was stopped: the run waits,
-////   up to the tool's bound, for the settlement before it ends. The
-////   settlement is recorded as the action's result, definite or uncertain.
-////   Past the bound the action is an uncertain effect.
-//// - The action is an uncertain effect of a run that has not ended: only a
-////   definite settlement is accepted, recorded like a reconciliation of
-////   exactly that action, and the run continues.
+//// - **The run is stopping.** Once the executor has confirmed that the
+////   action's task no longer runs, the run waits, up to the tool's bound
+////   (`within`), for the settlement before it ends, and records it as the
+////   action's result, definite or uncertain. A settlement offered before
+////   that confirmation waits for it (the task may still be acting); one
+////   offered after the bound is refused, and the action stays an uncertain
+////   effect.
+//// - **The run continues.** An action that became an uncertain effect
+////   while the run was not stopping (its task died, or its runner was lost
+////   and the run recovered) accepts a definite settlement at any later
+////   time, recorded like a reconciliation of exactly that action; the run
+////   then continues. An uncertain settlement adds nothing and is refused.
 ////
-//// Otherwise `settle` returns `NotAwaited` and changes nothing: the task
-//// is still running or reported, the action was settled or reconciled
-//// already, or the run has ended. The handle reaches the run through the
-//// store its invocation ran with.
+//// Whichever is accepted first, a settlement or a reconciliation, is the
+//// only one: every later settlement is refused. A refused settlement
+//// changes nothing, and `settle` returns `NotAwaited`: the task is still
+//// running (or reported its own result), the action was settled or
+//// reconciled already, its bound passed, or the run has ended. The handle
+//// reaches the run through the store its invocation ran with.
 
 import fabric/internal/invocation.{type Outcome}
 import fabric/model.{type ToolCall}
