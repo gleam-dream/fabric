@@ -462,6 +462,7 @@ pub fn start(store: Store) -> Result(Nil, StoreError) {
   let keeper =
     process.spawn(fn() {
       process.trap_exits(True)
+      await_earlier_factory(store.name)
       let subtree =
         subtree(store, Some(#(caller, failed)), supervision.Transient)
         |> static_supervisor.start
@@ -487,6 +488,25 @@ pub fn start(store: Store) -> Result(Nil, StoreError) {
       Error(Nil) -> describe_start(error)
     })
   })
+}
+
+/// Waits, up to 5000 ms, until the runner factory of an earlier subtree of
+/// the store `name` is gone, when no store process of that name runs: the
+/// store's process stops at once when its starter exits, and its factory
+/// only after it, so a script that starts the store again right away
+/// would find the factory's name taken.
+fn await_earlier_factory(name: Name(Message)) -> Nil {
+  case process.named(name), process.named(factory_name(name)) {
+    Error(Nil), Ok(factory) -> {
+      let monitor = process.monitor(factory)
+      let _ =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(_) { Nil })
+        |> process.selector_receive(5000)
+      process.demonitor_process(monitor)
+    }
+    _, _ -> Nil
+  }
 }
 
 /// Holds a started subtree until `caller` exits, then stops it; exits with
