@@ -747,7 +747,7 @@ fn store_error(error: store.StoreError) -> RecordError {
   case error {
     store.NotFound -> RunNotFound
     store.Unavailable(reason) -> StoreUnavailable(reason)
-    store.AlreadyExists | store.Conflict(_) ->
+    store.AlreadyExists | store.Conflict(_) | store.LeaseRefused(_) ->
       StoreUnavailable(describe_store(error))
   }
 }
@@ -759,6 +759,9 @@ fn describe_store(error: store.StoreError) -> String {
     store.AlreadyExists -> "the run already exists"
     store.Conflict(current) ->
       "the run moved on to revision " <> int.to_string(current)
+    store.LeaseRefused(store.Held(owner:, ..)) ->
+      "the run's lease is held by " <> owner
+    store.LeaseRefused(store.Free) -> "the run's lease is not held"
   }
 }
 
