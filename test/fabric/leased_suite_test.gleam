@@ -5,6 +5,7 @@
 import fabric/approval_test
 import fabric/cancellation_test
 import fabric/delegation_test
+import fabric/drain_test
 import fabric/durable_test
 import fabric/store
 import fabric/support
@@ -16,8 +17,12 @@ import gleeunit/should
 pub fn the_suite_runs_on_leased_stores_test() {
   support.leased(fn() {
     store.poll_interval(support.store()) |> should.equal(Some(500))
+    store.poll_interval(support.restartable_store("unused"))
+    |> should.equal(Some(500))
   })
   store.poll_interval(support.store()) |> should.equal(None)
+  store.poll_interval(support.restartable_store("unused"))
+  |> should.equal(None)
 }
 
 pub fn leased_killed_runner_is_recovered_test() {
@@ -133,5 +138,71 @@ pub fn leased_cancel_stored_cancels_the_children_first_test() {
 pub fn leased_nested_delegation_depth_test() {
   support.leased(
     delegation_test.nested_delegation_is_bounded_by_the_root_depth_test,
+  )
+}
+
+pub fn leased_drain_finishes_running_work_test() {
+  support.leased(
+    drain_test.a_stop_lets_a_running_tool_finish_and_hands_the_run_off_test,
+  )
+}
+
+pub fn leased_drain_window_exhaustion_test() {
+  support.leased(
+    drain_test.a_tool_past_the_drain_window_is_uncertain_and_never_rerun_test,
+  )
+}
+
+pub fn leased_drain_asks_for_queued_approval_again_test() {
+  support.leased(
+    drain_test.an_approved_queued_tool_is_asked_for_again_after_the_handoff_test,
+  )
+}
+
+pub fn leased_drain_waits_for_model_reply_test() {
+  support.leased(drain_test.a_stop_waits_for_the_model_reply_in_flight_test)
+}
+
+pub fn leased_drain_preserves_suspended_run_test() {
+  support.leased(drain_test.a_suspended_run_is_untouched_by_a_stop_test)
+}
+
+pub fn leased_store_outlives_draining_runners_test() {
+  support.leased(drain_test.a_store_stops_after_its_draining_runners_test)
+}
+
+pub fn leased_drain_hands_off_children_test() {
+  support.leased(
+    drain_test.a_child_run_drains_on_its_own_and_is_recovered_with_its_parent_test,
+  )
+}
+
+pub fn leased_approval_ahead_of_shutdown_test() {
+  support.leased(
+    drain_test.a_delegation_approved_ahead_of_the_stop_does_not_hold_up_the_drain_test,
+  )
+}
+
+pub fn leased_delegation_decided_during_shutdown_test() {
+  support.leased(
+    drain_test.a_delegation_decided_during_the_stop_does_not_hold_up_the_drain_test,
+  )
+}
+
+pub fn leased_drain_refunds_retry_turn_test() {
+  support.leased(
+    drain_test.a_retry_backoff_is_not_waited_for_and_its_turn_is_given_back_test,
+  )
+}
+
+pub fn leased_shutdown_precedes_queued_report_test() {
+  support.leased(
+    drain_test.a_shutdown_queued_behind_a_report_is_taken_first_test,
+  )
+}
+
+pub fn leased_start_during_shutdown_test() {
+  support.leased(
+    drain_test.a_tool_body_starting_a_run_during_the_stop_does_not_hold_up_the_drain_test,
   )
 }

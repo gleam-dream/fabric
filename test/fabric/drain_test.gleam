@@ -50,10 +50,6 @@ fn turns_used(run: fabric.Run(context)) -> Int {
   snapshot.turns_used
 }
 
-fn directory_store(dir: String) -> store.Store {
-  store.directory(process.new_name("draining"), dir)
-}
-
 /// The tool running when the application stops finishes, its result is
 /// committed, and the run is handed off: the next model call was never
 /// issued, so its turn is not counted. After a restart, `recover` goes on
@@ -62,7 +58,7 @@ fn directory_store(dir: String) -> store.Store {
 pub fn a_stop_lets_a_running_tool_finish_and_hands_the_run_off_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let runs = directory_store(dir)
+  let runs = support.restartable_store(dir)
   let app = restart.application(runs)
   let assert Ok(run) = fabric.start(runs, one_slow(probe), Nil, "go")
   let running = probe.arrival(probe)
@@ -93,7 +89,7 @@ pub fn a_stop_lets_a_running_tool_finish_and_hands_the_run_off_test() {
 pub fn a_tool_past_the_drain_window_is_uncertain_and_never_rerun_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let assert Ok(runs) = store.with_drain(directory_store(dir), 50)
+  let assert Ok(runs) = store.with_drain(support.restartable_store(dir), 50)
   let app = restart.application(runs)
   let assert Ok(run) = fabric.start(runs, one_slow(probe), Nil, "go")
   let _ = probe.arrival(probe)
@@ -122,7 +118,7 @@ pub fn a_tool_past_the_drain_window_is_uncertain_and_never_rerun_test() {
 pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let runs = directory_store(dir)
+  let runs = support.restartable_store(dir)
   let agent =
     agent.new(
       "agent",
@@ -172,7 +168,7 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
 pub fn a_stop_waits_for_the_model_reply_in_flight_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let runs = directory_store(dir)
+  let runs = support.restartable_store(dir)
   let slow_model =
     model.new(fn(request: model.Request) {
       case scripted.results(request.messages) {
@@ -227,7 +223,7 @@ pub fn a_stop_waits_for_the_model_reply_in_flight_test() {
 pub fn a_suspended_run_is_untouched_by_a_stop_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let runs = directory_store(dir)
+  let runs = support.restartable_store(dir)
   let agent =
     agent.new(
       "agent",
@@ -265,7 +261,7 @@ pub fn a_suspended_run_is_untouched_by_a_stop_test() {
 pub fn a_store_stops_after_its_draining_runners_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let runs = directory_store(dir)
+  let runs = support.restartable_store(dir)
   let app = restart.application(runs)
   let assert Ok(run) = fabric.start(runs, one_slow(probe), Nil, "go")
   let running = probe.arrival(probe)
@@ -294,7 +290,7 @@ pub fn a_store_stops_after_its_draining_runners_test() {
 pub fn a_child_run_drains_on_its_own_and_is_recovered_with_its_parent_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let runs = directory_store(dir)
+  let runs = support.restartable_store(dir)
   let research =
     tool.define(
       "research",
@@ -421,7 +417,7 @@ fn queued(pid: process.Pid, count: Int) -> Nil {
 pub fn a_delegation_approved_ahead_of_the_stop_does_not_hold_up_the_drain_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let assert Ok(runs) = store.with_drain(directory_store(dir), 60_000)
+  let assert Ok(runs) = store.with_drain(support.restartable_store(dir), 60_000)
   let assert Ok(delegation) = testing.call(research(), "r", "weather")
   let policy = fn(_context, action: policy.Action) {
     case action.tool {
@@ -472,7 +468,7 @@ pub fn a_delegation_decided_during_the_stop_does_not_hold_up_the_drain_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
   let gate = probe.new()
-  let assert Ok(runs) = store.with_drain(directory_store(dir), 60_000)
+  let assert Ok(runs) = store.with_drain(support.restartable_store(dir), 60_000)
   let assert Ok(delegation) = testing.call(research(), "r", "weather")
   let policy = fn(_context, action: policy.Action) {
     case action.tool {
@@ -506,7 +502,7 @@ pub fn a_delegation_decided_during_the_stop_does_not_hold_up_the_drain_test() {
 pub fn a_retry_backoff_is_not_waited_for_and_its_turn_is_given_back_test() {
   let dir = restart.temp_dir()
   let calls = probe.new()
-  let runs = directory_store(dir)
+  let runs = support.restartable_store(dir)
   let flaky_model =
     model.new(fn(_request) {
       probe.record(calls, "call")
@@ -560,7 +556,7 @@ fn wait_for_turns(run: fabric.Run(context), turns: Int) -> Nil {
 pub fn a_shutdown_queued_behind_a_report_is_taken_first_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let assert Ok(runs) = store.with_drain(directory_store(dir), 60_000)
+  let assert Ok(runs) = store.with_drain(support.restartable_store(dir), 60_000)
   let two =
     agent.new(
       "agent",
@@ -607,7 +603,7 @@ pub fn a_shutdown_queued_behind_a_report_is_taken_first_test() {
 pub fn a_tool_body_starting_a_run_during_the_stop_does_not_hold_up_the_drain_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let assert Ok(runs) = store.with_drain(directory_store(dir), 60_000)
+  let assert Ok(runs) = store.with_drain(support.restartable_store(dir), 60_000)
   let child =
     agent.new(
       "child",

@@ -32,20 +32,21 @@ pub fn agent(spec: Spec(context)) -> Agent(context) {
 /// A started in-memory store, linked to the caller. Within `leased`, a
 /// leased store over its own in-memory leased backend instead.
 pub fn store() -> Store {
-  let name = process.new_name("fabric-test-store")
   case leasing() {
-    False -> started(store.in_memory(name))
-    True -> {
-      let assert Ok(leased) =
-        store.leased(
-          name,
-          node: "fabric-test",
-          lease: 1500,
-          backend: testing.leased_memory().backend,
-        )
-      started(leased)
-    }
+    False -> started(store.in_memory(process.new_name("fabric-test-store")))
+    True -> started(leased_store())
   }
+}
+
+fn leased_store() -> Store {
+  let assert Ok(leased) =
+    store.leased(
+      process.new_name("fabric-test-store"),
+      node: "fabric-test",
+      lease: 1500,
+      backend: testing.leased_memory().backend,
+    )
+  leased
 }
 
 /// Runs `body` with `store` making leased stores, in the calling process
@@ -71,4 +72,13 @@ pub fn directory(path: String) -> Store {
 pub fn started(store: Store) -> Store {
   let assert Ok(Nil) = store.start(store)
   store
+}
+
+/// An unstarted store whose records survive its subtree: files by default,
+/// or a leased backend owned by the test process within `leased`.
+pub fn restartable_store(path: String) -> Store {
+  case leasing() {
+    False -> store.directory(process.new_name("fabric-test-store"), path)
+    True -> leased_store()
+  }
 }
