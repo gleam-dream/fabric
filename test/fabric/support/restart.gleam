@@ -4,6 +4,7 @@
 
 import fabric/run.{type RunId}
 import fabric/store.{type Store}
+import gleam/erlang/atom.{type Atom}
 import gleam/erlang/process.{type Pid}
 import gleam/option.{None, Some}
 
@@ -81,6 +82,11 @@ pub fn crash(owner: Pid, store: Store) -> Nil {
 /// Whether `pid` monitors `target` and is blocked in a receive.
 @external(erlang, "fabric_test_ffi", "waits_on")
 pub fn waits_on(pid: Pid, target: Pid) -> Bool
+
+/// Whether `pid` is blocked in a receive that `module`'s own code entered
+/// (not, say, a call into another module that waits for a reply).
+@external(erlang, "fabric_test_ffi", "waits_in")
+pub fn waits_in(pid: Pid, module: Atom) -> Bool
 
 /// Suspends `pid`: it runs nothing until `resume`, while messages queue.
 @external(erlang, "fabric_test_ffi", "suspend")

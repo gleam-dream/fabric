@@ -19,6 +19,7 @@ import fabric/support/probe.{type Probe}
 import fabric/support/restart
 import fabric/support/scripted
 import fabric/tool
+import gleam/erlang/atom
 import gleam/erlang/process.{type Pid}
 import gleam/list
 import gleam/option.{None}
@@ -552,6 +553,34 @@ pub fn await_reports_a_stopped_store_test() {
   restart.crash(owner, store)
   let assert Ok(Error(fabric.StoreUnavailable(_))) =
     process.receive(awaited, 5000)
+}
+
+/// A wait longer than the longest timer the runtime can set (2^32 - 1 ms)
+/// is waited in parts rather than crashing the caller: here the run
+/// finishes while `await` waits, and its outcome is returned.
+pub fn an_await_longer_than_a_timer_returns_the_outcome_test() {
+  let probe = probe.new()
+  let store = support.store()
+  let assert Ok(run) = fabric.start(store, one_slow(probe), Nil, "go")
+  let arrival = probe.arrival(probe)
+  let awaiter = process.self()
+  process.spawn(fn() {
+    waiting_in_fabric(awaiter)
+    probe.release(arrival)
+  })
+  fabric.await(run, 4_294_967_296)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
+}
+
+/// Waits until `awaiter` is blocked in `fabric`'s own receive.
+fn waiting_in_fabric(awaiter: Pid) -> Nil {
+  case restart.waits_in(awaiter, atom.create("fabric")) {
+    True -> Nil
+    False -> {
+      process.sleep(1)
+      waiting_in_fabric(awaiter)
+    }
+  }
 }
 
 // --- several stores over one directory ------------------------------------------

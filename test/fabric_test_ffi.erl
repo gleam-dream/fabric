@@ -1,5 +1,5 @@
 -module(fabric_test_ffi).
--export([temp_dir/0, remove_dir/1, list_dir/1, write_file/2, read_file/1, age_file/2, waits_on/2,
+-export([temp_dir/0, remove_dir/1, list_dir/1, write_file/2, read_file/1, age_file/2, waits_on/2, waits_in/2,
          suspend/1, resume/1, queued/1]).
 
 %% A fresh, empty directory under the system temporary directory.
@@ -46,6 +46,19 @@ waits_on(Pid, Target) ->
     case erlang:process_info(Pid, [status, monitors]) of
         [{status, waiting}, {monitors, Monitors}] ->
             lists:member({process, Target}, Monitors);
+        _ -> false
+    end.
+
+%% Whether Pid is blocked in a receive that Module's code entered directly:
+%% the innermost frame of its stack outside gleam_erlang is Module's.
+waits_in(Pid, Module) ->
+    case erlang:process_info(Pid, [status, current_stacktrace]) of
+        [{status, waiting}, {current_stacktrace, Frames}] ->
+            case [M || {M, _, _, _} <- Frames,
+                       M =/= gleam_erlang_ffi, M =/= 'gleam@erlang@process'] of
+                [Module | _] -> true;
+                _ -> false
+            end;
         _ -> false
     end.
 

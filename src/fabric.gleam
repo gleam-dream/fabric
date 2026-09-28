@@ -264,7 +264,9 @@ pub fn child(
 /// With no store process running when it starts, or none registered again
 /// in time, it is `StoreUnavailable`. A run whose
 /// sub-agents work is working; one waiting only on paused sub-agents is
-/// suspended on their approvals. `await(run, 0)` reads the status now.
+/// suspended on their approvals. `await(run, 0)` reads the status now; a
+/// `within` longer than the runtime's longest timer (2^32 - 1 ms) is waited
+/// in parts.
 pub fn await(run: Run(context), within: Int) -> Result(Status, RecordError) {
   attend(run, process.new_subject(), now() + within, None)
 }
@@ -375,7 +377,7 @@ fn wait(
             process.new_selector()
             |> process.select_map(watcher, Ok)
             |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
-            |> process.selector_receive(int.max(0, deadline - now()))
+            |> receive_until(deadline)
           case woken {
             Error(Nil) -> done(Ok(run.Working))
             Ok(Error(Nil)) -> StoreStopped
@@ -385,6 +387,22 @@ fn wait(
         Ok(Nil), [], family.View(status, _) -> done(Ok(status))
       }
     }
+  }
+}
+
+/// The longest timer the runtime can set, in milliseconds.
+const longest_timer = 4_294_967_295
+
+/// Receives from `selector` until `deadline`, waiting at most the longest
+/// timer at a time, so that a longer wait does not crash the caller.
+fn receive_until(
+  selector: process.Selector(message),
+  deadline: Int,
+) -> Result(message, Nil) {
+  let left = int.max(0, deadline - now())
+  case process.selector_receive(selector, int.min(left, longest_timer)) {
+    Error(Nil) if left > longest_timer -> receive_until(selector, deadline)
+    received -> received
   }
 }
 
