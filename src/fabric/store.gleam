@@ -83,6 +83,8 @@
 import fabric/internal/bounded
 import fabric/internal/executor
 import fabric/internal/live
+import fabric/internal/observe
+import fabric/observation as o
 import gleam/dict.{type Dict}
 import gleam/dynamic
 import gleam/erlang/process.{type Name, type Pid, type Subject}
@@ -219,6 +221,18 @@ pub opaque type Message {
   /// A runner of the factory `pid` received its shutdown: the factory takes
   /// no more runners.
   Draining(factory: Pid)
+  /// A leased store renews the leases of its runners; `tick`: the timer's
+  /// (which sets the next one), not a test's.
+  Renew(tick: Bool)
+  /// A renewal sent at the monotonic time `sent` for `runs` (each with its
+  /// runner) finished.
+  Renewed(
+    sent: Int,
+    runs: List(#(String, Pid)),
+    result: Result(List(String), StoreError),
+  )
+  /// Kill the runners whose lease could have expired.
+  Fence
 }
 
 /// A store over application-supplied backend functions (for example a
@@ -821,6 +835,13 @@ type Loop {
     /// A leased store's owner token and lease duration.
     lessee: Option(Lessee),
     live: Dict(String, #(Pid, Live)),
+    /// A leased store: per run with a live runner, the monotonic time until
+    /// which its lease is surely held (see `valid_until`).
+    valid: Dict(String, Int),
+    /// A renewal is in flight.
+    renewing: Bool,
+    /// When the next `Fence` is due, if one is set.
+    fence_at: Option(Int),
     /// The name of the factory its runners are started under.
     factory: Name(FactoryMessage),
     /// The runner factory process that reported it is shutting down.
@@ -870,11 +891,17 @@ fn run(
           leasing.ttl,
         )
       })
+    option.map(lessee, fn(lessee) {
+      process.send_after(subject, lessee.ttl / 3, Renew(True))
+    })
     Loop(
       subject:,
       backend:,
       lessee:,
       live: dict.new(),
+      valid: dict.new(),
+      renewing: False,
+      fence_at: None,
       factory: factory_name(store.name),
       draining: None,
       watchers: dict.new(),
@@ -948,6 +975,9 @@ fn serve(state: Loop, message: Message) -> Loop {
       state
     }
     Draining(pid) -> Loop(..state, draining: Some(pid))
+    Renew(tick) -> renew(state, tick)
+    Renewed(sent, runs, renewed) -> renewed_leases(state, sent, runs, renewed)
+    Fence -> Loop(..state, fence_at: None) |> fence |> schedule_fence
     Get(run, ..) as request | Write(run, ..) as request ->
       enqueue(state, run, request)
     Finished(run, done) -> finish(state, run, done)
@@ -989,6 +1019,7 @@ fn serve(state: Loop, message: Message) -> Loop {
         Loop(
           ..state,
           live:,
+          valid: dict.drop(state.valid, released),
           watchers:,
           monitored: list.filter(state.monitored, fn(p) { p != pid }),
         )
@@ -1146,12 +1177,12 @@ fn finish(state: Loop, run: String, done: Done) -> Loop {
           )
           state
         }
-        Write(ownership:, reply:, ..), Wrote(written, _) -> {
+        Write(ownership:, reply:, ..), Wrote(written, sent) -> {
           process.send(reply, written)
           case written {
             Error(_) -> state
             Ok(_) -> {
-              let state = own(state, run, ownership)
+              let state = own(state, run, ownership, sent)
               notify(state, run)
               state
             }
@@ -1208,21 +1239,187 @@ fn confirm(
   }
 }
 
-fn own(state: Loop, run: String, ownership: Ownership) -> Loop {
+/// Applies a committed write's ownership. A write sent at `sent` that
+/// claimed a lease holds it until `valid_until(sent)`.
+fn own(state: Loop, run: String, ownership: Ownership, sent: Int) -> Loop {
   case ownership {
     Keep | Detached(..) -> state
     Leave(pid) | HandOff(pid) ->
       case dict.get(state.live, run) {
         Ok(#(owner, _)) if owner == pid ->
-          Loop(..state, live: dict.delete(state.live, run))
+          Loop(
+            ..state,
+            live: dict.delete(state.live, run),
+            valid: dict.delete(state.valid, run),
+          )
         _ -> state
       }
-    Launch(pid, live, _) ->
-      Loop(
-        ..monitor(state, pid),
-        live: dict.insert(state.live, run, #(pid, live)),
-      )
+    Launch(pid, live, _) -> {
+      let state =
+        Loop(
+          ..monitor(state, pid),
+          live: dict.insert(state.live, run, #(pid, live)),
+        )
+      case state.lessee {
+        None -> state
+        Some(lessee) ->
+          Loop(
+            ..state,
+            valid: dict.insert(state.valid, run, valid_until(lessee, sent)),
+          )
+          |> schedule_fence
+      }
+    }
   }
+}
+
+// --- leases ------------------------------------------------------------------
+
+/// Until when a lease extended by a write or renewal sent at `sent` is
+/// surely held, by this process's monotonic clock: the backend set its
+/// expiry after `sent`, `ttl` ahead by its own clock, and a margin of a
+/// fifth of the lease covers the clocks' drift and the kill's delay.
+fn valid_until(lessee: Lessee, sent: Int) -> Int {
+  sent + lessee.ttl - lessee.ttl / 5
+}
+
+/// Sends one renewal of the leases of every live runner, unless one is in
+/// flight; on the timer's tick, also sets the next one and kills the
+/// runners whose lease could have expired.
+fn renew(state: Loop, tick: Bool) -> Loop {
+  case state.lessee {
+    None -> state
+    Some(lessee) -> {
+      let state = case tick {
+        True -> {
+          process.send_after(state.subject, lessee.ttl / 3, Renew(True))
+          fence(state)
+        }
+        False -> state
+      }
+      let runs =
+        dict.to_list(state.live)
+        |> list.map(fn(entry) { #(entry.0, entry.1.0) })
+      case state.renewing, runs {
+        True, _ | False, [] -> state
+        False, _ -> {
+          let backend = state.backend
+          let subject = state.subject
+          // A renewal slower than a third of the lease is as good as failed;
+          // the next tick sends another.
+          let timeout = int.min(state.timeout, int.max(lessee.ttl / 3, 1))
+          let _ =
+            process.spawn(fn() {
+              let sent = now_ms()
+              let renewed =
+                bounded_backend(timeout, fn() {
+                  backend.renew(
+                    lessee.owner,
+                    list.map(runs, fn(run) { run.0 }),
+                    lessee.ttl,
+                  )
+                })
+              process.send(subject, Renewed(sent, runs, renewed))
+            })
+          Loop(..state, renewing: True)
+        }
+      }
+    }
+  }
+}
+
+/// A renewal finished: each run it renewed is held a lease longer, and the
+/// runner of each run it did not is killed, unless that runner is gone.
+fn renewed_leases(
+  state: Loop,
+  sent: Int,
+  runs: List(#(String, Pid)),
+  renewed: Result(List(String), StoreError),
+) -> Loop {
+  let state = Loop(..state, renewing: False)
+  case state.lessee, renewed {
+    None, _ -> state
+    Some(lessee), Error(_) -> {
+      observe.renewal_failed(lessee.owner, list.length(runs))
+      state
+    }
+    Some(lessee), Ok(held) ->
+      list.fold(runs, state, fn(state, entry) {
+        let #(run, pid) = entry
+        case dict.get(state.live, run), list.contains(held, run) {
+          Ok(#(current, _)), True if current == pid ->
+            Loop(
+              ..state,
+              valid: dict.upsert(state.valid, run, fn(valid) {
+                int.max(option.unwrap(valid, 0), valid_until(lessee, sent))
+              }),
+            )
+          Ok(#(current, _)), False if current == pid ->
+            lose(state, lessee, run, pid, o.Revoked)
+          _, _ -> state
+        }
+      })
+      |> schedule_fence
+  }
+}
+
+/// Kills the runner of every run whose lease could have expired.
+fn fence(state: Loop) -> Loop {
+  case state.lessee {
+    None -> state
+    Some(lessee) -> {
+      let now = now_ms()
+      dict.fold(state.valid, state, fn(state, run, valid) {
+        case valid <= now, dict.get(state.live, run) {
+          True, Ok(#(pid, _)) -> lose(state, lessee, run, pid, o.Unrenewed)
+          _, _ -> state
+        }
+      })
+    }
+  }
+}
+
+/// Sets a `Fence` for the earliest time a lease could expire, unless one
+/// is set for an earlier time.
+fn schedule_fence(state: Loop) -> Loop {
+  let earliest =
+    dict.values(state.valid)
+    |> list.reduce(int.min)
+  case earliest, state.fence_at {
+    Error(Nil), _ -> state
+    Ok(at), Some(set) if set <= at -> state
+    Ok(at), _ -> {
+      process.send_after(state.subject, int.max(at - now_ms(), 0), Fence)
+      Loop(..state, fence_at: Some(at))
+    }
+  }
+}
+
+/// Kills the runner `pid` of `run`, whose lease this store lost, and with
+/// it its model call and tool bodies (they are linked to it).
+fn lose(
+  state: Loop,
+  lessee: Lessee,
+  run: String,
+  pid: Pid,
+  reason: o.LeaseLoss,
+) -> Loop {
+  process.kill(pid)
+  let state =
+    Loop(
+      ..state,
+      live: dict.delete(state.live, run),
+      valid: dict.delete(state.valid, run),
+    )
+  notify(state, run)
+  observe.lease_lost(run, lessee.owner, reason)
+  state
+}
+
+/// Sends the store's process a renewal now, for tests.
+@internal
+pub fn renew_now(store: Store) -> Nil {
+  process.send(target(store), Renew(False))
 }
 
 fn monitor(state: Loop, pid: Pid) -> Loop {
