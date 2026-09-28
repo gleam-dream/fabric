@@ -326,29 +326,34 @@ pub fn directory(name: Name(Message), path: String) -> Store {
 /// that share one database (see Leases in the module documentation). Its
 /// process identifies itself to the backend as
 /// `<node>/<name>/<random>`, with a new random part each time it starts;
-/// `node` must be unique to the VM and the same after a restart.
+/// `node` must be unique to the VM and the same after a restart. Names
+/// made by `process.new_name` are unique only within a VM: two live VMs
+/// sharing a node id can mistake each other's store for an earlier self.
 ///
 /// A run's lease is claimed in the commit that hands its work to a runner
 /// of this store and held, for `lease` milliseconds from the backend's
-/// clock, while the runner lives: every runner commit, including a tool's
-/// start, requires this store to hold it, and the store's process renews
-/// the leases of its runners every `lease / 3` ms in one batch. A runner
+/// clock, while the runner lives: every commit that keeps work in flight,
+/// including a tool's start, requires this store to hold it. The process
+/// renews its runners' leases every `lease / 3` ms in one batch. A runner
 /// whose lease the renewal no longer returns (another node took the run
 /// over, or cancelled it) is killed with its model call and tool bodies,
 /// and so is one whose lease could have expired since the last renewal
 /// that succeeded (the backend is unreachable). A commit that leaves
-/// nothing in flight releases the lease; a handoff releases it as already
-/// expired, so that any node may take the run over at once.
+/// nothing in flight releases the lease with the revision check alone;
+/// a handoff releases it as already expired, so that any node may take
+/// the run over at once.
 ///
-/// Across nodes: a run whose lease is live anywhere reads `Working`, and
-/// `Unattended` only when work is in flight and its lease is free or
-/// expired. A command on an idle run works from any node, which then
+/// Across nodes: a run with work in flight and a live foreign lease reads
+/// `Working`; a free or expired lease reads `Unattended`. This node also
+/// reads its own lease as `Unattended` when its runner is gone, including
+/// a lease of an earlier store process. A command on an idle run works
+/// from any node, which then
 /// claims the lease; one that needs the runner of another node is
 /// `fabric.RunUnattended` and changes nothing; a cancellation wins over a
 /// live lease, and its owner learns of it at its next renewal.
-/// `fabric.recover` takes over only a free or expired lease, or one held
-/// by an earlier process of this store (same node and name), so it is
-/// safe to call at any time.
+/// `fabric.recover` takes over a free or expired lease, one held by an
+/// earlier process of this store (same node and name), or this process's
+/// own lease whose runner is gone. It is safe to call at any time.
 ///
 /// `lease` is at least 100 ms and at most 2^32 - 1 ms.
 pub fn leased(
