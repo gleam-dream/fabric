@@ -162,12 +162,29 @@ pub type LeasedBackend {
 pub opaque type Store {
   Store(
     name: Name(Message),
-    open: fn() -> Result(Backend, String),
+    open: fn() -> Result(LeasedBackend, String),
     pinned: Option(Subject(Message)),
     /// Milliseconds each runner may take to finish its work when the
     /// store's subtree shuts down (`with_drain`).
     drain: Int,
+    /// A leased store's node id and lease duration (`leased`).
+    leasing: Option(Leasing),
   )
+}
+
+type Leasing {
+  Leasing(node: String, ttl: Int)
+}
+
+/// Why a leased store's settings were refused (`leased`).
+pub type LeaseConfigError {
+  /// A node id is 1 to 128 letters, digits, and `.`, `_`, `-`, `@` or
+  /// `:`, and not `nonode@nohost`, which names no machine.
+  InvalidNodeId(String)
+  /// Shorter than the shortest lease a store renews (`minimum` ms).
+  LeaseTooShort(value: Int, minimum: Int)
+  /// Longer than the longest timer the runtime can set (`limit` ms).
+  LeaseTooLong(value: Int, limit: Int)
 }
 
 /// Why a drain window was refused (`with_drain`).
@@ -217,9 +234,10 @@ pub fn new(
 ) -> Store {
   Store(
     name,
-    fn() { Ok(Backend(get:, insert:, compare_and_set:)) },
+    fn() { Ok(unleased(Backend(get:, insert:, compare_and_set:))) },
     None,
     default_drain,
+    None,
   )
 }
 
@@ -227,7 +245,13 @@ pub fn new(
 /// They are lost when that process stops, also when a supervisor restarts
 /// it.
 pub fn in_memory(name: Name(Message)) -> Store {
-  Store(name, fn() { Ok(memory_backend()) }, None, default_drain)
+  Store(
+    name,
+    fn() { Ok(unleased(memory_backend())) },
+    None,
+    default_drain,
+    None,
+  )
 }
 
 /// A store in the directory `path`, registered as `name`, for development,
@@ -261,17 +285,92 @@ pub fn directory(name: Name(Message), path: String) -> Store {
     name,
     fn() {
       use Nil <- result.map(ensure_directory(path))
-      Backend(
-        get: directory_get(path, _),
-        insert: fn(run, record) { directory_insert(path, run, record) },
-        compare_and_set: fn(run, expected, record) {
-          directory_compare_and_set(path, run, expected, record)
-        },
+      unleased(
+        Backend(
+          get: directory_get(path, _),
+          insert: fn(run, record) { directory_insert(path, run, record) },
+          compare_and_set: fn(run, expected, record) {
+            directory_compare_and_set(path, run, expected, record)
+          },
+        ),
       )
     },
     None,
     default_drain,
+    None,
   )
+}
+
+/// A leased store over `backend`, registered as `name`, for several nodes
+/// that share one database (see Leases in the module documentation). Its
+/// process identifies itself to the backend as
+/// `<node>/<name>/<random>`, with a new random part each time it starts;
+/// `node` must be unique to the VM and the same after a restart.
+///
+/// A run's lease is claimed in the commit that hands its work to a runner
+/// of this store and held, for `lease` milliseconds from the backend's
+/// clock, while the runner lives: every runner commit, including a tool's
+/// start, requires this store to hold it, and the store's process renews
+/// the leases of its runners every `lease / 3` ms in one batch. A runner
+/// whose lease the renewal no longer returns (another node took the run
+/// over, or cancelled it) is killed with its model call and tool bodies,
+/// and so is one whose lease could have expired since the last renewal
+/// that succeeded (the backend is unreachable). A commit that leaves
+/// nothing in flight releases the lease; a handoff releases it as already
+/// expired, so that any node may take the run over at once.
+///
+/// Across nodes: a run whose lease is live anywhere reads `Working`, and
+/// `Unattended` only when work is in flight and its lease is free or
+/// expired. A command on an idle run works from any node, which then
+/// claims the lease; one that needs the runner of another node is
+/// `fabric.RunUnattended` and changes nothing; a cancellation wins over a
+/// live lease, and its owner learns of it at its next renewal.
+/// `fabric.recover` takes over only a free or expired lease, or one held
+/// by an earlier process of this store (same node and name), so it is
+/// safe to call at any time.
+///
+/// `lease` is at least 100 ms and at most 2^32 - 1 ms.
+pub fn leased(
+  name: Name(Message),
+  node node: String,
+  lease milliseconds: Int,
+  backend backend: LeasedBackend,
+) -> Result(Store, LeaseConfigError) {
+  use Nil <- result.try(check_node(node))
+  case milliseconds {
+    ms if ms < shortest_lease -> Error(LeaseTooShort(ms, shortest_lease))
+    ms if ms > longest_timer -> Error(LeaseTooLong(ms, longest_timer))
+    ms ->
+      Ok(Store(
+        name,
+        fn() { Ok(backend) },
+        None,
+        default_drain,
+        Some(Leasing(node, ms)),
+      ))
+  }
+}
+
+/// The shortest lease a store renews, in milliseconds.
+const shortest_lease = 100
+
+fn check_node(node: String) -> Result(Nil, LeaseConfigError) {
+  let allowed = fn(grapheme) {
+    string.contains(
+      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-@:",
+      grapheme,
+    )
+  }
+  let graphemes = string.to_graphemes(node)
+  case
+    graphemes != []
+    && list.length(graphemes) <= 128
+    && list.all(graphemes, allowed)
+    && node != "nonode@nohost"
+  {
+    True -> Ok(Nil)
+    False -> Error(InvalidNodeId(node))
+  }
 }
 
 /// How long a runner may take to finish its work on shutdown, by default.
@@ -501,18 +600,42 @@ pub type Live {
 
 @internal
 pub type Entry {
-  Entry(revision: Int, record: String, live: Option(Live))
+  Entry(revision: Int, record: String, live: Option(Live), holding: Holding)
 }
 
-/// What a commit does to the run's live runner registration.
+/// Who holds a run's lease, as this store's process sees it.
+@internal
+pub type Holding {
+  /// No one holds it, or the store is not leased.
+  Unheld
+  HeldHere
+  /// Another owner holds it; `live` is `False` when it expired, and when
+  /// it belongs to an earlier process of this store (same node and name),
+  /// which is gone.
+  HeldElsewhere(owner: String, live: Bool)
+}
+
+/// What a commit does to the run's live runner registration and, in a
+/// leased store, to its lease.
 @internal
 pub type Ownership {
+  /// A runner's commit that keeps the run: in a leased store only while
+  /// this store holds its lease (`Hold`).
   Keep
   /// The committing runner `Pid` gives the run up in the same step, so a
-  /// watcher woken by this commit already sees no runner.
+  /// watcher woken by this commit already sees no runner; nothing is left
+  /// in flight (`Release`).
   Leave(Pid)
-  /// A new runner takes the run over in the same step.
-  Launch(Pid, Live)
+  /// The committing runner `Pid` hands the run off with work in flight: the
+  /// lease is released as already expired.
+  HandOff(Pid)
+  /// A new runner takes the run over in the same step (`Claim`, or
+  /// `Seize` for a cancellation, which wins over a live lease).
+  Launch(Pid, Live, seize: Bool)
+  /// A commit by no runner: of work nobody drives yet (`in_flight`; the
+  /// lease is claimed, or seized, as already expired) or of none (the
+  /// lease is released).
+  Detached(in_flight: Bool, seize: Bool)
 }
 
 /// The store's process: the one registered under its name, or for a
@@ -657,9 +780,36 @@ type Backend {
   )
 }
 
+/// An unleased backend as a leased one that never holds a lease: its
+/// writes ignore the lease, and nothing is renewed or claimed.
+fn unleased(backend: Backend) -> LeasedBackend {
+  LeasedBackend(
+    get: fn(run) {
+      backend.get(run)
+      |> result.map(fn(stored) { Current(stored.revision, stored.record, Free) })
+    },
+    insert: fn(run, record, _) { backend.insert(run, record) },
+    compare_and_set: fn(run, expected, record, _) {
+      backend.compare_and_set(run, expected, record)
+    },
+    renew: fn(_, _, _) { Ok([]) },
+    claim_expired: fn(_, _, _) { Ok([]) },
+  )
+}
+
+/// A leased store process's side of its leases.
+type Lessee {
+  Lessee(
+    /// `<node>/<store name>/<random>`, new each time the process starts.
+    owner: String,
+    ttl: Int,
+  )
+}
+
 type Done {
-  Got(Result(Stored, StoreError))
-  Wrote(Result(Int, StoreError))
+  Got(Result(Current, StoreError))
+  /// `sent`: the monotonic time the write was sent to the backend.
+  Wrote(Result(Int, StoreError), sent: Int)
 }
 
 type Loop {
@@ -667,7 +817,9 @@ type Loop {
     /// This process's own subject for its workers' reports: unlike the
     /// named subject, it never reaches a later process of the same name.
     subject: Subject(Message),
-    backend: Backend,
+    backend: LeasedBackend,
+    /// A leased store's owner token and lease duration.
+    lessee: Option(Lessee),
     live: Dict(String, #(Pid, Live)),
     /// The name of the factory its runners are started under.
     factory: Name(FactoryMessage),
@@ -711,9 +863,17 @@ fn run(
           process.PortDown(..) -> Down(process.self())
         }
       })
+    let lessee =
+      option.map(store.leasing, fn(leasing) {
+        Lessee(
+          leasing.node <> "/" <> name_text(store.name) <> "/" <> random_id(),
+          leasing.ttl,
+        )
+      })
     Loop(
       subject:,
       backend:,
+      lessee:,
       live: dict.new(),
       factory: factory_name(store.name),
       draining: None,
@@ -860,29 +1020,108 @@ fn begin(state: Loop, run: String, request: Message) -> Nil {
   let backend = state.backend
   let timeout = state.timeout
   let subject = state.subject
+  let lessee = state.lessee
   let _ =
     process.spawn(fn() {
       let done = case request {
-        Write(expected:, record:, ..) -> {
+        Write(expected:, record:, ownership:, ..) -> {
           let revision = case expected {
             None -> 1
             Some(expected) -> expected + 1
           }
+          let sent = now_ms()
+          let lease = lease_for(lessee, ownership)
           bounded_backend(timeout, fn() {
             case expected {
-              None -> backend.insert(run, record)
-              Some(expected) -> backend.compare_and_set(run, expected, record)
+              None -> backend.insert(run, record, lease)
+              Some(expected) ->
+                case
+                  backend.compare_and_set(run, expected, record, lease),
+                  lease,
+                  lessee
+                {
+                  // The lease of an earlier process of this store, which is
+                  // gone, is taken at once.
+                  Error(LeaseRefused(Held(holder, _))) as refused,
+                    Claim(owner, ttl),
+                    Some(lessee)
+                  ->
+                    case earlier_self(lessee.owner, holder) {
+                      True ->
+                        backend.compare_and_set(
+                          run,
+                          expected,
+                          record,
+                          Seize(owner, ttl),
+                        )
+                      False -> refused
+                    }
+                  written, _, _ -> written
+                }
             }
           })
           |> result.replace(revision)
           |> confirm(backend, timeout, run, revision, record)
-          |> Wrote
+          |> Wrote(sent)
         }
         _ -> Got(bounded_backend(timeout, fn() { backend.get(run) }))
       }
       process.send(subject, Finished(run, done))
     })
   Nil
+}
+
+/// The lease change of a commit with `ownership` for a leased store's
+/// process (`lessee`); an unleased backend ignores it.
+fn lease_for(lessee: Option(Lessee), ownership: Ownership) -> Lease {
+  case lessee {
+    None -> Release
+    Some(Lessee(owner:, ttl:)) ->
+      case ownership {
+        Keep -> Hold(owner)
+        Leave(_) | Detached(in_flight: False, ..) -> Release
+        HandOff(_) | Detached(in_flight: True, seize: False) -> Claim(owner, 0)
+        Detached(in_flight: True, seize: True) -> Seize(owner, 0)
+        Launch(seize: False, ..) -> Claim(owner, ttl)
+        Launch(seize: True, ..) -> Seize(owner, ttl)
+      }
+  }
+}
+
+/// Whether `other` is the owner token of an earlier process of the store
+/// whose token is `me`: the same node and store name, another random
+/// part. A store's name is registered by one process at a time, and a node
+/// id names one VM, so that process is gone.
+fn earlier_self(me: String, other: String) -> Bool {
+  case token_parts(me), token_parts(other) {
+    Ok(#(node, name, random)), Ok(#(other_node, other_name, other_random)) ->
+      node == other_node && name == other_name && random != other_random
+    _, _ -> False
+  }
+}
+
+/// A token's node, store name, and random part: the node has no `/`, and
+/// the random part is after the last one.
+fn token_parts(token: String) -> Result(#(String, String, String), Nil) {
+  use #(node, rest) <- result.try(string.split_once(token, "/"))
+  case list.reverse(string.split(rest, "/")) {
+    [random, first, ..others] ->
+      Ok(#(node, string.join(list.reverse([first, ..others]), "/"), random))
+    _ -> Error(Nil)
+  }
+}
+
+/// How this store's process sees `holder`.
+fn holding(lessee: Option(Lessee), holder: Holder) -> Holding {
+  case lessee, holder {
+    None, _ | _, Free -> Unheld
+    Some(lessee), Held(owner, live) ->
+      case owner == lessee.owner {
+        True -> HeldHere
+        False ->
+          HeldElsewhere(owner, live && !earlier_self(lessee.owner, owner))
+      }
+  }
 }
 
 /// Answers the run's current request and starts the next one.
@@ -894,19 +1133,20 @@ fn finish(state: Loop, run: String, done: Done) -> Loop {
         Get(reply:, ..), Got(got) -> {
           process.send(
             reply,
-            result.map(got, fn(stored) {
+            result.map(got, fn(current) {
               Entry(
-                stored.revision,
-                stored.record,
+                current.revision,
+                current.record,
                 dict.get(state.live, run)
                   |> result.map(fn(l) { l.1 })
                   |> option.from_result,
+                holding(state.lessee, current.holder),
               )
             }),
           )
           state
         }
-        Write(ownership:, reply:, ..), Wrote(written) -> {
+        Write(ownership:, reply:, ..), Wrote(written, _) -> {
           process.send(reply, written)
           case written {
             Error(_) -> state
@@ -951,7 +1191,7 @@ fn bounded_backend(
 /// revision; otherwise the error stands.
 fn confirm(
   written: Result(Int, StoreError),
-  backend: Backend,
+  backend: LeasedBackend,
   timeout: Int,
   run: String,
   revision: Int,
@@ -960,7 +1200,7 @@ fn confirm(
   case written {
     Error(Unavailable(_)) ->
       case bounded_backend(timeout, fn() { backend.get(run) }) {
-        Ok(Stored(found, stored)) if found == revision && stored == record ->
+        Ok(Current(found, stored, _)) if found == revision && stored == record ->
           Ok(revision)
         _ -> written
       }
@@ -970,14 +1210,14 @@ fn confirm(
 
 fn own(state: Loop, run: String, ownership: Ownership) -> Loop {
   case ownership {
-    Keep -> state
-    Leave(pid) ->
+    Keep | Detached(..) -> state
+    Leave(pid) | HandOff(pid) ->
       case dict.get(state.live, run) {
         Ok(#(owner, _)) if owner == pid ->
           Loop(..state, live: dict.delete(state.live, run))
         _ -> state
       }
-    Launch(pid, live) ->
+    Launch(pid, live, _) ->
       Loop(
         ..monitor(state, pid),
         live: dict.insert(state.live, run, #(pid, live)),
@@ -1267,6 +1507,12 @@ fn leased_serve(
 
 @external(erlang, "fabric_ffi", "now_ms")
 fn now_ms() -> Int
+
+@external(erlang, "fabric_ffi", "random_id")
+fn random_id() -> String
+
+@external(erlang, "erlang", "atom_to_binary")
+fn name_text(name: Name(Message)) -> String
 
 // --- directory ---------------------------------------------------------------
 

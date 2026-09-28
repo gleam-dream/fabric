@@ -94,7 +94,7 @@ pub fn view(node: Node) -> View {
     // The record alone never reads unattended: this is where the store's
     // runners are consulted.
     run.Working | run.Unattended ->
-      View(run.Working, runner.live_runner(node.entry, node.state) != None)
+      View(run.Working, runner.driven(node.entry, node.state))
     run.Suspended(approvals, uncertain) -> {
       let views = list.map(node.children, child_view)
       case list.any(views, fn(view) { view.status == run.Working }) {
@@ -147,7 +147,7 @@ fn child_view(child: Child) -> View {
         // Ended but not yet applied to the parent: its runner is
         // delivering it, or the delivery was lost.
         View(run.Finished(_), _) ->
-          View(run.Working, runner.live_runner(node.entry, node.state) != None)
+          View(run.Working, runner.driven(node.entry, node.state))
         other -> other
       }
   }
@@ -195,11 +195,7 @@ pub fn own_pending(state: State) -> List(PendingApproval) {
 /// saw one consistent family.
 pub fn fingerprint(node: Node) -> List(#(String, Int, Bool)) {
   [
-    #(
-      node.id,
-      node.entry.revision,
-      runner.live_runner(node.entry, node.state) != None,
-    ),
+    #(node.id, node.entry.revision, runner.driven(node.entry, node.state)),
     ..list.flat_map(node.children, fn(child) {
       case child.node {
         Ok(node) -> fingerprint(node)
@@ -307,25 +303,32 @@ pub fn take_over(
   use #(entry, state) <- result.try(
     runner.load_checked(setup, id) |> result.map_error(TakeOverUnreadable),
   )
-  let owned = case
+  case
     runner.live_runner(entry, state),
+    runner.held_elsewhere(entry),
     controller.needs_runner(state)
   {
-    Some(_), _ | None, False -> Ok(Nil)
-    None, True -> {
-      let #(next, effects) = controller.recover(setup.env, state)
-      runner.launch(setup, Some(#(entry.revision, state)), next, effects)
-      |> result.replace(Nil)
-    }
-  }
-  case owned {
-    Ok(Nil) -> {
+    // Another node's runner drives the run and its children: nothing is
+    // taken.
+    None, True, _ -> Ok(Nil)
+    Some(_), _, _ | None, False, False -> {
       reattach(setup, id)
       Ok(Nil)
     }
-    Error(store.Conflict(_)) if tries > 1 -> take_over(setup, id, tries - 1)
-    Error(store.Conflict(_)) -> Error(TakeOverContended)
-    Error(error) -> Error(TakeOverUnreadable(runner.StoreFailed(error)))
+    None, False, True -> {
+      let #(next, effects) = controller.recover(setup.env, state)
+      case runner.launch(setup, Some(#(entry.revision, state)), next, effects) {
+        Ok(_) -> {
+          reattach(setup, id)
+          Ok(Nil)
+        }
+        // Another node claimed the lease meanwhile: the run is left to it.
+        Error(store.LeaseRefused(_)) -> Ok(Nil)
+        Error(store.Conflict(_)) if tries > 1 -> take_over(setup, id, tries - 1)
+        Error(store.Conflict(_)) -> Error(TakeOverContended)
+        Error(error) -> Error(TakeOverUnreadable(runner.StoreFailed(error)))
+      }
+    }
   }
 }
 
