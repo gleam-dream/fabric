@@ -208,6 +208,18 @@ ms); the constants `agent.max_children_limit` (999) and
 `SettlementBoundNotPositive(name, within)`; `CommandError.RunnerBusy`; and
 `fabric_saga.tool(.., explain:, rollback_within:)`.
 
+## Public API after the slice 2b re-review
+
+Beside the API above: `tool.SettleError` gains `AlreadyRecorded` (a refused
+settlement lost nothing; `NotAwaited` now means the action has no definite
+result and needs a person); `tool.settle_summarized(settlement, result,
+summary:)`; the event `observation.settlement_refused()` with
+`SettlementRefused(action, offered, reason, summary)` and
+`SettlementRefusal { AlreadyRecorded  NotAwaited  NotReached }`; and the
+`ConfigError` variant `SettlementBoundTooLarge(name, within)`. `cancel` and
+`cancel_stored` no longer return `RunnerBusy`. Run records move to version 3
+(the phase `never_started`); version 1 and 2 records are still read.
+
 ## Public API at slice 2a
 
 The slice 2b additions and changes are listed in the previous section.
@@ -490,6 +502,43 @@ Deferred, with reasons:
   (the cancel increments the incarnation); `child_started` is not emitted
   when a child's end is applied before its start report.
 
+## Slice 2b re-review fixes
+
+An independent re-review of `1b0178a..1d71bec` found two blockers and seven
+minor findings; its executed probes are ported as regression tests. Fixed
+test-first, one commit each:
+
+| Finding                                                                                                                                                                             | Status | Resolution and evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| X1: `fabric_saga` reported definite failures while an effect was unknown (a crash its decider aborted, a sibling that crashed while settling, a crashed attempt retried to success) | Fixed  | `fabric_saga/internal/verdict` is definite only when Saga's report and `saga.describe` prove no attempt of any step has an unknown effect: a step without a recovery decider makes one attempt; a step downstream of a failed step never ran; sibling failures are checked like the cause. A step with a recovery decider that may have run makes any outcome, `Completed` included, uncertain, because Saga does not report a crashed attempt it recovered from. The evidence names outcome kinds and step addresses only. The mapping table is in the module docs (`a_crash_its_decider_aborted_is_uncertain_test`, `a_sibling_that_crashed_while_settling_is_uncertain_test`, `a_completed_workflow_with_a_recovery_decider_is_uncertain_test`, `verdict_test`). |
+| X2: cancel depended on the runner cooperating; a "lost" child went on paying                                                                                                        | Fixed  | A cancellation the live runner does not take is committed to the record (the held runner's work abandoned, a new incarnation); the held runner's next commit conflicts, so it records no model turn and starts no tool. A fence is answered as soon as its start is stored, so no body starts after a later cancellation. `ChildLost` only on store failure (`a_held_child_is_cancelled_through_its_record_test`, `a_held_run_is_cancelled_through_its_record_test`, `a_handler_cancelling_its_own_run_commits_the_cancellation_test`).                                                                                                                                                                                                                             |
+| X3: an answer committed after an ancestor's cancellation                                                                                                                            | Fixed  | A sub-agent reads its ancestors at every tool fence and before storing a child; one that finds an ancestor stopping or ended starts nothing and cancels itself. An answer may still commit; nothing it approved starts (`a_tool_under_a_stopping_ancestor_never_starts_test`, `a_sub_agent_under_a_stopping_ancestor_never_starts_test`, `an_answer_racing_the_parent_cancellation_starts_nothing_test`).                                                                                                                                                                                                                                                                                                                                                           |
+| X4: a settlement was accepted twice                                                                                                                                                 | Fixed  | The first accepted settlement moves the action out of the state that awaits one (`a_settlement_is_accepted_once_per_action_test`, `a_settlement_is_accepted_once_test`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| X5: a settlement after the bound, or from a still-running handler, was accepted while stopping                                                                                      | Fixed  | `Stopping` records `tools_stopped`; a stopping run accepts a settlement only after that and within the bound. An earlier one waits for the confirming commit; a later one is refused. Decision: a late definite settlement of an action that became uncertain while the run was not stopping stays allowed, as the one accepted settlement (`a_settlement_after_the_bound_is_refused_while_stopping_test`, `a_settlement_before_the_tools_stopped_is_early_test`, `a_settlement_while_the_task_runs_waits_for_its_report_test`, `a_handler_settling_its_own_call_is_refused_test`).                                                                                                                                                                                 |
+| X6: the no-runner command path ran handlers before the runner started; `cancel_unattended` ignored the configured timeout                                                           | Fixed  | The runner receives its first state before the caller emits the commit's events; the agent-less child cancellation uses the parent's command timeout (`cancel_stored` has no agent and keeps the default); docs say a command with no runner emits its events in the caller (`a_runner_started_by_a_command_works_while_its_handlers_run_test`, `a_command_with_no_runner_emits_its_events_in_the_caller_test`, `a_handler_in_a_commands_caller_can_command_the_run_test`).                                                                                                                                                                                                                                                                                         |
+| X7: `RunnerBusy` could leave a command applied                                                                                                                                      | Fixed  | Each command carries a claim (one atomics cell): the runner applies it only if it takes the claim, a caller withdraws it before reporting busy (`racing_sides_never_both_win_test`, `a_command_the_runner_took_is_waited_for_test`, `a_withdrawn_command_is_never_applied_test`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| X8: the Saga receiver swallowed settle errors                                                                                                                                       | Fixed  | `SettleError` splits `AlreadyRecorded` from `NotAwaited`; every refusal emits `settlement_refused` with a summary for a person (`tool.settle_summarized`); the receiver handles each answer and gives Saga's report summary (`a_refused_settlement_is_observed_test`, `an_outcome_after_the_run_ended_is_refused_test`).                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| X9: a tombstone recognised by an empty transcript; a settling child reported lost; a late-landing child insert left without a runner                                                | Fixed  | The phase `NeverStarted`, record version 3, a version 2 tombstone read as it (`a_child_that_never_started_is_explicit_test`); `ChildStopping` (`cancel_stored_of_a_parent_with_a_settling_child_test`); a start that finds its child stored gives it a runner or takes it over (`a_child_whose_insert_lands_late_still_runs_test`).                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Probe: a settlement bound past 2^32 - 1 ms left a cancelled run working forever                                                                                                     | Fixed  | `SettlementBoundTooLarge` (`a_settlement_bound_must_fit_a_timer_test`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+
+Limits and follow-ups:
+
+- **Workflows with a recovery decider are always uncertain (X1).** Until
+  Saga reports crashed attempts, a `fabric_saga` tool whose workflow has a
+  `saga.compensate` step returns an uncertain effect even when it
+  completes. The Saga change that adds that evidence is additive; the
+  verdict can then narrow to the steps whose attempts actually crashed.
+- **A held runner's running bodies (X2).** A body that started before the
+  cancellation keeps running until the held runner is released (its
+  executor dies with it); the record already calls it uncertain.
+- **The fence check is a read (X3).** A fence that read its ancestors open
+  just before an ancestor's cancellation committed may still start its
+  body; the child's own cancellation then records it uncertain.
+- **A child adopted after a late insert (X9)** emits no `run_started`: the
+  insert that stored it reported a failure and emitted nothing.
+- **Other timeouts past 2^32 - 1 ms** (`with_command_timeout`,
+  `with_policy_timeout`) are not yet refused.
+
 ## Slice 2b — sub-agents, observations, Saga workflows as tools
 
 Implemented. Acceptance, each with its executed evidence
@@ -647,8 +696,8 @@ adopted here:
   rollback, to a subject that may belong to another process. `fabric_saga`
   owns it in a receiver per call, and with the settlement seam
   (`tool.bind_settling`) a cancelled call records a definite failure when
-  Saga undid every completed step
-  (`a_cancellation_that_undid_every_step_is_definite_test`). The settle
+  Saga's report proves every completed step undone and no effect unknown
+  (`a_cancellation_that_undid_everything_is_definite_test`). The settle
   window (`settle_timeout`) still delays that settlement; `rollback_within`
   bounds how long Fabric waits.
 - **Sinal: a handler that blocks holds up the emitter** (resolved in sinal
@@ -660,7 +709,7 @@ adopted here:
 ## Tested sibling revisions
 
 Fabric resolves its siblings as `../` path dependencies. The gates after the
-slice 2b review passed against these revisions, each with a clean working
+slice 2b re-review fixes passed against these revisions, each with a clean working
 tree:
 
 | Package        | Revision  | Relationship                                                                  |
