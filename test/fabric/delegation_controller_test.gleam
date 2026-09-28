@@ -9,8 +9,9 @@ import fabric/internal/controller.{
 import fabric/internal/invocation
 import fabric/internal/registry
 import fabric/model.{ToolCall, ToolRequest}
-import fabric/policy.{ActionId}
-import fabric/run
+import fabric/policy
+import fabric/run.{ActionId}
+import fabric/support
 import fabric/support/scripted
 import fabric/tool
 import gleam/list
@@ -110,7 +111,7 @@ pub fn an_allowed_delegation_names_its_child_before_the_child_exists_test() {
     ask_call("a"),
     run.Running,
     [],
-    Some("run-p-1"),
+    Some(support.id("run-p-1")),
   ))
   // Starting a child is work in flight; waiting on a started child is not.
   controller.needs_runner(state) |> should.be_true
@@ -134,7 +135,7 @@ pub fn a_child_end_is_mapped_by_the_delegation_test() {
       ),
     )
   action(state, "a").state |> should.equal(run.Succeeded("\"because\""))
-  action(state, "a").child |> should.equal(Some("run-p-1"))
+  action(state, "a").child |> should.equal(Some(support.id("run-p-1")))
   let assert [CallModel(2, _)] = effects
 }
 

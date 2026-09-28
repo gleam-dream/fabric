@@ -9,9 +9,10 @@ import fabric
 import fabric/agent.{type Agent}
 import fabric/internal/record
 import fabric/model
-import fabric/policy.{ActionId, Requirement}
-import fabric/run
+import fabric/policy
+import fabric/run.{ActionId, Requirement}
 import fabric/store.{type Store}
+import fabric/support
 import fabric/support/apps
 import fabric/support/flaky
 import fabric/support/probe.{type Probe}
@@ -247,12 +248,12 @@ pub fn a_sub_agent_starts_only_after_approval_even_across_a_restart_test() {
   pending.tool |> should.equal("research")
   pending.reference.run |> should.equal(fabric.id(run))
   only_action(run).child |> should.equal(None)
-  restart.list_dir(dir) |> should.equal(Ok([fabric.id(run)]))
+  restart.list_dir(dir) |> should.equal(Ok([support.text(fabric.id(run))]))
   crash(owner, old)
 
   let assert Ok(run) = fabric.recover(reopen(dir), parent, Nil, fabric.id(run))
   fabric.pending(run) |> should.equal(Ok([pending]))
-  restart.list_dir(dir) |> should.equal(Ok([fabric.id(run)]))
+  restart.list_dir(dir) |> should.equal(Ok([support.text(fabric.id(run))]))
   let assert Ok(_) =
     fabric.answer(
       run,
@@ -273,7 +274,7 @@ pub fn a_sub_agent_starts_only_after_approval_even_across_a_restart_test() {
   let assert Ok(snapshot) = fabric.snapshot(child)
   snapshot.agent |> should.equal(run.Identity("researcher", 1))
   snapshot.parent
-  |> should.equal(Some(run.Parent(fabric.id(run), ActionId(1, "r"))))
+  |> should.equal(Some(run.ActionRef(fabric.id(run), ActionId(1, "r"))))
   snapshot.status |> should.equal(run.Finished(run.Completed("found gleam")))
   probe.entries(probe)
   |> should.equal([
@@ -434,7 +435,7 @@ pub fn cancelling_the_parent_stops_an_active_child_test() {
   fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
   child_states(child) |> should.equal([run.Uncertain("stopped while running")])
   let assert run.Uncertain(evidence) = only_action(run).state
-  string.contains(evidence, fabric.id(child)) |> should.be_true
+  string.contains(evidence, support.text(fabric.id(child))) |> should.be_true
   probe.count(probe, "end:s") |> should.equal(0)
 }
 
@@ -530,7 +531,10 @@ pub fn an_unreadable_child_is_an_uncertain_effect_of_the_parent_test() {
   crash(owner, old)
   let assert Ok(Nil) =
     restart.write_file(
-      dir <> "/" <> pending.reference.run <> "/99999999999999999999.json",
+      dir
+        <> "/"
+        <> support.text(pending.reference.run)
+        <> "/99999999999999999999.json",
       "{\"format\":\"fabric.run\",\"version\":2,\"run\":",
     )
 
@@ -539,7 +543,8 @@ pub fn an_unreadable_child_is_an_uncertain_effect_of_the_parent_test() {
   let assert Ok(run.Suspended([], [uncertain])) = fabric.status(run)
   uncertain.run |> should.equal(fabric.id(run))
   uncertain.tool |> should.equal("research")
-  string.contains(uncertain.evidence, pending.reference.run) |> should.be_true
+  string.contains(uncertain.evidence, support.text(pending.reference.run))
+  |> should.be_true
   let assert Ok(_) =
     fabric.reconcile(run, uncertain.id, "{\"summary\":\"unknown\"}")
   fabric.await(run, 5000)
@@ -811,7 +816,7 @@ pub fn a_child_stored_after_its_parent_was_cancelled_never_runs_test() {
     |> process.select_specific_monitor(runner_exit, fn(down) { down })
     |> process.selector_receive(5000)
 
-  let assert Ok(child) = fabric.child(run, child_id)
+  let assert Ok(child) = fabric.child(run, support.id(child_id))
   fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
   only_action(run).state |> should.equal(run.NotStarted)
   probe.count(probe, "child:model") |> should.equal(0)
@@ -851,7 +856,7 @@ pub fn recovery_does_not_start_a_child_after_its_parent_was_cancelled_test() {
   flaky.release_held(backend)
   let assert Ok(Ok(recovered)) = process.receive(recovering, 5000)
 
-  let assert Ok(child) = fabric.child(recovered, child_id)
+  let assert Ok(child) = fabric.child(recovered, support.id(child_id))
   fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
   only_action(recovered).state |> should.equal(run.NotStarted)
   probe.count(probe, "child:model") |> should.equal(0)
@@ -895,7 +900,7 @@ pub fn an_identical_child_record_by_another_writer_is_recovered_test() {
     fabric.start(flaky.store(backend), eager_family(probe), Nil, "go")
   let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
   let assert Ok(store.Entry(record: stored, ..)) =
-    store.get(flaky.store(backend), fabric.id(run) <> "-1")
+    store.get(flaky.store(backend), support.text(fabric.id(run)) <> "-1")
   let assert Ok(child) = record.decode(stored)
   child.incarnation |> should.equal(2)
   probe.count(probe, "pay:bob") |> should.equal(1)

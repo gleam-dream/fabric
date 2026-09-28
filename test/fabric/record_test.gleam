@@ -4,8 +4,8 @@ import fabric/internal/controller.{type State}
 import fabric/internal/record
 import fabric/internal/registry
 import fabric/model.{ToolCall}
-import fabric/policy.{ActionId, Requirement}
-import fabric/run
+import fabric/run.{ActionId, Requirement}
+import fabric/support
 import fabric/support/apps
 import gleam/list
 import gleam/option.{None, Some}
@@ -43,10 +43,13 @@ fn every_action() -> List(run.ActionRecord) {
     action("k", run.Reconciled("{\"receipt\":\"r\"}")),
     action("l", run.NotStarted),
     action("m", run.Faulted("cannot encode")),
-    run.ActionRecord(..action("n", run.Delegated), child: Some("run-01-3-1")),
+    run.ActionRecord(
+      ..action("n", run.Delegated),
+      child: Some(support.id("run-01-3-1")),
+    ),
     run.ActionRecord(
       ..action("o", run.Succeeded("{}")),
-      child: Some("run-01-3-2"),
+      child: Some(support.id("run-01-3-2")),
     ),
     action("p", run.LimitReached(run.ChildLimit(2))),
     action("q", run.LimitReached(run.DepthLimit(1))),
@@ -73,7 +76,7 @@ fn base() -> State {
     run: "run-01-3",
     agent: run.Identity("desk", 3),
     incarnation: 4,
-    parent: Some(run.Parent("run-01", ActionId(3, "delegate"))),
+    parent: Some(run.ActionRef(support.id("run-01"), ActionId(3, "delegate"))),
     depth: 1,
     limits: controller.Limits(
       max_turns: 8,

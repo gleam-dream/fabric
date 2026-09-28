@@ -7,9 +7,10 @@ import fabric
 import fabric/agent
 import fabric/model
 import fabric/observation as o
-import fabric/policy.{Requirement}
-import fabric/run
+import fabric/policy
+import fabric/run.{Requirement}
 import fabric/store
+import fabric/support
 import fabric/support/apps
 import fabric/support/probe
 import fabric/support/restart
@@ -228,7 +229,7 @@ pub fn a_run_is_observed_after_each_commit_test() {
     )
     |> agent.with_identity("desk", 1)
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "pay")
-  let id = fabric.id(run)
+  let id = support.text(fabric.id(run))
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   let paused = until(events, "approval_requested")
   let assert Ok(_) =
@@ -287,7 +288,8 @@ pub fn a_failing_handler_does_not_affect_the_run_test() {
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
   )
-  let lines = until(events, "run_finished") |> about(fabric.id(run))
+  let lines =
+    until(events, "run_finished") |> about(support.text(fabric.id(run)))
   release([failing, crashing, ..attachments])
   lines
   |> should.equal([
@@ -357,14 +359,15 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
   let assert Ok(run) = fabric.recover(store, parent, Nil, fabric.id(run))
   let recovered = until(events, "tool_settled")
   let assert Ok(_) = fabric.cancel(run)
-  let cancelled = until(events, "run_finished " <> fabric.id(run) <> " ")
+  let cancelled =
+    until(events, "run_finished " <> support.text(fabric.id(run)) <> " ")
   release(attachments)
   restart.remove_dir(dir)
 
   // Each run's events are in its commit order; the two runs' events
   // interleave as their processes run.
   let lines = list.flatten([started, recovered, cancelled])
-  let id = fabric.id(run)
+  let id = support.text(fabric.id(run))
   of_run(lines, id, id)
   |> should.equal([
     "run_started R lead parent=none",
@@ -455,10 +458,10 @@ pub fn a_routed_handler_runs_in_the_forwarder_and_does_not_stall_the_run_test() 
 
   let assert Ok(run) =
     fabric.start(store.in_memory(), weather_agent(), Nil, "weather")
-  let #(first, gate) = entered_by(entered, fabric.id(run))
+  let #(first, gate) = entered_by(entered, support.text(fabric.id(run)))
   let finished = fabric.await(run, 5000)
   process.send(gate, Nil)
-  let #(second, gate) = entered_by(entered, fabric.id(run))
+  let #(second, gate) = entered_by(entered, support.text(fabric.id(run)))
   process.send(gate, Nil)
   forwarder.unroute(prefix)
   let _ = sinal.detach(attachment)
@@ -479,13 +482,13 @@ pub fn an_unrouted_handler_runs_in_the_runner_test() {
   let #(entered, attachment) = blocking_model_turn("unrouted")
   let memory = store.in_memory()
   let assert Ok(run) = fabric.start(memory, weather_agent(), Nil, "weather")
-  let #(handler, gate) = entered_by(entered, fabric.id(run))
+  let #(handler, gate) = entered_by(entered, support.text(fabric.id(run)))
   let assert Ok(store.Entry(live: Some(store.Live(_, mailbox)), ..)) =
-    store.get(memory, fabric.id(run))
+    store.get(memory, support.text(fabric.id(run)))
   let runner = process.subject_owner(mailbox)
   let waiting = fabric.status(run)
   process.send(gate, Nil)
-  let #(_, gate) = entered_by(entered, fabric.id(run))
+  let #(_, gate) = entered_by(entered, support.text(fabric.id(run)))
   process.send(gate, Nil)
   let finished = fabric.await(run, 5000)
   let _ = sinal.detach(attachment)
@@ -514,11 +517,8 @@ pub fn a_handler_commanding_its_own_run_is_refused_test() {
   let assert Ok(attachment) =
     sinal.observe(id, o.tool_dispatched(), fn(_, m: o.ToolDispatched) {
       let assert Ok(own) =
-        fabric.recover(memory, weather_agent(), Nil, m.action.run)
-      process.send(
-        results,
-        fabric.reconcile(own, policy.ActionId(1, "w"), "{}"),
-      )
+        fabric.recover(memory, weather_agent(), Nil, support.id(m.action.run))
+      process.send(results, fabric.reconcile(own, run.ActionId(1, "w"), "{}"))
     })
   let assert Ok(run) = fabric.start(memory, weather_agent(), Nil, "weather")
   let assert Ok(refused) = process.receive(results, 5000)
@@ -544,7 +544,10 @@ pub fn a_handler_cancelling_its_own_run_commits_the_cancellation_test() {
     )
   let assert Ok(attachment) =
     sinal.observe(id, o.tool_dispatched(), fn(_, m: o.ToolDispatched) {
-      process.send(results, fabric.cancel_stored(memory, m.action.run))
+      process.send(
+        results,
+        fabric.cancel_stored(memory, support.id(m.action.run)),
+      )
     })
   let assert Ok(run) = fabric.start(memory, weather_agent(), Nil, "weather")
   let assert Ok(cancelled) = process.receive(results, 5000)
@@ -586,7 +589,7 @@ pub fn a_command_returns_before_its_handlers_run_test() {
   let _ = sinal.detach(attachment)
 
   cancelled |> should.equal(Ok(run.Working))
-  cancelled_run |> should.equal(fabric.id(run))
+  cancelled_run |> should.equal(support.text(fabric.id(run)))
   finished |> should.equal(Ok(run.Finished(run.Cancelled)))
 }
 
@@ -597,10 +600,10 @@ pub fn a_command_to_a_runner_held_by_a_handler_is_refused_test() {
   let #(entered, attachment) = blocking_model_turn("busy")
   let agent = weather_agent() |> agent.with_command_timeout(20)
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "weather")
-  let #(_, gate) = entered_by(entered, fabric.id(run))
-  let refused = fabric.reconcile(run, policy.ActionId(1, "w"), "{}")
+  let #(_, gate) = entered_by(entered, support.text(fabric.id(run)))
+  let refused = fabric.reconcile(run, run.ActionId(1, "w"), "{}")
   process.send(gate, Nil)
-  let #(_, gate) = entered_by(entered, fabric.id(run))
+  let #(_, gate) = entered_by(entered, support.text(fabric.id(run)))
   process.send(gate, Nil)
   let finished = fabric.await(run, 5000)
   let _ = sinal.detach(attachment)

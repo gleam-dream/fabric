@@ -12,8 +12,8 @@
 import fabric
 import fabric/agent.{type Agent}
 import fabric/model
-import fabric/policy.{Requirement}
-import fabric/run
+import fabric/policy
+import fabric/run.{Requirement}
 import fabric/store
 import fabric/support/apps
 import fabric/support/flaky

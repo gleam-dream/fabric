@@ -8,9 +8,10 @@ import fabric/agent.{type Agent}
 import fabric/internal/controller
 import fabric/internal/record
 import fabric/model
-import fabric/policy.{ActionId}
-import fabric/run
+import fabric/policy
+import fabric/run.{type RunId, ActionId}
 import fabric/store.{type Store}
+import fabric/support
 import fabric/support/apps
 import fabric/support/probe.{type Probe}
 import fabric/support/restart
@@ -43,7 +44,7 @@ fn start_owned(
 
 /// Kills the owner and waits until its store and the run's runner are gone:
 /// only the files remain.
-fn crash(owner: Pid, store: Store, id: String) -> Nil {
+fn crash(owner: Pid, store: Store, id: RunId) -> Nil {
   let runner = restart.runner(store, id)
   restart.kill(owner)
   restart.gone(store.pid(store))
@@ -315,7 +316,7 @@ fn transfers_need_approval(
 ) -> Result(policy.Decision, String) {
   case action.tool {
     "transfer_funds" ->
-      Ok(policy.RequireApproval(policy.Requirement("transfer", 1)))
+      Ok(policy.RequireApproval(run.Requirement("transfer", 1)))
     _ -> Ok(policy.Allow)
   }
 }
@@ -329,7 +330,7 @@ fn paying_agent(tools: List(tool.Tool(Nil))) -> Agent(Nil) {
 }
 
 /// A run suspended on a transfer approval, with every process gone.
-fn suspended_on_disk(dir: String) -> String {
+fn suspended_on_disk(dir: String) -> RunId {
   let #(owner, old, run) =
     start_owned(dir, paying_agent([apps.transfer_tool()]), Nil, "pay bob")
   let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
@@ -393,7 +394,7 @@ pub fn recovery_reports_an_unsupported_record_version_test() {
   let id = suspended_on_disk(dir)
   let assert Ok(Nil) =
     restart.write_file(
-      dir <> "/" <> id <> "/99999999999999999999.json",
+      dir <> "/" <> support.text(id) <> "/99999999999999999999.json",
       "{\"format\":\"fabric.run\",\"version\":99}",
     )
   fabric.recover(reopen(dir), paying_agent([apps.transfer_tool()]), Nil, id)
@@ -408,7 +409,7 @@ pub fn recovery_reports_a_corrupt_record_test() {
   let id = suspended_on_disk(dir)
   let assert Ok(Nil) =
     restart.write_file(
-      dir <> "/" <> id <> "/99999999999999999999.json",
+      dir <> "/" <> support.text(id) <> "/99999999999999999999.json",
       "{\"format\":\"fabric.run\",\"version\":1,\"run\":",
     )
   let assert Error(fabric.RecoverUnreadable(fabric.CorruptRecord(_))) =
@@ -422,7 +423,7 @@ pub fn recovery_reports_a_run_that_does_not_exist_test() {
     reopen(dir),
     paying_agent([apps.transfer_tool()]),
     Nil,
-    "run-nope",
+    support.id("run-nope"),
   )
   |> should.equal(Error(fabric.RecoverUnreadable(fabric.RunNotFound)))
   restart.remove_dir(dir)
@@ -497,7 +498,7 @@ fn two_reviewed(probe: Probe) -> Agent(Nil) {
   agent.new(
     scripted.plan([scripted.slow("p", "p"), scripted.slow("q", "q")]),
     [scripted.gated_tool(probe)],
-    fn(_, _) { Ok(policy.RequireApproval(policy.Requirement("review", 1))) },
+    fn(_, _) { Ok(policy.RequireApproval(run.Requirement("review", 1))) },
   )
 }
 
@@ -550,7 +551,7 @@ pub fn a_stranded_run_is_cancelled_without_an_agent_test() {
   fabric.cancel_stored(store, id)
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.cancel_stored(store, id) |> should.equal(Error(fabric.RunEnded))
-  fabric.cancel_stored(store, "run-nope")
+  fabric.cancel_stored(store, support.id("run-nope"))
   |> should.equal(Error(fabric.Unreadable(fabric.RunNotFound)))
 
   let assert Ok(run) =
@@ -603,7 +604,7 @@ pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
     )
   let assert Ok(1) =
     store.insert(store, "run-stopping", record.encode(stopping), store.Keep)
-  fabric.cancel_stored(store, "run-stopping")
+  fabric.cancel_stored(store, support.id("run-stopping"))
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert Ok(store.Entry(record: stored, ..)) =
     store.get(store, "run-stopping")

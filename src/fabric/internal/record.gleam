@@ -45,10 +45,10 @@
 import fabric/internal/controller.{type Phase, type State, State}
 import fabric/internal/registry.{type Registry}
 import fabric/model.{type Message, type ToolCall}
-import fabric/policy.{type ActionId, type Requirement, ActionId, Requirement}
 import fabric/run.{
-  type ActionRecord, type ActionState, type Approval, type HostFailure,
-  type Identity, type Incompatibility, type Outcome, ActionRecord, Identity,
+  type ActionId, type ActionRecord, type ActionState, type Approval,
+  type HostFailure, type Identity, type Incompatibility, type Outcome,
+  type Requirement, ActionId, ActionRecord, Identity, Requirement,
 }
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
@@ -83,8 +83,8 @@ pub fn encode(state: State) -> String {
       "parent",
       json.nullable(state.parent, fn(parent) {
         json.object([
-          #("run", json.string(parent.run)),
-          #("action", action_id(parent.action)),
+          #("run", json.string(run.id_to_string(parent.run))),
+          #("action", action_id(parent.id)),
         ])
       }),
     ),
@@ -155,6 +155,10 @@ fn tool_call(call: ToolCall) -> Json {
   ])
 }
 
+fn run_id(id: run.RunId) -> Json {
+  json.string(run.id_to_string(id))
+}
+
 fn action_id(id: ActionId) -> Json {
   json.object([
     #("turn", json.int(id.turn)),
@@ -175,7 +179,7 @@ fn action(action: ActionRecord) -> Json {
     #("call", tool_call(action.call)),
     #("state", action_state(action.state)),
     #("approvals", json.array(action.approvals, approval)),
-    #("child", json.nullable(action.child, json.string)),
+    #("child", json.nullable(action.child, run_id)),
   ])
 }
 
@@ -340,7 +344,7 @@ fn never_started_before_3(state: State, found: Int) -> State {
 /// corrupt; ids then strictly grow down a family, so no link is cyclic.
 fn linked(state: State) -> Result(State, DecodeError) {
   let parent = case state.parent {
-    Some(parent) -> extends(state.run, parent.run)
+    Some(parent) -> extends(state.run, run.id_to_string(parent.run))
     None -> True
   }
   let actions = case state.phase {
@@ -353,7 +357,7 @@ fn linked(state: State) -> Result(State, DecodeError) {
   let children =
     list.all(actions, fn(action) {
       case action.child {
-        Some(child) -> extends(child, state.run)
+        Some(child) -> extends(run.id_to_string(child), state.run)
         None -> True
       }
     })
@@ -429,7 +433,7 @@ fn state_decoder(found: Int) -> Decoder(State) {
     decode.optional({
       use run <- decode.field("run", decode.string)
       use action <- decode.field("action", action_id_decoder())
-      decode.success(run.Parent(run, action))
+      decode.success(run.ActionRef(run.issued(run), action))
     }),
   )
   use depth <- since_2(found, "depth", 0, decode.int)
@@ -531,6 +535,10 @@ fn tool_call_decoder() -> Decoder(ToolCall) {
   ))
 }
 
+fn run_id_decoder() -> Decoder(run.RunId) {
+  decode.map(decode.string, run.issued)
+}
+
 fn action_id_decoder() -> Decoder(ActionId) {
   use turn <- decode.field("turn", decode.int)
   use call_id <- decode.field("call_id", decode.string)
@@ -548,7 +556,7 @@ fn action_decoder(found: Int) -> Decoder(ActionRecord) {
   use call <- decode.field("call", tool_call_decoder())
   use state <- decode.field("state", action_state_decoder())
   use approvals <- decode.field("approvals", decode.list(approval_decoder()))
-  use child <- since_2(found, "child", None, decode.optional(decode.string))
+  use child <- since_2(found, "child", None, decode.optional(run_id_decoder()))
   decode.success(ActionRecord(id, call, state, approvals, child))
 }
 

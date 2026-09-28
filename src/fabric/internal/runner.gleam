@@ -31,8 +31,8 @@ import fabric/internal/observe
 import fabric/internal/record
 import fabric/internal/registry
 import fabric/model.{type Model}
-import fabric/policy.{type ActionId}
-import fabric/run
+import fabric/policy
+import fabric/run.{type ActionId}
 import fabric/store.{type Store}
 import fabric/tool
 import gleam/dict.{type Dict}
@@ -285,7 +285,7 @@ pub fn child_state(
     setup.identity,
     controller.Limits(..setup.limits, max_depth:),
     prompt,
-    Some(run.Parent(parent.run, action)),
+    Some(run.ActionRef(run.issued(parent.run), action)),
     depth,
   )
 }
@@ -1233,7 +1233,7 @@ fn notify_parent_tries(
 /// accepts its work: `False` once one is stopping or has ended. A chain
 /// that cannot be read after the store's bounded retries counts as closed:
 /// nothing starts that the ancestors may have stopped.
-pub fn ancestors_open(store: Store, parent: Option(run.Parent)) -> Bool {
+pub fn ancestors_open(store: Store, parent: Option(run.ActionRef)) -> Bool {
   case read_ancestors(store, parent, max_links, 0) {
     Ok(open) -> open
     Error(_) -> False
@@ -1247,7 +1247,7 @@ const max_links = 64
 /// work. A failed read is tried again after the runner's bounded backoff.
 pub fn read_ancestors(
   store: Store,
-  parent: Option(run.Parent),
+  parent: Option(run.ActionRef),
   links: Int,
   attempt: Int,
 ) -> Result(Bool, ReadError) {
@@ -1255,7 +1255,7 @@ pub fn read_ancestors(
     None, _ -> Ok(True)
     Some(_), 0 -> Error(Corrupt("the chain of parent runs is too long"))
     Some(link), _ ->
-      case load(store, link.run) {
+      case load(store, run.id_to_string(link.run)) {
         Error(StoreFailed(_)) if attempt < unavailable_retries -> {
           process.sleep(
             unavailable_backoff * int.bitwise_shift_left(1, attempt),
@@ -1479,10 +1479,8 @@ pub fn load(
   store: Store,
   id: String,
 ) -> Result(#(store.Entry, State), ReadError) {
-  use Nil <- result.try(case issued_id(id) {
-    True -> Ok(Nil)
-    False -> Error(NotFound)
-  })
+  // An id in any other shape names no run (`run.parse_id`).
+  use _ <- result.try(run.parse_id(id) |> result.replace_error(NotFound))
   use entry <- result.try(
     store.get(store, id)
     |> result.map_error(fn(error) {
@@ -1527,21 +1525,6 @@ pub fn live_runner(
       Some(mailbox)
     _ -> None
   }
-}
-
-/// Whether `id` has the shape of the run ids Fabric issues: 1 to 128
-/// letters, digits, `-` and `_`. Anything else names no run.
-fn issued_id(id: String) -> Bool {
-  let length = string.length(id)
-  length >= 1
-  && length <= 128
-  && string.to_graphemes(id)
-  |> list.all(fn(grapheme) {
-    string.contains(
-      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_",
-      grapheme,
-    )
-  })
 }
 
 /// Exponential backoff: `initial` doubled per consecutive failure after the

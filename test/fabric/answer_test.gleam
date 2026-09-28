@@ -6,8 +6,9 @@ import fabric/internal/controller.{
 import fabric/internal/invocation
 import fabric/internal/registry
 import fabric/model.{ToolCall, ToolRequest, ToolResultMessage, Usage}
-import fabric/policy.{type Action, ActionId, Requirement}
-import fabric/run
+import fabric/policy.{type Action}
+import fabric/run.{ActionId, Requirement}
+import fabric/support
 import fabric/support/apps
 import gleam/list
 import gleam/option.{None, Some}
@@ -128,7 +129,7 @@ pub fn an_approval_queues_the_action_and_records_the_reviewer_test() {
   let #(state, pending) = suspended()
   pending.reference
   |> should.equal(run.ApprovalRef(
-    "run-1",
+    support.id("run-1"),
     ActionId(1, "t"),
     Requirement("transfer", 1),
     1,
@@ -194,7 +195,7 @@ pub fn a_changed_requirement_demands_a_new_answer_test() {
   let assert run.Suspended([again], []) = controller.status(state)
   again.reference
   |> should.equal(run.ApprovalRef(
-    "run-1",
+    support.id("run-1"),
     ActionId(1, "t"),
     Requirement("transfer", 2),
     2,
@@ -216,7 +217,12 @@ pub fn references_are_checked_against_the_record_test() {
   let #(state, pending) = suspended()
   let env = env(desk())
   let reference = pending.reference
-  answer(env, state, run.ApprovalRef(..reference, run: "run-2"), run.Approve)
+  answer(
+    env,
+    state,
+    run.ApprovalRef(..reference, run: support.id("run-2")),
+    run.Approve,
+  )
   |> should.equal(Error(controller.WrongReference))
   answer(
     env,

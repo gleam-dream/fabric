@@ -46,11 +46,11 @@ import fabric/internal/registry.{type Registry}
 import fabric/model.{
   type Message, type ModelError, type Reply, type Request, type ToolCall,
 }
-import fabric/policy.{type ActionId, type Policy, ActionId}
+import fabric/policy.{type Policy}
 import fabric/run.{
-  type ActionRecord, type ActionState, type Answer, type ApprovalRef,
-  type HostFailure, type Identity, type Outcome, type Status, type TokenUsage,
-  ActionRecord,
+  type ActionId, type ActionRecord, type ActionState, type Answer,
+  type ApprovalRef, type HostFailure, type Identity, type Outcome, type Status,
+  type TokenUsage, ActionId, ActionRecord,
 }
 import gleam/int
 import gleam/list
@@ -115,7 +115,7 @@ pub type State {
     /// Increases by one each time a lost runner's work is taken over.
     incarnation: Int,
     /// The action that started this run, for a sub-agent run.
-    parent: Option(run.Parent),
+    parent: Option(run.ActionRef),
     /// Levels below the root run: 0 for a root run.
     depth: Int,
     limits: Limits,
@@ -216,7 +216,7 @@ pub fn start(
   agent: Identity,
   limits: Limits,
   prompt: String,
-  parent: Option(run.Parent),
+  parent: Option(run.ActionRef),
   depth: Int,
 ) -> #(State, List(Effect)) {
   let state =
@@ -578,7 +578,7 @@ fn cancel_children(actions: List(ActionRecord)) -> List(Effect) {
   case
     list.filter_map(actions, fn(action) {
       case child_active(action), action.child {
-        True, Some(child) -> Ok(#(action.id, child))
+        True, Some(child) -> Ok(#(action.id, run.id_to_string(child)))
         _, _ -> Error(Nil)
       }
     })
@@ -655,7 +655,7 @@ fn child_ended(
     True, Some(child) -> Ok(child)
     _, _ -> Error(ReportNotExpected(id))
   })
-  let named = "the sub-agent run " <> child
+  let named = "the sub-agent run " <> run.id_to_string(child)
   let #(action_state, fault) = case result {
     ChildMissing -> #(run.NotStarted, None)
     ChildLost(detail) -> #(
@@ -730,7 +730,8 @@ fn next_child(state: State, records: List(ActionRecord)) -> String {
 fn start_children(actions: List(ActionRecord)) -> List(Effect) {
   list.filter_map(actions, fn(action) {
     case action.state, action.child {
-      run.Running, Some(child) -> Ok(StartChild(action.id, child, action.call))
+      run.Running, Some(child) ->
+        Ok(StartChild(action.id, run.id_to_string(child), action.call))
       _, _ -> Error(Nil)
     }
   })
@@ -765,7 +766,7 @@ fn answer_approval(
   let find = fn(actions: List(ActionRecord)) {
     list.find(actions, fn(action) { action.id == reference.id })
   }
-  case reference.run == state.run, state.phase {
+  case run.id_to_string(reference.run) == state.run, state.phase {
     False, _ -> Error(WrongReference)
     True, Ended(_) | True, NeverStarted ->
       Error(after_end(state.history, reference))
@@ -1096,14 +1097,20 @@ fn gate(
 
 fn decide_policy(
   env: Env(context),
-  run: String,
+  run_id: String,
   id: ActionId,
   call: ToolCall,
   target: policy.Target,
 ) -> Result(Gated, HostFailure) {
   env.policy(
     env.context,
-    policy.Action(run, id, call.name, call.arguments_json, target),
+    policy.Action(
+      run.issued(run_id),
+      id,
+      call.name,
+      call.arguments_json,
+      target,
+    ),
   )
   |> result.map(Decided)
   |> result.map_error(run.PolicyFailed(id, _))
@@ -1135,7 +1142,7 @@ fn admitted(
         True ->
           ActionRecord(
             ..record(run.Running),
-            child: Some(next_child(state, others)),
+            child: Some(run.issued(next_child(state, others))),
           )
       }
   }
@@ -1487,7 +1494,8 @@ pub fn active_children(state: State) -> List(#(ActionId, String, String)) {
     Acting(_, actions) | Stopping(actions:, ..) ->
       list.filter_map(actions, fn(action) {
         case child_active(action), action.child {
-          True, Some(child) -> Ok(#(action.id, action.call.name, child))
+          True, Some(child) ->
+            Ok(#(action.id, action.call.name, run.id_to_string(child)))
           _, _ -> Error(Nil)
         }
       })
@@ -1510,7 +1518,7 @@ pub fn never_started(
     run: child,
     agent:,
     incarnation: 1,
-    parent: Some(run.Parent(parent.run, action)),
+    parent: Some(run.ActionRef(run.issued(parent.run), action)),
     depth: parent.depth + 1,
     limits: parent.limits,
     turns_used: 0,
@@ -1557,7 +1565,12 @@ pub fn status(state: State) -> Status {
               case action.state {
                 run.AwaitingApproval(requirement, revision) ->
                   Ok(run.PendingApproval(
-                    run.ApprovalRef(state.run, action.id, requirement, revision),
+                    run.ApprovalRef(
+                      run.issued(state.run),
+                      action.id,
+                      requirement,
+                      revision,
+                    ),
                     action.call.name,
                     action.call.arguments_json,
                   ))
@@ -1568,7 +1581,7 @@ pub fn status(state: State) -> Status {
               case action.state {
                 run.Uncertain(evidence) ->
                   Ok(run.UncertainAction(
-                    state.run,
+                    run.issued(state.run),
                     action.id,
                     action.call.name,
                     evidence,
@@ -1598,7 +1611,7 @@ fn in_flight(actions: List(ActionRecord)) -> Bool {
 
 pub fn snapshot(state: State) -> run.Snapshot {
   run.Snapshot(
-    run: state.run,
+    run: run.issued(state.run),
     agent: state.agent,
     incarnation: state.incarnation,
     parent: state.parent,

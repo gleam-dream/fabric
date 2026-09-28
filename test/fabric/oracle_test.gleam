@@ -369,7 +369,7 @@ fn pay_needs_review(
   action: policy.Action,
 ) -> Result(policy.Decision, String) {
   case action.tool {
-    "pay" -> Ok(policy.RequireApproval(policy.Requirement("review", 1)))
+    "pay" -> Ok(policy.RequireApproval(run.Requirement("review", 1)))
     _ -> Ok(policy.Allow)
   }
 }
@@ -536,7 +536,7 @@ fn delegation_agent(probe: Probe) -> agent.Agent(Nil) {
   agent.new(delegation_model(probe), [], fn(_, action: policy.Action) {
     case action.target {
       policy.StartAgent(..) ->
-        Ok(policy.RequireApproval(policy.Requirement("review", 1)))
+        Ok(policy.RequireApproval(run.Requirement("review", 1)))
       policy.InvokeTool -> Ok(policy.Allow)
     }
   })

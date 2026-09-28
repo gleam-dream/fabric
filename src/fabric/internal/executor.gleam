@@ -13,7 +13,7 @@
 //// run actions of the same run with different contexts.
 
 import fabric/internal/invocation.{type Outcome}
-import fabric/policy.{type ActionId}
+import fabric/run.{type ActionId}
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list

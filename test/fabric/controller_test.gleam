@@ -9,8 +9,9 @@ import fabric/model.{
   AssistantMessage, FinalAnswer, ToolCall, ToolRequest, ToolResultMessage, Usage,
   UserMessage,
 }
-import fabric/policy.{type Action, ActionId}
-import fabric/run
+import fabric/policy.{type Action}
+import fabric/run.{ActionId}
+import fabric/support
 import fabric/support/apps
 import gleam/list
 import gleam/option.{None, Some}
@@ -35,7 +36,7 @@ fn bank_policy(
         True, _, _ -> Ok(policy.Deny("recipient is blocked"))
         _, True, _ -> Error("policy service unavailable")
         _, _, True ->
-          Ok(policy.RequireApproval(policy.Requirement("large-transfer", 1)))
+          Ok(policy.RequireApproval(run.Requirement("large-transfer", 1)))
         _, _, _ -> Ok(policy.Allow)
       }
     _ -> Ok(policy.Allow)
@@ -120,7 +121,7 @@ fn tools_requested(
 fn run_tool(
   env: controller.Env(Nil),
   state: State,
-  id: policy.ActionId,
+  id: run.ActionId,
   outcome: invocation.Outcome,
 ) -> #(State, List(Effect)) {
   let assert #(state, []) = step(env, state, controller.ToolStarting(id))
@@ -224,13 +225,13 @@ pub fn policy_denies_and_requires_approval_test() {
   // The approval blocks the next turn; nothing is in flight.
   effects |> should.equal([])
   controller.needs_runner(state) |> should.be_false
-  let requirement = policy.Requirement("large-transfer", 1)
+  let requirement = run.Requirement("large-transfer", 1)
   controller.status(state)
   |> should.equal(
     run.Suspended(
       [
         run.PendingApproval(
-          run.ApprovalRef("run-1", ActionId(1, "a"), requirement, 1),
+          run.ApprovalRef(support.id("run-1"), ActionId(1, "a"), requirement, 1),
           "transfer_funds",
           "{\"to\":\"bob\",\"amount\":500}",
         ),
@@ -313,7 +314,12 @@ pub fn uncertain_effect_blocks_until_reconciled_test() {
   controller.status(state)
   |> should.equal(
     run.Suspended([], [
-      run.UncertainAction("run-1", t, "transfer_funds", "gateway timed out"),
+      run.UncertainAction(
+        support.id("run-1"),
+        t,
+        "transfer_funds",
+        "gateway timed out",
+      ),
     ]),
   )
   controller.step(env, state, controller.Reconcile(ActionId(1, "w"), "x"))

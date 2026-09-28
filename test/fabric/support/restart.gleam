@@ -2,6 +2,7 @@
 //// processes whose death takes down every Fabric process they started, and
 //// access to a run's live runner.
 
+import fabric/run.{type RunId}
 import fabric/store.{type Store}
 import gleam/erlang/process.{type Pid}
 import gleam/option.{None, Some}
@@ -58,8 +59,8 @@ pub fn gone(pid: Pid) -> Nil {
 }
 
 /// The process of the runner the store has registered for `run`.
-pub fn runner(store: Store, run: String) -> Result(Pid, Nil) {
-  case store.get(store, run) {
+pub fn runner(store: Store, id: RunId) -> Result(Pid, Nil) {
+  case store.get(store, run.id_to_string(id)) {
     Ok(store.Entry(live: Some(store.Live(mailbox:, ..)), ..)) ->
       process.subject_owner(mailbox)
     Ok(store.Entry(live: None, ..)) | Error(_) -> Error(Nil)
