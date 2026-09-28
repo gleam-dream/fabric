@@ -1,6 +1,6 @@
 -module(fabric_test_ffi).
 -export([temp_dir/0, remove_dir/1, list_dir/1, write_file/2, read_file/1, age_file/2, waits_on/2, waits_in/2,
-         suspend/1, resume/1, queued/1]).
+         suspend/1, resume/1, queued/1, leasing/0, set_leasing/1]).
 
 %% A fresh, empty directory under the system temporary directory.
 temp_dir() ->
@@ -75,3 +75,11 @@ queued(Pid) ->
         {message_queue_len, N} -> N;
         undefined -> 0
     end.
+
+%% Whether `fabric/support.store` makes leased stores in this process.
+leasing() ->
+    get(fabric_test_leasing) =:= true.
+
+set_leasing(Leasing) ->
+    put(fabric_test_leasing, Leasing),
+    nil.
