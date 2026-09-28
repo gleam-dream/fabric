@@ -13,10 +13,11 @@
 //// - llm_wire's exact result-coverage check at `prepare_continue`; Fabric's
 ////   controller only continues when every call has exactly one result.
 ////
-//// Arguments that are not a JSON object (already answered with
-//// `invalid_arguments`) are replayed as `{"unparsed_arguments": text}`,
-//// because Anthropic and Google take an object and llm_wire refuses to
-//// prepare arguments that are not JSON.
+//// A call's arguments are replayed exactly as the model sent them, even
+//// when they were not a JSON object and were answered with
+//// `invalid_arguments`; llm_wire encodes such text for each provider
+//// (Anthropic and Google wrap it as `{"unparsed_arguments": text}`, OpenAI
+//// sends it verbatim).
 ////
 //// The adapter asks llm_wire to report invalid tool calls rather than fail
 //// the turn (`types.ReportInvalidToolCalls`): every call reaches Fabric, whose
@@ -25,9 +26,7 @@
 //// and bounds still fail the turn in llm_wire.
 
 import fabric/model.{type Model, type ModelError, type Reply, type Request}
-import gleam/dynamic/decode
 import gleam/int
-import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -137,25 +136,10 @@ fn to_wire_call(call: model.ToolCall) -> Result(types.ToolCall, ModelError) {
   types.ToolCall(
     id:,
     name:,
-    arguments_json: replayable_arguments(call.arguments_json),
+    arguments_json: call.arguments_json,
     provider_id: call.provider_id,
     provider_state: call.provider_state,
   )
-}
-
-/// Anthropic and Google replay a call's arguments as a JSON object, and
-/// llm_wire refuses to prepare a transcript whose arguments are not JSON.
-/// Arguments that are not a JSON object were already answered with
-/// `invalid_arguments`; they are replayed as `{"unparsed_arguments": text}`
-/// so the model still sees what it sent. The record keeps the original.
-fn replayable_arguments(arguments: String) -> String {
-  case json.parse(arguments, decode.dict(decode.string, decode.dynamic)) {
-    Ok(_) -> arguments
-    Error(_) ->
-      json.to_string(
-        json.object([#("unparsed_arguments", json.string(arguments))]),
-      )
-  }
 }
 
 fn from_wire_call(call: types.ToolCall) -> model.ToolCall {
