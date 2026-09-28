@@ -98,7 +98,9 @@ pub fn desk(
 }
 
 /// A store is a named value; its process runs under the application's
-/// supervisor (`store.start(runs)` in a script or a test).
+/// supervisor (`store.start(runs)` in a script or a test). A directory store
+/// suits development, tests and one host; it does not survive a power loss,
+/// so production uses a database backend through `store.new`.
 pub fn supervise(path: String) -> Result(store.Store, actor.StartError) {
   let runs = store.directory(process.new_name("runs"), path)
   static_supervisor.new(static_supervisor.OneForOne)

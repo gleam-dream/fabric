@@ -50,7 +50,9 @@
 //// every commit it acknowledged: the directory store does not flush the
 //// directory entry, so after an operating-system crash or power loss (not
 //// a process or VM crash) the latest revisions may be missing, and a tool
-//// whose start was among them could run again.
+//// whose start was among them could run again. The directory store is for
+//// development, tests, and one host; production uses a database backend
+//// (`store.new`).
 
 import fabric/agent.{type Agent}
 import fabric/internal/controller.{type State}

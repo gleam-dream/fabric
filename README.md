@@ -117,7 +117,9 @@ pub fn desk(
 }
 
 /// A store is a named value; its process runs under the application's
-/// supervisor (`store.start(runs)` in a script or a test).
+/// supervisor (`store.start(runs)` in a script or a test). A directory store
+/// suits development, tests and one host; it does not survive a power loss,
+/// so production uses a database backend through `store.new`.
 pub fn supervise(path: String) -> Result(store.Store, actor.StartError) {
   let runs = store.directory(process.new_name("runs"), path)
   static_supervisor.new(static_supervisor.OneForOne)
@@ -249,6 +251,14 @@ pub fn settling_transfer(
   )
 }
 ```
+
+Stores: `store.in_memory` keeps records in its process (tests and
+scripts). `store.directory` keeps them in files, for development, tests and
+a single host: a record survives a process or VM crash, but not a power
+loss or an operating-system crash, after which the latest revisions may be
+missing and a tool whose start was among them could run again. In
+production, give Fabric a database backend through `store.new` (a Postgres
+adapter is planned) or another application backend.
 
 A Saga workflow is one typed tool too, from the separate package
 `integrations/fabric_saga`: `fabric_saga.tool(definition, workflow,
