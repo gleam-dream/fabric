@@ -15,14 +15,15 @@ an idle run is data in the store with no process holding it.
 
 ## Decisions carried into every slice
 
-- **One ordinary path.** `agent.new(model, tools, policy)`, then
-  `fabric.start(store, agent, context, prompt)`, then `fabric.await`.
-  Advanced capabilities are distinct functions (`fabric.answer`,
-  `fabric.recover`, `fabric.reconcile`, `agent.with_token_budget`), not
-  flags.
+- **One ordinary path.** `agent.new(name, model, tools, policy)`, then
+  `agent.build`, then `fabric.start(store, agent, context, prompt)`, then
+  `fabric.await`. Advanced capabilities are distinct functions
+  (`fabric.approve`, `fabric.reject`, `fabric.recover`, `fabric.reconcile`,
+  `fabric.child`, `fabric.cancel_stored`, `tool.bind_settling`,
+  `store.new`), not flags; bounds default in one `agent.Limits` record.
 - **Policy is a required argument.** There is no implicit allow; the named
   `policy.always_allow()` exists for tests and deliberate choices. A policy
-  error, crash, or missing decision within `agent.with_policy_timeout` is a
+  error, crash, or missing decision within `agent.Limits.policy_timeout` is a
   host failure (fail closed).
 - **One action shape for the gate.** `policy.Action` identifies the run, turn
   ordinal, provider call id, target name, and exact validated arguments. Slice
@@ -64,10 +65,15 @@ an idle run is data in the store with no process holding it.
   `BudgetUnverifiable`; without a token budget, missing usage is counted in the
   snapshot. There is no elapsed-time budget API, so it cannot be silently
   accepted.
-- **Ownership.** The application opens a `Store` (in memory, a directory, or
-  its own backend through `store.new`); the store process is linked to the
-  process that opened it. A runner exists only while model or tool work is in
-  flight; it monitors the store and stops when the store goes. The runner
+- **Ownership.** The application names a `Store` (in memory, a directory, or
+  its own backend through `store.new`) and runs its process under its own
+  supervisor (`store.supervised`), or linked to the caller (`store.start`)
+  in a script or test; any process uses the same value, so a run outlives
+  the process that started it. A runner exists only while model or tool
+  work is in flight; it monitors the store process that was running when it
+  was claimed and stops when that process goes. A restarted store process
+  knows no runner: its runs with work in flight are `Unattended` until
+  recovered. The runner
   traps exits; the executor and the model task are linked to it, and tool
   tasks to the executor, so killing the runner kills them all and a task that
   dies becomes a message to the runner. The model task is linked rather than
@@ -81,9 +87,10 @@ an idle run is data in the store with no process holding it.
   newer owner reads the newer record and is validated again.
 - **Runner loss is reported, not waited on.** When a runner dies while its
   record still needs one, the store drops its registration and wakes every
-  `await`, which then returns `NoRunner`. A command is first checked against
-  the stored record, so a refusal is reported as such; a valid command that
-  needs the absent runner returns `OwnerUnknown` and changes nothing;
+  `await`, which then returns `Ok(Unattended)`. A command is first checked
+  against the stored record, so a refusal is reported as such; a valid
+  command that needs the absent runner returns `RunUnattended` and changes
+  nothing;
   `cancel` needs no runner. Recovery is an explicit `fabric.recover`,
   because a store knows only the runners of its own VM: taking a run over
   automatically could steal it from a live runner driven through another
@@ -98,18 +105,20 @@ an idle run is data in the store with no process holding it.
 - **A task that dies without a report** (killed from outside) is recorded as an
   uncertain effect, whether or not its fence was committed.
 - **Model retries back off.** A retryable model failure is retried after
-  `agent.with_model_retry_delay` (default 200 ms), doubling per consecutive
+  `agent.Limits.model_retry_delay` (default 200 ms), doubling per consecutive
   failure up to 64 times; the wait is inside the model task, so a cancel ends
   it. Every attempt counts against the turn limit.
-- **Answers are authenticated by the application.** `fabric.answer` records
-  the `reviewer` it is given as is. The application authenticates and
-  authorizes the reviewer before calling it; Fabric checks only that the
-  reference is current and that the policy, run again with the context the
-  application passes, still allows the action.
+- **Answers are authenticated by the application.** `fabric.approve` and
+  `fabric.reject` record the `reviewer` they are given as is. The
+  application authenticates and authorizes the reviewer before calling
+  them; Fabric checks only that the reference is current and, for an
+  approval, that the policy, run again with the context the application
+  passes, still allows the action. A rejection runs nothing and is not
+  rechecked, so it takes no context.
 - **An approved action runs with the context that passed the recheck**
   (oversight `fabric-design.md` §0, "approved invocation retains the same
   context used by the recheck"). The approved tool's body, or the approved
-  sub-agent's child run, receives exactly the context given to `answer`,
+  sub-agent's child run, receives exactly the context given to `approve`,
   whether a runner was live or the answer started one. It never becomes the
   run's context: the run's other actions, and its later model turns, keep
   the context the run was started or recovered with. Mechanism: the effects
@@ -145,10 +154,10 @@ an idle run is data in the store with no process holding it.
   allowed, and a crash in between leaves a named, missing child that
   recovery starts.
 - **No second owner of a child's state.** The child owns its approvals and
-  effects. Nothing is mirrored into the parent's record; `status`, `await`,
-  and `pending` read the family (the parent and its active children), so a
-  child's pause is the parent's pause (anti-oracle B1) and `answer` routes by
-  the reference's run. A delegated action needs no runner; the child delivers
+  effects. Nothing is mirrored into the parent's record; `await`,
+  `snapshot` and `pending` read the family (the parent and its active
+  children), so a child's pause is the parent's pause (anti-oracle B1) and
+  `approve`, `reject` and `reconcile` route by the reference's run. A delegated action needs no runner; the child delivers
   its end to its parent's delegation, keeping its store registration until
   it has, so a family is never seen ended, unreported, and ownerless. A child
   that ended with an unreconciled uncertain effect, or cannot be read or
@@ -174,6 +183,202 @@ an idle run is data in the store with no process holding it.
 - **Saga stays optional.** A Saga workflow becomes a tool through the
   separate package `integrations/fabric_saga`, so Fabric does not depend on
   Saga (oversight `fabric-design.md`, package ownership).
+
+## Public API (slice 3: ergonomics pass)
+
+The current public surface. The sections after this one are the history
+of earlier slices. The pass followed the accepted proposal (2026-09-28, at
+`e5e27f2`): an agent is described by a `Spec` and checked once by `build`,
+with every bound in `Limits`; one policy gate, which matches a tool with
+`tool.input`; a named store that a supervisor can run. Principles: every
+effect passes the one policy, every command names its run by a reference
+checked against the stored record, a value is validated where it is made
+(`agent.build`, `run.parse_id`), a result type lists only what can
+happen, safety decisions are required arguments, and an advanced
+capability is a distinct function, never a flag. Stored records are
+unchanged: the same tags, no version bump.
+
+```gleam
+// fabric — runs and the commands on them
+pub opaque type Run(context)
+pub type StartError { StartUnconfirmed(id: RunId, reason: String) }
+pub type RecordError { RunNotFound  StoreUnavailable(reason: String)  UnsupportedVersion(found: Int)
+                       CorruptRecord(detail: String)  IncompatibleAgent(List(Incompatibility)) }
+pub type CommandError { RunEnded  WrongReference  StaleReference  AlreadyAnswered
+                        RequirementChanged(PendingApproval)  NotReconcilable  RunUnattended
+                        RunnerBusy  Contended  Unreadable(RecordError) }
+pub fn start(store: Store, agent: Agent(c), context: c, prompt: String) -> Result(Run(c), StartError)
+pub fn recover(store: Store, agent: Agent(c), context: c, id: RunId) -> Result(Run(c), CommandError)
+pub fn id(run: Run(c)) -> RunId
+pub fn child(run: Run(c), id: RunId) -> Result(Run(c), RecordError)
+pub fn await(run: Run(c), within: Int) -> Result(Status, RecordError)   // Ok(Working) at the deadline
+pub fn snapshot(run: Run(c)) -> Result(Snapshot, RecordError)
+pub fn pending(run: Run(c)) -> Result(List(PendingApproval), RecordError)
+pub fn approve(run: Run(c), reference: ApprovalRef, reviewer reviewer: Option(String), context context: c)
+  -> Result(Status, CommandError)
+pub fn reject(run: Run(c), reference: ApprovalRef, reason reason: String, reviewer reviewer: Option(String))
+  -> Result(Status, CommandError)
+pub fn reconcile(run: Run(c), effect: ActionRef, content: String) -> Result(Status, CommandError)
+pub fn cancel(run: Run(c)) -> Result(Status, CommandError)
+pub fn cancel_stored(store: Store, id: RunId) -> Result(Status, CommandError)
+
+// fabric/agent — pure configuration, checked once
+pub opaque type Spec(context)
+pub opaque type Agent(context)   // only build makes one
+pub type Limits { Limits(max_turns: Int, max_concurrency: Int, token_budget: Option(Int), max_children: Int,
+                         max_depth: Int, policy_timeout: Int, model_retry_delay: Int, command_timeout: Int) }
+pub type ConfigError { DuplicateToolName(String)  InvalidToolName(String)  ToolSchemaUnavailable(String)
+                       SettlementBoundNotPositive(name, within)  SettlementBoundTooLarge(name, within)
+                       MaxTurnsNotPositive(Int)  MaxConcurrencyNotPositive(Int)  TokenBudgetNotPositive(Int)
+                       PolicyTimeoutNotPositive(Int)  ModelRetryDelayNegative(Int)  CommandTimeoutNotPositive(Int)
+                       InvalidIdentity(name, version)  MaxChildrenNegative(Int)  MaxDepthNegative(Int)
+                       MaxChildrenTooLarge(value: Int, limit: Int)  MaxDepthTooLarge(value: Int, limit: Int) }
+pub fn default_limits() -> Limits   // 8 turns, 4 tools at once, no token budget, 4 children, depth 1,
+                                    // 5000 ms policy and command timeouts, 200 ms first model retry
+pub fn new(name: String, model: Model, tools: List(Tool(c)), policy: Policy(c)) -> Spec(c)   // version 1
+pub fn with_version(spec: Spec(c), version: Int) -> Spec(c)
+pub fn with_system_prompt(spec: Spec(c), text: String) -> Spec(c)
+pub fn with_limits(spec: Spec(c), limits: Limits) -> Spec(c)
+pub fn with_sub_agent(spec: Spec(c), definition: Definition(i, o), to child: Agent(c),
+                      prompt prompt: fn(i) -> String, output output: fn(String) -> Result(o, String)) -> Spec(c)
+pub fn build(spec: Spec(c)) -> Result(Agent(c), List(ConfigError))
+
+// fabric/tool — typed application tools
+pub opaque type Definition(i, o)   pub opaque type Tool(c)   pub opaque type Settlement(o)
+pub type Failure { Explain(message: String)  Uncertain(evidence: String) }
+pub type SettleError { AlreadyRecorded  NotAwaited  SettleUnconfirmed(reason: String) }
+pub fn define(name: String, description: String, input: Codec(i), output: Codec(o)) -> Definition(i, o)
+pub fn bind(definition: Definition(i, o), handler: fn(c, i) -> Result(o, e), classify: fn(e) -> Failure) -> Tool(c)
+pub fn bind_settling(definition: Definition(i, o), handler: fn(c, i, Settlement(o)) -> Result(o, e),
+                     classify: fn(e) -> Failure, within milliseconds: Int) -> Tool(c)
+pub fn settle(settlement: Settlement(o), result: Result(o, Failure), summary summary: String)
+  -> Result(Nil, SettleError)   // the summary reaches observation: no secrets
+pub fn input(definition: Definition(i, o), action: policy.Action) -> Result(i, Nil)
+pub fn call(definition: Definition(i, o), id: String, input: i) -> Result(model.ToolCall, codec.EncodeError)
+
+// fabric/run — plain data
+pub opaque type RunId
+pub fn parse_id(text: String) -> Result(RunId, Nil)   // 1 to 128 of [A-Za-z0-9_-]
+pub fn id_to_string(id: RunId) -> String
+pub type ActionId { ActionId(turn: Int, call_id: String) }
+pub type ActionRef { ActionRef(run: RunId, id: ActionId) }
+pub type Requirement { Requirement(name: String, version: Int) }
+pub type Status { Working  Unattended  Suspended(approvals: List(PendingApproval), uncertain: List(UncertainAction))
+                  Finished(Outcome) }
+pub type ApprovalRef { ApprovalRef(run: RunId, id: ActionId, requirement: Requirement, revision: Int) }
+pub type PendingApproval { PendingApproval(reference: ApprovalRef, tool: String, arguments_json: String) }
+pub type UncertainAction { UncertainAction(reference: ActionRef, tool: String, evidence: String) }
+pub type Answer { Approve  Reject(reason: String) }   // as recorded in an Approval
+pub type Budget { TurnLimit(limit: Int)  TokenLimit(limit: Int, used: Int) }
+pub type DelegationLimit { ChildLimit(limit: Int)  DepthLimit(limit: Int) }
+// ActionState: ..., LimitReached(DelegationLimit); ActionRecord.child: Option(RunId);
+// Snapshot.run: RunId, Snapshot.parent: Option(ActionRef). Approval, Identity, Incompatibility,
+// Outcome, HostFailure, TokenUsage as in slice 2b.
+
+// fabric/policy — the one gate
+pub type Target { InvokeTool  StartAgent(name: String, version: Int) }
+pub type Action { Action(run: RunId, id: ActionId, tool: String, arguments_json: String, target: Target) }
+pub type Decision { Allow  Deny(reason: String)  RequireApproval(Requirement) }
+pub type Policy(context) = fn(context, Action) -> Result(Decision, String)
+pub fn always_allow() -> Policy(context)
+
+// fabric/store — a named value that starts nothing
+pub opaque type Store   pub opaque type Message
+pub type StoreError { NotFound  AlreadyExists  Conflict(current: Int)  Unavailable(reason: String) }
+pub type Stored { Stored(revision: Int, record: String) }
+pub fn in_memory(name: Name(Message)) -> Store      // records live in the store process
+pub fn directory(name: Name(Message), path: String) -> Store
+pub fn new(name: Name(Message), get get: .., insert insert: .., compare_and_set compare_and_set: ..) -> Store
+pub fn supervised(store: Store) -> supervision.ChildSpecification(Nil)
+pub fn start(store: Store) -> Result(Nil, StoreError)   // linked to the caller: scripts and tests
+
+// fabric/observation — as in slice 2b, with model_turn() -> Event(model.Usage, ModelTurn)
+// fabric/model, fabric/llm — unchanged
+```
+
+Errors by operation: `agent.build` returns every `ConfigError` at once;
+`start` only `StartUnconfirmed`, whose run may land later and can then be
+ended with `cancel_stored`; `await`, `snapshot` and `pending` the four
+read errors, `child` those and `IncompatibleAgent`; `recover` `Contended`
+or `Unreadable`; `approve` every `CommandError` but `NotReconcilable`;
+`reject` the same without `RequirementChanged`; `reconcile` `RunEnded`,
+`WrongReference`, `NotReconcilable`, `RunUnattended`, `RunnerBusy`,
+`Contended` and `Unreadable`; `cancel` and `cancel_stored` `RunEnded`,
+`Contended` and `Unreadable`. `StoreError` reaches callers only through
+`store.new`'s backend contract; a missing record is `RunNotFound`, a lost
+race `Contended`, and only an unavailable store `StoreUnavailable`.
+
+Cut: `fabric.status` (`await(run, 0)` reads the status now; `snapshot`
+carries it), `fabric.answer`, `AwaitError`, `RecoverError`, `StartFailed`,
+`InvalidAgent`, `UnknownAction` (now `WrongReference`), `WrongPhase` (now
+`NotReconcilable`), `OwnerUnknown` (now `RunUnattended`), `run.Parent`,
+`agent.validate`, the nine `agent.with_*` bounds and identity setters, the
+`default_*`, `max_children_limit` and `max_depth_limit` constants,
+`ConfigError.InvalidChild` (a sub-agent is a built `Agent`),
+`tool.settle_summarized`, `tool.name` (internal), `observation.Tokens`,
+`store.close`. Moved: `ActionId` and `Requirement` from `policy` to `run`.
+
+### Deviations from the accepted proposal
+
+Each is the smallest safe variant of an item the proposal reasoned
+about but had not compiled against the real code; none changes the three
+decisions (Spec, build and Limits; one policy gate with `tool.input`; a
+named supervisable store).
+
+- **`DelegationLimit` keeps its `limit`.** The proposal wrote
+  `ChildLimit  DepthLimit` without payload; a stored `limit_reached` action
+  carries the limit, and the model sees it, so both keep `limit: Int`. The
+  tag `budget_exhausted`, written only for a delegation limit ending a run
+  (which no run did), is still read for a run budget; `record_test` drops
+  the one round trip of that unrepresentable outcome.
+- **Temporary variants between steps.** Until agents were built once, `start`
+  kept `InvalidAgent` and `recover` returned `CommandError.AgentInvalid`;
+  both were removed with `agent.build`. The final surface has neither.
+- **`Unattended` everywhere a status is reported.** Beyond `await` and
+  `snapshot`, command results and `cancel_stored` report the family's
+  status with the store's runner registry, so a lost runner's run reads
+  `Unattended` there too. `cancel_stored` used to report the committed
+  record's status alone.
+- **A colliding run id is replaced.** `start` retries an `AlreadyExists`
+  first write (a collision of random ids) under a fresh id; only a write
+  whose outcome is unknown is `StartUnconfirmed`.
+- **Fabric names every other ending of a sub-agent.** With `output:`, a
+  refused, output-limited, budget-exhausted, unverifiable, cancelled or
+  failed child is a definite failure whose text names the ending (for
+  example `the sub-agent was cancelled`), not one fixed text. A child with
+  an effect of unknown status still makes the delegation uncertain first.
+- **The store process is an OTP actor bound by instance.** A runner
+  monitors the store process that was running when it was claimed and
+  stops when it goes, so it never drives a run for a restarted process;
+  until it notices, its commits reach the new process and are fenced by
+  compare-and-set like any other owner's. Backend workers report to the
+  process's own subject, never to the name, so a late report cannot reach
+  a later process of the same name. `await` follows a restarted process.
+  `directory(name, path)` no longer fails when built: a directory that
+  cannot be created, or a name already taken, fails `start`.
+- **`run.issued`** is an `@internal` constructor of `RunId` for ids Fabric
+  made or read from its own records; Gleam cannot hide it further.
+  `runner.load` keeps the issued-shape check before any read.
+
+### Guards added
+
+`a_rejection_never_runs_the_policy_test` (approval_test),
+`a_foreign_effect_is_not_reconciled_test` (command_test),
+`a_child_effect_is_reconciled_through_the_parent_test` (delegation_test),
+`a_request_process_that_exits_leaves_its_run_intact_test` and
+`a_restarted_store_leaves_its_runs_unattended_until_recovered_test`
+(supervision_test), `an_unconfirmed_start_names_its_run_test`
+(durable_test), `a_child_without_a_usable_answer_is_a_definite_failure_test`
+(delegation_controller_test), `a_policy_reads_the_typed_input_of_its_tool_test`
+(registry_test), `a_store_that_is_not_running_is_unavailable_test` and
+`a_store_that_cannot_open_does_not_start_test` (store_test),
+`a_wrapped_budget_is_still_read_test` (record_test), `readme_test`, and in
+`consumers/app` `a_run_outlives_the_request_that_started_it_test`.
+
+Resolved backlog: the ergonomics review items (below, slice 2b review
+fixes), `reconcile` routed by run (m7), delegation limits apart from
+`Budget` (m7), and starter-owned stores (slice 3). Runners themselves are
+still started unsupervised, owned through their store process.
 
 ## Public API (slice 2b)
 
@@ -462,7 +667,8 @@ Deferred, with reasons:
   make every added field a version bump.
 - Ergonomics (five error types, `answer` needing a context for a rejection,
   a Store linked to its opener, an opaque run id) are recorded for an API
-  review; none was changed here.
+  review; none was changed here. Resolved by the slice 3 ergonomics pass
+  (see "Public API (slice 3: ergonomics pass)").
 
 ## Slice 2b review fixes
 
@@ -490,13 +696,15 @@ Deferred, with reasons:
 - **Flushing the directory before pruning (m5).** Erlang's `file` module
   refuses to open a directory (`eisdir`), so an `fsync` of the directory
   needs a NIF or a port; the loss is limited to power loss or an OS crash.
-- **`reconcile` routed by run (m7).** It takes an `ActionId` of the handle's
+- **`reconcile` routed by run (m7)** (resolved by the ergonomics pass:
+  `reconcile` takes an `ActionRef`). It takes an `ActionId` of the handle's
   run; routing it like `answer` needs a reference type (an
   `UncertainAction`, or a new one) and changes every caller. An API
   decision.
 - **Typed child output (m7).** A delegation maps `run.Outcome` text; a
   typed child output needs a structured final answer (slice 3).
-- **Delegation limits apart from `Budget` (m7).** `ChildLimit` and
+- **Delegation limits apart from `Budget` (m7)** (resolved by the
+  ergonomics pass: `run.DelegationLimit`). `ChildLimit` and
   `DepthLimit` share `run.Budget` with turn and token limits.
 - **Nits:** `run_recovered` is emitted for the cancel of an orphaned run
   (the cancel increments the incarnation); `child_started` is not emitted
@@ -657,7 +865,9 @@ Backlog from this slice:
 
 - Supervision: a supervision tree instead of starter-owned stores and
   unsupervised runners, with the runner stopping on a supervisor's exit
-  signal (slice 2a review) as its starting point.
+  signal (slice 2a review) as its starting point. The store is supervisable
+  since the ergonomics pass (`store.supervised`); runners are still
+  started unsupervised and owned through their store process.
 - A lease or heartbeat for runs driven through several Stores, so that
   recovery can wait for a live owner; a Grind-driven recovery that carries
   only a run reference.
@@ -668,7 +878,6 @@ Backlog from this slice:
 - Elapsed-time budget with a trusted clock and per-tool timeouts.
 - Database store adapter (the port and a directory store exist) and Grind
   delivery carrying only a run reference.
-- Supervision tree instead of starter-owned stores.
 
 ## Slice 1 status and friction
 
@@ -744,9 +953,8 @@ adopted here:
 ## Tested sibling revisions
 
 Fabric resolves its siblings as `../` path dependencies. The gates after
-`fabric_saga` adopted Saga's unknown-effect evidence passed against these
-revisions, each with a clean working
-tree:
+the slice 3 ergonomics pass passed against these revisions, each with a
+clean working tree:
 
 | Package        | Revision  | Relationship                                                                  |
 | -------------- | --------- | ----------------------------------------------------------------------------- |
