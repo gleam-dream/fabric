@@ -26,6 +26,35 @@
 ////   `Unavailable`: its outcome is unknown, since the backend may still
 ////   perform it later.
 ////
+//// Leases. A leased backend (`LeasedBackend`) keeps, next to each run's
+//// record, a lease: an owner and an expiry judged by the backend's own
+//// clock. Several nodes sharing one database use it to agree on which
+//// node drives a run; the lease never authorizes a write, which the
+//// revision alone decides. Its contract, over the one above:
+////
+//// - `get(run)` returns the record, its revision, and its `Holder`:
+////   `Free`, or `Held(owner, live)`, `live` while the expiry is ahead.
+//// - `insert(run, record, lease)` stores revision 1 with the lease of a
+////   `Claim` or `Seize` (held by its owner for its `ttl`), and none for a
+////   `Hold` or `Release`.
+//// - `compare_and_set(run, expected, record, lease)` checks the revision
+////   first (`NotFound`, `Conflict(current)`), then the lease condition in
+////   the same atomic step: `Hold(owner)` only while `owner` holds the
+////   lease (live or expired) and leaves it unchanged; `Claim(owner, ttl)`
+////   only while the lease is free, held by `owner`, or expired; `Seize`
+////   and `Release` whoever holds it. A refused condition is
+////   `LeaseRefused(holder)` and writes nothing. After the write, a `Claim`
+////   or `Seize` owner holds the lease for `ttl` and a `Release` frees it.
+//// - `renew(owner, runs, ttl)` extends, to `ttl` from now, the lease of
+////   each of `runs` that `owner` holds (live or expired), and returns
+////   those runs. It changes no revision.
+//// - `claim_expired(owner, ttl, limit)` claims for `owner` up to `limit`
+////   runs whose lease is held and expired, and returns them. It changes
+////   no revision, and concurrent calls never return the same run.
+////
+//// `fabric/testing.leased_backend_checks` checks a backend against this
+//// contract; `leased_memory` is one kept in memory.
+////
 //// A `Store` value names a store process and starts nothing: it is plain
 //// data that any process may hold and use. Start its subtree once: the
 //// store's process and the factory its runners are started under, under
@@ -72,11 +101,59 @@ pub type StoreError {
   AlreadyExists
   /// The expected revision is no longer current.
   Conflict(current: Int)
+  /// A leased backend refused the write's lease condition (see Leases):
+  /// `holder` is the run's lease as the backend found it. Nothing was
+  /// written.
+  LeaseRefused(holder: Holder)
   Unavailable(reason: String)
 }
 
 pub type Stored {
   Stored(revision: Int, record: String)
+}
+
+/// Who holds a run's lease in a leased backend.
+pub type Holder {
+  Free
+  /// `live`: the lease's expiry, judged by the backend's clock, is still
+  /// ahead.
+  Held(owner: String, live: Bool)
+}
+
+/// A run's latest record in a leased backend, with its revision and lease.
+pub type Current {
+  Current(revision: Int, record: String, holder: Holder)
+}
+
+/// What a write in a leased backend does to the run's lease, in the same
+/// atomic step as the record (see Leases). `ttl` is in milliseconds, from
+/// the backend's clock.
+pub type Lease {
+  /// Only while `owner` holds the lease, live or expired; the lease is
+  /// unchanged.
+  Hold(owner: String)
+  /// Only while the lease is free, held by `owner`, or expired; `owner`
+  /// then holds it for `ttl`.
+  Claim(owner: String, ttl: Int)
+  /// Whoever holds the lease; `owner` then holds it for `ttl`.
+  Seize(owner: String, ttl: Int)
+  /// Whoever holds the lease; it is then free.
+  Release
+}
+
+/// The functions of a leased backend over encoded records (see Leases).
+pub type LeasedBackend {
+  LeasedBackend(
+    get: fn(String) -> Result(Current, StoreError),
+    /// `insert(run, record, lease)`.
+    insert: fn(String, String, Lease) -> Result(Nil, StoreError),
+    /// `compare_and_set(run, expected, record, lease)`.
+    compare_and_set: fn(String, Int, String, Lease) -> Result(Nil, StoreError),
+    /// `renew(owner, runs, ttl)`: returns the runs renewed.
+    renew: fn(String, List(String), Int) -> Result(List(String), StoreError),
+    /// `claim_expired(owner, ttl, limit)`: returns the runs claimed.
+    claim_expired: fn(String, Int, Int) -> Result(List(String), StoreError),
+  )
 }
 
 /// A named store: the name of its process and the backend that process
@@ -396,9 +473,9 @@ pub type Ownership {
   Keep
   /// The committing runner `Pid` gives the run up in the same step, so a
   /// watcher woken by this commit already sees no runner.
-  Release(Pid)
+  Leave(Pid)
   /// A new runner takes the run over in the same step.
-  Claim(Pid, Live)
+  Launch(Pid, Live)
 }
 
 /// The store's process: the one registered under its name, or for a
@@ -848,13 +925,13 @@ fn confirm(
 fn own(state: Loop, run: String, ownership: Ownership) -> Loop {
   case ownership {
     Keep -> state
-    Release(pid) ->
+    Leave(pid) ->
       case dict.get(state.live, run) {
         Ok(#(owner, _)) if owner == pid ->
           Loop(..state, live: dict.delete(state.live, run))
         _ -> state
       }
-    Claim(pid, live) ->
+    Launch(pid, live) ->
       Loop(
         ..monitor(state, pid),
         live: dict.insert(state.live, run, #(pid, live)),
@@ -943,6 +1020,207 @@ fn memory_loop(
     }
   }
 }
+
+// --- leased, in memory ------------------------------------------------------------
+
+/// A leased backend kept in memory by one process, shared by every store
+/// given `backend` in this VM, and a clock that tests can move forward.
+pub type LeasedMemory {
+  LeasedMemory(
+    backend: LeasedBackend,
+    /// Moves the backend's clock forward by this many milliseconds.
+    advance: fn(Int) -> Nil,
+  )
+}
+
+type Row {
+  Row(revision: Int, record: String, lease: Option(#(String, Int)))
+}
+
+type LeasedRequest {
+  LeasedGet(String, Subject(Result(Current, StoreError)))
+  LeasedWrite(
+    String,
+    Option(Int),
+    String,
+    Lease,
+    Subject(Result(Nil, StoreError)),
+  )
+  LeasedRenew(String, List(String), Int, Subject(List(String)))
+  LeasedClaimExpired(String, Int, Int, Subject(List(String)))
+  Advance(Int, Subject(Nil))
+}
+
+/// A leased backend in memory (see Leases), for tests and for several
+/// stores of one VM that share runs; not for runs that must outlive the
+/// VM. Its process stops when the process that called this exits. Its
+/// clock is the VM's monotonic clock, moved forward by `advance`.
+pub fn leased_memory() -> LeasedMemory {
+  let ready = process.new_subject()
+  let owner = process.self()
+  process.spawn_unlinked(fn() {
+    let subject = process.new_subject()
+    let requests =
+      process.new_selector()
+      |> process.select_map(subject, Ok)
+      |> process.select_specific_monitor(process.monitor(owner), fn(_) {
+        Error(Nil)
+      })
+    process.send(ready, subject)
+    leased_loop(requests, dict.new(), 0)
+  })
+  let subject = process.receive_forever(ready)
+  LeasedMemory(
+    backend: LeasedBackend(
+      get: fn(run) { process.call_forever(subject, LeasedGet(run, _)) },
+      insert: fn(run, record, lease) {
+        process.call_forever(subject, LeasedWrite(run, None, record, lease, _))
+      },
+      compare_and_set: fn(run, expected, record, lease) {
+        process.call_forever(subject, LeasedWrite(
+          run,
+          Some(expected),
+          record,
+          lease,
+          _,
+        ))
+      },
+      renew: fn(owner, runs, ttl) {
+        Ok(process.call_forever(subject, LeasedRenew(owner, runs, ttl, _)))
+      },
+      claim_expired: fn(owner, ttl, limit) {
+        Ok(
+          process.call_forever(subject, LeasedClaimExpired(owner, ttl, limit, _)),
+        )
+      },
+    ),
+    advance: fn(milliseconds) {
+      process.call_forever(subject, Advance(milliseconds, _))
+    },
+  )
+}
+
+fn leased_loop(
+  requests: process.Selector(Result(LeasedRequest, Nil)),
+  rows: Dict(String, Row),
+  offset: Int,
+) -> Nil {
+  case process.selector_receive_forever(requests) {
+    Error(Nil) -> Nil
+    Ok(request) -> {
+      let #(rows, offset) =
+        leased_serve(request, rows, now_ms() + offset, offset)
+      leased_loop(requests, rows, offset)
+    }
+  }
+}
+
+/// Serves one request at the backend's time `now`.
+fn leased_serve(
+  request: LeasedRequest,
+  rows: Dict(String, Row),
+  now: Int,
+  offset: Int,
+) -> #(Dict(String, Row), Int) {
+  let holder = fn(row: Row) {
+    case row.lease {
+      None -> Free
+      Some(#(owner, until)) -> Held(owner, until > now)
+    }
+  }
+  case request {
+    Advance(milliseconds, reply) -> {
+      process.send(reply, Nil)
+      #(rows, offset + milliseconds)
+    }
+    LeasedGet(run, reply) -> {
+      process.send(reply, case dict.get(rows, run) {
+        Ok(row) -> Ok(Current(row.revision, row.record, holder(row)))
+        Error(Nil) -> Error(NotFound)
+      })
+      #(rows, offset)
+    }
+    LeasedWrite(run, expected, record, lease, reply) -> {
+      let outcome = case expected, dict.get(rows, run) {
+        None, Ok(_) -> Error(AlreadyExists)
+        None, Error(Nil) ->
+          Ok(
+            Row(1, record, case lease {
+              Claim(owner, ttl) | Seize(owner, ttl) -> Some(#(owner, now + ttl))
+              Hold(_) | Release -> None
+            }),
+          )
+        Some(_), Error(Nil) -> Error(NotFound)
+        Some(expected), Ok(row) if row.revision != expected ->
+          Error(Conflict(row.revision))
+        Some(_), Ok(row) -> {
+          let next = Row(row.revision + 1, record, row.lease)
+          case lease, holder(row) {
+            Hold(owner), Held(holding, _) if holding == owner -> Ok(next)
+            Claim(owner, ttl), Free
+            | Claim(owner, ttl), Held(_, False)
+            | Seize(owner, ttl), _
+            -> Ok(Row(..next, lease: Some(#(owner, now + ttl))))
+            Claim(owner, ttl), Held(holding, True) if holding == owner ->
+              Ok(Row(..next, lease: Some(#(owner, now + ttl))))
+            Release, _ -> Ok(Row(..next, lease: None))
+            Hold(_), found | Claim(..), found -> Error(LeaseRefused(found))
+          }
+        }
+      }
+      process.send(reply, result.replace(outcome, Nil))
+      case outcome {
+        Ok(row) -> #(dict.insert(rows, run, row), offset)
+        Error(_) -> #(rows, offset)
+      }
+    }
+    LeasedRenew(owner, runs, ttl, reply) -> {
+      let renewed =
+        list.filter(list.unique(runs), fn(run) {
+          case dict.get(rows, run) {
+            Ok(Row(lease: Some(#(holding, _)), ..)) -> holding == owner
+            _ -> False
+          }
+        })
+      process.send(reply, renewed)
+      #(
+        list.fold(renewed, rows, fn(rows, run) {
+          dict.upsert(rows, run, fn(row) {
+            let assert Some(row) = row
+            Row(..row, lease: Some(#(owner, now + ttl)))
+          })
+        }),
+        offset,
+      )
+    }
+    LeasedClaimExpired(owner, ttl, limit, reply) -> {
+      let claimed =
+        dict.to_list(rows)
+        |> list.filter_map(fn(entry) {
+          case entry.1.lease {
+            Some(#(_, until)) if until <= now -> Ok(#(until, entry.0))
+            _ -> Error(Nil)
+          }
+        })
+        |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
+        |> list.take(int.max(limit, 0))
+        |> list.map(fn(entry) { entry.1 })
+      process.send(reply, claimed)
+      #(
+        list.fold(claimed, rows, fn(rows, run) {
+          dict.upsert(rows, run, fn(row) {
+            let assert Some(row) = row
+            Row(..row, lease: Some(#(owner, now + ttl)))
+          })
+        }),
+        offset,
+      )
+    }
+  }
+}
+
+@external(erlang, "fabric_ffi", "now_ms")
+fn now_ms() -> Int
 
 // --- directory ---------------------------------------------------------------
 

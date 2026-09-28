@@ -451,7 +451,7 @@ fn launch_over(
           revision
         }
         Ok(#(pid, mailbox, go)) -> {
-          let claim = store.Claim(pid, store.Live(state.incarnation, mailbox))
+          let claim = store.Launch(pid, store.Live(state.incarnation, mailbox))
           case write(setup.store, state.run, expected, encoded, claim) {
             Ok(revision) -> {
               // The runner starts before this commit's events are emitted: a
@@ -629,7 +629,7 @@ fn hand_off(runner: Runner(context)) -> Nil {
       state.run,
       record.encode(state),
       runner.revision,
-      store.Release(process.self()),
+      store.Leave(process.self()),
       0,
     )
   {
@@ -866,7 +866,7 @@ fn commit_answering(
   }
   let ownership = case controller.needs_runner(state) || delivering {
     True -> store.Keep
-    False -> store.Release(process.self())
+    False -> store.Leave(process.self())
   }
   let encoded = record.encode(state)
   case
