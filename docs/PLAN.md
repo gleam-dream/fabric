@@ -387,7 +387,8 @@ named supervisable store).
 (delegation_controller_test), `a_policy_reads_the_typed_input_of_its_tool_test`
 (registry_test), `a_store_that_is_not_running_is_unavailable_test` and
 `a_store_that_cannot_open_does_not_start_test` (store_test),
-`a_wrapped_budget_is_still_read_test` (record_test), `readme_test`, and in
+`a_wrapped_budget_is_still_read_test` (record_test), `readme_test` (the
+README's block is `readme_example.gleam` verbatim, and runs), and in
 `consumers/app` `a_run_outlives_the_request_that_started_it_test`.
 
 Resolved backlog: the ergonomics review items (below, slice 2b review

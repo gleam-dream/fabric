@@ -10,26 +10,88 @@ Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies 
 
 ## Usage
 
+A payment desk: a typed tool whose large transfers wait for a treasurer's
+approval, a supervised durable store, a request that starts a run, and a
+later request that opens the run by its id to approve, reject, or
+reconcile it. The block is `test/fabric/readme_example.gleam` verbatim;
+`test/fabric/readme_test.gleam` checks that and runs it.
+
 ```gleam
 import fabric
-import fabric/agent
+import fabric/agent.{type Agent}
+import fabric/model.{type Model}
 import fabric/policy
 import fabric/run
 import fabric/store
 import fabric/tool
+import gleam/erlang/process
+import gleam/option.{Some}
+import gleam/otp/actor
+import gleam/otp/static_supervisor
+import gleam/result
+import json/blueprint/codec
 
-let weather_definition =
-  tool.define("lookup_weather", "Look up a forecast.", city_codec, forecast_codec)
-let weather =
-  tool.bind(weather_definition, lookup_weather, fn(error) {
-    tool.Explain(describe(error))
-  })
+/// The live context of a run: who acts. It is never stored.
+pub type Context {
+  Context(user: String)
+}
 
-// One policy gates every effect. `tool.input` matches an action on a
-// tool's definition and gives its typed input (`None` for another tool);
-// arguments that definition cannot read are an error, which stops the run.
-let my_policy = fn(context, action: policy.Action) {
-  use transfer <- result.try(tool.input(transfer_definition, action))
+pub type Transfer {
+  Transfer(to: String, amount: Int)
+}
+
+pub type Receipt {
+  Receipt(id: String)
+}
+
+pub type TransferError {
+  InsufficientFunds
+  GatewayTimeout
+}
+
+/// A tool's definition owns its name and its input and output codecs: the
+/// declaration the model sees and the decoder of its arguments.
+pub fn transfer_definition() -> tool.Definition(Transfer, Receipt) {
+  let assert Ok(input) =
+    codec.record2(
+      codec.required("to", codec.string()),
+      codec.required("amount", codec.int()),
+      Transfer,
+      fn(transfer) { transfer.to },
+      fn(transfer) { transfer.amount },
+    )
+  let output =
+    codec.field("receipt", codec.string())
+    |> codec.imap(Receipt, fn(receipt) { receipt.id })
+  tool.define("transfer_funds", "Transfer an amount.", input, output)
+}
+
+/// Binding a typed handler says what each of its errors means: a definite
+/// failure the model sees, or an effect that may have happened, which is
+/// never retried and waits for a person to reconcile it.
+pub fn transfer_tool(
+  pay: fn(Transfer) -> Result(Receipt, TransferError),
+) -> tool.Tool(Context) {
+  tool.bind(
+    transfer_definition(),
+    fn(_context, transfer) { pay(transfer) },
+    fn(error) {
+      case error {
+        InsufficientFunds -> tool.Explain("insufficient funds")
+        GatewayTimeout -> tool.Uncertain("the gateway timed out after sending")
+      }
+    },
+  )
+}
+
+/// One policy gates every effect. `tool.input` matches an action on a
+/// tool's definition and gives its typed input (`None` for another tool);
+/// arguments that definition cannot read are an error, which stops the run.
+pub fn desk_policy(
+  _context: Context,
+  action: policy.Action,
+) -> Result(policy.Decision, String) {
+  use transfer <- result.try(tool.input(transfer_definition(), action))
   case transfer {
     Some(transfer) if transfer.amount > 100 ->
       Ok(policy.RequireApproval(run.Requirement("treasurer", 1)))
@@ -37,75 +99,163 @@ let my_policy = fn(context, action: policy.Action) {
   }
 }
 
-// An agent is described, then built once: `build` reports every problem.
-let assert Ok(desk) =
-  agent.new("desk", model, [weather, transfer], my_policy)  // fabric/llm.model(settings, model_id)
+/// An agent is described, then built once: `build` reports every problem.
+/// A provider's model comes from `fabric/llm.model(settings, model_id)`.
+pub fn desk(
+  model: Model,
+  pay: fn(Transfer) -> Result(Receipt, TransferError),
+) -> Result(Agent(Context), List(agent.ConfigError)) {
+  agent.new("desk", model, [transfer_tool(pay)], desk_policy)
   |> agent.with_limits(
-    agent.Limits(..agent.default_limits(), max_turns: 6, token_budget: Some(20_000)),
+    agent.Limits(
+      ..agent.default_limits(),
+      max_turns: 6,
+      token_budget: Some(20_000),
+    ),
   )
   |> agent.build
-
-// A store is a named value; its process runs under the application's
-// supervisor (or `store.start(runs)` in a script or test).
-let runs = store.directory(process.new_name("runs"), "/var/lib/app/runs")
-let children = [store.supervised(runs)]   // static_supervisor.add(builder, ..)
-
-let assert Ok(handle) = fabric.start(runs, desk, context, "Pay Bob 120")
-case fabric.await(handle, 30_000) {
-  Ok(run.Finished(run.Completed(answer))) -> answer
-  Ok(run.Suspended([pending, ..], _)) ->
-    // No process holds the run. The application authenticates the reviewer;
-    // the policy is checked again with the context passed here.
-    fabric.approve(handle, pending.reference,
-      reviewer: Some("alice"), context: current_context)
-    // or: fabric.reject(handle, pending.reference, reason: "not today", reviewer: Some("alice"))
-  Ok(run.Suspended([], [uncertain, ..])) ->
-    // An effect of unknown status: record what actually happened.
-    fabric.reconcile(handle, uncertain.reference, "{\"receipt\":\"r-1\"}")
-  Ok(run.Working) -> ...     // the time ran out
-  Ok(run.Unattended) -> ...  // its runner was lost: `recover` takes it over
-  ...
 }
 
-// In a later request: parse the run id from wherever it was kept, and open
-// the run. Opening takes nothing over; commands through the handle are
-// checked against the stored record.
-let assert Ok(id) = run.parse_id(stored_id)
-let assert Ok(handle) = fabric.open(runs, desk, context, id)
+/// A store is a named value; its process runs under the application's
+/// supervisor (`store.start(runs)` in a script or a test).
+pub fn supervise(path: String) -> Result(store.Store, actor.StartError) {
+  let runs = store.directory(process.new_name("runs"), path)
+  static_supervisor.new(static_supervisor.OneForOne)
+  |> static_supervisor.add(store.supervised(runs))
+  |> static_supervisor.start
+  |> result.replace(runs)
+}
 
-// At boot, when the previous owner is known to be gone: `recover` takes
-// over work whose runner was lost (running tools become uncertain effects).
-let assert Ok(handle) = fabric.recover(runs, desk, context, id)
+/// A request starts a run and keeps its id (in a link, a job, a table).
+pub fn start_payment(
+  runs: store.Store,
+  desk: Agent(Context),
+  context: Context,
+  prompt: String,
+) -> Result(String, fabric.StartError) {
+  use handle <- result.map(fabric.start(runs, desk, context, prompt))
+  run.id_to_string(fabric.id(handle))
+}
 
-// A sub-agent: a typed delegation whose start the policy gates like a tool
-// (`action.target` is `policy.StartAgent(..)`). Its approvals surface in the
-// parent's `pending`, cancelling the parent cancels it, and recovering the
-// parent recovers it. `output` parses a completed sub-agent's answer; any
-// other ending is a definite failure the model sees.
-let assert Ok(front_desk) =
-  agent.new("front-desk", model, [weather], my_policy)
-  |> agent.with_sub_agent(research_definition, to: researcher,
-       prompt: fn(topic) { topic.name },
-       output: fn(answer) { Ok(Summary(answer)) })
+pub type Verdict {
+  Approve
+  Reject(reason: String)
+  /// What actually happened to an effect of unknown status, as the model
+  /// will see it.
+  Happened(content: String)
+}
+
+/// A later request opens the run by the id it kept and acts on its status.
+/// Opening takes nothing over, and every command is checked against the
+/// stored record. The application authenticates the reviewer; an approval
+/// checks the policy again with the context passed here.
+pub fn review(
+  runs: store.Store,
+  desk: Agent(Context),
+  context: Context,
+  stored_id: String,
+  verdict: Verdict,
+) -> Result(run.Status, fabric.CommandError) {
+  use id <- result.try(
+    run.parse_id(stored_id)
+    |> result.replace_error(fabric.Unreadable(fabric.RunNotFound)),
+  )
+  use handle <- result.try(
+    fabric.open(runs, desk, context, id) |> result.map_error(fabric.Unreadable),
+  )
+  use status <- result.try(
+    fabric.await(handle, 5000) |> result.map_error(fabric.Unreadable),
+  )
+  let reviewer = Some(context.user)
+  case status, verdict {
+    run.Suspended([pending, ..], _), Approve ->
+      fabric.approve(handle, pending.reference, reviewer:, context:)
+    run.Suspended([pending, ..], _), Reject(reason) ->
+      fabric.reject(handle, pending.reference, reason:, reviewer:)
+    run.Suspended(_, [uncertain, ..]), Happened(content) ->
+      fabric.reconcile(handle, uncertain.reference, content)
+    // `Working`: the time ran out. `Unattended`: its runner was lost.
+    // `Finished`: nothing more can change it.
+    status, _ -> Ok(status)
+  }
+}
+
+/// At boot, when the previous owner is known to be gone, `recover` takes
+/// over work whose runner was lost: running tools become uncertain
+/// effects, never retried. Never recover a run another process may drive.
+pub fn resume(
+  runs: store.Store,
+  desk: Agent(Context),
+  context: Context,
+  stored_id: String,
+) -> Result(fabric.Run(Context), fabric.CommandError) {
+  use id <- result.try(
+    run.parse_id(stored_id)
+    |> result.replace_error(fabric.Unreadable(fabric.RunNotFound)),
+  )
+  fabric.recover(runs, desk, context, id)
+}
+
+pub type Topic {
+  Topic(name: String)
+}
+
+pub type Summary {
+  Summary(text: String)
+}
+
+/// A sub-agent is a typed delegation whose start the policy gates like a
+/// tool (`action.target` is `policy.StartAgent(..)`). Its approvals surface
+/// in the parent's status, cancelling the parent cancels it, and
+/// recovering the parent recovers it. `output` parses a completed
+/// sub-agent's answer; any other ending is a definite failure the model
+/// sees.
+pub fn front_desk(
+  model: Model,
+  researcher: Agent(Context),
+) -> Result(Agent(Context), List(agent.ConfigError)) {
+  let research =
+    tool.define(
+      "research",
+      "Research a topic.",
+      codec.field("topic", codec.string())
+        |> codec.imap(Topic, fn(topic) { topic.name }),
+      codec.field("summary", codec.string())
+        |> codec.imap(Summary, fn(summary) { summary.text }),
+    )
+  agent.new("front-desk", model, [], desk_policy)
+  |> agent.with_sub_agent(
+    research,
+    to: researcher,
+    prompt: fn(topic) { topic.name },
+    output: fn(answer) { Ok(Summary(answer)) },
+  )
   |> agent.build
+}
 
-// A Saga workflow as one typed tool (package fabric_saga). A cancelled call
-// waits up to `rollback_within` ms for Saga's rollback: every completed step
-// undone is a definite failure, anything left in place an uncertain effect.
-let assert Ok(book_trip) =
-  fabric_saga.tool(trip_definition, book_trip_workflow, execution.config(),
-    explain: describe_trip_error, rollback_within: 10_000)
-
-// A tool whose effect outlives its task settles its result late: the handler
-// gets a typed `tool.Settlement(output)`, and a stopped run waits up to
-// `within` ms for `tool.settle(settlement, result, summary:)`. The summary
-// is observed if the settlement is refused, so it must not carry secrets.
-let lookup =
-  tool.bind_settling(weather_definition, handler, classify, within: 5000)
+/// A tool whose effect outlives its task settles its result late: its
+/// handler gets a `tool.Settlement`, and a stopped run waits up to
+/// `within` milliseconds for `tool.settle(settlement, result, summary:)`.
+/// The summary is observed if the settlement is refused, so it must not
+/// carry secrets.
+pub fn settling_transfer(
+  pay: fn(Transfer, tool.Settlement(Receipt)) -> Result(Receipt, TransferError),
+) -> tool.Tool(Context) {
+  tool.bind_settling(
+    transfer_definition(),
+    fn(_context, transfer, settlement) { pay(transfer, settlement) },
+    fn(_error) { tool.Uncertain("the transfer did not report") },
+    within: 5000,
+  )
+}
 ```
 
-`test/fabric/readme_test.gleam` runs this example (without the Saga tool,
-which `consumers/app` covers).
+A Saga workflow is one typed tool too, from the separate package
+`integrations/fabric_saga`: `fabric_saga.tool(definition, workflow,
+execution.config(), explain:, rollback_within:)`. A cancelled call waits up
+to `rollback_within` ms for Saga's rollback: every completed step undone is
+a definite failure, anything left in place an uncertain effect.
+`consumers/app` uses it.
 
 Observations: attach Sinal handlers to the events of `fabric/observation`.
 They run in the committing process unless the application routes `[fabric]`
