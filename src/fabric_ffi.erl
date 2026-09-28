@@ -2,7 +2,7 @@
 -export([rescue/1, random_id/0, now_ms/0, ensure_directory/1, directory_get/2,
          directory_insert/3, directory_compare_and_set/4, claim_new/0,
          claim_take/2, exit_shutdown/0, factory_name/1,
-         await_or_shutdown/2, requeue_shutdown/1]).
+         await_or_shutdown/2, requeue_shutdown/1, take_shutdown/1]).
 
 %% Runs Body, turning any raised exception into {error, Description}.
 rescue(Body) ->
@@ -30,6 +30,14 @@ await_or_shutdown({subject, _Owner, Tag}, Factory) ->
 requeue_shutdown(Factory) ->
     self() ! {'EXIT', Factory, shutdown},
     nil.
+
+%% Takes the exit signal `shutdown` from Factory if it is queued, wherever
+%% it waits in the mailbox; never waits.
+take_shutdown(Factory) ->
+    receive
+        {'EXIT', Factory, shutdown} -> true
+    after 0 -> false
+    end.
 
 %% The registered name of the runner factory of the store named Name.
 factory_name(Name) ->
