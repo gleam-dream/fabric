@@ -249,8 +249,8 @@ pub fn take_over(
   {
     Some(_), _ | None, False -> Ok(Nil)
     None, True -> {
-      let #(state, effects) = controller.recover(setup.env, state)
-      runner.launch(setup, Some(entry.revision), state, effects)
+      let #(next, effects) = controller.recover(setup.env, state)
+      runner.launch(setup, Some(#(entry.revision, state)), next, effects)
       |> result.replace(Nil)
     }
   }
