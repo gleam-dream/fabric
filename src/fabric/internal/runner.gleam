@@ -309,8 +309,11 @@ type Runner(context) {
   )
 }
 
+/// What a prepared runner is told once its first state's commit is known.
 type Go {
   Go(revision: Int, state: State, effects: List(Effect), work: Work)
+  /// The commit failed: exit without doing anything.
+  Abandon
 }
 
 /// Commits `state` over `expected` (`None`: inserts the run) and, when the
@@ -415,23 +418,39 @@ fn launch_over(
       deliver(setup, state)
       revision
     }
-    True -> {
-      let #(pid, mailbox, go) = prepare(setup)
-      let claim = store.Claim(pid, store.Live(state.incarnation, mailbox))
-      case write(setup.store, state.run, expected, encoded, claim) {
-        Ok(revision) -> {
-          // The runner starts before this commit's events are emitted: a
-          // handler running here does not hold up the work.
-          process.send(go, Go(revision, state, effects, work))
+    True ->
+      case prepare(setup) {
+        // No runner can start (the store's runners are shutting down): the
+        // work is committed and started by nobody, as if its runner had been
+        // lost at once. It is `Unattended` until recovered.
+        Error(Nil) -> {
+          use revision <- result.map(write(
+            setup.store,
+            state.run,
+            expected,
+            encoded,
+            store.Keep,
+          ))
           observe.committed(observed, state)
-          Ok(revision)
+          revision
         }
-        Error(error) -> {
-          process.kill(pid)
-          Error(error)
+        Ok(#(pid, mailbox, go)) -> {
+          let claim = store.Claim(pid, store.Live(state.incarnation, mailbox))
+          case write(setup.store, state.run, expected, encoded, claim) {
+            Ok(revision) -> {
+              // The runner starts before this commit's events are emitted: a
+              // handler running here does not hold up the work.
+              process.send(go, Go(revision, state, effects, work))
+              observe.committed(observed, state)
+              Ok(revision)
+            }
+            Error(error) -> {
+              process.send(go, Abandon)
+              Error(error)
+            }
+          }
         }
       }
-    }
   }
 }
 
@@ -448,52 +467,72 @@ fn write(
   }
 }
 
-/// Spawns a runner that waits for its first committed state. It exits
-/// without doing anything if the caller or the store goes first.
-fn prepare(setup: Setup(context)) -> #(Pid, Subject(Message), Subject(Go)) {
+/// Starts a runner under the store's runner factory, waiting for its first
+/// committed state. `Error` when no runner can start: no store process
+/// runs, or its runners are shutting down.
+///
+/// The runner belongs to the store process running now: once that process
+/// stops, even if a supervisor restarts it, the runner stops, and its store
+/// calls reach that process only, so a runner that has not yet noticed the
+/// stop never commits through the next process. It exits without doing
+/// anything if the caller or the store goes before its first state.
+fn prepare(
+  setup: Setup(context),
+) -> Result(#(Pid, Subject(Message), Subject(Go)), Nil) {
+  use #(pinned, factory) <- result.try(store.runners(setup.store))
+  use store_pid <- result.try(store.pid(pinned))
   let ready = process.new_subject()
   let caller = process.self()
-  let pid =
-    process.spawn_unlinked(fn() {
-      let self = process.new_subject()
-      let go = process.new_subject()
-      process.send(ready, #(self, go))
-      // The runner belongs to the store process running now: once that
-      // process stops, even if a supervisor restarts it, the runner stops,
-      // and its store calls reach that process only, so a runner that has
-      // not yet noticed the stop never commits through the next process.
-      // With no store process running, the first write fails.
-      let pinned = {
-        use pinned <- result.try(store.pin(setup.store))
-        use store_pid <- result.map(store.pid(pinned))
-        #(pinned, store_pid)
-      }
-      let first = case pinned {
-        Error(Nil) -> Error(Nil)
-        Ok(#(pinned, store_pid)) -> {
-          let _ = process.monitor(store_pid)
-          let caller_monitor = process.monitor(caller)
-          process.new_selector()
-          |> process.select_map(go, fn(go) { Ok(#(go, caller_monitor, pinned)) })
-          |> process.select_monitors(fn(_) { Error(Nil) })
-          |> process.selector_receive_forever
-        }
-      }
-      case first {
-        Error(Nil) -> Nil
-        Ok(#(Go(revision, state, effects, first), caller_monitor, pinned)) -> {
-          process.demonitor_process(caller_monitor)
-          process.trap_exits(True)
-          let setup = Setup(..setup, store: pinned)
-          let own = work(setup, setup.env.context)
-          Runner(setup, own, self, state, revision, None, None, 0)
-          |> perform(effects, first)
-          |> serve
-        }
-      }
-    })
-  let #(mailbox, go) = process.receive_forever(ready)
+  use pid <- result.try(
+    store.start_runner(factory, fn(parent) {
+      process.spawn(fn() {
+        begin(setup, pinned, #(store_pid, parent, caller), ready)
+      })
+    }),
+  )
+  let monitor = process.monitor(pid)
+  let started =
+    process.new_selector()
+    |> process.select_map(ready, Ok)
+    |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
+    |> process.selector_receive_forever
+  process.demonitor_process(monitor)
+  use #(mailbox, go) <- result.map(started)
   #(pid, mailbox, go)
+}
+
+/// The runner's life, in the process its factory linked to it. `owners`
+/// are the store process it belongs to, its factory, and the caller that
+/// commits its first state.
+fn begin(
+  setup: Setup(context),
+  pinned: Store,
+  owners: #(Pid, Pid, Pid),
+  ready: Subject(#(Subject(Message), Subject(Go))),
+) -> Nil {
+  let #(store_pid, _factory, caller) = owners
+  let self = process.new_subject()
+  let go = process.new_subject()
+  process.send(ready, #(self, go))
+  let _ = process.monitor(store_pid)
+  let caller_monitor = process.monitor(caller)
+  let first =
+    process.new_selector()
+    |> process.select_map(go, Ok)
+    |> process.select_monitors(fn(_) { Error(Nil) })
+    |> process.selector_receive_forever
+  case first {
+    Error(Nil) | Ok(Abandon) -> Nil
+    Ok(Go(revision, state, effects, first)) -> {
+      process.demonitor_process(caller_monitor)
+      process.trap_exits(True)
+      let setup = Setup(..setup, store: pinned)
+      let own = work(setup, setup.env.context)
+      Runner(setup, own, self, state, revision, None, None, 0)
+      |> perform(effects, first)
+      |> serve
+    }
+  }
 }
 
 fn serve(runner: Runner(context)) -> Nil {
