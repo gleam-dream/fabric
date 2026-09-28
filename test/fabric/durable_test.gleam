@@ -518,19 +518,19 @@ pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
   let assert Ok(run_b) =
     fabric.recover(b, two_reviewed(probe), Nil, fabric.id(run_a))
   let assert Ok(run.Working) =
-    fabric.answer(run_a, p.reference, run.Approve, reviewer: None, context: Nil)
+    fabric.approve(run_a, p.reference, reviewer: None, context: Nil)
   let started = probe.arrival(probe)
   started.name |> should.equal("p")
 
-  fabric.answer(run_b, p.reference, run.Approve, reviewer: None, context: Nil)
+  fabric.approve(run_b, p.reference, reviewer: None, context: Nil)
   |> should.equal(Error(fabric.AlreadyAnswered))
-  fabric.answer(run_b, q.reference, run.Approve, reviewer: None, context: Nil)
+  fabric.approve(run_b, q.reference, reviewer: None, context: Nil)
   |> should.equal(Error(fabric.RunUnattended))
 
   probe.release(started)
   let assert Ok(run.Suspended([_], [])) = fabric.await(run_a, 5000)
   let assert Ok(run.Working) =
-    fabric.answer(run_b, q.reference, run.Approve, reviewer: None, context: Nil)
+    fabric.approve(run_b, q.reference, reviewer: None, context: Nil)
   probe.release(probe.arrival(probe))
   fabric.await(run_b, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("final: \"p\" | \"q\""))))

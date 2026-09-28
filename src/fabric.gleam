@@ -7,29 +7,29 @@
 //// let assert Ok(handle) = fabric.start(store, agent, context, "Pay Bob")
 //// case fabric.await(handle, 5000) {
 ////   Ok(run.Suspended([pending, ..], _)) ->
-////     fabric.answer(handle, pending.reference, run.Approve,
+////     fabric.approve(handle, pending.reference,
 ////       reviewer: Some("alice"), context: current_context)
 ////   ...
 //// }
 //// ```
 ////
-//// A run's record lives in a store. A runner process exists only while a
-//// model call or a tool is in flight; a suspended or finished run has no
-//// process. Commands (`answer`, `cancel`, `reconcile`) go to the live
+//// A run's record lives in a store. A runner process exists only while a model
+//// call or a tool is in flight; a suspended or finished run has no process.
+//// Commands (`approve`, `reject`, `cancel`, `reconcile`) go to the live
 //// runner, or are applied to the stored record when there is none, and a
 //// runner is started if the command produced work.
 ////
-//// A delegation (`agent.with_sub_agent`) starts a sub-agent run in the
-//// same store, behind the same policy gate as a tool. The family is read
-//// together: a child's pending approvals and uncertain effects are the
-//// parent's (their references name the child run), `answer` routes by the
-//// reference, `child` opens a child's handle, cancelling a parent cancels
-//// its children, and recovering a parent recovers its children.
+//// A delegation (`agent.with_sub_agent`) starts a sub-agent run in the same
+//// store, behind the same policy gate as a tool. The family is read together:
+//// a child's pending approvals and uncertain effects are the parent's (their
+//// references name the child run), `approve` and `reject` route by the
+//// reference, `child` opens a child's handle, cancelling a parent cancels its
+//// children, and recovering a parent recovers its children.
 ////
 //// A run's context is a live value, never stored: the one given to `start`
 //// or `recover`, held by the handle and its runner. An approved action is
 //// the exception: it runs with the context its answer was checked with
-//// (see `answer`).
+//// (see `approve`).
 ////
 //// After a restart, `recover` opens a stored run under the same agent. If
 //// work was in flight when its runner was lost, recovery takes it over as a
@@ -319,21 +319,22 @@ pub fn pending(
   |> result.map_error(record_error)
 }
 
-/// Answers an approval request of the run or of one of its sub-agents (the
-/// reference names the run). `context` is the application's current
+/// Approves an approval request of the run or of one of its sub-agents
+/// (the reference names the run). `context` is the application's current
 /// context: the policy is checked again with it, and a current denial or
-/// policy failure wins over an approval. The approved action runs with
-/// exactly this context, whether or not a runner was live: the tool body
-/// receives it, and an approved sub-agent start starts the child run with
-/// it. It does not become the run's context: the run's other actions keep
-/// the context it was started or recovered with. If the run's runner is
-/// lost before the approved action starts, recovery asks again (see
+/// policy failure wins over the approval; a policy that now requires another
+/// approval refuses it with `RequirementChanged`. The approved action runs
+/// with exactly this context, whether or not a runner was live: the tool
+/// body receives it, and an approved sub-agent start starts the child run
+/// with it. It does not become the run's context: the run's other actions
+/// keep the context it was started or recovered with. If the run's runner
+/// is lost before the approved action starts, recovery asks again (see
 /// `recover`).
 ///
 /// Works with no process holding the run: the answer is committed to the
 /// stored record with compare-and-set, so of concurrent answers exactly one
 /// wins and the others get `AlreadyAnswered` (or `RunEnded` after a cancel).
-/// The caller then emits the commit's events before `answer` returns (see
+/// The caller then emits the commit's events before `approve` returns (see
 /// `fabric/observation`); the approved work has already started.
 ///
 /// An answer to a sub-agent run whose ancestor is stopping or has ended is
@@ -347,44 +348,106 @@ pub fn pending(
 /// `reviewer` is recorded with the answer as given. Fabric does not
 /// authenticate it: the application must authenticate and authorize whoever
 /// answers before calling this.
-pub fn answer(
+pub fn approve(
   run: Run(context),
   reference: ApprovalRef,
-  answer: Answer,
   reviewer reviewer: Option(String),
   context context: context,
 ) -> Result(Status, CommandError) {
-  let target_id = id_to_string(reference.run)
-  use target <- result.try(case target_id == run.id {
-    True -> Ok(run.setup)
-    False ->
-      case family.locate(run.setup, run.id, target_id) {
-        Ok(setup) -> Ok(setup)
-        Error(runner.NotFound) -> Error(WrongReference)
-        Error(problem) -> Error(Unreadable(record_error(problem)))
-      }
-  })
-  use Nil <- result.try(open_to_commands(run, target_id))
+  use #(target_id, target) <- result.try(locate(run, reference.run))
   let recheck = controller.Env(..target.env, context:)
-  use state <- result.try(
-    runner.command(
-      target,
-      target_id,
-      recheck,
-      controller.Answer(reference, answer, reviewer),
-      retries,
-    )
-    |> result.map_error(command_error),
-  )
+  use state <- result.try(answer(
+    run,
+    target_id,
+    target,
+    recheck,
+    reference,
+    run.Approve,
+    reviewer,
+  ))
   let reissued =
     list.find(family.own_pending(state), fn(pending) {
       pending.reference.id == reference.id
       && pending.reference.revision != reference.revision
     })
-  case reissued, target_id == run.id {
-    Ok(pending), _ -> Error(RequirementChanged(pending))
-    Error(Nil), True -> Ok(status_after(run, state))
-    Error(Nil), False ->
+  case reissued {
+    Ok(pending) -> Error(RequirementChanged(pending))
+    Error(Nil) -> family_status_after(run, target_id, state)
+  }
+}
+
+/// Rejects an approval request of the run or of one of its sub-agents (the
+/// reference names the run): the action does not run, and the model sees
+/// `reason`. A rejection is not checked again, so it takes no context and
+/// never runs the policy; the run continues with its own context. It is
+/// committed like an approval (see `approve`), with the same refusals
+/// except `RequirementChanged`. `reviewer` is recorded as given.
+pub fn reject(
+  run: Run(context),
+  reference: ApprovalRef,
+  reason reason: String,
+  reviewer reviewer: Option(String),
+) -> Result(Status, CommandError) {
+  use #(target_id, target) <- result.try(locate(run, reference.run))
+  use state <- result.try(answer(
+    run,
+    target_id,
+    target,
+    target.env,
+    reference,
+    run.Reject(reason),
+    reviewer,
+  ))
+  family_status_after(run, target_id, state)
+}
+
+/// The run `id` of `run`'s family, located by following the child links:
+/// `WrongReference` when it is not a descendant.
+fn locate(
+  run: Run(context),
+  id: RunId,
+) -> Result(#(String, runner.Setup(context)), CommandError) {
+  let id = id_to_string(id)
+  case id == run.id {
+    True -> Ok(#(id, run.setup))
+    False ->
+      case family.locate(run.setup, run.id, id) {
+        Ok(setup) -> Ok(#(id, setup))
+        Error(runner.NotFound) -> Error(WrongReference)
+        Error(problem) -> Error(Unreadable(record_error(problem)))
+      }
+  }
+}
+
+fn answer(
+  run: Run(context),
+  target_id: String,
+  target: runner.Setup(context),
+  env: controller.Env(context),
+  reference: ApprovalRef,
+  answer: Answer,
+  reviewer: Option(String),
+) -> Result(State, CommandError) {
+  use Nil <- result.try(open_to_commands(run, target_id))
+  runner.command(
+    target,
+    target_id,
+    env,
+    controller.Answer(reference, answer, reviewer),
+    retries,
+  )
+  |> result.map_error(command_error)
+}
+
+/// The family's status after `state` of its run `target_id` was committed.
+fn family_status_after(
+  run: Run(context),
+  target_id: String,
+  state: State,
+) -> Result(Status, CommandError) {
+  case target_id == run.id {
+    True -> Ok(status_after(run, state))
+    False ->
       family.load(run.setup.store, run.id)
       |> result.map(family.status)
       |> result.map_error(fn(problem) { Unreadable(record_error(problem)) })

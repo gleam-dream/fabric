@@ -405,8 +405,7 @@ pub fn an_approved_call_matches_beamweaver_test() {
     fabric.start(store.in_memory(), hitl_agent(probe), Nil, "go")
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("hitl_approve"))
-  let assert Ok(_) =
-    fabric.answer(run, pending.reference, run.Approve, None, Nil)
+  let assert Ok(_) = fabric.approve(run, pending.reference, None, Nil)
   let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
   observe(run, probe) |> should.equal(fixture("hitl_approve"))
 }
@@ -423,12 +422,11 @@ pub fn a_rejected_call_matches_beamweaver_test() {
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("hitl_reject"))
   let assert Ok(_) =
-    fabric.answer(
+    fabric.reject(
       run,
       pending.reference,
-      run.Reject("payment declined by reviewer"),
-      None,
-      Nil,
+      reason: "payment declined by reviewer",
+      reviewer: None,
     )
   let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
   let without_final = fn(observed: Observed) {
@@ -468,8 +466,7 @@ pub fn an_approval_after_a_restart_matches_beamweaver_test() {
   let assert Ok(run) =
     fabric.recover(store, hitl_agent(probe), Nil, fabric.id(run))
   let assert Ok([pending]) = fabric.pending(run)
-  let assert Ok(_) =
-    fabric.answer(run, pending.reference, run.Approve, None, Nil)
+  let assert Ok(_) = fabric.approve(run, pending.reference, None, Nil)
   let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
   observe(run, probe) |> should.equal(fixture("hitl_cold_restart"))
   restart.remove_dir(dir)
@@ -562,8 +559,7 @@ pub fn an_approved_sub_agent_start_matches_beamweaver_test() {
     fabric.start(store.in_memory(), delegation_agent(probe), Nil, "go")
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("subagent_gate_approve"))
-  let assert Ok(_) =
-    fabric.answer(run, pending.reference, run.Approve, None, Nil)
+  let assert Ok(_) = fabric.approve(run, pending.reference, None, Nil)
   let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
   observe(run, probe) |> should.equal(fixture("subagent_gate_approve"))
 }
@@ -578,12 +574,11 @@ pub fn a_rejected_sub_agent_start_matches_beamweaver_test() {
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("subagent_gate_reject"))
   let assert Ok(_) =
-    fabric.answer(
+    fabric.reject(
       run,
       pending.reference,
-      run.Reject("no sub-agent today"),
-      None,
-      Nil,
+      reason: "no sub-agent today",
+      reviewer: None,
     )
   let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
   let without_final = fn(observed: Observed) {

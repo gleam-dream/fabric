@@ -506,10 +506,9 @@ pub fn an_answer_racing_the_parent_cancellation_starts_nothing_test() {
     process.spawn(fn() {
       process.send(
         answered,
-        fabric.answer(
+        fabric.approve(
           run,
           pending.reference,
-          run.Approve,
           reviewer: None,
           context: "recheck",
         ),

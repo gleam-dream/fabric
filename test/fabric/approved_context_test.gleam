@@ -116,13 +116,7 @@ fn approve(
   pending: run.PendingApproval,
   who: String,
 ) -> Result(run.Status, fabric.CommandError) {
-  fabric.answer(
-    run,
-    pending.reference,
-    run.Approve,
-    reviewer: Some(who),
-    context: who,
-  )
+  fabric.approve(run, pending.reference, reviewer: Some(who), context: who)
 }
 
 // --- approved tools --------------------------------------------------------------

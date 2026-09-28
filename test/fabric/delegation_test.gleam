@@ -255,13 +255,7 @@ pub fn a_sub_agent_starts_only_after_approval_even_across_a_restart_test() {
   fabric.pending(run) |> should.equal(Ok([pending]))
   restart.list_dir(dir) |> should.equal(Ok([support.text(fabric.id(run))]))
   let assert Ok(_) =
-    fabric.answer(
-      run,
-      pending.reference,
-      run.Approve,
-      reviewer: None,
-      context: Nil,
-    )
+    fabric.approve(run, pending.reference, reviewer: None, context: Nil)
   fabric.await(run, 5000)
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"found gleam\"}"))),
@@ -297,12 +291,11 @@ pub fn a_rejected_sub_agent_never_starts_test() {
   let assert Ok(run) = fabric.start(store.in_memory(), parent, Nil, "go")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   let assert Ok(_) =
-    fabric.answer(
+    fabric.reject(
       run,
       pending.reference,
-      run.Reject("not today"),
+      reason: "not today",
       reviewer: Some("ann"),
-      context: Nil,
     )
   fabric.await(run, 5000)
   |> should.equal(
@@ -354,13 +347,7 @@ pub fn a_child_pause_surfaces_to_the_parent_and_is_answered_through_it_test() {
   probe.count(probe, "pay:bob") |> should.equal(0)
 
   let assert Ok(_) =
-    fabric.answer(
-      run,
-      pending.reference,
-      run.Approve,
-      reviewer: None,
-      context: Nil,
-    )
+    fabric.approve(run, pending.reference, reviewer: None, context: Nil)
   fabric.await(run, 5000)
   |> should.equal(
     Ok(
@@ -370,13 +357,7 @@ pub fn a_child_pause_surfaces_to_the_parent_and_is_answered_through_it_test() {
     ),
   )
   probe.count(probe, "pay:bob") |> should.equal(1)
-  fabric.answer(
-    run,
-    pending.reference,
-    run.Approve,
-    reviewer: None,
-    context: Nil,
-  )
+  fabric.approve(run, pending.reference, reviewer: None, context: Nil)
   |> should.equal(Error(fabric.AlreadyAnswered))
 }
 
@@ -397,13 +378,7 @@ pub fn cancelling_the_parent_cancels_a_paused_child_test() {
   child_states(child) |> should.equal([run.NotStarted])
   only_action(run).state
   |> should.equal(run.ToolFailed("{\"error\":\"research did not complete\"}"))
-  fabric.answer(
-    run,
-    pending.reference,
-    run.Approve,
-    reviewer: None,
-    context: Nil,
-  )
+  fabric.approve(run, pending.reference, reviewer: None, context: Nil)
   |> should.equal(Error(fabric.RunEnded))
   probe.count(probe, "pay:bob") |> should.equal(0)
 }
@@ -699,13 +674,7 @@ pub fn cancel_stored_cancels_the_children_first_test() {
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert run.Uncertain(_) = only_action(run).state
-  fabric.answer(
-    run,
-    pending.reference,
-    run.Approve,
-    reviewer: None,
-    context: Nil,
-  )
+  fabric.approve(run, pending.reference, reviewer: None, context: Nil)
   |> should.equal(Error(fabric.RunEnded))
 }
 
@@ -727,13 +696,7 @@ pub fn a_transient_store_failure_does_not_leave_a_child_uncancelled_test() {
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.pending(run) |> should.equal(Ok([]))
-  fabric.answer(
-    run,
-    pending.reference,
-    run.Approve,
-    reviewer: None,
-    context: Nil,
-  )
+  fabric.approve(run, pending.reference, reviewer: None, context: Nil)
   |> should.equal(Error(fabric.RunEnded))
   probe.count(probe, "pay:bob") |> should.equal(0)
 }
@@ -756,21 +719,9 @@ pub fn a_child_that_cannot_be_cancelled_can_no_longer_act_test() {
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert run.Uncertain(evidence) = only_action(run).state
   string.contains(evidence, "could not be cancelled") |> should.be_true
-  fabric.answer(
-    run,
-    pending.reference,
-    run.Approve,
-    reviewer: None,
-    context: Nil,
-  )
+  fabric.approve(run, pending.reference, reviewer: None, context: Nil)
   |> should.equal(Error(fabric.RunEnded))
-  fabric.answer(
-    child,
-    pending.reference,
-    run.Approve,
-    reviewer: None,
-    context: Nil,
-  )
+  fabric.approve(child, pending.reference, reviewer: None, context: Nil)
   |> should.equal(Error(fabric.RunEnded))
   probe.count(probe, "pay:bob") |> should.equal(0)
 }

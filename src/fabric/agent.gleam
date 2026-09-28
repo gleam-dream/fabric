@@ -215,11 +215,11 @@ pub fn with_model_retry_delay(
   Agent(..agent, model_retry_delay: milliseconds)
 }
 
-/// Bounds how long a command (`answer`, `cancel`, `reconcile`) waits for
-/// the run's live runner to take it, in milliseconds (default 5000). A
+/// Bounds how long a command (`approve`, `reject`, `cancel`, `reconcile`) waits
+/// for the run's live runner to take it, in milliseconds (default 5000). A
 /// runner busy for longer (for example held by a synchronous observation
-/// handler) refuses the command with `fabric.RunnerBusy`, and never applies
-/// it later.
+/// handler) refuses the command with `fabric.RunnerBusy`, and never applies it
+/// later.
 pub fn with_command_timeout(
   agent: Agent(context),
   milliseconds: Int,

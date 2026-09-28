@@ -75,13 +75,7 @@ fn approve(
   run: fabric.Run(Desk),
   reference: run.ApprovalRef,
 ) -> Result(run.Status, fabric.CommandError) {
-  fabric.answer(
-    run,
-    reference,
-    run.Approve,
-    reviewer: None,
-    context: open_desk(),
-  )
+  fabric.approve(run, reference, reviewer: None, context: open_desk())
 }
 
 // --- answering -----------------------------------------------------------------
@@ -105,10 +99,9 @@ pub fn an_approved_tool_runs_once_after_a_restart_test() {
     fabric.recover(store, paying_agent(probe), open_desk(), id)
   let assert Ok([pending]) = fabric.pending(run)
   let assert Ok(_) =
-    fabric.answer(
+    fabric.approve(
       run,
       pending.reference,
-      run.Approve,
       reviewer: Some("alice"),
       context: open_desk(),
     )
@@ -136,12 +129,11 @@ pub fn a_rejected_tool_never_runs_and_the_model_sees_the_reason_test() {
   let probe = probe.new()
   let #(run, pending) = suspended(probe)
   let assert Ok(_) =
-    fabric.answer(
+    fabric.reject(
       run,
       pending.reference,
-      run.Reject("not today"),
+      reason: "not today",
       reviewer: Some("bob"),
-      context: open_desk(),
     )
   fabric.await(run, 5000)
   |> should.equal(
@@ -151,6 +143,44 @@ pub fn a_rejected_tool_never_runs_and_the_model_sees_the_reason_test() {
       )),
     ),
   )
+  probe.count(probe, "pay:bob") |> should.equal(0)
+}
+
+/// A rejection is not checked again: it takes no context, never runs the
+/// policy (here one that would now fail), and the rejected tool never runs.
+pub fn a_rejection_never_runs_the_policy_test() {
+  let probe = probe.new()
+  let calls = process.new_subject()
+  let once = fn(desk, action: policy.Action) {
+    process.send(calls, action.id)
+    case action.id {
+      ActionId(1, "t") -> desk_policy(desk, action)
+      _ -> Error("the policy runs only for the admission")
+    }
+  }
+  let agent =
+    agent.new(scripted.plan([transfer_call()]), [paying_tool(probe)], once)
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), agent, open_desk(), "pay")
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  process.receive(calls, 0) |> should.equal(Ok(ActionId(1, "t")))
+
+  let assert Ok(_) =
+    fabric.reject(
+      run,
+      pending.reference,
+      reason: "not today",
+      reviewer: Some("bob"),
+    )
+  fabric.await(run, 5000)
+  |> should.equal(
+    Ok(
+      run.Finished(run.Completed(
+        "final: {\"error\":\"rejected\",\"detail\":\"not today\"}",
+      )),
+    ),
+  )
+  process.receive(calls, 0) |> should.equal(Error(Nil))
   probe.count(probe, "pay:bob") |> should.equal(0)
 }
 
@@ -217,10 +247,9 @@ pub fn the_policy_at_answer_time_wins_over_an_approval_test() {
   let probe = probe.new()
   let #(run, pending) = suspended(probe)
   let assert Ok(_) =
-    fabric.answer(
+    fabric.approve(
       run,
       pending.reference,
-      run.Approve,
       reviewer: Some("alice"),
       context: Desk(..open_desk(), frozen: True),
     )
@@ -243,13 +272,13 @@ pub fn a_changed_requirement_issues_a_new_request_test() {
   let #(run, pending) = suspended(probe)
   let stricter = Desk(..open_desk(), requirement_version: 2)
   let assert Error(fabric.RequirementChanged(renewed)) =
-    fabric.answer(run, pending.reference, run.Approve, None, stricter)
+    fabric.approve(run, pending.reference, None, stricter)
   renewed.reference.requirement |> should.equal(Requirement("transfer", 2))
   fabric.pending(run) |> should.equal(Ok([renewed]))
   probe.count(probe, "pay:bob") |> should.equal(0)
 
   let assert Ok(_) =
-    fabric.answer(run, renewed.reference, run.Approve, Some("carol"), stricter)
+    fabric.approve(run, renewed.reference, Some("carol"), stricter)
   let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
   probe.count(probe, "pay:bob") |> should.equal(1)
 }
@@ -395,7 +424,7 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
   let assert Ok(run) = fabric.start(first, agent, Nil, "pay")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   let id = fabric.id(run)
-  let reject = run.Reject("not today")
+  let reason = "not today"
 
   // The second writer reads the record, and its write is held.
   let held = flaky.hold(backend, fn(written) { written == support.text(id) })
@@ -405,19 +434,13 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
     let assert Ok(handle) = fabric.recover(second_store, agent, Nil, id)
     process.send(
       second,
-      fabric.answer(
-        handle,
-        pending.reference,
-        reject,
-        reviewer: None,
-        context: Nil,
-      ),
+      fabric.reject(handle, pending.reference, reason:, reviewer: None),
     )
   })
   let assert Ok(_) = process.receive(held, 5000)
   // The first writer's identical answer lands, and its model call waits.
   let assert Ok(run.Working) =
-    fabric.answer(run, pending.reference, reject, reviewer: None, context: Nil)
+    fabric.reject(run, pending.reference, reason:, reviewer: None)
   let calling = probe.arrival(probe)
   // The held write is lost.
   flaky.drop_held(backend)
