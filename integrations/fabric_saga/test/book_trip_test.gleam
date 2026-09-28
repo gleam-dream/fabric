@@ -3,6 +3,10 @@
 //// the flight, then charge both. A hotel failure releases the flight.
 //// Steps report to the test process, which waits on those reports, never
 //// on sleeps.
+////
+//// A declined charge is retried a minute later, so a cancellation after
+//// the decline finds no step in flight: Saga undoes every completed step
+//// and settles the stopped call with how that ended.
 
 import fabric
 import fabric/agent
@@ -12,6 +16,7 @@ import fabric/run
 import fabric/store
 import fabric/tool
 import fabric_saga
+import fabric_saga/support/watched
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None}
@@ -31,6 +36,7 @@ pub type Itinerary {
 
 pub type TripError {
   NoHotel(city: String)
+  CardDeclined
 }
 
 pub type UndoError {
@@ -56,7 +62,10 @@ fn report(reports: Subject(Report), entry: String) -> Nil {
 }
 
 /// `Atlantis` has no hotel; in `Mordor` there is no hotel and the flight
-/// cannot be released; in `Slowtown` the charge waits for the test.
+/// cannot be released; in `Slowtown` the charge waits for the test. In
+/// `Latetown`, `Latemordor`, and `Lateslow` the card is declined and the
+/// charge is retried a minute later; the flight cannot be released in
+/// `Latemordor`, and the hotel's release waits for the test in `Lateslow`.
 fn book_trip(
   reports: Subject(Report),
 ) -> saga.Workflow(Trip, Itinerary, TripError, UndoError) {
@@ -68,7 +77,7 @@ fn book_trip(
     |> saga.undo(fn(trip: Trip, flight) {
       report(reports, "flight:release:" <> flight)
       case trip.city {
-        "Mordor" -> Error(ReleaseRefused(flight))
+        "Mordor" | "Latemordor" -> Error(ReleaseRefused(flight))
         _ -> Ok(Nil)
       }
     })
@@ -86,8 +95,11 @@ fn book_trip(
         }
       }
     })
-    |> saga.undo(fn(_, hotel) {
-      report(reports, "hotel:release:" <> hotel)
+    |> saga.undo(fn(pair: #(Trip, String), hotel) {
+      case pair.0.city {
+        "Lateslow" -> report(reports, "gate:hotel:release:" <> hotel)
+        _ -> report(reports, "hotel:release:" <> hotel)
+      }
       Ok(Nil)
     })
   let charge =
@@ -95,9 +107,18 @@ fn book_trip(
       let #(#(trip, flight), hotel) = pair
       case trip.city {
         "Slowtown" -> report(reports, "gate:charge")
+        "Latetown" | "Latemordor" | "Lateslow" ->
+          report(reports, "charge:declined")
         _ -> report(reports, "charge")
       }
-      Ok(Itinerary(flight, hotel, "CH-1"))
+      case string.starts_with(trip.city, "Late") {
+        True -> Error(CardDeclined)
+        False -> Ok(Itinerary(flight, hotel, "CH-1"))
+      }
+    })
+    |> saga.compensate(max_attempts: 2, with: fn(_, _, _) {
+      report(reports, "charge:retry-later")
+      saga.RetryAfter(60_000)
     })
   let assert Ok(workflow) =
     saga.define("book_trip", fn(trip) {
@@ -127,7 +148,7 @@ fn trip_definition() -> tool.Definition(Trip, Itinerary) {
   )
 }
 
-fn trip_tool(reports: Subject(Report)) -> tool.Tool(Nil) {
+fn trip_tool(reports: Subject(Report), rollback_within: Int) -> tool.Tool(Nil) {
   let assert Ok(tool) =
     fabric_saga.tool(
       trip_definition(),
@@ -140,9 +161,12 @@ fn trip_tool(reports: Subject(Report)) -> tool.Tool(Nil) {
         settle_timeout: 50,
       ),
       explain: fn(error) {
-        let NoHotel(city) = error
-        "no hotel in " <> city
+        case error {
+          NoHotel(city) -> "no hotel in " <> city
+          CardDeclined -> "the card was declined"
+        }
       },
+      rollback_within:,
     )
   tool
 }
@@ -166,9 +190,22 @@ fn traveller(city: String) -> model.Model {
 }
 
 fn start(city: String, reports: Subject(Report)) -> fabric.Run(Nil) {
+  start_in(store.in_memory(), city, reports, 5000)
+}
+
+fn start_in(
+  store: store.Store,
+  city: String,
+  reports: Subject(Report),
+  rollback_within: Int,
+) -> fabric.Run(Nil) {
   let agent =
-    agent.new(traveller(city), [trip_tool(reports)], policy.always_allow())
-  let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "book")
+    agent.new(
+      traveller(city),
+      [trip_tool(reports, rollback_within)],
+      policy.always_allow(),
+    )
+  let assert Ok(run) = fabric.start(store, agent, Nil, "book")
   run
 }
 
@@ -241,8 +278,9 @@ pub fn an_incomplete_compensation_is_an_uncertain_effect_test() {
 }
 
 /// Cancelling the Fabric run stops the tool, and with it the Saga run:
-/// Saga compensates the steps that completed. Fabric cannot know whether
-/// that compensation succeeded, so the action is an uncertain effect.
+/// Saga kills the charge still in flight after its settle window and
+/// undoes the steps that completed. The charge's effect is unknown, so the
+/// stopped call settles as an uncertain effect that names it.
 pub fn cancelling_the_run_cancels_the_workflow_test() {
   let reports = process.new_subject()
   let run = start("Slowtown", reports)
@@ -252,10 +290,77 @@ pub fn cancelling_the_run_cancels_the_workflow_test() {
 
   let assert Ok(_) = fabric.cancel(run)
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
-  let assert run.Uncertain(_) = action_state(run)
+  let assert run.Uncertain(evidence) = action_state(run)
+  string.contains(evidence, "interrupted charge") |> should.be_true
   // Saga undoes the completed steps in reverse order.
-  next(reports).entry |> should.equal("hotel:release:HT-Slowtown")
-  next(reports).entry |> should.equal("flight:release:FL-Slowtown")
+  reported(reports)
+  |> should.equal(["hotel:release:HT-Slowtown", "flight:release:FL-Slowtown"])
+}
+
+/// Waits until the charge was declined and its retry scheduled.
+fn declined(reports: Subject(Report), city: String) -> Nil {
+  next(reports).entry |> should.equal("flight:reserve:" <> city)
+  next(reports).entry |> should.equal("hotel:reserve:" <> city)
+  next(reports).entry |> should.equal("charge:declined")
+  next(reports).entry |> should.equal("charge:retry-later")
+}
+
+/// Cancelled while no step is in flight, Saga undoes every completed step:
+/// the stopped call settles as a definite failure, and the run ends once it
+/// has.
+pub fn a_cancellation_that_undid_every_step_is_definite_test() {
+  let reports = process.new_subject()
+  let run = start("Latetown", reports)
+  declined(reports, "Latetown")
+
+  let assert Ok(_) = fabric.cancel(run)
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  action_state(run)
+  |> should.equal(run.ToolFailed(
+    "{\"error\":\"the workflow was cancelled; every completed step was undone\"}",
+  ))
+  reported(reports)
+  |> should.equal(["hotel:release:HT-Latetown", "flight:release:FL-Latetown"])
+}
+
+/// An undo that failed during the cancellation leaves an effect in place:
+/// the stopped call settles as an uncertain effect that names it.
+pub fn a_cancellation_whose_undo_failed_is_uncertain_test() {
+  let reports = process.new_subject()
+  let run = start("Latemordor", reports)
+  declined(reports, "Latemordor")
+
+  let assert Ok(_) = fabric.cancel(run)
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  let assert run.Uncertain(evidence) = action_state(run)
+  string.contains(evidence, "not undone reserve_flight") |> should.be_true
+}
+
+/// Saga's rollback outlasts the call's bound: the run ends with an
+/// uncertain effect. The outcome that arrives afterwards is refused: it is
+/// read against the record, nothing is written, and the record is
+/// unchanged.
+pub fn an_outcome_after_the_run_ended_is_refused_test() {
+  let reports = process.new_subject()
+  let backend = watched.new()
+  let run = start_in(watched.store(backend), "Lateslow", reports, 20)
+  declined(reports, "Lateslow")
+
+  let assert Ok(_) = fabric.cancel(run)
+  let undo = next(reports)
+  undo.entry |> should.equal("gate:hotel:release:HT-Lateslow")
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  let assert run.Uncertain(evidence) = action_state(run)
+  string.contains(evidence, "no settlement") |> should.be_true
+  let assert Ok(before) = fabric.snapshot(run)
+  let writes = watched.writes(backend)
+
+  let read = watched.notify_reads(backend)
+  process.send(undo.release, Nil)
+  next(reports).entry |> should.equal("flight:release:FL-Lateslow")
+  let assert Ok(_) = process.receive(read, 5000)
+  watched.writes(backend) |> should.equal(writes)
+  fabric.snapshot(run) |> should.equal(Ok(before))
 }
 
 pub fn an_invalid_config_is_refused_before_anything_runs_test() {
@@ -265,6 +370,7 @@ pub fn an_invalid_config_is_refused_before_anything_runs_test() {
     book_trip(reports),
     execution.Config(..execution.config(), max_concurrency: 0),
     explain: fn(_) { "" },
+    rollback_within: 5000,
   )
   |> should.equal(Error([execution.MaxConcurrencyNotPositive(0)]))
 }
