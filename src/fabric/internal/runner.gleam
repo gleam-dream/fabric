@@ -700,8 +700,12 @@ fn withhold_model_call(runner: Runner(context)) -> Runner(context) {
 /// Hands the run off: commits `controller.hand_off` of its state, giving
 /// the run up in the same step, and stops. The run is then `Unattended`,
 /// or idle if only approvals are left, and `recover` goes on with it. A
-/// commit that fails leaves the record as it was, which recovery also
-/// continues.
+/// commit that fails (a newer owner, or a store that stays unavailable)
+/// leaves the record as it was, which recovery also continues, as after a
+/// lost runner: a model call never issued then still counts its turn, so
+/// the run uses one turn more than without the stop. Nothing observes a
+/// failed handoff yet (the drain summary is planned with the operations
+/// events).
 fn hand_off(runner: Runner(context)) -> Nil {
   let state = controller.hand_off(runner.state)
   case

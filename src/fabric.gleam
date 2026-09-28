@@ -189,7 +189,9 @@ pub fn start(
 ///
 /// A run handed off by a drained shutdown (`store.supervised`) has nothing
 /// running: its results are committed, a model call it never issued is
-/// issued as the same turn, and its queued tools are dispatched.
+/// issued as the same turn, and its queued tools are dispatched, except
+/// approved ones, which ask for their approval again (the handoff already
+/// asked).
 ///
 /// A store knows only the runners it started. Recovering through another
 /// `Store` (for example in another VM) while the run's runner is still
