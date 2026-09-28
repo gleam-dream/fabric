@@ -2,11 +2,11 @@
 
 A bounded, typed LLM agent runtime for Gleam: typed application tools, an explicit policy gate, a pure agent controller, and a thin OTP runner with cancellation. It consumes llm_wire for providers and json_blueprint for tool codecs; typed workflows (DAGs) belong to Saga.
 
-Status: slice 1 (bounded agent execution) and slice 2a (durable pause, approval, resume, cancellation, and restart) implemented; see [docs/PLAN.md](docs/PLAN.md), [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [docs/ORACLE.md](docs/ORACLE.md). Design: see [fabric-design.md](https://github.com/gleam-dream/oversight/blob/master/fabric-design.md) in [gleam-dream/oversight](https://github.com/gleam-dream/oversight). Not yet published to Hex.
+Status: slice 1 (bounded agent execution), slice 2a (durable pause, approval, resume, cancellation, and restart), and slice 2b (approval-gated sub-agents, Sinal observations, and Saga workflows as tools) implemented; see [docs/PLAN.md](docs/PLAN.md), [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [docs/ORACLE.md](docs/ORACLE.md). Design: see [fabric-design.md](https://github.com/gleam-dream/oversight/blob/master/fabric-design.md) in [gleam-dream/oversight](https://github.com/gleam-dream/oversight). Not yet published to Hex.
 
 Behavioural oracle: BeamWeaver (partial migration of its agent loop).
 
-Dependencies on `llm_wire` and `json_blueprint` are path dependencies (`../llm_wire`, `../json_blueprint`); check out the sibling repositories next to this one.
+Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
 
 ## Usage
 
@@ -41,7 +41,29 @@ case fabric.await(handle, 30_000) {
 
 // After a restart: reopen the store and recover the run by its id.
 let assert Ok(handle) = fabric.recover(runs, agent, context, run_id)
+
+// A sub-agent: a typed delegation whose start the policy gates like a tool
+// (`action.target` is `policy.StartAgent(..)`). Its approvals surface in the
+// parent's `pending`, cancelling the parent cancels it, and recovering the
+// parent recovers it.
+let desk =
+  agent.new(model, [weather], my_policy)
+  |> agent.with_sub_agent(research_definition, to: researcher,
+       prompt: fn(topic) { topic.name },
+       result: fn(outcome) {
+         case outcome {
+           run.Completed(text) -> Ok(Summary(text))
+           _ -> Error(tool.Explain("research did not complete"))
+         }
+       })
+
+// A Saga workflow as one typed tool (package fabric_saga).
+let assert Ok(book_trip) =
+  fabric_saga.tool(trip_definition, book_trip_workflow, execution.config(),
+    explain: describe_trip_error)
 ```
+
+Observations: attach Sinal handlers to the events of `fabric/observation`.
 
 `consumers/app` is a complete external application using public imports only.
 
@@ -53,5 +75,6 @@ gleam format --check src test
 gleam build --warnings-as-errors
 gleam test
 (cd consumers/app && gleam test)
+(cd integrations/fabric_saga && gleam test)
 nix flake check
 ```
