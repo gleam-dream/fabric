@@ -333,12 +333,7 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
       research,
       to: researcher,
       prompt: fn(topic: Topic) { topic.topic },
-      result: fn(outcome) {
-        case outcome {
-          run.Completed(text) -> Ok(text)
-          _ -> Error(tool.Explain("no"))
-        }
-      },
+      output: fn(text) { Ok(text) },
     )
     |> support.agent
   let dir = restart.temp_dir()

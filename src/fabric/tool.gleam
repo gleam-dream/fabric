@@ -44,6 +44,7 @@
 import fabric/internal/invocation.{type Outcome}
 import fabric/model.{type ToolCall}
 import fabric/run
+import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import json/blueprint/codec.{type Codec}
@@ -260,13 +261,15 @@ fn encode(output: Codec(output), value: output) -> Outcome {
 
 /// A tool whose call starts a sub-agent run of `agent` (see
 /// `agent.with_sub_agent`): `prompt` builds the sub-agent's prompt from the
-/// decoded input, and `result` maps its outcome to this call's result.
+/// decoded input, and `output` parses a completed sub-agent's answer into
+/// this call's output (an `Error` is a definite failure the model sees).
+/// Any other outcome is a definite failure that names it.
 @internal
 pub fn delegation(
   definition: Definition(input, output),
   agent: run.Identity,
   prompt: fn(input) -> String,
-  result: fn(run.Outcome) -> Result(output, Failure),
+  output parse: fn(String) -> Result(output, String),
 ) -> Tool(context) {
   let Definition(name:, description:, input:, output:) = definition
   Tool(
@@ -287,14 +290,41 @@ pub fn delegation(
         |> result.map(prompt)
         |> result.map_error(invocation.describe_decode_error)
       },
-      settle: fn(outcome) {
-        case result(outcome) {
-          Ok(value) -> encode(output, value)
-          Error(error) -> failure(error)
-        }
-      },
+      settle: fn(outcome) { delegated(outcome, parse, output) },
     ),
   )
+}
+
+/// A sub-agent's end as its delegation's result: a completed answer parsed
+/// by `parse`, or a definite failure that names how the sub-agent ended.
+fn delegated(
+  outcome: run.Outcome,
+  parse: fn(String) -> Result(output, String),
+  output: Codec(output),
+) -> Outcome {
+  let explain = fn(message) { failure(Explain(message)) }
+  case outcome {
+    run.Completed(text) ->
+      case parse(text) {
+        Ok(value) -> encode(output, value)
+        Error(message) -> explain(message)
+      }
+    run.Refused(reason) -> explain("the sub-agent refused: " <> reason)
+    run.OutputLimited(_) ->
+      explain("the sub-agent's answer exceeded its output limit")
+    run.BudgetExhausted(run.TurnLimit(limit)) ->
+      explain(
+        "the sub-agent used its " <> int.to_string(limit) <> " model turns",
+      )
+    run.BudgetExhausted(run.TokenLimit(limit, _)) ->
+      explain(
+        "the sub-agent used its budget of " <> int.to_string(limit) <> " tokens",
+      )
+    run.BudgetUnverifiable(_) ->
+      explain("the sub-agent's token budget could not be enforced")
+    run.Cancelled -> explain("the sub-agent was cancelled")
+    run.Failed(_) -> explain("the sub-agent failed")
+  }
 }
 
 /// A call to `definition` with `input` encoded by its input codec, as a

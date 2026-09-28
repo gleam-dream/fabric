@@ -171,18 +171,21 @@ pub fn with_limits(spec: Spec(context), limits: Limits) -> Spec(context) {
 /// run's pending approvals (their references name the child run), and
 /// cancelling this run cancels it.
 ///
-/// When the child finishes, `result(outcome)` is the call's result. A child
+/// When the child completes, `output(answer)` parses its answer into the
+/// call's output; an `Error(text)` is a definite failure whose `text` the
+/// model sees. A child that ended otherwise (refused, cancelled, out of
+/// budget, failed) is a definite failure that names how it ended. A child
 /// that ended with effects of unknown status (for example cancelled while a
-/// tool ran) makes the call an uncertain effect whatever `result` says.
+/// tool ran) makes the call an uncertain effect however it ended.
 pub fn with_sub_agent(
   spec: Spec(context),
   definition: tool.Definition(input, output),
   to child: Agent(context),
   prompt prompt: fn(input) -> String,
-  result result: fn(run.Outcome) -> Result(output, tool.Failure),
+  output output: fn(String) -> Result(output, String),
 ) -> Spec(context) {
   let delegation =
-    tool.delegation(definition, child.admitted.identity, prompt, result)
+    tool.delegation(definition, child.admitted.identity, prompt, output:)
   Spec(
     ..spec,
     tools: list.append(spec.tools, [delegation]),

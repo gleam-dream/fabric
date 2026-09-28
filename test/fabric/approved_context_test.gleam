@@ -281,12 +281,7 @@ fn delegating(probe: Probe) -> Agent(String) {
     research(),
     to: researcher,
     prompt: fn(topic: Topic) { topic.topic },
-    result: fn(outcome) {
-      case outcome {
-        run.Completed(text) -> Ok(Summary(text))
-        _ -> Error(tool.Explain("research did not complete"))
-      }
-    },
+    output: fn(text) { Ok(Summary(text)) },
   )
   |> support.agent
 }

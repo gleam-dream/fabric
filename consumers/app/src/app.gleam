@@ -487,12 +487,7 @@ pub fn front_desk() -> Agent(Member) {
       acquire_definition(),
       to: purchaser(),
       prompt: fn(purchase: Purchase) { "buy " <> purchase.title },
-      result: fn(outcome) {
-        case outcome {
-          run.Completed(text) -> Ok(Order(text))
-          _ -> Error(tool.Explain("the purchase did not complete"))
-        }
-      },
+      output: fn(text) { Ok(Order(text)) },
     )
     |> agent.build
   desk

@@ -140,12 +140,7 @@ fn named_delegating_spec(
     research(),
     to: child,
     prompt: fn(topic: Topic) { topic.topic },
-    result: fn(outcome) {
-      case outcome {
-        run.Completed(text) -> Ok(Summary(text))
-        _ -> Error(tool.Explain("research did not complete"))
-      }
-    },
+    output: fn(text) { Ok(Summary(text)) },
   )
 }
 
@@ -402,7 +397,7 @@ pub fn cancelling_the_parent_cancels_a_paused_child_test() {
   fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   child_states(child) |> should.equal([run.NotStarted])
   only_action(run).state
-  |> should.equal(run.ToolFailed("{\"error\":\"research did not complete\"}"))
+  |> should.equal(run.ToolFailed("{\"error\":\"the sub-agent was cancelled\"}"))
   fabric.approve(run, pending.reference, reviewer: None, context: Nil)
   |> should.equal(Error(fabric.RunEnded))
   probe.count(probe, "pay:bob") |> should.equal(0)
@@ -470,7 +465,7 @@ pub fn a_child_reply_after_the_parent_was_cancelled_is_discarded_test() {
   probe.release(replying)
   fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
   only_action(run).state
-  |> should.equal(run.ToolFailed("{\"error\":\"research did not complete\"}"))
+  |> should.equal(run.ToolFailed("{\"error\":\"the sub-agent was cancelled\"}"))
   probe.count(probe, "parent:model") |> should.equal(1)
 }
 
@@ -656,12 +651,7 @@ pub fn nested_delegation_is_bounded_by_the_root_depth_test() {
       research(),
       to: middle,
       prompt: fn(topic: Topic) { topic.topic },
-      result: fn(outcome) {
-        case outcome {
-          run.Completed(text) -> Ok(Summary(text))
-          _ -> Error(tool.Explain("no"))
-        }
-      },
+      output: fn(text) { Ok(Summary(text)) },
     )
     |> agent.with_limits(agent.Limits(..agent.default_limits(), max_depth:))
     |> support.agent
@@ -709,7 +699,7 @@ pub fn a_delegation_is_validated_with_its_child_test() {
     ),
     to: quick_researcher(probe),
     prompt: fn(city) { city },
-    result: fn(_) { Ok("") },
+    output: fn(_) { Ok("") },
   )
   |> agent.build
   |> should.equal(Error([agent.DuplicateToolName("lookup_weather")]))
