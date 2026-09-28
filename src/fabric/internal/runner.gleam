@@ -15,10 +15,19 @@
 ////
 //// A runner is claimed in the same commit that hands it work (`launch`),
 //// so there is never a moment where the record needs a runner and the
-//// store knows none. Ownership: the runner is linked to nobody above it; it
-//// monitors the store and exits when the store goes. It traps exits, so a
-//// crash of its model task or executor becomes a message; killing the
-//// runner kills both.
+//// store knows none. Ownership: the runner is a temporary child of its
+//// store's runner factory (`store.supervised`); it monitors the store
+//// process it was claimed through and exits when that process goes. It
+//// traps exits, so a crash of its model task or executor becomes a
+//// message; killing the runner kills both.
+////
+//// Drain: the factory's `shutdown` makes the runner start nothing new (no
+//// model call, tool body or child run; the committed state keeps that
+//// work) while it goes on applying what arrives: the reports of the tool
+//// bodies running, the model reply in flight, commands. Once no tool body
+//// runs and no reply is awaited, it commits `controller.hand_off` of its
+//// state, giving the run up, and exits. A runner the factory kills at the
+//// end of its drain window leaves its record as a lost runner does.
 
 import fabric/agent
 import fabric/internal/bounded
@@ -36,6 +45,7 @@ import fabric/run.{type ActionId}
 import fabric/store.{type Store}
 import fabric/tool
 import gleam/dict.{type Dict}
+import gleam/erlang/atom
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
@@ -306,6 +316,12 @@ type Runner(context) {
     model_task: Option(#(Pid, Int)),
     /// Consecutive retryable model failures; the next call waits longer.
     model_failures: Int,
+    /// The factory the runner was started under: its `shutdown` drains
+    /// the runner.
+    factory: Pid,
+    /// Draining: the runner starts nothing new and hands its run off once
+    /// its work in flight has finished (`serve`).
+    draining: Bool,
   )
 }
 
@@ -503,138 +519,232 @@ fn prepare(
 
 /// The runner's life, in the process its factory linked to it. `owners`
 /// are the store process it belongs to, its factory, and the caller that
-/// commits its first state.
+/// commits its first state. It traps exits from the start, so that a
+/// shutdown arriving before its first state drains it rather than killing
+/// it after its claim was committed.
 fn begin(
   setup: Setup(context),
   pinned: Store,
   owners: #(Pid, Pid, Pid),
   ready: Subject(#(Subject(Message), Subject(Go))),
 ) -> Nil {
-  let #(store_pid, _factory, caller) = owners
+  let #(store_pid, factory, caller) = owners
+  process.trap_exits(True)
   let self = process.new_subject()
   let go = process.new_subject()
   process.send(ready, #(self, go))
   let _ = process.monitor(store_pid)
   let caller_monitor = process.monitor(caller)
-  let first =
-    process.new_selector()
-    |> process.select_map(go, Ok)
-    |> process.select_monitors(fn(_) { Error(Nil) })
-    |> process.selector_receive_forever
-  case first {
-    Error(Nil) | Ok(Abandon) -> Nil
-    Ok(Go(revision, state, effects, first)) -> {
+  case first_state(go, pinned, factory, False) {
+    Error(Nil) | Ok(#(Abandon, _)) -> Nil
+    Ok(#(Go(revision, state, effects, first), draining)) -> {
       process.demonitor_process(caller_monitor)
-      process.trap_exits(True)
       let setup = Setup(..setup, store: pinned)
       let own = work(setup, setup.env.context)
-      Runner(setup, own, self, state, revision, None, None, 0)
+      Runner(
+        setup:,
+        work: own,
+        self:,
+        state:,
+        revision:,
+        executor: None,
+        model_task: None,
+        model_failures: 0,
+        factory:,
+        draining:,
+      )
       |> perform(effects, first)
       |> serve
     }
   }
 }
 
+/// What a runner waiting for its first state receives.
+type Before {
+  First(Go)
+  OwnerGone
+  ExitSignal(process.ExitMessage)
+}
+
+/// Waits for the first state, and whether a shutdown arrived meanwhile.
+/// `Error` when the store or the caller goes first, or the factory stops
+/// otherwise than by a shutdown.
+fn first_state(
+  go: Subject(Go),
+  pinned: Store,
+  factory: Pid,
+  draining: Bool,
+) -> Result(#(Go, Bool), Nil) {
+  let received =
+    process.new_selector()
+    |> process.select_map(go, First)
+    |> process.select_monitors(fn(_) { OwnerGone })
+    |> process.select_trapped_exits(ExitSignal)
+    |> process.selector_receive_forever
+  case received {
+    First(first) -> Ok(#(first, draining))
+    OwnerGone -> Error(Nil)
+    ExitSignal(exit) ->
+      case exit.pid == factory && is_shutdown(exit.reason) {
+        True -> {
+          store.draining(pinned, factory)
+          first_state(go, pinned, factory, True)
+        }
+        False -> Error(Nil)
+      }
+  }
+}
+
+fn is_shutdown(reason: process.ExitReason) -> Bool {
+  case reason {
+    process.Abnormal(reason) ->
+      reason == atom.to_dynamic(atom.create("shutdown"))
+    process.Normal | process.Killed -> False
+  }
+}
+
 fn serve(runner: Runner(context)) -> Nil {
-  case controller.needs_runner(runner.state) {
-    False -> shutdown(runner)
-    True -> {
-      let selector =
-        process.new_selector()
-        |> process.select(runner.self)
-        |> process.select_monitors(fn(_) { live.StoreDown })
-        |> process.select_trapped_exits(fn(exit) {
-          live.Exited(exit.pid, exit.reason)
-        })
-      let next = case process.selector_receive_forever(selector) {
-        live.StoreDown -> Error(Superseded)
-        live.Command(step, work, command_claim, reply) ->
-          case claim.accept(command_claim) {
-            // The caller has withdrawn it: the command changes nothing.
-            False -> Ok(runner)
-            True -> {
-              process.send(reply, live.Accepted)
-              let work = option.unwrap(work, runner.work)
-              commit_answering(runner, step(runner.state), work, fn(answer) {
-                process.send(reply, answer)
-              })
-            }
-          }
-        live.ModelDone(turn, result) -> {
-          let model_failures = case result {
-            Error(model.ModelError(retryable: True, ..)) ->
-              runner.model_failures + 1
-            _ -> 0
-          }
-          let runner = Runner(..runner, model_task: None, model_failures:)
-          apply(runner, case result {
-            Ok(reply) -> controller.ModelReplied(turn, reply)
-            Error(error) -> controller.ModelFailed(turn, error)
+  case controller.needs_runner(runner.state), runner.draining {
+    False, _ -> shutdown(runner)
+    // Draining, with no tool body running and no model reply awaited.
+    True, True if runner.model_task == None ->
+      case controller.tools_running(runner.state) {
+        True -> receive(runner)
+        False -> hand_off(runner)
+      }
+    True, _ -> receive(runner)
+  }
+}
+
+/// Hands the run off: commits `controller.hand_off` of its state, giving
+/// the run up in the same step, and stops. The run is then `Unattended`,
+/// or idle if only approvals are left, and `recover` goes on with it. A
+/// commit that fails leaves the record as it was, which recovery also
+/// continues.
+fn hand_off(runner: Runner(context)) -> Nil {
+  let state = controller.hand_off(runner.state)
+  case
+    persist(
+      runner.setup.store,
+      state.run,
+      record.encode(state),
+      runner.revision,
+      store.Release(process.self()),
+      0,
+    )
+  {
+    Ok(_) -> observe.committed(Some(runner.state), state)
+    Error(_) -> Nil
+  }
+  shutdown(runner)
+}
+
+/// Its factory is shutting its runners down: the runner drains. Its
+/// store's process hands the factory out no more, so no runner is started
+/// under it meanwhile, not even by this one delivering an end to a parent.
+fn drain(runner: Runner(context)) -> Runner(context) {
+  store.draining(runner.setup.store, runner.factory)
+  Runner(..runner, draining: True)
+}
+
+/// Waits for the next message and applies it.
+fn receive(runner: Runner(context)) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select(runner.self)
+    |> process.select_monitors(fn(_) { live.StoreDown })
+    |> process.select_trapped_exits(fn(exit) {
+      live.Exited(exit.pid, exit.reason)
+    })
+  let next = case process.selector_receive_forever(selector) {
+    live.StoreDown -> Error(Superseded)
+    live.Command(step, work, command_claim, reply) ->
+      case claim.accept(command_claim) {
+        // The caller has withdrawn it: the command changes nothing.
+        False -> Ok(runner)
+        True -> {
+          process.send(reply, live.Accepted)
+          let work = option.unwrap(work, runner.work)
+          commit_answering(runner, step(runner.state), work, fn(answer) {
+            process.send(reply, answer)
           })
         }
-        // Nothing starts once an ancestor stops: a run that finds one
-        // stopping or ended cancels itself. The ancestors are read before
-        // the start is stored and again after it: an ancestor that stops
-        // after the second read does so after the start was stored, and its
-        // cancellation reaches this run with the tool running, so the tool
-        // is recorded uncertain. The body starts as soon as that second
-        // read finds them open: a handler of this commit does not hold it
-        // past a later cancellation.
-        live.Fence(id, reply) ->
-          case ancestors_open(runner.setup.store, runner.state.parent) {
-            False -> {
-              process.send(reply, False)
-              apply(runner, controller.Cancel)
-            }
-            True -> {
-              let open_after = process.new_subject()
-              let started =
-                commit_answering(
-                  runner,
-                  controller.step(
-                    runner.setup.env,
-                    runner.state,
-                    controller.ToolStarting(id),
-                  ),
-                  runner.work,
-                  fn(answer) {
-                    let start = case answer {
-                      live.Applied(_) -> {
-                        let open =
-                          ancestors_open(
-                            runner.setup.store,
-                            runner.state.parent,
-                          )
-                        process.send(open_after, open)
-                        open
-                      }
-                      _ -> False
-                    }
-                    process.send(reply, start)
-                  },
-                )
-              case started, process.receive(open_after, 0) {
-                Ok(runner), Ok(False) -> apply(runner, controller.Cancel)
-                started, _ -> started
-              }
-            }
-          }
-        live.Executed(executor.Reported(id, outcome)) ->
-          apply(runner, controller.ToolReported(id, outcome))
-        live.Executed(executor.Lost(id, reason)) ->
-          apply(runner, controller.ToolLost(id, reason))
-        live.Executed(executor.Stopped) ->
-          apply(Runner(..runner, executor: None), controller.ToolsStopped)
-        live.Exited(pid, reason) -> exited(runner, pid, reason)
-        live.Apply(event) -> apply(runner, event)
       }
-      case next {
-        Ok(runner) -> serve(runner)
-        // A refused event changes nothing.
-        Error(Refused(_)) -> serve(runner)
-        Error(Superseded) -> shutdown(runner)
+    live.ModelDone(turn, result) -> {
+      let model_failures = case result {
+        Error(model.ModelError(retryable: True, ..)) ->
+          runner.model_failures + 1
+        _ -> 0
       }
+      let runner = Runner(..runner, model_task: None, model_failures:)
+      apply(runner, case result {
+        Ok(reply) -> controller.ModelReplied(turn, reply)
+        Error(error) -> controller.ModelFailed(turn, error)
+      })
     }
+    // Nothing starts once an ancestor stops: a run that finds one
+    // stopping or ended cancels itself. The ancestors are read before
+    // the start is stored and again after it: an ancestor that stops
+    // after the second read does so after the start was stored, and its
+    // cancellation reaches this run with the tool running, so the tool
+    // is recorded uncertain. The body starts as soon as that second
+    // read finds them open: a handler of this commit does not hold it
+    // past a later cancellation.
+    // A draining runner starts no tool body: the action stays queued.
+    live.Fence(_, reply) if runner.draining -> {
+      process.send(reply, False)
+      Ok(runner)
+    }
+    live.Fence(id, reply) ->
+      case ancestors_open(runner.setup.store, runner.state.parent) {
+        False -> {
+          process.send(reply, False)
+          apply(runner, controller.Cancel)
+        }
+        True -> {
+          let open_after = process.new_subject()
+          let started =
+            commit_answering(
+              runner,
+              controller.step(
+                runner.setup.env,
+                runner.state,
+                controller.ToolStarting(id),
+              ),
+              runner.work,
+              fn(answer) {
+                let start = case answer {
+                  live.Applied(_) -> {
+                    let open =
+                      ancestors_open(runner.setup.store, runner.state.parent)
+                    process.send(open_after, open)
+                    open
+                  }
+                  _ -> False
+                }
+                process.send(reply, start)
+              },
+            )
+          case started, process.receive(open_after, 0) {
+            Ok(runner), Ok(False) -> apply(runner, controller.Cancel)
+            started, _ -> started
+          }
+        }
+      }
+    live.Executed(executor.Reported(id, outcome)) ->
+      apply(runner, controller.ToolReported(id, outcome))
+    live.Executed(executor.Lost(id, reason)) ->
+      apply(runner, controller.ToolLost(id, reason))
+    live.Executed(executor.Stopped) ->
+      apply(Runner(..runner, executor: None), controller.ToolsStopped)
+    live.Exited(pid, reason) -> exited(runner, pid, reason)
+    live.Apply(event) -> apply(runner, event)
+  }
+  case next {
+    Ok(runner) -> serve(runner)
+    // A refused event changes nothing.
+    Error(Refused(_)) -> serve(runner)
+    Error(Superseded) -> shutdown(runner)
   }
 }
 
@@ -646,7 +756,9 @@ fn exited(
   reason: process.ExitReason,
 ) -> Result(Runner(context), ApplyError) {
   let executor_pid = option.map(runner.executor, executor.pid)
+  let shutdown = pid == runner.factory && is_shutdown(reason)
   case reason, runner.model_task, executor_pid {
+    _, _, _ if shutdown -> Ok(drain(runner))
     process.Normal, _, _ -> Ok(runner)
     _, Some(#(task, turn)), _ if task == pid ->
       apply(
@@ -664,8 +776,8 @@ fn exited(
         Runner(..runner, executor: None),
         "the executor exited: " <> string.inspect(reason),
       )
-    // An exit signal from anyone else (a supervisor shutting down) stops
-    // the runner, and with it the executor and the model task.
+    // Any other exit signal (its factory crashed) stops the runner, and with
+    // it the executor and the model task.
     _, _, _ -> Error(Superseded)
   }
 }
@@ -855,6 +967,13 @@ fn perform(
 ) -> Runner(context) {
   use runner, effect <- list.fold(effects, runner)
   case effect {
+    // A draining runner starts nothing new: the committed state keeps the
+    // work, and its handoff leaves it to recovery.
+    controller.CallModel(..)
+      | controller.Dispatch(_)
+      | controller.StartChild(..)
+      if runner.draining
+    -> runner
     controller.CallModel(turn, request) -> {
       let self = runner.self
       let model = runner.setup.model

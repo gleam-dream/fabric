@@ -4,6 +4,7 @@ import fabric/internal/controller.{
   type Effect, type State, CallModel, Dispatch, StopTools,
 }
 import fabric/internal/invocation
+import fabric/internal/record
 import fabric/internal/registry
 import fabric/model.{
   AssistantMessage, FinalAnswer, ToolCall, ToolRequest, ToolResultMessage, Usage,
@@ -559,4 +560,26 @@ pub fn lost_task_is_an_uncertain_effect_test() {
   let assert #(state, []) = step(env, state, controller.ToolStarting(w))
   let assert #(state, []) = step(env, state, controller.ToolLost(w, "killed"))
   let assert [run.Uncertain(_)] = states(state)
+}
+
+/// A runner that hands its run off before issuing the model call gives the
+/// turn back: the record, read back by the current decoder, is recovered
+/// by issuing the same turn again, so the call is counted once.
+pub fn a_handoff_before_the_model_call_gives_the_turn_back_test() {
+  let env = env()
+  let state = begin(env, limits())
+  let #(state, _) = tools_requested(env, state, [weather("w", "Paris")])
+  let #(state, _) =
+    run_tool(env, state, ActionId(1, "w"), invocation.Returned("\"sunny\""))
+  let assert controller.AwaitingModel(2) = state.phase
+  state.turns_used |> should.equal(2)
+
+  let handed = controller.hand_off(state)
+  handed.turns_used |> should.equal(1)
+  let assert Ok(read) = record.decode(record.encode(handed))
+  read |> should.equal(handed)
+  let #(recovered, effects) = controller.recover(env, read)
+  let assert [CallModel(2, _)] = effects
+  recovered.phase |> should.equal(controller.AwaitingModel(2))
+  recovered.turns_used |> should.equal(2)
 }
