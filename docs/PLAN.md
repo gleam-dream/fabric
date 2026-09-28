@@ -187,12 +187,12 @@ an idle run is data in the store with no process holding it.
   separate package `integrations/fabric_saga`, so Fabric does not depend on
   Saga (oversight `fabric-design.md`, package ownership).
 
-## Production runtime: limits and supervised runners
+## Production runtime: limits, supervised runners, leases
 
 The accepted production-runtime design (2026-09-28, at `7901edb`; user
 decisions D1 to D5) is built in slices. This section records the slices
-built so far; the backlog below the list keeps the rest (leases, the
-Postgres adapter, the sweeper, the write-version window, operations).
+built so far (S1 to S3); the rest (the Postgres adapter, the sweeper, the
+write-version window, operations) follows the design's slice list.
 
 ### S1: limits
 
@@ -363,6 +363,133 @@ S2; each is fixed test-first or deferred:
 - **Fixed: missing tests (nit):** two `Store` values of one name
   (`two_store_values_of_one_name_share_the_runners_test`) and a start
   racing the shutdown (the two drain tests above).
+
+### S3: the leased store contract, with an in-memory leased backend
+
+D1: several nodes share one database and coordinate only through per-run
+leases (an owner and an expiry judged by the backend's clock); D2: a
+command that needs another node's live runner is `RunUnattended` with
+nothing changed; D3: a drained handoff releases the lease as already
+expired. Two leased stores of distinct node ids over one in-memory leased
+backend simulate two nodes in one VM.
+
+- **The contract** (`fabric/store`, Leases). A `LeasedBackend` adds
+  `renew(owner, runs, ttl)` and `claim_expired(owner, ttl, limit)` to get,
+  insert and compare-and-set, whose writes carry a `Lease` checked in the
+  same atomic step as the revision (revision first): `Hold(owner)` only
+  while `owner` holds it (live or expired), `Claim(owner, ttl)` only while
+  it is free, `owner`'s or expired, `Seize` and `Release` always. `get`
+  reports the `Holder` (`Free`, or `Held(owner, live)`). Renewal and
+  `claim_expired` change no revision; concurrent `claim_expired` calls
+  never return the same run. `fabric/testing.leased_backend_checks(new)`
+  is the conformance suite (nine checks), which the Postgres backend will
+  run too (`the_in_memory_leased_backend_conforms_test`,
+  `a_backend_that_ignores_live_leases_fails_the_claim_check_test`,
+  lease_backend_test).
+- **A leased store** (`store.leased(name, node:, lease:, backend:)`)
+  identifies its process as `<node>/<store name>/<random>`, new at each
+  start. A commit that gives work to a new runner claims the lease (a
+  cancellation seizes it); every runner commit holds it, the tool fence
+  included, so a runner whose lease another owner claimed commits nothing
+  and starts no body
+  (`a_tool_start_is_refused_once_another_owner_claimed_the_lease_test`); a
+  commit that leaves nothing in flight releases it; work committed with no
+  runner (a draining store) and a handoff claim it as already expired
+  (`a_handoff_releases_the_lease_as_already_expired_test`)
+  (`a_runner_holds_its_runs_lease_while_it_works_test`).
+- **Renewal and fencing.** The store's process renews its runners' leases
+  every lease/3 in one batch; a run the renewal no longer returns has its
+  runner killed with its model task and tool bodies, through the kill a
+  held runner gets on cancel (`a_lost_lease_kills_the_runner_and_its_running_body_test`,
+  `a_cancellation_from_another_node_wins_over_a_live_lease_test`). It
+  fences itself on its monotonic clock: a lease is surely held until the
+  last successful claim or renewal was sent, plus the lease, minus a fifth
+  of it; a runner still alive then is killed
+  (`a_store_that_cannot_renew_kills_its_runners_before_their_leases_expire_test`,
+  `renewals_keep_a_lease_live_past_its_duration_test`).
+- **Across nodes.** A live lease elsewhere reads `Working`
+  (`a_live_lease_elsewhere_reads_working_test`); `Unattended` only when work
+  is in flight and the lease is free or expired. `recover` never takes a
+  live lease and returns the handle unchanged, so it is safe at any time
+  (`recover_does_not_take_a_live_lease_test`); racing recoveries take an
+  expired lease exactly once
+  (`an_expired_lease_is_taken_over_once_by_racing_recoveries_test`); a store
+  restarted on the same node and name takes its earlier process's lease at
+  once (`a_restarted_store_takes_its_earlier_processes_lease_at_once_test`).
+  An approval of an idle run works from any node, which claims the lease
+  (`an_approval_of_an_idle_run_on_another_node_claims_the_lease_test`); one
+  that needs the other node's runner is `RunUnattended`, nothing changed
+  (`an_approval_needing_another_nodes_runner_is_unattended_test`); a
+  cancellation from another node wins and the old owner kills its runner
+  at its next renewal. `await` reads a leased run again at least every
+  lease/3, 10 to 1000 ms (`an_await_on_another_node_sees_the_end_of_the_run_test`).
+- **Observation.** `run_taken_over` (`[fabric, run, take_over]`) after a
+  recovery commit that took a run from another owner's lease;
+  `lease_lost` (`[fabric, lease, lose]`, `Revoked` or `Unrenewed`) after a
+  kill; `renewal_failed` (`[fabric, lease, renew, fail]`) after a failed
+  renewal. The last two are emitted by the store's process.
+- **Unleased stores** (`new`, `in_memory`, `directory`) are unchanged: one
+  node, no lease. Twenty durable, approval, cancellation and delegation
+  tests run again on a leased store (`leased_suite_test`, through
+  `support.leased`), and every earlier test still runs unleased.
+- **Settings** (`a_leased_store_checks_its_settings_test`):
+  `LeaseConfigError` is `InvalidNodeId` (1 to 128 of letters, digits and
+  `._-@:`, not `nonode@nohost`), `LeaseTooShort(value, minimum)` below
+  100 ms, `LeaseTooLong(value, limit)` above 2^32 - 1 ms.
+
+Deviations from the accepted design, each the smallest safe variant:
+
+- **`LeaseRefused(holder: Holder)`, not `LeaseHeld(owner: String)`.** A
+  `Hold` can fail on a free lease, which has no owner; the holder says both
+  cases. It is a new `StoreError` variant (a breaking change for
+  exhaustive matches).
+- **No `Lease.Keep`.** Every write Fabric makes holds, claims, seizes or
+  releases the lease. The internal ownership kinds of a commit were renamed
+  (`Leave`, `HandOff`, `Launch`, `Detached`) so the public constructors keep
+  the design's names.
+- **"Released as already expired" is `Claim(me, 0)`,** keeping the owner
+  and setting the expiry to now, not `Release`: a free lease has no owner,
+  and `claim_expired` (the sweeper's query) looks only at held, expired
+  leases. Work committed with no runner is claimed the same way.
+- **The boot fast path** is a `Seize` at the same revision, retried by the
+  store's process when a `Claim` is refused by a lease of the same node and
+  store name with another random part. A store name made by
+  `process.new_name` differs after a VM restart, so the fast path covers a
+  restarted store process in one VM (a store crash); after a VM restart the
+  lease is taken once it expires. An explicit store id could extend it
+  (S4/S5 decision).
+- **A lease this store holds, with no runner of it here** (its runner
+  crashed), reads `Unattended` on this node, which knows its runner is
+  gone, and `Working` on other nodes until it expires; `recover` here takes
+  it at once (owner = me).
+- **`recover` of a run another node drives** leaves its children alone
+  too: that node drives the family.
+- **The self-fencing margin is a fifth of the lease**, and a renewal is
+  bounded by a third of the lease; `renewal_failed` is included (cheap).
+- **The conformance suite is in `fabric/testing`** (source, not a test
+  module) so that `integrations/fabric_postgres` can run it; each check
+  returns a `Result` rather than asserting.
+- **The in-memory leased backend** is `store.leased_memory()`, returning
+  `LeasedMemory(backend, advance)`; its process stops when its creator
+  exits.
+
+After S3, public items per module (types and functions, `@internal`
+excluded): `fabric` 17, `fabric/agent` 11, `fabric/llm` 1, `fabric/model`
+9, `fabric/observation` 40, `fabric/policy` 5, `fabric/run` 22,
+`fabric/store` 19, `fabric/testing` 3, `fabric/tool` 10: 137 in all.
+
+Also in S3, a regression of the S2 review fix: `store.start` right after a
+previous subtree of the same name stopped could find the factory's name
+still taken (the sentinel stops before it); `start` now waits up to 5 s
+for that factory (`eaa5dbb`).
+
+S3's gates passed against llm_wire `a822ea4`, json_blueprint `ecf5c60`,
+sinal `858dfa3` and saga `4a93b04`, each with a clean working tree.
+
+Deferred: to S4, the Postgres backend running the conformance suite, and
+`pgo` notifications instead of polling; to S5, the sweeper
+(`claim_expired`, the boot scan) and a peer-VM test; to S7, the drain
+summary (with failed handoffs) and lease gauges.
 
 ## Public API (slice 3: ergonomics pass)
 
@@ -918,7 +1045,7 @@ Deferred, with reasons:
   rejected: a rejection would continue the run under an agent that recovery
   refused.
 - **A lease or heartbeat** for runs driven through several Stores (see the
-  cross-VM backlog item above).
+  cross-VM backlog item above): built as leases in production S3.
 - **Unknown record fields** are ignored when decoding; strict decoding would
   make every added field a version bump.
 - Ergonomics (five error types, `answer` needing a context for a rejection,
@@ -1124,9 +1251,9 @@ Backlog from this slice:
   signal (slice 2a review) as its starting point. The store is supervisable
   since the ergonomics pass (`store.supervised`); runners are still
   started unsupervised and owned through their store process.
-- A lease or heartbeat for runs driven through several Stores, so that
-  recovery can wait for a live owner; a Grind-driven recovery that carries
-  only a run reference.
+- Leases for runs driven through several Stores are built (production S3,
+  above); a Grind-driven recovery that carries only a run reference
+  remains.
 - Streamed model progress through llm_wire `session.stream`, with
   cancellation closing the stream.
 - Budgets shared across a sub-agent family.

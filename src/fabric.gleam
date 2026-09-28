@@ -26,11 +26,13 @@
 ////
 //// Any process can hold a handle. `open` rebuilds one from a run id
 //// without taking anything over: the handle a request handler uses.
-//// `recover` takes over work whose runner is gone: use it at boot, never
-//// on a run another process may still be driving. Runners run under their
-//// store's subtree (`store.supervised`); when the application stops, each
-//// drains and hands its run off, and `recover` goes on with it after the
-//// restart with nothing uncertain.
+//// `recover` takes over work whose runner is gone: on an unleased store,
+//// use it at boot, never on a run another process may still be driving; on
+//// a leased store (`store.leased`, several nodes sharing one database) it
+//// takes over only a run whose lease is free or expired, so it is safe at
+//// any time. Runners run under their store's subtree (`store.supervised`);
+//// when the application stops, each drains and hands its run off, and
+//// `recover` goes on with it after the restart with nothing uncertain.
 ////
 //// A delegation (`agent.with_sub_agent`) starts a sub-agent run in the same
 //// store, behind the same policy gate as a tool. The family is read together:
@@ -193,12 +195,20 @@ pub fn start(
 /// approved ones, which ask for their approval again (the handoff already
 /// asked).
 ///
-/// A store knows only the runners it started. Recovering through another
-/// `Store` (for example in another VM) while the run's runner is still
-/// alive takes the run over: the older runner can no longer commit and
-/// stops, and its running tools become uncertain effects. Recover only
-/// when the previous owner is known to be gone (for example at boot); to
-/// read or command a run someone else may be driving, `open` it.
+/// On a leased store (`store.leased`) it is safe to call at any time: a run
+/// whose lease another node holds live is left exactly as it is (the
+/// handle is returned, and the run reads `Working`), and only a free or
+/// expired lease, or one of an earlier process of this store, is taken
+/// over. Of several nodes recovering one run at once, exactly one takes it
+/// over.
+///
+/// An unleased store knows only the runners it started. Recovering
+/// through another unleased `Store` (for example in another VM) while the
+/// run's runner is still alive takes the run over: the older runner can no
+/// longer commit and stops, and its running tools become uncertain
+/// effects. On an unleased store, recover only when the previous owner is
+/// known to be gone (for example at boot); to read or command a run someone
+/// else may be driving, `open` it.
 pub fn recover(
   store: Store,
   agent: Agent(context),
@@ -263,13 +273,18 @@ pub fn child(
 /// Blocks until the run is no longer `Working`, or until `within`
 /// milliseconds pass, and returns its status: `Working` when the time ran
 /// out, `Suspended` or `Finished`, or `Unattended` when work is in flight
-/// but no runner known to this store drives it. `Unattended` means the
-/// runner was lost or handed the run off at shutdown, or the run is driven
-/// through another `Store`; only the application knows which. `recover`
-/// takes the run over, so call it only when the previous owner is known to
-/// be gone.
+/// but no runner known to this store drives it. On an unleased store,
+/// `Unattended` means the runner was lost or handed the run off at
+/// shutdown, or the run is driven through another `Store`; only the
+/// application knows which, and `recover` takes the run over, so call it
+/// only when the previous owner is known to be gone. On a leased store a
+/// run whose lease is live anywhere is `Working`, and `Unattended` means
+/// its lease is free or expired: `recover` takes it over.
 ///
-/// It wakes on commits made through this run's store and when a runner exits.
+/// It wakes on commits made through this run's store and when a runner
+/// exits; on a leased store it also reads the run again at least every
+/// third of the lease (at most every second), since another node's commits
+/// wake nothing here.
 /// If the store's process stops meanwhile, it waits, until `within` runs
 /// out, for a supervisor to register the next one, and goes on through it;
 /// that process knows no runner, so work in flight then reads `Unattended`.
