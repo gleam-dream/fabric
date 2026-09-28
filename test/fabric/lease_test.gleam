@@ -322,6 +322,85 @@ pub fn renewals_keep_a_lease_live_past_its_duration_test() {
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
 }
 
+/// Several nodes that recover a run at once whose owner is gone and whose
+/// lease expired take it over exactly once: one new incarnation, and the
+/// running tool is one uncertain effect. While the lease was live, none
+/// took it.
+pub fn an_expired_lease_is_taken_over_once_by_racing_recoveries_test() {
+  let probe = probe.new()
+  let memory = store.leased_memory()
+  let #(owner, a) =
+    restart.owned(fn() { nodes.node(memory.backend, "a", nodes.long) })
+  let events = capture()
+  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let _ = probe.arrival(probe)
+  let assert Ok(before) = fabric.snapshot(run)
+  // The node stops: its store and runner are gone, its lease is not.
+  restart.crash(owner, a)
+  let others =
+    list.index_map(list.repeat(Nil, 8), fn(_, i) {
+      nodes.node(memory.backend, "b" <> int.to_string(i), nodes.long)
+    })
+  let recover_all = fn() {
+    together(others, fn(node) {
+      let assert Ok(there) =
+        fabric.recover(node, one_slow(probe), Nil, fabric.id(run))
+      fabric.await(there, 0)
+    })
+  }
+  recover_all() |> list.unique |> should.equal([Ok(run.Working)])
+  let assert [first, ..] = others
+  let assert Ok(seen) = fabric.open(first, one_slow(probe), Nil, fabric.id(run))
+  let assert Ok(snapshot) = fabric.snapshot(seen)
+  snapshot.incarnation |> should.equal(before.incarnation)
+
+  memory.advance(nodes.long + 1)
+  let statuses = recover_all()
+  let assert [Ok(run.Suspended([], [_]))] = list.unique(statuses)
+  let assert Ok(snapshot) = fabric.snapshot(seen)
+  snapshot.incarnation |> should.equal(before.incarnation + 1)
+  let id = support.text(fabric.id(run))
+  let assert [taken] = lines(events, 1)
+  string.starts_with(taken, "run_taken_over " <> id <> " ") |> should.be_true
+  process.receive(events.lines, 0) |> should.equal(Error(Nil))
+  release(events)
+  probe.count(probe, "start:a") |> should.equal(1)
+}
+
+/// A store restarted on the same node under the same name takes over the
+/// lease of its earlier process at once, without waiting for it to
+/// expire: that process is gone. Another node still sees the lease live
+/// until then.
+pub fn a_restarted_store_takes_its_earlier_processes_lease_at_once_test() {
+  let probe = probe.new()
+  let memory = store.leased_memory()
+  let name = process.new_name("restarting")
+  let leased = fn() {
+    let assert Ok(leased) =
+      store.leased(name, node: "a", lease: nodes.long, backend: memory.backend)
+    leased
+  }
+  let #(owner, a) = restart.owned(fn() { support.started(leased()) })
+  let b = nodes.node(memory.backend, "b", nodes.long)
+  let events = capture()
+  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let _ = probe.arrival(probe)
+  restart.crash(owner, a)
+  let assert Ok(there) = fabric.recover(b, one_slow(probe), Nil, fabric.id(run))
+  fabric.await(there, 0) |> should.equal(Ok(run.Working))
+
+  let again = support.started(leased())
+  let assert Ok(reopened) =
+    fabric.open(again, one_slow(probe), Nil, fabric.id(run))
+  fabric.await(reopened, 0) |> should.equal(Ok(run.Unattended))
+  let assert Ok(recovered) =
+    fabric.recover(again, one_slow(probe), Nil, fabric.id(run))
+  let assert Ok(run.Suspended([], [_])) = fabric.await(recovered, 0)
+  let id = support.text(fabric.id(run))
+  lines(events, 1) |> should.equal(["run_taken_over " <> id <> " 2 a"])
+  release(events)
+}
+
 /// A runner commits only while its store holds the run's lease: once
 /// another owner claimed the expired lease, the runner's next commit, the
 /// fence of a tool's start, is refused, and the tool's body never starts.
@@ -358,6 +437,31 @@ pub fn a_tool_start_is_refused_once_another_owner_claimed_the_lease_test() {
 }
 
 // --- instruments -------------------------------------------------------------------
+
+/// Runs `body` for each of `items` in its own process, all released
+/// together, and returns their results in order.
+fn together(items: List(a), body: fn(a) -> b) -> List(b) {
+  let results = process.new_subject()
+  let starts =
+    list.index_map(items, fn(item, i) {
+      let ready = process.new_subject()
+      process.spawn(fn() {
+        let start = process.new_subject()
+        process.send(ready, start)
+        let assert Ok(Nil) = process.receive(start, 5000)
+        process.send(results, #(i, body(item)))
+      })
+      let assert Ok(start) = process.receive(ready, 5000)
+      start
+    })
+  list.each(starts, process.send(_, Nil))
+  list.map(starts, fn(_) {
+    let assert Ok(result) = process.receive(results, 5000)
+    result
+  })
+  |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
+  |> list.map(fn(entry) { entry.1 })
+}
 
 /// The process of a tool body waiting at its barrier.
 fn body(arrival: probe.Arrival) -> process.Pid {
