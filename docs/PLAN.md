@@ -324,6 +324,9 @@ carries it), `fabric.answer`, `AwaitError`, `RecoverError`, `StartFailed`,
 `ConfigError.InvalidChild` (a sub-agent is a built `Agent`),
 `tool.settle_summarized`, `tool.name` (internal), `observation.Tokens`,
 `store.close`. Moved: `ActionId` and `Requirement` from `policy` to `run`.
+After the review: added `fabric.open`, `StartError.StartRefused` and
+`fabric/testing` (`tool.call` moved there); `tool.input` returns
+`Result(Option(input), String)`.
 
 ### Deviations from the accepted proposal
 
@@ -394,7 +397,57 @@ README's block is `readme_example.gleam` verbatim, and runs), and in
 Resolved backlog: the ergonomics review items (below, slice 2b review
 fixes), `reconcile` routed by run (m7), delegation limits apart from
 `Budget` (m7), and starter-owned stores (slice 3). Runners themselves are
-still started unsupervised, owned through their store process.
+still started unsupervised, owned through their store process, whose
+calls they are pinned to.
+
+### Slice 3 review fixes
+
+An independent review of `e5e27f2..45fbc96` found no blocker and no
+safety regression. Each finding, and what became of it:
+
+| #   | Finding                                                                                          | Disposition                                        | Guard                                                                                                                                                                                      |
+| --- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | `await` failed at once when its store process restarted, although documented to follow it        | Fixed                                              | `an_await_follows_a_restarted_store_test` (supervision_test); `await_reports_a_stopped_store_test` now waits 200 ms                                                                        |
+| 2   | `recover` was the only way from a `RunId` to a handle, and through another `Store` it takes over | Fixed: `fabric.open`                               | `opening_a_live_run_through_another_store_leaves_it_running_test`, `opening_checks_the_run_and_its_agent_test`, `an_approval_through_an_opened_handle_runs_the_action_test` (durable_test) |
+| 3   | A store started by a caller that exited normally stayed registered                               | Fixed: the store stops with its starter            | `a_started_store_stops_when_its_starter_exits_normally_test` (store_test)                                                                                                                  |
+| 4   | `tool.input` returned `Error(Nil)` for another tool and for this tool's unreadable arguments     | Fixed: `Result(Option(i), String)`, fails closed   | `a_policy_reads_the_typed_input_of_its_tool_test`, `a_drifted_definition_fails_the_policy_closed_test` (registry_test)                                                                     |
+| 5   | `snapshot` and command results read the family once and could report a spurious `Unattended`     | Fixed: `family.load_settled`                       | `a_family_that_moved_on_since_it_read_unattended_is_read_again_test` (durable_test); the snapshot interleaving itself cannot be forced (below)                                             |
+| 6   | A runner committed through a restarted store process by name                                     | Fixed: store calls pinned to the monitored process | `a_runner_never_commits_through_a_restarted_store_test` (supervision_test)                                                                                                                 |
+| 7   | The id-collision retry was dead, and `StartUnconfirmed(id)` could name someone else's run        | Fixed: read back, `StartRefused`                   | `a_start_the_backend_stored_despite_reporting_it_taken_runs_test`, `a_start_whose_id_holds_another_record_is_refused_test` (durable_test)                                                  |
+| 8   | No `reconcile` twin of the cancelled-ancestor answer test                                        | Fixed                                              | `a_child_that_cannot_be_cancelled_can_no_longer_be_reconciled_test` (delegation_test)                                                                                                      |
+| n1  | Stale comments (`with_max_depth`, `OwnerUnknown`, the rejection test's policy)                   | Fixed                                              | —                                                                                                                                                                                          |
+| n2  | The README was pseudocode and `readme_test` a paraphrase                                         | Fixed                                              | `the_readme_shows_the_compiled_example_test`, `the_readme_example_runs_test` (readme_test)                                                                                                 |
+| n3  | `@internal` items of `store` and `tool` into `fabric/internal/*`                                 | Deferred                                           | Not clean (below)                                                                                                                                                                          |
+| n4  | `tool.call` into a `fabric/testing` module                                                       | Fixed: `testing.call`                              | The existing tests call it                                                                                                                                                                 |
+| n5  | `Requirement` reachable without importing `run`                                                  | Deferred                                           | An import cycle (below)                                                                                                                                                                    |
+
+Finding 5: a family is read record by record, and every hold on the
+parent's read in the store also holds the child's delivery to the parent
+(one request at a time per run), so the interleaving where a child ends
+between the two reads of one `snapshot` cannot be forced. The rule is
+tested directly: a family read as `Unattended` through a store that knows
+no runner reads again after the run moved on.
+
+n3: the client functions of `store` (`get`, `insert`, `commit`, `watch`,
+`unwatch`, `pid`, `pin`, `with_backend_timeout`) need the opaque `Store`
+and the `Message` constructors, and an internal module holding the store
+process would need `StoreError` and `Stored`, whose constructors a backend
+built with `store.new` uses, so `store` and that module would import each
+other. The same holds for `tool`: its accessors need the opaque `Tool`, and
+`Late` and `Kind` name the public `SettleError`. Moving them needs the
+backend contract types in a module of their own (`fabric/store/backend`),
+an API change left for a later pass.
+
+n5: `run.ApprovalRef` and `run.Approval` hold a `Requirement`, and
+`policy` imports `run` for `RunId` and `ActionId`, so `Requirement` cannot
+live in `policy`; a type alias would not carry its constructor. A policy
+author imports `fabric/run` for `run.Requirement`.
+
+After the fixes, public items (types and functions, `@internal` items
+excluded) per module: `fabric` 17, `fabric/agent` 11, `fabric/llm` 1,
+`fabric/model` 9, `fabric/observation` 31, `fabric/policy` 5, `fabric/run`
+22, `fabric/store` 9, `fabric/testing` 1, `fabric/tool` 10: 116 in all.
+`@internal` items: `agent` 2, `model` 1, `run` 1, `store` 11, `tool` 11.
 
 ## Public API (slice 2b)
 
