@@ -12,6 +12,7 @@ import fabric/support/probe.{type Probe}
 import fabric/support/restart
 import fabric/support/scripted
 import gleam/erlang/process.{type Pid}
+import gleam/list
 import gleam/otp/static_supervisor
 import gleeunit/should
 
@@ -130,6 +131,49 @@ fn blocked(awaiter: Pid, store: Pid) -> Nil {
     False -> {
       process.sleep(1)
       blocked(awaiter, store)
+    }
+  }
+}
+
+/// A runner of a store process that stopped never commits through the
+/// process a supervisor started in its place: here its tool's result is
+/// queued before the stop is, and the runner takes it only after the
+/// restart. Its commit fails, as the stopped process's would, so the run
+/// keeps its running action and reads `Unattended` until recovered.
+pub fn a_runner_never_commits_through_a_restarted_store_test() {
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let name = process.new_name("pinned")
+  let runs = store.directory(name, dir)
+  supervise(runs)
+  let assert Ok(run) = fabric.start(runs, one_slow(probe), Nil, "go")
+  let running = probe.arrival(probe)
+  let assert Ok(runner) = restart.runner(runs, fabric.id(run))
+
+  restart.suspend(runner)
+  probe.release(running)
+  reported(runner)
+  let assert Ok(old) = process.named(name)
+  process.kill(old)
+  let _ = restarted(name, old, 5000)
+  restart.resume(runner)
+  restart.gone(runner)
+
+  fabric.await(run, 0) |> should.equal(Ok(run.Unattended))
+  let assert Ok(snapshot) = fabric.snapshot(run)
+  snapshot.actions
+  |> list.map(fn(action) { action.state })
+  |> should.equal([run.Running])
+  restart.remove_dir(dir)
+}
+
+/// Waits until the tool's result waits in `runner`'s mailbox.
+fn reported(runner: Pid) -> Nil {
+  case restart.queued(runner) > 0 {
+    True -> Nil
+    False -> {
+      process.sleep(1)
+      reported(runner)
     }
   }
 }

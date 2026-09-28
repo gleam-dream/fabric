@@ -34,7 +34,8 @@
 //// wakes `fabric.await` on commits made through it. A run outlives the
 //// process that started it, which only uses the store.
 ////
-//// Runners stop when their store process stops. A restarted store process
+//// Runners stop when their store process stops, and never commit through
+//// a later process registered under the same name. A restarted store process
 //// (for example by its supervisor) knows no runner, so every run with work
 //// in flight reads as `Unattended` until `fabric.recover` takes it over. An
 //// in-memory store keeps its records in its process, so a restart loses
@@ -68,9 +69,14 @@ pub type Stored {
 }
 
 /// A named store: the name of its process and the backend that process
-/// opens when it starts.
+/// opens when it starts. A pinned store (`pin`) reaches one process of
+/// that name only, never a later one.
 pub opaque type Store {
-  Store(name: Name(Message), open: fn() -> Result(Backend, String))
+  Store(
+    name: Name(Message),
+    open: fn() -> Result(Backend, String),
+    pinned: Option(Subject(Message)),
+  )
 }
 
 /// What the store process receives.
@@ -89,6 +95,7 @@ pub opaque type Message {
   /// A worker finished the backend call of the run's current request.
   Finished(run: String, done: Done)
   SetTimeout(milliseconds: Int)
+  Identify(reply: Subject(Subject(Message)))
 }
 
 /// A store over application-supplied backend functions (for example a
@@ -101,14 +108,14 @@ pub fn new(
   compare_and_set compare_and_set: fn(String, Int, String) ->
     Result(Nil, StoreError),
 ) -> Store {
-  Store(name, fn() { Ok(Backend(get:, insert:, compare_and_set:)) })
+  Store(name, fn() { Ok(Backend(get:, insert:, compare_and_set:)) }, None)
 }
 
 /// A store that keeps records in its own process, registered as `name`.
 /// They are lost when that process stops, also when a supervisor restarts
 /// it.
 pub fn in_memory(name: Name(Message)) -> Store {
-  Store(name, fn() { Ok(memory_backend()) })
+  Store(name, fn() { Ok(memory_backend()) }, None)
 }
 
 /// A durable store in `path`, registered as `name`; the directory is
@@ -131,16 +138,20 @@ pub fn in_memory(name: Name(Message)) -> Store {
 /// two newer ones are published, the run may then read as `Unavailable`.
 /// Network filesystems without atomic hard links are not supported.
 pub fn directory(name: Name(Message), path: String) -> Store {
-  Store(name, fn() {
-    use Nil <- result.map(ensure_directory(path))
-    Backend(
-      get: directory_get(path, _),
-      insert: fn(run, record) { directory_insert(path, run, record) },
-      compare_and_set: fn(run, expected, record) {
-        directory_compare_and_set(path, run, expected, record)
-      },
-    )
-  })
+  Store(
+    name,
+    fn() {
+      use Nil <- result.map(ensure_directory(path))
+      Backend(
+        get: directory_get(path, _),
+        insert: fn(run, record) { directory_insert(path, run, record) },
+        compare_and_set: fn(run, expected, record) {
+          directory_compare_and_set(path, run, expected, record)
+        },
+      )
+    },
+    None,
+  )
 }
 
 /// The store's process as a supervised worker. A restart forgets its
@@ -193,10 +204,45 @@ pub type Ownership {
   Claim(Pid, Live)
 }
 
-/// The store's process, while one is registered under its name.
+/// The store's process: the one registered under its name, or for a
+/// pinned store the process it is pinned to, while it runs.
 @internal
 pub fn pid(store: Store) -> Result(Pid, Nil) {
-  process.named(store.name)
+  case store.pinned {
+    None -> process.named(store.name)
+    Some(subject) ->
+      case process.subject_owner(subject) {
+        Ok(pid) ->
+          case process.is_alive(pid) {
+            True -> Ok(pid)
+            False -> Error(Nil)
+          }
+        Error(Nil) -> Error(Nil)
+      }
+  }
+}
+
+/// `store` pinned to the process registered under its name now: every call
+/// through it reaches that process or, once it stopped, fails as a stopped
+/// store would, even after a supervisor registers another process under
+/// the name. A runner uses its store pinned to the process it monitors.
+@internal
+pub fn pin(store: Store) -> Result(Store, Nil) {
+  case store.pinned {
+    Some(_) -> Ok(store)
+    None ->
+      call(store, Identify)
+      |> result.map(fn(subject) { Store(..store, pinned: Some(subject)) })
+      |> result.replace_error(Nil)
+  }
+}
+
+/// Where requests to the store's process go.
+fn target(store: Store) -> Subject(Message) {
+  case store.pinned {
+    Some(subject) -> subject
+    None -> process.named_subject(store.name)
+  }
 }
 
 @internal
@@ -242,7 +288,7 @@ pub fn watch(
 
 @internal
 pub fn unwatch(store: Store, run: String, watcher: Subject(Nil)) -> Nil {
-  process.send(process.named_subject(store.name), Unwatch(run, watcher))
+  process.send(target(store), Unwatch(run, watcher))
 }
 
 // --- the store process -----------------------------------------------------------
@@ -331,7 +377,7 @@ fn run(
 /// Sets how long one backend call may take (default 5000 ms). For tests.
 @internal
 pub fn with_backend_timeout(store: Store, milliseconds: Int) -> Store {
-  process.send(process.named_subject(store.name), SetTimeout(milliseconds))
+  process.send(target(store), SetTimeout(milliseconds))
   store
 }
 
@@ -342,12 +388,16 @@ fn call(
   store: Store,
   request: fn(Subject(reply)) -> Message,
 ) -> Result(reply, StoreError) {
-  case process.named(store.name) {
-    Error(Nil) -> Error(Unavailable("the store is not running"))
+  case pid(store) {
+    Error(Nil) ->
+      case store.pinned {
+        None -> Error(Unavailable("the store is not running"))
+        Some(_) -> Error(Unavailable("the store stopped"))
+      }
     Ok(pid) -> {
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
-      process.send(process.named_subject(store.name), request(reply))
+      process.send(target(store), request(reply))
       let answer =
         process.new_selector()
         |> process.select_map(reply, Ok)
@@ -367,6 +417,10 @@ fn call(
 fn serve(state: Loop, message: Message) -> Loop {
   case message {
     SetTimeout(milliseconds) -> Loop(..state, timeout: milliseconds)
+    Identify(reply) -> {
+      process.send(reply, state.subject)
+      state
+    }
     Get(run, ..) as request | Write(run, ..) as request ->
       enqueue(state, run, request)
     Finished(run, done) -> finish(state, run, done)

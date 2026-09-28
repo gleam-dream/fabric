@@ -353,9 +353,10 @@ named supervisable store).
   an effect of unknown status still makes the delegation uncertain first.
 - **The store process is an OTP actor bound by instance.** A runner
   monitors the store process that was running when it was claimed and
-  stops when it goes, so it never drives a run for a restarted process;
-  until it notices, its commits reach the new process and are fenced by
-  compare-and-set like any other owner's. Backend workers report to the
+  stops when it goes, so it never drives a run for a restarted process.
+  Its store calls are pinned to that process: until it notices the stop,
+  a commit fails as a stopped store's would and never reaches the new
+  process under the same name. Backend workers report to the
   process's own subject, never to the name, so a late report cannot reach
   a later process of the same name. An `await` whose store process stops
   waits, within its own deadline, for the supervisor to register the next
