@@ -315,8 +315,10 @@ type Runner(context) {
     state: State,
     revision: Int,
     executor: Option(Executor),
-    /// The model task and the turn it answers.
-    model_task: Option(#(Pid, Int)),
+    /// The model task, the turn it answers, and its claim: the task takes
+    /// it just before it calls the model, so a draining runner that takes
+    /// it first knows the call was never issued (`serve`).
+    model_task: Option(#(Pid, Int, claim.Claim)),
     /// Consecutive retryable model failures; the next call waits longer.
     model_failures: Int,
     /// The factory the runner was started under: its `shutdown` drains
@@ -658,10 +660,12 @@ fn is_shutdown(reason: process.ExitReason) -> Bool {
 fn serve(runner: Runner(context)) -> Nil {
   case controller.needs_runner(runner.state), runner.draining {
     False, _ -> shutdown(runner)
-    // Draining: the run is handed off once no tool body runs and no model
-    // reply is awaited, with the reports of the effects it performed
-    // applied.
+    // Draining: a model call not yet issued (its task may be waiting out a
+    // retry backoff) never is, and the run is handed off once no tool body
+    // runs and no model reply is awaited, with the reports of the effects
+    // it performed applied.
     True, True -> {
+      let runner = withhold_model_call(runner)
       case runner.model_task, controller.tools_running(runner.state) {
         None, False ->
           case process.receive(runner.reports, 0) {
@@ -677,6 +681,19 @@ fn serve(runner: Runner(context)) -> Nil {
       }
     }
     True, False -> receive(runner)
+  }
+}
+
+/// Stops the model task if it has not issued its call yet: the call is
+/// then never issued, and the handoff gives its turn back.
+fn withhold_model_call(runner: Runner(context)) -> Runner(context) {
+  case runner.model_task {
+    Some(#(_, _, issue)) ->
+      case claim.withdraw(issue) {
+        True -> abort_model(runner)
+        False -> runner
+      }
+    None -> runner
   }
 }
 
@@ -828,7 +845,7 @@ fn exited(
   case reason, runner.model_task, executor_pid {
     _, _, _ if shutdown -> Ok(drain(runner))
     process.Normal, _, _ -> Ok(runner)
-    _, Some(#(task, turn)), _ if task == pid ->
+    _, Some(#(task, turn, _)), _ if task == pid ->
       apply(
         Runner(..runner, model_task: None),
         controller.ModelFailed(
@@ -1047,28 +1064,36 @@ fn perform(
       let model = runner.setup.model
       let delay =
         retry_delay(runner.setup.model_retry_delay, runner.model_failures)
+      let issue = claim.new()
       // Linked: the task dies with the runner, and the runner (trapping
       // exits) learns of a task that dies without answering. A retry waits
-      // inside the task, so aborting the call also ends the wait.
+      // inside the task, so aborting the call also ends the wait. The task
+      // takes `issue` before it calls the model; a draining runner that
+      // took it first stops the task (`withhold_model_call`).
       let pid =
         process.spawn(fn() {
           case delay > 0 {
             True -> process.sleep(delay)
             False -> Nil
           }
-          let result = case
-            executor.rescue(fn() { model.call(model, request) })
-          {
-            Ok(result) -> result
-            Error(crash) ->
-              Error(model.ModelError(
-                "model crashed: " <> crash,
-                retryable: False,
-              ))
+          case claim.accept(issue) {
+            False -> Nil
+            True -> {
+              let result = case
+                executor.rescue(fn() { model.call(model, request) })
+              {
+                Ok(result) -> result
+                Error(crash) ->
+                  Error(model.ModelError(
+                    "model crashed: " <> crash,
+                    retryable: False,
+                  ))
+              }
+              process.send(self, live.ModelDone(turn, result))
+            }
           }
-          process.send(self, live.ModelDone(turn, result))
         })
-      Runner(..runner, model_task: Some(#(pid, turn)))
+      Runner(..runner, model_task: Some(#(pid, turn, issue)))
     }
     controller.AbortModel -> abort_model(runner)
     controller.Dispatch(actions) -> {
@@ -1841,7 +1866,7 @@ fn start_executor(runner: Runner(context)) -> Executor {
 
 fn abort_model(runner: Runner(context)) -> Runner(context) {
   case runner.model_task {
-    Some(#(pid, _)) -> {
+    Some(#(pid, _, _)) -> {
       process.unlink(pid)
       process.kill(pid)
       Runner(..runner, model_task: None)

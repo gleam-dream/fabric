@@ -499,3 +499,56 @@ pub fn a_delegation_decided_during_the_stop_does_not_hold_up_the_drain_test() {
   restart.stop(app)
   restart.remove_dir(dir)
 }
+
+/// A model call waiting out its retry backoff when the application stops
+/// is never issued: the drain does not wait for the backoff, and the
+/// handoff gives its turn back.
+pub fn a_retry_backoff_is_not_waited_for_and_its_turn_is_given_back_test() {
+  let dir = restart.temp_dir()
+  let calls = probe.new()
+  let runs = directory_store(dir)
+  let flaky_model =
+    model.new(fn(_request) {
+      probe.record(calls, "call")
+      case probe.count(calls, "call") {
+        1 -> Error(model.ModelError("overloaded", retryable: True))
+        _ -> Ok(model.FinalAnswer("done", None))
+      }
+    })
+  let agent =
+    agent.new("agent", flaky_model, [], policy.always_allow())
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), model_retry_delay: 60_000),
+    )
+    |> support.agent
+  let app = restart.application(runs)
+  let assert Ok(run) = fabric.start(runs, agent, Nil, "go")
+  let assert Ok(run.Working) = fabric.await(run, 0)
+  wait_for_turns(run, 2)
+  restart.stopped_within(app, 0) |> should.be_false
+  restart.begin_stop(app)
+  restart.stopped_within(app, 5000) |> should.be_true
+  probe.count(calls, "call") |> should.equal(1)
+
+  let app = restart.application(runs)
+  let assert Ok(run) = fabric.open(runs, agent, Nil, fabric.id(run))
+  turns_used(run) |> should.equal(1)
+  let assert Ok(run) = fabric.recover(runs, agent, Nil, fabric.id(run))
+  fabric.await(run, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("done"))))
+  turns_used(run) |> should.equal(2)
+  probe.count(calls, "call") |> should.equal(2)
+  restart.stop(app)
+  restart.remove_dir(dir)
+}
+
+/// Waits until the run's record counts `turns` model turns.
+fn wait_for_turns(run: fabric.Run(context), turns: Int) -> Nil {
+  case turns_used(run) >= turns {
+    True -> Nil
+    False -> {
+      process.sleep(1)
+      wait_for_turns(run, turns)
+    }
+  }
+}
