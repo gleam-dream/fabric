@@ -1388,14 +1388,12 @@ pub fn model_content(action_state: ActionState) -> Result(String, Nil) {
   }
 }
 
-fn describe(budget: run.Budget) -> String {
-  case budget {
+fn describe(limit: run.DelegationLimit) -> String {
+  case limit {
     run.ChildLimit(limit) ->
       "at most " <> int.to_string(limit) <> " sub-agent runs per run"
     run.DepthLimit(limit) ->
       "sub-agents nest at most " <> int.to_string(limit) <> " levels deep"
-    run.TurnLimit(limit) -> "at most " <> int.to_string(limit) <> " model turns"
-    run.TokenLimit(limit, _) -> "at most " <> int.to_string(limit) <> " tokens"
   }
 }
 

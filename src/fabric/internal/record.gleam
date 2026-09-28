@@ -31,6 +31,12 @@
 //// transcript, which is read as `never_started`; any other version 1 or 2
 //// record reads as it did.
 ////
+//// An outcome's budget is written under its own tag (`turn_limit`,
+//// `token_limit`). The tag `budget_exhausted`, which wraps a budget, is
+//// still read; it was written only for a sub-agent limit ending a run,
+//// which no run did, and a sub-agent limit now only refuses a delegation
+//// (`limit_reached`).
+////
 //// The `stopping` phase records `tools_stopped`, whether the executor
 //// confirmed that no tool task runs. A record without it reads as not yet
 //// confirmed, which refuses late settlements until recovery completes the
@@ -211,18 +217,12 @@ fn action_state(state: ActionState) -> Json {
     run.Faulted(detail) -> tag("faulted", [#("detail", json.string(detail))])
     run.Delegated -> tag("delegated", [])
     run.LimitReached(limit) ->
-      tag("limit_reached", [#("budget", budget(limit))])
+      tag("limit_reached", [#("budget", delegation_limit(limit))])
   }
 }
 
-fn budget(budget: run.Budget) -> Json {
-  case budget {
-    run.TurnLimit(limit) -> tag("turn_limit", [#("limit", json.int(limit))])
-    run.TokenLimit(limit, used) ->
-      tag("token_limit", [
-        #("limit", json.int(limit)),
-        #("used", json.int(used)),
-      ])
+fn delegation_limit(limit: run.DelegationLimit) -> Json {
+  case limit {
     run.ChildLimit(limit) -> tag("child_limit", [#("limit", json.int(limit))])
     run.DepthLimit(limit) -> tag("depth_limit", [#("limit", json.int(limit))])
   }
@@ -267,8 +267,6 @@ fn outcome_json(outcome: Outcome) -> Json {
         #("limit", json.int(limit)),
         #("used", json.int(used)),
       ])
-    run.BudgetExhausted(other) ->
-      tag("budget_exhausted", [#("budget", budget(other))])
     run.BudgetUnverifiable(turn) ->
       tag("budget_unverifiable", [#("turn", json.int(turn))])
     run.Cancelled -> tag("cancelled", [])
@@ -593,8 +591,8 @@ fn action_state_decoder() -> Decoder(ActionState) {
     "delegated" -> Ok(decode.success(run.Delegated))
     "limit_reached" ->
       Ok(
-        decode.field("budget", budget_decoder(), fn(budget) {
-          decode.success(run.LimitReached(budget))
+        decode.field("budget", delegation_limit_decoder(), fn(limit) {
+          decode.success(run.LimitReached(limit))
         }),
       )
     _ -> Error(Nil)
@@ -603,17 +601,29 @@ fn action_state_decoder() -> Decoder(ActionState) {
 
 fn budget_decoder() -> Decoder(run.Budget) {
   use found <- tagged(run.TurnLimit(0))
-  let limit = fn(build) {
-    decode.field("limit", decode.int, fn(limit) { decode.success(build(limit)) })
-  }
   case found {
-    "turn_limit" -> Ok(limit(run.TurnLimit))
+    "turn_limit" ->
+      Ok(
+        decode.field("limit", decode.int, fn(limit) {
+          decode.success(run.TurnLimit(limit))
+        }),
+      )
     "token_limit" ->
       Ok({
         use limit <- decode.field("limit", decode.int)
         use used <- decode.field("used", decode.int)
         decode.success(run.TokenLimit(limit, used))
       })
+    _ -> Error(Nil)
+  }
+}
+
+fn delegation_limit_decoder() -> Decoder(run.DelegationLimit) {
+  use found <- tagged(run.ChildLimit(0))
+  let limit = fn(build) {
+    decode.field("limit", decode.int, fn(limit) { decode.success(build(limit)) })
+  }
+  case found {
     "child_limit" -> Ok(limit(run.ChildLimit))
     "depth_limit" -> Ok(limit(run.DepthLimit))
     _ -> Error(Nil)

@@ -109,7 +109,6 @@ fn phases() -> List(controller.Phase) {
     run.OutputLimited("partial"),
     run.BudgetExhausted(run.TurnLimit(8)),
     run.BudgetExhausted(run.TokenLimit(100, 120)),
-    run.BudgetExhausted(run.ChildLimit(2)),
     run.BudgetUnverifiable(2),
     run.Cancelled,
     ..list.map(failures, run.Failed)
@@ -321,4 +320,21 @@ pub fn a_child_that_never_started_is_explicit_test() {
   |> should.equal(Ok(controller.ChildFinished(run.Cancelled, False)))
   controller.status(controller.State(..base, phase: controller.NeverStarted))
   |> should.equal(run.Finished(run.Cancelled))
+}
+
+/// The tag `budget_exhausted`, which wraps a budget, is still read.
+pub fn a_wrapped_budget_is_still_read_test() {
+  let ended =
+    controller.State(
+      ..base(),
+      phase: controller.Ended(run.BudgetExhausted(run.TurnLimit(8))),
+    )
+  let wrapped =
+    record.encode(ended)
+    |> string.replace(
+      "{\"tag\":\"turn_limit\",\"limit\":8}",
+      "{\"tag\":\"budget_exhausted\",\"budget\":{\"tag\":\"turn_limit\",\"limit\":8}}",
+    )
+  wrapped |> string.contains("budget_exhausted") |> should.be_true
+  record.decode(wrapped) |> should.equal(Ok(ended))
 }
