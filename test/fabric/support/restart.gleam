@@ -77,3 +77,7 @@ pub fn crash(owner: Pid, store: Store) -> Nil {
     Error(Nil) -> Nil
   }
 }
+
+/// Whether `pid` monitors `target` and is blocked in a receive.
+@external(erlang, "fabric_test_ffi", "waits_on")
+pub fn waits_on(pid: Pid, target: Pid) -> Bool
