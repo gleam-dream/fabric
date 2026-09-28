@@ -5,7 +5,9 @@
 //// model scripted over the transcript. A front desk delegates acquisitions
 //// to a purchasing sub-agent (starting it needs the committee's approval,
 //// and each order the treasurer's) and arranges interlibrary loans with a
-//// Saga workflow exposed as one tool.
+//// Saga workflow exposed as one tool. At start the application routes
+//// Fabric's observations through a Sinal forwarder, so a slow handler never
+//// holds up a run.
 
 import fabric/agent.{type Agent}
 import fabric/model.{
@@ -16,13 +18,57 @@ import fabric/policy
 import fabric/run
 import fabric/tool
 import fabric_saga
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/atom
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/otp/actor
+import gleam/otp/static_supervisor
 import gleam/string
 import json/blueprint/codec.{type Codec}
 import saga
 import saga/execution
+import sinal/forwarder
+
+// --- observation ----------------------------------------------------------------
+
+/// The supervisor of the forwarder that runs Fabric's event handlers.
+pub opaque type Observation {
+  Observation(supervisor: Pid)
+}
+
+fn fabric_events() -> List(atom.Atom) {
+  [atom.create("fabric")]
+}
+
+/// Application start: supervises a forwarder, then routes every `[fabric]`
+/// event through it. Handlers attached to Fabric's events then run in the
+/// forwarder's process; when it is full, events are dropped and counted
+/// rather than holding up a run.
+pub fn start_observation() -> Result(Observation, actor.StartError) {
+  let assert Ok(events) =
+    forwarder.new(process.new_name("app-fabric-observation"), 1024)
+  let started =
+    static_supervisor.new(static_supervisor.OneForOne)
+    |> static_supervisor.add(forwarder.supervised(events))
+    |> static_supervisor.start
+  case started {
+    Ok(started) -> {
+      forwarder.route(fabric_events(), events)
+      Ok(Observation(started.pid))
+    }
+    Error(error) -> Error(error)
+  }
+}
+
+/// Application shutdown, from the process that called `start_observation`:
+/// later events are emitted synchronously again, and the forwarder stops
+/// (events still in flight are dropped).
+pub fn stop_observation(observation: Observation) -> Nil {
+  forwarder.unroute(fabric_events())
+  process.unlink(observation.supervisor)
+  process.send_abnormal_exit(observation.supervisor, atom.create("shutdown"))
+}
 
 // --- application types --------------------------------------------------------
 

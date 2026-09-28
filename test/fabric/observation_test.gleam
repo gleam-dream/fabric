@@ -1,6 +1,7 @@
 //// Fabric's Sinal events, captured by handlers the test attaches: which
-//// events a run emits, in which order, with which metadata, and that a
-//// failing handler does not affect the run.
+//// events a run emits, in which order, with which metadata, that a
+//// failing handler does not affect the run, and where handlers run when
+//// the application routes Fabric's events through a Sinal forwarder.
 
 import fabric
 import fabric/agent
@@ -14,7 +15,8 @@ import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
 import fabric/tool
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/atom
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -22,6 +24,7 @@ import gleam/string
 import gleeunit/should
 import json/blueprint/codec
 import sinal
+import sinal/forwarder
 
 // --- capture --------------------------------------------------------------------
 
@@ -393,4 +396,104 @@ fn of_run(lines: List(String), id: String, root: String) -> List(String) {
     }
   })
   |> list.map(string.replace(_, root, "R"))
+}
+
+// --- routing --------------------------------------------------------------------
+
+/// A `model_turn` handler that announces the run, the process it runs in,
+/// and a release subject, then blocks until the test releases it.
+fn blocking_model_turn(
+  name: String,
+) -> #(Subject(#(String, Pid, Subject(Nil))), sinal.Attachment) {
+  let entered = process.new_subject()
+  let suffix = int.to_string(int.random(1_000_000_000))
+  let assert Ok(id) = sinal.handler_id("fabric-blocking-" <> name <> suffix)
+  let assert Ok(attachment) =
+    sinal.observe(id, o.model_turn(), fn(_, m: o.ModelTurn) {
+      let gate = process.new_subject()
+      process.send(entered, #(m.run, process.self(), gate))
+      process.receive_forever(gate)
+    })
+  #(entered, attachment)
+}
+
+/// The next blocked handler of run `id`; handlers of other runs are
+/// released.
+fn entered_by(
+  entered: Subject(#(String, Pid, Subject(Nil))),
+  id: String,
+) -> #(Pid, Subject(Nil)) {
+  let assert Ok(#(run, pid, gate)) = process.receive(entered, 5000)
+  case run == id {
+    True -> #(pid, gate)
+    False -> {
+      process.send(gate, Nil)
+      entered_by(entered, id)
+    }
+  }
+}
+
+fn weather_agent() -> agent.Agent(Nil) {
+  agent.new(
+    scripted.plan([scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}")]),
+    [apps.weather_tool()],
+    policy.always_allow(),
+  )
+}
+
+/// With `[fabric]` routed through a forwarder, a blocked handler stalls
+/// the forwarder, not the run: the run finishes while the handler of its
+/// first model turn is still blocked, and that handler runs in the
+/// forwarder's process.
+pub fn a_routed_handler_runs_in_the_forwarder_and_does_not_stall_the_run_test() {
+  let assert Ok(fwd) =
+    forwarder.new(process.new_name("fabric-observation-forwarder"), 64)
+  let assert Ok(started) = forwarder.supervised(fwd).start()
+  let prefix = [atom.create("fabric")]
+  forwarder.route(prefix, fwd)
+  let #(entered, attachment) = blocking_model_turn("routed")
+
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), weather_agent(), Nil, "weather")
+  let #(first, gate) = entered_by(entered, fabric.id(run))
+  let finished = fabric.await(run, 5000)
+  process.send(gate, Nil)
+  let #(second, gate) = entered_by(entered, fabric.id(run))
+  process.send(gate, Nil)
+  forwarder.unroute(prefix)
+  let _ = sinal.detach(attachment)
+  process.unlink(started.pid)
+  process.kill(started.pid)
+
+  finished
+  |> should.equal(
+    Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
+  )
+  #(first, second) |> should.equal(#(started.pid, started.pid))
+}
+
+/// Without a route, a handler runs synchronously in the process that made
+/// the commit: a model turn's handler runs in the run's runner, which waits
+/// for it.
+pub fn an_unrouted_handler_runs_in_the_runner_test() {
+  let #(entered, attachment) = blocking_model_turn("unrouted")
+  let memory = store.in_memory()
+  let assert Ok(run) = fabric.start(memory, weather_agent(), Nil, "weather")
+  let #(handler, gate) = entered_by(entered, fabric.id(run))
+  let assert Ok(store.Entry(live: Some(store.Live(_, mailbox)), ..)) =
+    store.get(memory, fabric.id(run))
+  let runner = process.subject_owner(mailbox)
+  let waiting = fabric.status(run)
+  process.send(gate, Nil)
+  let #(_, gate) = entered_by(entered, fabric.id(run))
+  process.send(gate, Nil)
+  let finished = fabric.await(run, 5000)
+  let _ = sinal.detach(attachment)
+
+  runner |> should.equal(Ok(handler))
+  waiting |> should.equal(Ok(run.Working))
+  finished
+  |> should.equal(
+    Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
+  )
 }
