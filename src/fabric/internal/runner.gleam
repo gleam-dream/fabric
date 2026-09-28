@@ -351,19 +351,37 @@ pub fn launch(
   state: State,
   effects: List(Effect),
 ) -> Result(Int, store.StoreError) {
-  launch_with(setup, work(setup, setup.env.context), before, state, effects)
+  launch_with(
+    setup,
+    work(setup, setup.env.context),
+    before,
+    state,
+    effects,
+    False,
+  )
 }
 
 /// `launch`, with `effects` performed with `work`; the runner keeps
-/// `setup`'s context for everything after them.
+/// `setup`'s context for everything after them. A leased store claims the
+/// run's lease, or with `seize` (a cancellation) takes it whoever holds
+/// it.
 fn launch_with(
   setup: Setup(context),
   work: Work,
   before: Option(#(Int, State)),
   state: State,
   effects: List(Effect),
+  seize: Bool,
 ) -> Result(Int, store.StoreError) {
-  launch_encoded(setup, work, before, state, record.encode(state), effects)
+  launch_encoded(
+    setup,
+    work,
+    before,
+    state,
+    record.encode(state),
+    effects,
+    seize,
+  )
 }
 
 /// Stores and starts the new root run `state`. A backend that reports the
@@ -378,10 +396,10 @@ pub fn launch_new(
 ) -> Result(Int, store.StoreError) {
   let work = work(setup, setup.env.context)
   let encoded = record.encode(state)
-  case launch_encoded(setup, work, None, state, encoded, effects) {
+  case launch_encoded(setup, work, None, state, encoded, effects, False) {
     Error(store.AlreadyExists) ->
       case store.get(setup.store, state.run) {
-        Ok(store.Entry(revision: 1, record: stored, live: None))
+        Ok(store.Entry(revision: 1, record: stored, live: None, ..))
           if stored == encoded
         ->
           launch_over(
@@ -392,6 +410,7 @@ pub fn launch_new(
             state,
             record.encode(state),
             effects,
+            False,
           )
         _ -> Error(store.AlreadyExists)
       }
@@ -408,10 +427,11 @@ fn launch_encoded(
   state: State,
   encoded: String,
   effects: List(Effect),
+  seize: Bool,
 ) -> Result(Int, store.StoreError) {
   let expected = option.map(before, fn(before) { before.0 })
   let observed = option.map(before, fn(before) { before.1 })
-  launch_over(setup, work, expected, observed, state, encoded, effects)
+  launch_over(setup, work, expected, observed, state, encoded, effects, seize)
 }
 
 /// Writes `state` as `encoded` over the revision `expected` (`None`: a new
@@ -425,6 +445,7 @@ fn launch_over(
   state: State,
   encoded: String,
   effects: List(Effect),
+  seize: Bool,
 ) -> Result(Int, store.StoreError) {
   case controller.needs_runner(state) {
     False -> {
@@ -433,7 +454,7 @@ fn launch_over(
         state.run,
         expected,
         encoded,
-        store.Keep,
+        store.Detached(in_flight: False, seize:),
       ))
       observe.committed(observed, state)
       deliver(setup, state)
@@ -450,13 +471,14 @@ fn launch_over(
             state.run,
             expected,
             encoded,
-            store.Keep,
+            store.Detached(in_flight: True, seize:),
           ))
           observe.committed(observed, state)
           revision
         }
         Ok(#(pid, mailbox, go)) -> {
-          let claim = store.Launch(pid, store.Live(state.incarnation, mailbox))
+          let claim =
+            store.Launch(pid, store.Live(state.incarnation, mailbox), seize:)
           case write(setup.store, state.run, expected, encoded, claim) {
             Ok(revision) -> {
               // The runner starts before this commit's events are emitted: a
@@ -714,7 +736,7 @@ fn hand_off(runner: Runner(context)) -> Nil {
       state.run,
       record.encode(state),
       runner.revision,
-      store.Leave(process.self()),
+      store.HandOff(process.self()),
       0,
     )
   {
@@ -1004,7 +1026,7 @@ fn current(runner: Runner(context), effects: List(Effect)) -> Bool {
     False -> True
     True ->
       case store.get(runner.setup.store, runner.state.run) {
-        Ok(entry) -> entry.revision == runner.revision
+        Ok(entry) -> entry.revision == runner.revision && !held_elsewhere(entry)
         Error(_) -> True
       }
   }
@@ -1232,7 +1254,7 @@ fn store_child(
   attempt: Int,
 ) -> Result(Nil, store.StoreError) {
   let work = work(setup, setup.env.context)
-  case launch_encoded(setup, work, None, state, encoded, effects) {
+  case launch_encoded(setup, work, None, state, encoded, effects, False) {
     Ok(_) -> Ok(Nil)
     Error(store.Unavailable(_)) if attempt < unavailable_retries -> {
       process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
@@ -1264,17 +1286,18 @@ fn adopt_child(
   case load(setup.store, first.run) {
     Error(problem) -> lost(describe_read(problem))
     Ok(#(entry, stored)) ->
-      case live_runner(entry, stored), controller.child_result(stored) {
-        Some(_), _ | None, Ok(controller.ChildMissing) ->
+      case driven(entry, stored), controller.child_result(stored) {
+        True, _ | False, Ok(controller.ChildMissing) ->
           controller.ChildStarted(id)
-        None, Ok(ended) -> controller.ChildEnded(id, ended)
-        None, Error(Nil) -> {
+        False, Ok(ended) -> controller.ChildEnded(id, ended)
+        False, Error(Nil) -> {
           let #(next, effects) = case entry.record == encoded {
             True -> #(first, first_effects)
             False -> controller.recover(setup.env, stored)
           }
           case launch(setup, Some(#(entry.revision, stored)), next, effects) {
-            Ok(_) -> controller.ChildStarted(id)
+            // Started, or another node's runner drives it.
+            Ok(_) | Error(store.LeaseRefused(_)) -> controller.ChildStarted(id)
             Error(store.Conflict(_)) if tries > 1 ->
               adopt_child(setup, id, start, tries - 1)
             Error(error) ->
@@ -1395,7 +1418,14 @@ pub fn bury(
   agent: run.Identity,
 ) -> Result(Burial, store.StoreError) {
   let state = controller.never_started(parent, action, child, agent)
-  case store.insert(store, child, record.encode(state), store.Keep) {
+  case
+    store.insert(
+      store,
+      child,
+      record.encode(state),
+      store.Detached(in_flight: False, seize: False),
+    )
+  {
     Ok(_) -> Ok(Buried)
     Error(store.AlreadyExists) -> Ok(Exists)
     Error(error) -> Error(error)
@@ -1451,8 +1481,10 @@ pub fn cancel_unattended(
       controller.cancel_unattended(state, ended)
       |> result.map_error(CommandRefused),
     )
+    let detached =
+      store.Detached(in_flight: controller.needs_runner(next), seize: True)
     case
-      store.commit(store, id, entry.revision, record.encode(next), store.Keep)
+      store.commit(store, id, entry.revision, record.encode(next), detached)
     {
       Ok(_) -> {
         observe.committed(Some(state), next)
@@ -1681,13 +1713,22 @@ pub fn command(
       True, _ -> Error(OwnerUnknown)
     })
     case
-      launch_with(setup, work, Some(#(entry.revision, state)), next, effects)
+      launch_with(
+        setup,
+        work,
+        Some(#(entry.revision, state)),
+        next,
+        effects,
+        event == controller.Cancel,
+      )
     {
       Ok(_) -> {
         option.map(held, process.kill)
         Ok(next)
       }
       Error(store.Conflict(_)) -> retry()
+      // The work needs a lease that another node's runner holds.
+      Error(store.LeaseRefused(_)) -> Error(OwnerUnknown)
       Error(error) -> Error(Unreadable(StoreFailed(error)))
     }
   }
@@ -1832,6 +1873,22 @@ pub fn load_checked(
   record.check(state, setup.identity, setup.env.registry)
   |> result.map(fn(state) { #(entry, state) })
   |> result.map_error(Incompatible)
+}
+
+/// Whether another node's runner holds the run: a live lease of another
+/// owner (a leased store).
+pub fn held_elsewhere(entry: store.Entry) -> Bool {
+  case entry.holding {
+    store.HeldElsewhere(live: True, ..) -> True
+    store.HeldElsewhere(live: False, ..) | store.HeldHere | store.Unheld ->
+      False
+  }
+}
+
+/// Whether the run's work has an owner: a runner of this store for its
+/// current incarnation, or another node's runner (`held_elsewhere`).
+pub fn driven(entry: store.Entry, state: State) -> Bool {
+  live_runner(entry, state) != None || held_elsewhere(entry)
 }
 
 /// The runner registered for the record's current incarnation. A runner of
