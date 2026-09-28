@@ -27,24 +27,29 @@
 ////   perform it later.
 ////
 //// A `Store` value names a store process and starts nothing: it is plain
-//// data that any process may hold and use. Start its process once, under
-//// a supervisor (`supervised`) or owned by the caller (`start`, for
-//// scripts and tests: it stops when the caller exits). The process calls the backend one request at a time
-//// per run, tracks which runner currently drives each run in this VM, and
-//// wakes `fabric.await` on commits made through it. A run outlives the
-//// process that started it, which only uses the store.
+//// data that any process may hold and use. Start its subtree once: the
+//// store's process and the factory its runners are started under, under
+//// the application's supervisor (`supervised`) or owned by the caller
+//// (`start`, for scripts and tests: it stops when the caller exits). The
+//// process calls the backend one request at a time per run, tracks which
+//// runner currently drives each run in this VM, and wakes `fabric.await`
+//// on commits made through it. A run outlives the process that started
+//// it, which only uses the store.
 ////
 //// Runners stop when their store process stops, and never commit through
-//// a later process registered under the same name. A restarted store process
-//// (for example by its supervisor) knows no runner, so every run with work
-//// in flight reads as `Unattended` until `fabric.recover` takes it over. An
-//// in-memory store keeps its records in its process, so a restart loses
-//// them; a directory or application backend keeps them (the directory
-//// store only up to a power loss: it is for development, tests, and one
-//// host). Several stores may
-//// open the same backend (for example the same directory): the backend's
-//// compare-and-set keeps their commits safe, but each only knows its own
-//// runners.
+//// a later process registered under the same name. A restarted store
+//// process (for example by its supervisor) knows no runner, so every run
+//// with work in flight reads as `Unattended` until `fabric.recover` takes
+//// it over. When the subtree shuts down, its runners drain before its
+//// process stops (see `supervised`), and the runs they hand off read
+//// `Unattended` too, with nothing uncertain. A suspended or finished run
+//// has no runner, so a shutdown leaves it untouched. An in-memory store
+//// keeps its records in its process, so a restart loses them; a directory
+//// or application backend keeps them (the directory store only up to a
+//// power loss: it is for development, tests, and one host). Several
+//// stores may open the same backend (for example the same directory): the
+//// backend's compare-and-set keeps their commits safe, but each only
+//// knows its own runners.
 
 import fabric/internal/bounded
 import fabric/internal/executor
@@ -239,6 +244,18 @@ pub fn with_drain(
 /// results through the store's process, and hands the run off (see
 /// `fabric.recover`). A runner still busy when the window ends is killed,
 /// and its running tools become uncertain effects.
+///
+/// The handoff gives back the turn of a model call that was never issued,
+/// keeps queued tools queued, and asks again for an approved tool that
+/// never started (its approval was checked with a context that does not
+/// outlive the runner; the old reference is then stale). A stopped tool
+/// awaiting its late settlement (`tool.bind_settling`) is waited for like
+/// a running body. A sub-agent run is drained by its own runner; its
+/// parent's delegation stays delegated, and recovering the parent recovers
+/// it. A command the draining runner takes is committed, but starts
+/// nothing: an approval it takes is asked for again at the handoff. Work
+/// committed meanwhile through a store whose runners are draining starts
+/// no runner and reads `Unattended`.
 pub fn supervised(store: Store) -> supervision.ChildSpecification(Nil) {
   supervision.supervisor(fn() {
     subtree(store, None, supervision.Permanent)
