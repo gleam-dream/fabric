@@ -394,7 +394,8 @@ fn memory() -> store.Store {
 }
 
 /// A request handler starts a run and exits; the supervised store, not the
-/// handler, owns the run's runner, so the run still finishes. The reference
+/// handler, owns the run's runner, so the run still finishes. Another
+/// request opens the run by its id, which takes nothing over. The reference
 /// names its run with a typed id; a string from a link parses back to it.
 pub fn a_run_outlives_the_request_that_started_it_test() {
   let runs = store.in_memory(process.new_name("supervised-runs"))
@@ -409,8 +410,7 @@ pub fn a_run_outlives_the_request_that_started_it_test() {
     process.send(handed, fabric.id(run))
   })
   let assert Ok(id) = process.receive(handed, 5000)
-  let assert Ok(run) =
-    fabric.recover(runs, librarian(), app.member("junior"), id)
+  let assert Ok(run) = fabric.open(runs, librarian(), app.member("junior"), id)
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   run.parse_id(run.id_to_string(pending.reference.run))
   |> should.equal(Ok(fabric.id(run)))

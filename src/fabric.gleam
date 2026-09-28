@@ -24,6 +24,11 @@
 //// runner, or are applied to the stored record when there is none, and a
 //// runner is started if the command produced work.
 ////
+//// Any process can hold a handle. `open` rebuilds one from a run id
+//// without taking anything over: the handle a request handler uses.
+//// `recover` takes over work whose runner is gone: use it at boot, never
+//// on a run another process may still be driving.
+////
 //// A delegation (`agent.with_sub_agent`) starts a sub-agent run in the same
 //// store, behind the same policy gate as a tool. The family is read together:
 //// a child's pending approvals and uncertain effects are the parent's (their
@@ -31,12 +36,12 @@
 //// by the reference, `child` opens a child's handle, cancelling a parent
 //// cancels its children, and recovering a parent recovers its children.
 ////
-//// A run's context is a live value, never stored: the one given to `start`
-//// or `recover`, held by the handle and its runner. An approved action is
+//// A run's context is a live value, never stored: the one given to
+//// `start`, `open` or `recover`, held by the handle and its runner. An approved action is
 //// the exception: it runs with the context its answer was checked with
 //// (see `approve`).
 ////
-//// After a restart, `recover` opens a stored run under the same agent. If
+//// After a restart, `recover` reopens a stored run under the same agent. If
 //// work was in flight when its runner was lost, recovery takes it over as a
 //// new incarnation: tools that had started become uncertain effects, which
 //// are never retried and must be reconciled; queued tools and a lost model
@@ -63,9 +68,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
-/// A handle on one run, for the agent and context it was started or
-/// recovered with. It holds no process: it can be dropped and rebuilt with
-/// `recover`.
+/// A handle on one run, for the agent and context it was started, opened
+/// or recovered with. It holds no process: it can be dropped and rebuilt
+/// with `open`.
 pub opaque type Run(context) {
   Run(id: String, setup: runner.Setup(context))
 }
@@ -185,9 +190,9 @@ fn start_with(
 /// A store knows only the runners it started. Recovering through another
 /// `Store` (for example in another VM) while the run's runner is still
 /// alive takes the run over: the older runner can no longer commit and
-/// stops, and its running tools become uncertain effects. Recover through
-/// another store only when the previous owner is known to be gone (for
-/// example at boot).
+/// stops, and its running tools become uncertain effects. Recover only
+/// when the previous owner is known to be gone (for example at boot); to
+/// read or command a run someone else may be driving, `open` it.
 pub fn recover(
   store: Store,
   agent: Agent(context),
@@ -202,6 +207,34 @@ pub fn recover(
     Error(family.TakeOverUnreadable(problem)) ->
       Error(Unreadable(record_error(problem)))
   }
+}
+
+/// Opens the stored run `id` under `agent` and `context`, for a caller
+/// that did not start it: a request handler reading, awaiting, answering,
+/// reconciling or cancelling a run. It only reads the record and checks
+/// that the run can continue under `agent` (`IncompatibleAgent`
+/// otherwise); it never takes the run over and starts nothing, so a live
+/// runner, in this store or behind another `Store`, keeps its work.
+///
+/// Commands through the handle behave exactly as through the handle
+/// `start` returned: each is checked against the stored record, one that
+/// produces work with no runner live in this store starts a runner, and
+/// one that needs the live runner of another `Store` is `RunUnattended`.
+/// A sub-agent run is reached through its root's handle (`child`).
+///
+/// Use `recover` instead only when the previous owner is known to be gone
+/// (at boot): it takes over work in flight.
+pub fn open(
+  store: Store,
+  agent: Agent(context),
+  context: context,
+  id: RunId,
+) -> Result(Run(context), RecordError) {
+  let id = id_to_string(id)
+  let setup = runner.setup(store, agent.admitted(agent), context, None)
+  runner.load_checked(setup, id)
+  |> result.replace(Run(id:, setup:))
+  |> result.map_error(record_error)
 }
 
 pub fn id(run: Run(context)) -> RunId {

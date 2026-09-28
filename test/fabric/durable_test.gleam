@@ -565,11 +565,11 @@ fn two_reviewed(probe: Probe) -> Agent(Nil) {
   |> support.agent
 }
 
-/// Store A drives the run; store B opened the same directory. A command
-/// through B is checked against the stored record first: an answer A
-/// already applied is `AlreadyAnswered`, and a valid answer that B cannot
-/// apply because A's runner drives the work is `OwnerUnknown`, not a
-/// request to recover (which would take the run away from A).
+/// Store A drives the run; store B opened the same directory, and the run
+/// through it. A command through B is checked against the stored record
+/// first: an answer A already applied is `AlreadyAnswered`, and a valid
+/// answer that B cannot apply because A's runner drives the work is
+/// `RunUnattended`, not a takeover.
 pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
@@ -579,7 +579,7 @@ pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
 
   let b = reopen(dir)
   let assert Ok(run_b) =
-    fabric.recover(b, two_reviewed(probe), Nil, fabric.id(run_a))
+    fabric.open(b, two_reviewed(probe), Nil, fabric.id(run_a))
   let assert Ok(run.Working) =
     fabric.approve(run_a, p.reference, reviewer: None, context: Nil)
   let started = probe.arrival(probe)
@@ -599,6 +599,74 @@ pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
   |> should.equal(Ok(run.Finished(run.Completed("final: \"p\" | \"q\""))))
   probe.count(probe, "start:p") |> should.equal(1)
   restart.remove_dir(dir)
+}
+
+/// Store A drives the run; store B opens it, as a request handler would.
+/// Opening takes nothing over: A's runner keeps its running tool, which
+/// finishes with a definite result, and the run's incarnation is
+/// unchanged. Through B the work reads `Unattended`, since B knows no
+/// runner of it.
+pub fn opening_a_live_run_through_another_store_leaves_it_running_test() {
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let a = support.directory(dir)
+  let assert Ok(run_a) = fabric.start(a, one_slow(probe), Nil, "go")
+  let running = probe.arrival(probe)
+
+  let b = reopen(dir)
+  let assert Ok(run_b) = fabric.open(b, one_slow(probe), Nil, fabric.id(run_a))
+  fabric.await(run_b, 0) |> should.equal(Ok(run.Unattended))
+  fabric.await(run_a, 0) |> should.equal(Ok(run.Working))
+  incarnation(run_b) |> should.equal(incarnation(run_a))
+
+  probe.release(running)
+  fabric.await(run_a, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
+  states(run_b) |> should.equal([run.Succeeded("\"a\"")])
+  probe.count(probe, "start:a") |> should.equal(1)
+  restart.remove_dir(dir)
+}
+
+/// An id that names no stored run is `RunNotFound`, and a run of another
+/// agent is `IncompatibleAgent`, as for `recover`.
+pub fn opening_checks_the_run_and_its_agent_test() {
+  let dir = restart.temp_dir()
+  let id = suspended_on_disk(dir)
+  let store = reopen(dir)
+  fabric.open(
+    store,
+    paying_agent([apps.transfer_tool()]),
+    Nil,
+    support.id("run-nope"),
+  )
+  |> should.equal(Error(fabric.RunNotFound))
+  let assert Error(fabric.IncompatibleAgent(_)) =
+    fabric.open(store, paying_agent([apps.weather_tool()]), Nil, id)
+  let assert Ok(_) =
+    fabric.open(store, paying_agent([apps.transfer_tool()]), Nil, id)
+  restart.remove_dir(dir)
+}
+
+/// A suspended run opened after a restart is approved through the opened
+/// handle: the answer is committed to the stored record and the approved
+/// tool runs.
+pub fn an_approval_through_an_opened_handle_runs_the_action_test() {
+  let probe = probe.new()
+  let store = support.store()
+  let assert Ok(started) = fabric.start(store, two_reviewed(probe), Nil, "go")
+  let assert Ok(run.Suspended([p, q], [])) = fabric.await(started, 5000)
+
+  let assert Ok(opened) =
+    fabric.open(store, two_reviewed(probe), Nil, fabric.id(started))
+  let assert Ok(run.Working) =
+    fabric.approve(opened, p.reference, reviewer: None, context: Nil)
+  probe.release(probe.arrival(probe))
+  let assert Ok(run.Suspended([_], [])) = fabric.await(opened, 5000)
+  let assert Ok(_) =
+    fabric.reject(opened, q.reference, reason: "no", reviewer: None)
+  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(opened, 5000)
+  probe.count(probe, "start:p") |> should.equal(1)
+  probe.count(probe, "start:q") |> should.equal(0)
 }
 
 /// A run paused on a tool the current agent no longer has, or started by
