@@ -59,17 +59,20 @@ pub type Limits {
     max_depth: Int,
     /// Milliseconds one policy decision may take. A policy that gives no
     /// decision in time has failed: the run stops closed. The policy runs in
-    /// its own process.
+    /// its own process. At most 2^32 - 1, the longest timer the runtime can
+    /// set.
     policy_timeout: Int,
     /// Milliseconds before the first retry of a retryable model failure. The
     /// delay doubles with each consecutive retryable failure, up to 64 times
     /// this value, and every attempt still counts against the turn limit. A
-    /// cancelled run does not wait for it.
+    /// cancelled run does not wait for it. At most (2^32 - 1) / 64, so the
+    /// longest delay still fits a timer.
     model_retry_delay: Int,
     /// Milliseconds a command (`approve`, `reject`, `cancel`, `reconcile`)
     /// waits for the run's live runner to take it. A runner busy for longer
     /// (for example held by a synchronous observation handler) refuses the
-    /// command with `fabric.RunnerBusy`, and never applies it later.
+    /// command with `fabric.RunnerBusy`, and never applies it later. At most
+    /// 2^32 - 1.
     command_timeout: Int,
   )
 }
@@ -106,8 +109,17 @@ pub type ConfigError {
   MaxConcurrencyNotPositive(Int)
   TokenBudgetNotPositive(Int)
   PolicyTimeoutNotPositive(Int)
+  /// The policy timeout is longer than the longest timer the runtime can
+  /// set (`limit`, 2^32 - 1 ms).
+  PolicyTimeoutTooLarge(value: Int, limit: Int)
   ModelRetryDelayNegative(Int)
+  /// The first model retry delay, doubled up to 64 times, would exceed the
+  /// longest timer the runtime can set: `limit` is (2^32 - 1) / 64 ms.
+  ModelRetryDelayTooLarge(value: Int, limit: Int)
   CommandTimeoutNotPositive(Int)
+  /// The command timeout is longer than the longest timer the runtime can
+  /// set (`limit`, 2^32 - 1 ms).
+  CommandTimeoutTooLarge(value: Int, limit: Int)
   /// The name is empty or the version is not positive.
   InvalidIdentity(name: String, version: Int)
   MaxChildrenNegative(Int)
@@ -123,6 +135,14 @@ pub type ConfigError {
 const max_children_limit = 999
 
 const max_depth_limit = 16
+
+/// The longest timer the runtime can set, in milliseconds: a longer wait
+/// crashes the process that waits.
+const longest_timer = 4_294_967_295
+
+/// How many times the first model retry delay is doubled, at most (64
+/// times the first delay).
+const retry_delay_factor = 64
 
 /// An agent named `name`, with the given model, tools, and policy, version
 /// 1 and `default_limits()`. A stored run records the name and version it
@@ -251,11 +271,18 @@ fn admit(spec: Spec(context)) -> Result(Admitted(context), List(ConfigError)) {
         None -> Ok(Nil)
       },
       positive(policy_timeout, PolicyTimeoutNotPositive),
+      at_most(policy_timeout, longest_timer, PolicyTimeoutTooLarge),
       positive(command_timeout, CommandTimeoutNotPositive),
+      at_most(command_timeout, longest_timer, CommandTimeoutTooLarge),
       case model_retry_delay >= 0 {
         True -> Ok(Nil)
         False -> Error(ModelRetryDelayNegative(model_retry_delay))
       },
+      at_most(
+        model_retry_delay,
+        longest_timer / retry_delay_factor,
+        ModelRetryDelayTooLarge,
+      ),
       case spec.identity {
         Identity(name, version) if name == "" || version < 1 ->
           Error(InvalidIdentity(name, version))
@@ -310,6 +337,17 @@ fn positive(
   case value > 0 {
     True -> Ok(Nil)
     False -> Error(error(value))
+  }
+}
+
+fn at_most(
+  value: Int,
+  limit: Int,
+  error: fn(Int, Int) -> ConfigError,
+) -> Result(Nil, ConfigError) {
+  case value > limit {
+    True -> Error(error(value, limit))
+    False -> Ok(Nil)
   }
 }
 

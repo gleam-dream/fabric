@@ -17,6 +17,7 @@ import fabric/tool
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{Some}
+import gleam/result
 import gleam/string
 import gleeunit/should
 
@@ -403,6 +404,45 @@ pub fn the_policy_timeout_must_be_positive_test() {
   )
   |> agent.build
   |> should.equal(Error([agent.PolicyTimeoutNotPositive(0)]))
+}
+
+/// A timeout past the longest timer the runtime can set (2^32 - 1 ms) would
+/// crash the process waiting on it, and a first retry delay past a 64th of
+/// it would once doubled: each is refused up front, with its limit.
+pub fn timer_fed_limits_must_fit_a_timer_test() {
+  let longest = 4_294_967_295
+  agent.new("agent", scripted.plan([]), [], policy.always_allow())
+  |> agent.with_limits(
+    agent.Limits(
+      ..agent.default_limits(),
+      policy_timeout: longest + 1,
+      command_timeout: longest + 1,
+      model_retry_delay: longest / 64 + 1,
+    ),
+  )
+  |> agent.build
+  |> should.equal(
+    Error([
+      agent.PolicyTimeoutTooLarge(value: longest + 1, limit: longest),
+      agent.CommandTimeoutTooLarge(value: longest + 1, limit: longest),
+      agent.ModelRetryDelayTooLarge(
+        value: longest / 64 + 1,
+        limit: longest / 64,
+      ),
+    ]),
+  )
+  agent.new("agent", scripted.plan([]), [], policy.always_allow())
+  |> agent.with_limits(
+    agent.Limits(
+      ..agent.default_limits(),
+      policy_timeout: longest,
+      command_timeout: longest,
+      model_retry_delay: longest / 64,
+    ),
+  )
+  |> agent.build
+  |> result.is_ok
+  |> should.be_true
 }
 
 // --- model retries -------------------------------------------------------------
