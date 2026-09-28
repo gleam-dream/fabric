@@ -1,8 +1,8 @@
 {
   "captured": "2026-09-28",
   "command": "cd <scratch clone> && PATH=/nix/store/5fbjxaaizi26pmghbyn09llww48qg01q-elixir-1.19.5/bin:/nix/store/cyr4xsis8csd0sjvmy6lxaw9214f1sjf-erlang-28.5/bin:$PATH MIX_ENV=test FIXTURE_DIR=<fabric>/test/oracle/fixtures mix run --no-compile <fabric>/test/oracle/capture/capture.exs < /dev/null",
-  "description": "The pay tool requires approval: invoke pauses before it runs; an approve decision runs it once and the model answers.",
-  "effects": ["model:tool_msgs=0", "tool:pay:bob", "model:tool_msgs=1"],
+  "description": "Starting the researcher sub-agent requires approval; a reject decision answers the task call with an error tool message and the child never runs.",
+  "effects": ["model:go:tool_msgs=0", "model:go:tool_msgs=1"],
   "license": "Output of running BeamWeaver (Apache-2.0); not copied source.",
   "oracle": {
     "commit": "d0aa1f90d31c55d49be2f7b5a24224b5e18145a1",
@@ -20,53 +20,54 @@
       {
         "calls": [
           {
-            "id": "call_t",
-            "name": "pay"
+            "id": "call_task",
+            "name": "task"
           }
         ],
         "role": "assistant_calls"
       },
       {
-        "content": "paid bob",
-        "id": "call_t",
+        "content": "no sub-agent today",
+        "id": "call_task",
         "role": "tool",
-        "status": "success"
+        "status": "error"
       },
       {
-        "content": "final: paid bob",
+        "content": "final: no sub-agent today",
         "role": "assistant"
       }
     ]
   },
-  "scenario": "hitl_approve",
+  "scenario": "subagent_gate_reject",
   "script": "test/oracle/capture/capture.exs",
   "steps": [
     {
       "call": "invoke",
-      "effects": ["model:tool_msgs=0"],
+      "effects": ["model:go:tool_msgs=0"],
       "interrupt": {
         "action_requests": [
           {
             "args": {
-              "to": "bob"
+              "description": "Paris",
+              "subagent_type": "researcher"
             },
-            "description": "Tool execution requires approval\n\nTool: pay\nArgs: %{\"to\" => \"bob\"}",
-            "name": "pay"
+            "description": "Tool execution requires approval\n\nTool: task\nArgs: %{\"description\" => \"Paris\", \"subagent_type\" => \"researcher\"}",
+            "name": "task"
           }
         ],
         "id_matches_snapshot": true,
         "nodes": ["human_in_the_loop.after_model"],
         "review_configs": [
           {
-            "action_name": "pay",
+            "action_name": "task",
             "allowed_decisions": ["approve", "edit", "reject", "respond"]
           }
         ],
         "timing": "during",
         "under_review": [
           {
-            "id": "call_t",
-            "name": "pay"
+            "id": "call_task",
+            "name": "task"
           }
         ]
       },
@@ -81,8 +82,8 @@
           {
             "calls": [
               {
-                "id": "call_t",
-                "name": "pay"
+                "id": "call_task",
+                "name": "task"
               }
             ],
             "role": "assistant_calls"
@@ -96,11 +97,12 @@
       "decision": {
         "decisions": [
           {
-            "type": "approve"
+            "message": "no sub-agent today",
+            "type": "reject"
           }
         ]
       },
-      "effects": ["tool:pay:bob", "model:tool_msgs=1"],
+      "effects": ["model:go:tool_msgs=1"],
       "result": {
         "tag": "ok",
         "transcript": [
@@ -111,20 +113,20 @@
           {
             "calls": [
               {
-                "id": "call_t",
-                "name": "pay"
+                "id": "call_task",
+                "name": "task"
               }
             ],
             "role": "assistant_calls"
           },
           {
-            "content": "paid bob",
-            "id": "call_t",
+            "content": "no sub-agent today",
+            "id": "call_task",
             "role": "tool",
-            "status": "success"
+            "status": "error"
           },
           {
-            "content": "final: paid bob",
+            "content": "final: no sub-agent today",
             "role": "assistant"
           }
         ]

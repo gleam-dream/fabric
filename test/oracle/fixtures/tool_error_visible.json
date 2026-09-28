@@ -1,11 +1,11 @@
 {
-  "captured": "2026-09-27",
+  "captured": "2026-09-28",
   "command": "cd <scratch clone> && PATH=/nix/store/5fbjxaaizi26pmghbyn09llww48qg01q-elixir-1.19.5/bin:/nix/store/cyr4xsis8csd0sjvmy6lxaw9214f1sjf-erlang-28.5/bin:$PATH MIX_ENV=test FIXTURE_DIR=<fabric>/test/oracle/fixtures mix run --no-compile <fabric>/test/oracle/capture/capture.exs < /dev/null",
   "description": "A failing tool and an unknown tool become error tool messages; the run continues to a final answer.",
   "effects": [
     "model:tool_msgs=0",
-    "tool:lookup:Paris",
     "tool:lookup:Oslo",
+    "tool:lookup:Paris",
     "model:tool_msgs=3"
   ],
   "license": "Output of running BeamWeaver (Apache-2.0); not copied source.",
