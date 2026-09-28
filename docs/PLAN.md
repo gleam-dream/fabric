@@ -66,14 +66,17 @@ an idle run is data in the store with no process holding it.
   snapshot. There is no elapsed-time budget API, so it cannot be silently
   accepted.
 - **Ownership.** The application names a `Store` (in memory, a directory, or
-  its own backend through `store.new`) and runs its process under its own
+  its own backend through `store.new`) and runs its subtree (the store's
+  process and the factory its runners start under) under its own
   supervisor (`store.supervised`), or linked to the caller (`store.start`)
   in a script or test; any process uses the same value, so a run outlives
   the process that started it. A runner exists only while model or tool
-  work is in flight; it monitors the store process that was running when it
-  was claimed and stops when that process goes. A restarted store process
-  knows no runner: its runs with work in flight are `Unattended` until
-  recovered. The runner
+  work is in flight; it is a temporary child of the factory, monitors the
+  store process that was running when it was claimed, and stops when that
+  process goes. A restarted store process knows no runner: its runs with
+  work in flight are `Unattended` until recovered. On shutdown a runner
+  drains and hands its run off before the store's process stops (S2,
+  below). The runner
   traps exits; the executor and the model task are linked to it, and tool
   tasks to the executor, so killing the runner kills them all and a task that
   dies becomes a message to the runner. The model task is linked rather than
@@ -220,6 +223,111 @@ sinal `858dfa3` and saga `4a93b04`, each with a clean working tree. Sinal
 `unavailable`); Fabric names no `Dropped` field, so only the
 `fabric/observation` documentation changed.
 
+### S2: supervised runners and graceful drain
+
+One node, the directory store; D3: a draining node finishes running tools
+and hands off. Leases come in S3, so here "hand off" means committed and
+runner-less, ready for `fabric.recover`.
+
+- **Runners run under the store's subtree.** `store.supervised(store)`
+  keeps its signature and returns a supervisor (3 restarts in 5 s) of the
+  store's process (a permanent worker given 5000 ms to stop) and, after it,
+  a `factory_supervisor` whose temporary children are the runners, each
+  given the drain window to stop. Runners start under the factory instead
+  of `spawn_unlinked`. Kept: a runner is pinned to the store process it
+  was claimed through and stops when that process goes; the claim
+  protocol; the held-runner kill on cancel; the cancellation committed to
+  the record (X2).
+- **The drain window** is a validated setting on the store:
+  `store.with_drain(store, milliseconds) -> Result(Store, DrainError)`,
+  1 to 2^32 - 1 ms, default 25 000. A setting on the `Store` value, like the
+  backend, keeps `supervised` and `start` unchanged; a `Result` rather than
+  a list of errors because it checks one value.
+- **Drain.** The factory's `shutdown` makes a runner start nothing new (no
+  model call, tool body or child; a tool task at its fence is refused and
+  its action stays queued), while it keeps applying tool reports, a model
+  reply in flight and commands. Once no tool body runs and no reply is
+  awaited it commits `controller.hand_off` of its state, giving the run
+  up in that commit (`Release`), and exits. The handoff gives back the turn
+  of a model call never issued (`turns_used = turn - 1`; `recover` issues
+  `turns_used + 1`, the same turn), keeps queued tools queued, and asks
+  again for an approved tool that never started. The record's shape is
+  unchanged (version 3): `turns_used` and the awaiting turn are separate
+  fields, which every reader (versions 1 to 3) decodes independently, and
+  recovery has always recomputed the turn from `turns_used`
+  (`a_handoff_before_the_model_call_gives_the_turn_back_test`,
+  controller_test). A runner still busy at the end of the window is killed
+  by the factory; its running tools become uncertain at recovery, as before.
+- **Settling tools and children (decided here).** A stopped tool awaiting
+  its late settlement is waited for like a running body, within the
+  window. A child run is its own run, drained by its own runner; the
+  parent's delegation stays `Delegated`, and recovering the parent
+  recovers the child. A child start the drain withheld leaves its
+  delegation `Running` with a child id and no child record, which
+  recovery handles as after a crash (starts it, or asks again for an
+  approved start).
+- **Commands during a drain** are taken and committed, but start nothing:
+  an approval the draining runner takes is asked for again at the
+  handoff. A launch while the store's runners drain (the first draining
+  runner tells its store's process, which then hands the factory out no
+  more) commits its work with no runner, which reads `Unattended`; this
+  keeps a runner delivering its end to an idle parent from waiting on the
+  factory that waits for it.
+- **Suspended and finished runs** have no process and are untouched.
+- **`store.start`** starts the same subtree through a keeper process linked
+  to the caller: a subtree that fails to start is `Unavailable` rather than
+  an exit signal to the caller, and a caller that exits stops it. Its
+  store's process stops at once when the caller exits, so its runners stop
+  without draining, as when a node stops: tests and scripts that simulate
+  a crash by killing the starter keep that meaning.
+- **Observation.** `run_handed_off` (`[fabric, run, hand_off]`, run and
+  incarnation) follows a handoff's commit. The aggregate `drain` event
+  (handed off, killed) is deferred to S7: a killed runner cannot report,
+  and the store's process has no terminate step to count them.
+
+Tests: drain_test
+`a_stop_lets_a_running_tool_finish_and_hands_the_run_off_test`,
+`a_tool_past_the_drain_window_is_uncertain_and_never_rerun_test`,
+`an_approved_queued_tool_is_asked_for_again_after_the_handoff_test`,
+`a_stop_waits_for_the_model_reply_in_flight_test`,
+`a_suspended_run_is_untouched_by_a_stop_test`,
+`a_store_stops_after_its_draining_runners_test`,
+`a_child_run_drains_on_its_own_and_is_recovered_with_its_parent_test`;
+`a_restarted_store_leaves_its_runs_unattended_until_recovered_test`
+(supervision_test, now also starting a run after the restart);
+`a_drain_window_must_be_positive_and_fit_a_timer_test` (store_test);
+`a_drained_run_is_observed_handed_off_test` (observation_test).
+
+Deviations from the accepted design, each the smallest safe variant:
+
+- **One for one, not rest for one.** A rest-for-one restart of a crashed
+  store's process terminates the factory with the drain window, so one
+  runner busy in a synchronous call (a policy decision, a command to
+  another runner) delayed the store's restart, and with it every `await`
+  and command, by up to the window
+  (`a_runner_never_commits_through_a_restarted_store_test`, whose runner
+  is suspended, saw no restart within its 5 s).
+  Runners already stop when their store process stops, so restarting the
+  factory adds nothing. The shutdown order, factory before store, is the
+  same under both strategies.
+- **The factory's name is derived from the store's name**
+  (`<name>$runners`), not made with `process.new_name` when the `Store` is
+  built: two `Store` values built with one name (one for the supervisor,
+  one for requests) would otherwise name two factories, and every launch
+  through the second would find none and leave its run `Unattended`.
+- **The handoff does not release a lease** (none exists before S3) and
+  emits `run_handed_off` rather than a `drain` summary (above).
+- **An in-flight model call includes its retry wait.** A model task
+  sleeping before a retry is waited for like a call in flight, up to the
+  window, rather than distinguished from an issued call.
+
+After S2, public items per module (types and functions, `@internal`
+excluded): `fabric` 17, `fabric/agent` 11, `fabric/llm` 1, `fabric/model`
+9, `fabric/observation` 33, `fabric/policy` 5, `fabric/run` 22,
+`fabric/store` 11, `fabric/testing` 1, `fabric/tool` 10: 120 in all.
+
+S2's gates passed against the same sibling revisions as S1's.
+
 ## Public API (slice 3: ergonomics pass)
 
 The current public surface. The sections after this one are the history
@@ -333,10 +441,13 @@ pub type Stored { Stored(revision: Int, record: String) }
 pub fn in_memory(name: Name(Message)) -> Store      // records live in the store process
 pub fn directory(name: Name(Message), path: String) -> Store
 pub fn new(name: Name(Message), get get: .., insert insert: .., compare_and_set compare_and_set: ..) -> Store
-pub fn supervised(store: Store) -> supervision.ChildSpecification(Nil)
+pub fn supervised(store: Store) -> supervision.ChildSpecification(Nil)   // S2: the store's subtree
 pub fn start(store: Store) -> Result(Nil, StoreError)   // linked to the caller: scripts and tests
+pub type DrainError { DrainNotPositive(Int)  DrainTooLarge(value: Int, limit: Int) }   // added in S2
+pub fn with_drain(store: Store, milliseconds: Int) -> Result(Store, DrainError)       // added in S2
 
-// fabric/observation — as in slice 2b, with model_turn() -> Event(model.Usage, ModelTurn)
+// fabric/observation — as in slice 2b, with model_turn() -> Event(model.Usage, ModelTurn);
+//   S2 adds run_handed_off() -> Event(Nil, RunHandedOff) and RunHandedOff(run: String, incarnation: Int)
 // fabric/model, fabric/llm — unchanged
 ```
 
@@ -434,9 +545,9 @@ README's block is `readme_example.gleam` verbatim, and runs), and in
 
 Resolved backlog: the ergonomics review items (below, slice 2b review
 fixes), `reconcile` routed by run (m7), delegation limits apart from
-`Budget` (m7), and starter-owned stores (slice 3). Runners themselves are
-still started unsupervised, owned through their store process, whose
-calls they are pinned to.
+`Budget` (m7), and starter-owned stores (slice 3). Runners were then still
+started unsupervised, owned through their store process, whose calls they
+are pinned to; S2 (above) supervises them.
 
 ### Slice 3 review fixes
 
@@ -972,7 +1083,7 @@ Backlog from this slice:
 
 ## Slice 3 — streaming, structure, durable stores
 
-- Supervision: a supervision tree instead of starter-owned stores and
+- Supervision (done in S2, above): a supervision tree instead of starter-owned stores and
   unsupervised runners, with the runner stopping on a supervisor's exit
   signal (slice 2a review) as its starting point. The store is supervisable
   since the ergonomics pass (`store.supervised`); runners are still

@@ -27,7 +27,10 @@
 //// Any process can hold a handle. `open` rebuilds one from a run id
 //// without taking anything over: the handle a request handler uses.
 //// `recover` takes over work whose runner is gone: use it at boot, never
-//// on a run another process may still be driving.
+//// on a run another process may still be driving. Runners run under their
+//// store's subtree (`store.supervised`); when the application stops, each
+//// drains and hands its run off, and `recover` goes on with it after the
+//// restart with nothing uncertain.
 ////
 //// A delegation (`agent.with_sub_agent`) starts a sub-agent run in the same
 //// store, behind the same policy gate as a tool. The family is read together:
@@ -184,6 +187,10 @@ pub fn start(
 /// it, an active child is recovered in turn, and a child that cannot be
 /// read or continued becomes an uncertain effect of the delegation.
 ///
+/// A run handed off by a drained shutdown (`store.supervised`) has nothing
+/// running: its results are committed, a model call it never issued is
+/// issued as the same turn, and its queued tools are dispatched.
+///
 /// A store knows only the runners it started. Recovering through another
 /// `Store` (for example in another VM) while the run's runner is still
 /// alive takes the run over: the older runner can no longer commit and
@@ -255,9 +262,10 @@ pub fn child(
 /// milliseconds pass, and returns its status: `Working` when the time ran
 /// out, `Suspended` or `Finished`, or `Unattended` when work is in flight
 /// but no runner known to this store drives it. `Unattended` means the
-/// runner was lost, or the run is driven through another `Store`; only the
-/// application knows which. `recover` takes the run over, so call it only
-/// when the previous owner is known to be gone.
+/// runner was lost or handed the run off at shutdown, or the run is driven
+/// through another `Store`; only the application knows which. `recover`
+/// takes the run over, so call it only when the previous owner is known to
+/// be gone.
 ///
 /// It wakes on commits made through this run's store and when a runner exits.
 /// If the store's process stops meanwhile, it waits, until `within` runs

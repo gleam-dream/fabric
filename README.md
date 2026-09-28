@@ -2,7 +2,7 @@
 
 A bounded, typed LLM agent runtime for Gleam: typed application tools, an explicit policy gate, a pure agent controller, and a thin OTP runner with cancellation. It consumes llm_wire for providers and json_blueprint for tool codecs; typed workflows (DAGs) belong to Saga.
 
-Status: slice 1 (bounded agent execution), slice 2a (durable pause, approval, resume, cancellation, and restart), slice 2b (approval-gated sub-agents, Sinal observations, and Saga workflows as tools), and the public API ergonomics pass (a built agent, one policy gate, typed run ids, a named supervisable store) implemented; see [docs/PLAN.md](docs/PLAN.md), [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [docs/ORACLE.md](docs/ORACLE.md). Design: see [fabric-design.md](https://github.com/gleam-dream/oversight/blob/master/fabric-design.md) in [gleam-dream/oversight](https://github.com/gleam-dream/oversight). Not yet published to Hex.
+Status: slice 1 (bounded agent execution), slice 2a (durable pause, approval, resume, cancellation, and restart), slice 2b (approval-gated sub-agents, Sinal observations, and Saga workflows as tools), the public API ergonomics pass (a built agent, one policy gate, typed run ids, a named supervisable store), and the first production-runtime slices (timer limits; runners supervised under the store's subtree, drained and handed off on shutdown) implemented; see [docs/PLAN.md](docs/PLAN.md), [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [docs/ORACLE.md](docs/ORACLE.md). Design: see [fabric-design.md](https://github.com/gleam-dream/oversight/blob/master/fabric-design.md) in [gleam-dream/oversight](https://github.com/gleam-dream/oversight). Not yet published to Hex.
 
 Behavioural oracle: BeamWeaver (partial migration of its agent loop).
 
@@ -116,12 +116,20 @@ pub fn desk(
   |> agent.build
 }
 
-/// A store is a named value; its process runs under the application's
-/// supervisor (`store.start(runs)` in a script or a test). A directory store
-/// suits development, tests and one host; it does not survive a power loss,
-/// so production uses a database backend through `store.new`.
+/// A store is a named value. Its subtree, the store's process and the
+/// factory its runners start under, runs under the application's supervisor
+/// (`store.start(runs)` in a script or a test). When the application stops,
+/// each runner drains for up to the drain window: it starts nothing new,
+/// lets its running tools and model call finish, commits their results, and
+/// hands its run off to `resume` below. A runner still busy when the window
+/// ends is killed, and its running tools become uncertain effects. A
+/// directory store suits development, tests and one host; it does not
+/// survive a power loss, so production uses a database backend through
+/// `store.new`.
 pub fn supervise(path: String) -> Result(store.Store, actor.StartError) {
-  let runs = store.directory(process.new_name("runs"), path)
+  let assert Ok(runs) =
+    store.directory(process.new_name("runs"), path)
+    |> store.with_drain(10_000)
   static_supervisor.new(static_supervisor.OneForOne)
   |> static_supervisor.add(store.supervised(runs))
   |> static_supervisor.start
@@ -183,8 +191,10 @@ pub fn review(
 }
 
 /// At boot, when the previous owner is known to be gone, `recover` takes
-/// over work whose runner was lost: running tools become uncertain
-/// effects, never retried. Never recover a run another process may drive.
+/// over work whose runner was lost. A run handed off by a drained shutdown
+/// goes on with nothing uncertain; after a crash, running tools become
+/// uncertain effects, never retried. Never recover a run another process
+/// may drive.
 pub fn resume(
   runs: store.Store,
   desk: Agent(Context),

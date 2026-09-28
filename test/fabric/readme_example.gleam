@@ -97,12 +97,20 @@ pub fn desk(
   |> agent.build
 }
 
-/// A store is a named value; its process runs under the application's
-/// supervisor (`store.start(runs)` in a script or a test). A directory store
-/// suits development, tests and one host; it does not survive a power loss,
-/// so production uses a database backend through `store.new`.
+/// A store is a named value. Its subtree, the store's process and the
+/// factory its runners start under, runs under the application's supervisor
+/// (`store.start(runs)` in a script or a test). When the application stops,
+/// each runner drains for up to the drain window: it starts nothing new,
+/// lets its running tools and model call finish, commits their results, and
+/// hands its run off to `resume` below. A runner still busy when the window
+/// ends is killed, and its running tools become uncertain effects. A
+/// directory store suits development, tests and one host; it does not
+/// survive a power loss, so production uses a database backend through
+/// `store.new`.
 pub fn supervise(path: String) -> Result(store.Store, actor.StartError) {
-  let runs = store.directory(process.new_name("runs"), path)
+  let assert Ok(runs) =
+    store.directory(process.new_name("runs"), path)
+    |> store.with_drain(10_000)
   static_supervisor.new(static_supervisor.OneForOne)
   |> static_supervisor.add(store.supervised(runs))
   |> static_supervisor.start
@@ -164,8 +172,10 @@ pub fn review(
 }
 
 /// At boot, when the previous owner is known to be gone, `recover` takes
-/// over work whose runner was lost: running tools become uncertain
-/// effects, never retried. Never recover a run another process may drive.
+/// over work whose runner was lost. A run handed off by a drained shutdown
+/// goes on with nothing uncertain; after a crash, running tools become
+/// uncertain effects, never retried. Never recover a run another process
+/// may drive.
 pub fn resume(
   runs: store.Store,
   desk: Agent(Context),
