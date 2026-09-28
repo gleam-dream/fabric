@@ -1,6 +1,7 @@
 -module(fabric_ffi).
 -export([rescue/1, random_id/0, now_ms/0, ensure_directory/1, directory_get/2,
-         directory_insert/3, directory_compare_and_set/4]).
+         directory_insert/3, directory_compare_and_set/4, claim_new/0,
+         claim_take/2]).
 
 %% Runs Body, turning any raised exception into {error, Description}.
 rescue(Body) ->
@@ -16,6 +17,18 @@ random_id() ->
 %% Monotonic milliseconds, for deadlines.
 now_ms() ->
     erlang:monotonic_time(millisecond).
+
+%% --- claims -----------------------------------------------------------------
+%%
+%% A claim is one atomics cell, 0 while open. claim_take(Claim, Taker) sets
+%% it to Taker (1 or 2) only if it is still open, as one atomic step, and
+%% says whether this call did.
+
+claim_new() ->
+    atomics:new(1, [{signed, false}]).
+
+claim_take(Claim, Taker) ->
+    atomics:compare_exchange(Claim, 1, 0, Taker) =:= ok.
 
 %% --- the directory store ---------------------------------------------------
 %%

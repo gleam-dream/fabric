@@ -22,6 +22,7 @@
 
 import fabric/agent
 import fabric/internal/bounded
+import fabric/internal/claim
 import fabric/internal/controller.{type Effect, type Event, type State}
 import fabric/internal/executor.{type Executor}
 import fabric/internal/invocation
@@ -430,11 +431,11 @@ fn serve(runner: Runner(context)) -> Nil {
         })
       let next = case process.selector_receive_forever(selector) {
         live.StoreDown -> Error(Superseded)
-        live.Command(step, work, accept_by, reply) ->
-          case now() > accept_by {
-            // The caller has given up: the command changes nothing.
-            True -> Ok(runner)
-            False -> {
+        live.Command(step, work, command_claim, reply) ->
+          case claim.accept(command_claim) {
+            // The caller has withdrawn it: the command changes nothing.
+            False -> Ok(runner)
+            True -> {
               process.send(reply, live.Accepted)
               let work = option.unwrap(work, runner.work)
               commit_answering(runner, step(runner.state), work, Some(reply))
@@ -1183,17 +1184,14 @@ pub type LiveError {
   LiveGone
 }
 
-/// How much longer than a command's `accept_by` its caller waits for
-/// `Accepted`. A runner answers `Accepted` only by `accept_by`, so the
-/// answer is already in the caller's mailbox when the caller stops
-/// waiting: a command is either accepted or never applied.
-const accept_margin = 100
-
 /// Applies `step` through the live runner and returns the committed state;
 /// the effects of the step are performed with `work`, or with the run's
 /// own work (`None`). The runner must take the command within `within`
 /// milliseconds; once it has, the caller waits for the outcome, which the
-/// runner sends as soon as the commit is stored.
+/// runner sends as soon as the commit is stored. Exactly one of the two
+/// decides (`claim`): a caller that stops waiting withdraws the command
+/// before reporting `LiveBusy`, so a command reported busy is never
+/// applied, and one the runner took is always waited for.
 pub fn send_live(
   mailbox: Subject(live.Message),
   step: fn(State) ->
@@ -1208,7 +1206,8 @@ pub fn send_live(
     Ok(pid) -> {
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
-      process.send(mailbox, live.Command(step, work, now() + within, reply))
+      let command_claim = claim.new()
+      process.send(mailbox, live.Command(step, work, command_claim, reply))
       let receive = fn(timeout) {
         let selector =
           process.new_selector()
@@ -1219,19 +1218,30 @@ pub fn send_live(
           None -> Ok(process.selector_receive_forever(selector))
         }
       }
-      let outcome = case receive(Some(within + accept_margin)) {
-        Error(Nil) -> Error(LiveBusy)
-        Ok(Error(Nil)) -> Error(LiveGone)
-        Ok(Ok(live.Accepted)) ->
-          case receive(None) {
-            Ok(Ok(live.Applied(state))) -> Ok(state)
-            Ok(Ok(live.Refused(rejection))) -> Error(LiveRefused(rejection))
-            _ -> Error(LiveGone)
+      let outcome = fn() {
+        case receive(None) {
+          Ok(Ok(live.Applied(state))) -> Ok(state)
+          Ok(Ok(live.Refused(rejection))) -> Error(LiveRefused(rejection))
+          _ -> Error(LiveGone)
+        }
+      }
+      let result = case receive(Some(within)) {
+        Error(Nil) ->
+          case claim.withdraw(command_claim) {
+            True -> Error(LiveBusy)
+            // The runner took it meanwhile: its `Accepted` is on the way.
+            False ->
+              case receive(None) {
+                Ok(Ok(live.Accepted)) -> outcome()
+                _ -> Error(LiveGone)
+              }
           }
+        Ok(Error(Nil)) -> Error(LiveGone)
+        Ok(Ok(live.Accepted)) -> outcome()
         Ok(Ok(_)) -> Error(LiveGone)
       }
       process.demonitor_process(monitor)
-      outcome
+      result
     }
   }
 }
@@ -1325,9 +1335,6 @@ fn start_executor(runner: Runner(context)) -> Executor {
     ),
   )
 }
-
-@external(erlang, "fabric_ffi", "now_ms")
-fn now() -> Int
 
 fn abort_model(runner: Runner(context)) -> Runner(context) {
   case runner.model_task {
