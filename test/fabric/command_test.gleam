@@ -69,3 +69,89 @@ pub fn a_runner_started_by_a_command_works_while_its_handlers_run_test() {
   let assert Ok(_) = answered
   process.receive(seen, 0) |> should.equal(Ok(Ok(Nil)))
 }
+
+fn approval_agent() -> agent.Agent(Nil) {
+  agent.new(
+    scripted.plan([
+      scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":1}"),
+    ]),
+    [apps.transfer_tool()],
+    fn(_, _) { Ok(policy.RequireApproval(policy.Requirement("t", 1))) },
+  )
+}
+
+/// A cancellation of a suspended run is committed by its caller, which
+/// emits the commit's events itself before `cancel` returns: the handler
+/// runs in the caller.
+pub fn a_command_with_no_runner_emits_its_events_in_the_caller_test() {
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), approval_agent(), Nil, "pay")
+  let assert Ok(run.Suspended(_, _)) = fabric.await(run, 5000)
+  let ran_in = process.new_subject()
+  let assert Ok(id) =
+    sinal.handler_id("command-caller-" <> int.to_string(int.random(1_000_000)))
+  let assert Ok(attached) =
+    sinal.observe(id, o.run_cancelled(), fn(_, cancelled: o.RunCancelled) {
+      case cancelled.run == fabric.id(run) {
+        True -> process.send(ran_in, process.self())
+        False -> Nil
+      }
+    })
+  let cancelled = fabric.cancel(run)
+  let _ = sinal.detach(attached)
+  cancelled |> should.equal(Ok(run.Finished(run.Cancelled)))
+  process.receive(ran_in, 0) |> should.equal(Ok(process.self()))
+}
+
+/// A handler in the caller of an answer cancels the run the answer just
+/// started a runner for, while the approved transfer's body still runs:
+/// that runner is already serving, so the cancellation is applied, not
+/// refused as busy.
+pub fn a_handler_in_a_commands_caller_can_command_the_run_test() {
+  let memory = store.in_memory()
+  let agent =
+    agent.new(
+      scripted.plan([
+        scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":1}"),
+      ]),
+      [
+        tool.bind(
+          apps.transfer_definition(),
+          fn(_, _: apps.Transfer) -> Result(apps.Receipt, Nil) {
+            let never = process.new_subject()
+            let _ = process.receive_forever(never)
+            Ok(apps.Receipt("never"))
+          },
+          fn(_) { tool.Explain("failed") },
+        ),
+      ],
+      fn(_, _) { Ok(policy.RequireApproval(policy.Requirement("t", 1))) },
+    )
+    |> agent.with_command_timeout(300)
+  let assert Ok(run) = fabric.start(memory, agent, Nil, "pay")
+  let assert Ok(run.Suspended([pending], _)) = fabric.await(run, 5000)
+  let outcome = process.new_subject()
+  let assert Ok(id) =
+    sinal.handler_id(
+      "command-in-caller-" <> int.to_string(int.random(1_000_000)),
+    )
+  let assert Ok(attached) =
+    sinal.observe(id, o.approval_answered(), fn(_, answered) {
+      case answered.action.run == fabric.id(run) {
+        True ->
+          process.send(outcome, fabric.cancel_stored(memory, fabric.id(run)))
+        False -> Nil
+      }
+    })
+  let assert Ok(_) =
+    fabric.answer(
+      run,
+      pending.reference,
+      run.Approve,
+      reviewer: None,
+      context: Nil,
+    )
+  let _ = sinal.detach(attached)
+  let assert Ok(Ok(_)) = process.receive(outcome, 0)
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+}
