@@ -1366,7 +1366,8 @@ fn renewed_leases(
   case state.lessee, renewed {
     None, _ -> state
     Some(lessee), Error(_) -> {
-      observe.renewal_failed(lessee.owner, list.length(runs))
+      let runs = list.length(runs)
+      emit_apart(fn() { observe.renewal_failed(lessee.owner, runs) })
       state
     }
     Some(lessee), Ok(held) ->
@@ -1438,8 +1439,15 @@ fn lose(
       valid: dict.delete(state.valid, run),
     )
   notify(state, run)
-  observe.lease_lost(run, lessee.owner, reason)
+  emit_apart(fn() { observe.lease_lost(run, lessee.owner, reason) })
   state
+}
+
+/// Emits an event of the store's own from a process of its own, so that
+/// a slow handler holds up no request, renewal or fence of the store.
+fn emit_apart(emit: fn() -> Nil) -> Nil {
+  let _ = process.spawn_unlinked(emit)
+  Nil
 }
 
 /// How often a wait on a run of a leased store reads the run again, since

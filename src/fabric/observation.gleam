@@ -5,10 +5,11 @@
 //// the process that made the commit (a runner, or the caller of `start`,
 //// `approve`, `reject`, `cancel`, `reconcile`, `recover`, or `cancel_stored`),
 //// and never by the pure controller. The lease events of a leased store
-//// (`lease_lost`, `renewal_failed`) describe no commit: its store's
-//// process emits them, after the kill or the failed renewal. It is emitted with
-//// `sinal/forwarder.emit_routed`, so the application chooses where handlers
-//// run:
+//// (`lease_lost`, `renewal_failed`) describe no commit: a process its
+//// store's process starts emits each, after the kill or the failed
+//// renewal, so that no handler holds up the store. Every event is emitted
+//// with `sinal/forwarder.emit_routed`, so the application chooses where
+//// handlers run:
 ////
 //// - By default, synchronously in the committing process. A handler that
 ////   blocks holds up that run's progress.
