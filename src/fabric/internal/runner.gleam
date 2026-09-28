@@ -633,7 +633,10 @@ fn hand_off(runner: Runner(context)) -> Nil {
       0,
     )
   {
-    Ok(_) -> observe.committed(Some(runner.state), state)
+    Ok(_) -> {
+      observe.committed(Some(runner.state), state)
+      observe.handed_off(state)
+    }
     Error(_) -> Nil
   }
   shutdown(runner)

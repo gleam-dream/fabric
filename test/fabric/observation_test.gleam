@@ -52,6 +52,13 @@ fn capture(subject: Subject(String)) -> List(sinal.Attachment) {
       },
     ),
     attach_line(
+      attach("handed-off"),
+      o.run_handed_off(),
+      fn(_, m: o.RunHandedOff) {
+        "run_handed_off " <> m.run <> " " <> int.to_string(m.incarnation)
+      },
+    ),
+    attach_line(
       attach("model"),
       o.model_turn(),
       fn(t: model.Usage, m: o.ModelTurn) {
@@ -380,6 +387,44 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
     "run_cancelled R-1",
     "run_finished R-1 Cancelled turns=1",
   ])
+}
+
+/// A runner drained by a shutdown hands its run off after its tool's
+/// result: the handoff is observed, and the model call it never issued is
+/// not.
+pub fn a_drained_run_is_observed_handed_off_test() {
+  let events = process.new_subject()
+  let attachments = capture(events)
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let runs = store.directory(process.new_name("observed-drain"), dir)
+  let agent =
+    agent.new(
+      "agent",
+      scripted.plan([scripted.slow("a", "a")]),
+      [scripted.gated_tool(probe)],
+      policy.always_allow(),
+    )
+    |> support.agent
+  let app = restart.application(runs)
+  let assert Ok(run) = fabric.start(runs, agent, Nil, "go")
+  let running = probe.arrival(probe)
+  restart.begin_stop(app)
+  restart.draining(runs)
+  probe.release(running)
+  restart.stopped(app)
+  let lines =
+    until(events, "run_handed_off") |> about(support.text(fabric.id(run)))
+  release(attachments)
+  lines
+  |> should.equal([
+    "run_started R agent parent=none",
+    "model_turn R 1 ToolRequest tokens=15",
+    "tool_dispatched R 1/a slow",
+    "tool_settled R 1/a slow ModelVisible",
+    "run_handed_off R 1",
+  ])
+  restart.remove_dir(dir)
 }
 
 /// The lines whose run (the second word) is exactly `id`, with `root`
