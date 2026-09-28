@@ -308,6 +308,54 @@ pub fn decode(text: String) -> Result(State, DecodeError) {
     Ok(#(_, found)) ->
       json.parse(text, state_decoder(found))
       |> result.map_error(fn(error) { Corrupt(describe(error)) })
+      |> result.try(linked)
+  }
+}
+
+/// A child run's id is its parent's id, `-`, and a positive sequence
+/// number. A record whose parent or child links break that rule is
+/// corrupt; ids then strictly grow down a family, so no link is cyclic.
+fn linked(state: State) -> Result(State, DecodeError) {
+  let parent = case state.parent {
+    Some(parent) -> extends(state.run, parent.run)
+    None -> True
+  }
+  let actions = case state.phase {
+    controller.Acting(_, actions) | controller.Stopping(_, actions, _) ->
+      list.append(state.history, actions)
+    controller.AwaitingModel(_) | controller.Ended(_) -> state.history
+  }
+  let children =
+    list.all(actions, fn(action) {
+      case action.child {
+        Some(child) -> extends(child, state.run)
+        None -> True
+      }
+    })
+  case parent, children {
+    True, True -> Ok(state)
+    False, _ ->
+      Error(Corrupt(
+        "the run " <> state.run <> " does not extend its parent's id",
+      ))
+    _, False ->
+      Error(Corrupt(
+        "a child of the run " <> state.run <> " does not extend its id",
+      ))
+  }
+}
+
+fn extends(child: String, parent: String) -> Bool {
+  case string.starts_with(child, parent <> "-") {
+    False -> False
+    True -> {
+      let number = string.drop_start(child, string.length(parent) + 1)
+      number != ""
+      && !string.starts_with(number, "0")
+      && list.all(string.to_graphemes(number), fn(digit) {
+        string.contains("0123456789", digit)
+      })
+    }
   }
 }
 
