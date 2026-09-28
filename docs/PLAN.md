@@ -256,7 +256,8 @@ pub fn bind_settling(definition: Definition(i, o), handler: fn(c, i, Settlement(
                      classify: fn(e) -> Failure, within milliseconds: Int) -> Tool(c)
 pub fn settle(settlement: Settlement(o), result: Result(o, Failure), summary summary: String)
   -> Result(Nil, SettleError)   // the summary reaches observation: no secrets
-pub fn input(definition: Definition(i, o), action: policy.Action) -> Result(i, Nil)
+pub fn input(definition: Definition(i, o), action: policy.Action) -> Result(Option(i), String)
+  // Ok(None): another tool; Error(detail): this tool's name, arguments this definition cannot read
 pub fn call(definition: Definition(i, o), id: String, input: i) -> Result(model.ToolCall, codec.EncodeError)
 
 // fabric/run — plain data

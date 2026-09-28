@@ -318,27 +318,41 @@ fn delegated(
 }
 
 /// The typed input of `action` when it calls `definition`: the policy's
-/// typed match on a tool. `Error(Nil)` when the action calls another tool.
-/// The runtime decoded the same arguments with the same codec before the
-/// policy ran, so a call of `definition` always decodes.
+/// typed match on a tool. `Ok(None)` when the action calls another tool.
+///
+/// `Error(detail)` when the action names this definition's tool but its
+/// arguments do not decode with this definition's input codec: the
+/// definition the policy matches on is not the one the agent's tool was
+/// bound from (another definition shares its name). The runtime decoded
+/// the arguments with the bound tool's codec before the policy ran, so
+/// this happens only when the two drifted apart. Pass it on as the
+/// policy's error, which stops the run: an action the policy cannot read
+/// is never allowed by a fall-through.
 ///
 /// ```gleam
 /// fn policy(member: Member, action: policy.Action) {
-///   case tool.input(reserve_definition(), action) {
-///     Ok(Reservation(isbn:)) -> check_reservation(member, isbn)
-///     Error(Nil) -> Ok(policy.Allow)
+///   use reservation <- result.try(tool.input(reserve_definition(), action))
+///   case reservation {
+///     Some(Reservation(isbn:)) -> check_reservation(member, isbn)
+///     None -> Ok(policy.Allow)
 ///   }
 /// }
 /// ```
 pub fn input(
   definition: Definition(input, output),
   action: policy.Action,
-) -> Result(input, Nil) {
+) -> Result(Option(input), String) {
   case action.tool == definition.name {
-    False -> Error(Nil)
+    False -> Ok(None)
     True ->
       codec.decode_json(definition.input, action.arguments_json)
-      |> result.replace_error(Nil)
+      |> result.map(Some)
+      |> result.map_error(fn(error) {
+        "the arguments of "
+        <> definition.name
+        <> " do not decode with the policy's definition: "
+        <> invocation.describe_decode_error(error)
+      })
   }
 }
 
