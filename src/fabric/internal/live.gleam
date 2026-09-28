@@ -1,6 +1,7 @@
 //// The messages a live runner accepts. Kept apart from the runner so that
 //// the store can name a runner's mailbox without depending on the runner.
 
+import fabric/internal/claim.{type Claim}
 import fabric/internal/controller.{type Effect, type Rejection, type State}
 import fabric/internal/executor
 import fabric/internal/invocation
@@ -21,15 +22,15 @@ pub type Work {
 }
 
 pub type Message {
-  /// A command from outside. A runner that takes it by `accept_by`
-  /// (monotonic milliseconds) answers `Accepted`, applies `step` to its
-  /// current state, commits the result, answers, and then performs its
-  /// effects with `work` (`None`: the run's own). A runner that takes it
-  /// later drops it: the caller has given up.
+  /// A command from outside. A runner that takes it (`claim.accept`)
+  /// answers `Accepted`, applies `step` to its current state, commits the
+  /// result, answers, and then performs its effects with `work` (`None`:
+  /// the run's own). A runner that cannot take it drops it: the caller has
+  /// withdrawn it.
   Command(
     step: fn(State) -> Result(#(State, List(Effect)), Rejection),
     work: Option(Work),
-    accept_by: Int,
+    claim: Claim,
     reply: Subject(CommandReply),
   )
   ModelDone(turn: Int, result: Result(Reply, ModelError))
