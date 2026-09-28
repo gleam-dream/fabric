@@ -32,8 +32,11 @@
 //// command from elsewhere that the runner does not take within the
 //// agent's command timeout is refused the same way and never applied
 //// later. A cancellation is the exception: it is committed to the record,
-//// abandoning the held runner's work, and the runner stops at its next
-//// commit. Handlers that call Fabric should run in a forwarder.
+//// abandoning the held runner's work. A runner held by a handler of
+//// another process is then killed, with its model call and tool bodies;
+//// a runner whose own handler cancelled its run calls no model and starts
+//// no child afterwards, and stops at its next commit. Handlers that call
+//// Fabric should run in a forwarder.
 ////
 //// An event may be missing: a process that dies between its commit and
 //// its emit, or a commit made through a store in another VM, emits

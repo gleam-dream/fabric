@@ -1,7 +1,7 @@
 //// Cancellation does not depend on the run's runner cooperating: a runner
 //// held by a synchronous observation handler has its cancellation
-//// committed to its record, and once released it can commit nothing more,
-//// so no tool body starts and no model turn is recorded after the
+//// committed to its record and is killed with its work, so no tool body
+//// runs on, no model is called, and nothing is recorded after the
 //// cancellation. Tests wait on barriers and on processes exiting, never
 //// on sleeps.
 
@@ -215,6 +215,123 @@ pub fn a_held_run_is_cancelled_through_its_record_test() {
   }
   cancel_with(fn(run, _) { fabric.cancel(run) })
   cancel_with(fn(run, store) { fabric.cancel_stored(store, fabric.id(run)) })
+}
+
+/// A runner held by a handler of the commit that settles `t1` (and asks
+/// for the next model turn), until the test releases it.
+fn hold_on_settled() -> #(Subject(Held), sinal.Attachment) {
+  let held = process.new_subject()
+  let assert Ok(id) =
+    sinal.handler_id(
+      "settled-hold-" <> int.to_string(int.random(1_000_000_000)),
+    )
+  let assert Ok(attached) =
+    sinal.observe(id, o.tool_settled(), fn(_, settled: o.ToolSettled) {
+      case settled.action.call_id {
+        "t1" -> {
+          let release = process.new_subject()
+          process.send(held, Held(process.self(), settled.action.run, release))
+          let assert Ok(Nil) = process.receive(release, 10_000)
+          Nil
+        }
+        _ -> Nil
+      }
+    })
+  #(held, attached)
+}
+
+/// Pays `one` (and, when `slow`, runs the gated `slow` tool beside it),
+/// then answers; every model call is recorded as `model`.
+fn counted_payer(probe: Probe, slow: Bool) -> Agent(Nil) {
+  let first = case slow {
+    True -> [payment("t1", "one"), scripted.slow("s", "x")]
+    False -> [payment("t1", "one")]
+  }
+  agent.new(
+    model.new(fn(request: model.Request) {
+      probe.record(probe, "model")
+      Ok(case scripted.results(request.messages) {
+        [] -> model.ToolRequest("", first, None)
+        _ -> model.FinalAnswer("paid", None)
+      })
+    }),
+    [paying_tool(probe), scripted.gated_tool(probe)],
+    policy.always_allow(),
+  )
+  |> agent.with_identity("payer", 1)
+  |> agent.with_command_timeout(20)
+}
+
+/// The held runner had committed the settlement of `t1`, which asks for
+/// the next model turn, when the cancellation was committed to its record:
+/// the runner is stopped, so the model is never called again.
+pub fn a_held_runner_calls_no_model_after_its_cancellation_test() {
+  let probe = probe.new()
+  let #(holds, attached) = hold_on_settled()
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), counted_payer(probe, False), Nil, "go")
+  let assert Ok(held) = process.receive(holds, 5000)
+  let _ = sinal.detach(attached)
+  probe.count(probe, "model") |> should.equal(1)
+
+  fabric.cancel(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  let assert Ok(before) = fabric.snapshot(run)
+  release_and_wait(held)
+  fabric.snapshot(run) |> should.equal(Ok(before))
+  probe.count(probe, "model") |> should.equal(1)
+}
+
+/// A tool body still running when its held runner's cancellation is
+/// committed to the record dies with the runner: nothing of the abandoned
+/// work outlives it.
+pub fn a_held_runners_running_body_dies_with_it_test() {
+  let probe = probe.new()
+  let #(holds, attached) = hold_on_settled()
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), counted_payer(probe, True), Nil, "go")
+  let arrival = probe.arrival(probe)
+  let assert Ok(held) = process.receive(holds, 5000)
+  let _ = sinal.detach(attached)
+  let assert Ok(body) = process.subject_owner(arrival.release)
+  let body_exit = process.monitor(body)
+
+  fabric.cancel(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(body_exit, fn(down) { down })
+    |> process.selector_receive(5000)
+  release_and_wait(held)
+  probe.count(probe, "end:x") |> should.equal(0)
+  probe.count(probe, "model") |> should.equal(1)
+}
+
+/// A handler cancels its own run from inside the runner, on the commit
+/// that asks for the next model turn: the runner cannot be stopped from
+/// its own process, and it calls no model once its record moved on.
+pub fn a_runner_whose_handler_cancelled_its_run_calls_no_model_test() {
+  let probe = probe.new()
+  let memory = store.in_memory()
+  let runners = process.new_subject()
+  let assert Ok(id) =
+    sinal.handler_id("self-cancel-" <> int.to_string(int.random(1_000_000_000)))
+  let assert Ok(attached) =
+    sinal.observe(id, o.tool_settled(), fn(_, settled: o.ToolSettled) {
+      let cancelled = fabric.cancel_stored(memory, settled.action.run)
+      process.send(runners, #(process.self(), cancelled))
+    })
+  let assert Ok(run) =
+    fabric.start(memory, counted_payer(probe, False), Nil, "go")
+  let assert Ok(#(runner, cancelled)) = process.receive(runners, 5000)
+  let runner_exit = process.monitor(runner)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(runner_exit, fn(down) { down })
+    |> process.selector_receive(5000)
+  let _ = sinal.detach(attached)
+
+  cancelled |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.status(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  probe.count(probe, "model") |> should.equal(1)
 }
 
 // --- nothing starts under a stopped ancestor --------------------------------------

@@ -416,10 +416,13 @@ pub fn answer(
 /// reported `Finished(Cancelled)`, but the owner's tool bodies keep running
 /// until its runner next tries to commit and stops; they are recorded as
 /// uncertain effects. A runner that does not take the cancellation within
-/// the command timeout (a synchronous handler holds it) is treated the same
-/// way: its work is abandoned in the record, and once released it commits
-/// nothing more, so no tool body starts after the cancellation (a body
-/// starts only once its start is committed) and no model turn is recorded.
+/// the command timeout (a synchronous handler holds it) has its work
+/// abandoned in the record the same way, and is then killed, with its
+/// model call and running tool bodies (recorded as uncertain effects): it
+/// calls no model, starts no tool body or sub-agent, and commits nothing
+/// after the cancellation. A handler that cancels the run whose runner it
+/// runs in cannot kill that runner; the runner calls no model and starts
+/// no sub-agent once its record moved on, and commits nothing more.
 /// A sub-agent is cancelled the same way; its delegation becomes an
 /// uncertain effect only when the store keeps failing.
 pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
