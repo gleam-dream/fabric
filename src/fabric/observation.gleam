@@ -50,16 +50,26 @@
 //// | `tool_settled` | `[fabric, tool, stop]` | a dispatched tool's result was committed |
 //// | `child_started` | `[fabric, child, start]` | a delegation's child run is stored and runs |
 //// | `child_settled` | `[fabric, child, stop]` | a child run's end was applied to its delegation |
+//// | `settlement_refused` | `[fabric, tool, settlement, refuse]` | a late settlement was refused (see below) |
 //// | `run_cancelled` | `[fabric, run, cancel]` | a cancellation was committed |
 //// | `run_finished` | `[fabric, run, stop]` | the run ended |
 ////
 //// A late settlement (`tool.bind_settling`) of a stopped action is
 //// observed as that action's `tool_settled`; one that resolves an
-//// uncertain effect emits nothing, like a reconciliation.
+//// uncertain effect emits nothing, like a reconciliation. A settlement the
+//// run refused commits nothing: `settlement_refused` is emitted by the
+//// process that offered it, once it has its answer, with why it was
+//// refused. `NotAwaited` and `NotReached` mean what the settlement knew is
+//// not in the record and needs a person.
 ////
 //// Metadata carries identifiers and closed kinds only, never arguments,
-//// tool results, or model text. `turn` and `call_id` identify an action
-//// only within its `run`.
+//// tool results, or model text, with one exception: `settlement_refused`
+//// carries the refused settlement's summary as the tool gave it (an
+//// uncertain settlement's evidence, or `tool.settle_summarized`'s
+//// summary), so that a person can reconcile the action. A tool's summary
+//// and uncertain evidence must therefore not carry secrets; `fabric_saga`'s
+//// name outcome kinds and step addresses only. `turn` and `call_id`
+//// identify an action only within its `run`.
 
 import gleam/dynamic
 import gleam/dynamic/decode
@@ -159,6 +169,29 @@ pub type ChildStarted {
 
 pub type ChildSettled {
   ChildSettled(action: ActionRef, child: String, disposition: Disposition)
+}
+
+/// Why a late settlement was not recorded.
+pub type SettlementRefusal {
+  /// The action already has a definite result: nothing is lost.
+  AlreadyRecorded
+  /// The action does not await a settlement and has no definite result.
+  NotAwaited
+  /// The store could not be read or written.
+  NotReached
+}
+
+pub type SettlementRefused {
+  SettlementRefused(
+    action: ActionRef,
+    /// What the settlement offered.
+    offered: Disposition,
+    reason: SettlementRefusal,
+    /// What a person needs to reconcile the action, as the tool gave it:
+    /// an uncertain settlement's evidence, or the summary of
+    /// `tool.settle_summarized`; empty otherwise.
+    summary: String,
+  )
 }
 
 pub type RunCancelled {
@@ -342,6 +375,35 @@ pub fn child_settled() -> Event(Nil, ChildSettled) {
   )
 }
 
+pub fn settlement_refused() -> Event(Nil, SettlementRefused) {
+  event(
+    ["tool", "settlement", "refuse"],
+    fields.empty(),
+    both(
+      action_fields(),
+      both(
+        disposition(),
+        both(
+          kind("reason", refusal_name, [AlreadyRecorded, NotAwaited, NotReached]),
+          text("summary"),
+        ),
+      ),
+    )
+      |> fields.imap(
+        fn(values) {
+          let #(action, #(offered, #(reason, evidence))) = values
+          SettlementRefused(action, offered, reason, evidence)
+        },
+        fn(refused) {
+          #(
+            refused.action,
+            #(refused.offered, #(refused.reason, refused.summary)),
+          )
+        },
+      ),
+  )
+}
+
 pub fn run_cancelled() -> Event(Nil, RunCancelled) {
   event(
     ["run", "cancel"],
@@ -487,6 +549,14 @@ fn disposition_name(disposition: Disposition) -> String {
     EffectUncertain -> "effect_uncertain"
     HostFailure -> "host_failure"
     Withdrawn -> "withdrawn"
+  }
+}
+
+fn refusal_name(refusal: SettlementRefusal) -> String {
+  case refusal {
+    AlreadyRecorded -> "already_recorded"
+    NotAwaited -> "not_awaited"
+    NotReached -> "not_reached"
   }
 }
 

@@ -107,12 +107,16 @@ pub fn setup(
 pub fn work(setup: Setup(context), context: context) -> Work {
   live.Work(
     invoke: fn(run: String, id: ActionId, call: model.ToolCall) {
+      // Invoked in the action's task.
+      let task = process.self()
       registry.invoke(
         setup.env.registry,
         context,
         call.name,
         call.arguments_json,
-        fn(outcome) { settle_late(setup, run, id, call.name, outcome) },
+        fn(outcome, summary) {
+          settle_late(setup, run, id, call.name, task, outcome, summary)
+        },
       )
     },
     start_child: fn(parent, id, child, call) {
@@ -122,56 +126,83 @@ pub fn work(setup: Setup(context), context: context) -> Work {
 }
 
 /// Applies a late settlement of the action `id` of `run`, a call of the
-/// tool `name` (`tool.bind_settling`). A settlement that arrives while the
-/// run is stopping and before the executor confirmed that the action's task
-/// no longer runs is offered again after each commit of the run; it is
-/// given up when no commit comes within the tool's bound. A runner busy
-/// past the command timeout is asked again a few times.
+/// tool `name` whose body runs in `task` (`tool.bind_settling`). A
+/// settlement offered while the action's task may still run (its report
+/// or its stop is not committed yet) is offered again after each commit of
+/// the run; it is given up when no commit comes within the tool's bound,
+/// and at once when `task` itself offers it. A runner busy past the command
+/// timeout is asked again a few times. A refusal is observed with
+/// `summary`.
 fn settle_late(
   setup: Setup(context),
   run: String,
   id: ActionId,
   name: String,
+  task: Pid,
   outcome: invocation.Outcome,
+  summary: String,
 ) -> Result(Nil, tool.SettleError) {
   let within =
     registry.settles_within(setup.env.registry, name) |> option.unwrap(0)
-  let watcher = process.new_subject()
-  let settled =
-    offer_settlement(setup, run, id, outcome, watcher, False, within, 3)
-  store.unwatch(setup.store, run, watcher)
+  let offer =
+    Offer(
+      setup,
+      run,
+      id,
+      outcome,
+      process.new_subject(),
+      process.self() == task,
+      within,
+    )
+  let settled = offer_settlement(offer, False, 3)
+  store.unwatch(setup.store, run, offer.watcher)
+  case settled {
+    Ok(Nil) -> Nil
+    Error(error) ->
+      observe.settlement_refused(run, id, name, outcome, summary, error)
+  }
   settled
 }
 
+type Offer(context) {
+  Offer(
+    setup: Setup(context),
+    run: String,
+    id: ActionId,
+    outcome: invocation.Outcome,
+    watcher: Subject(Nil),
+    /// The action's own task offers it: it cannot wait for itself.
+    from_task: Bool,
+    within: Int,
+  )
+}
+
 fn offer_settlement(
-  setup: Setup(context),
-  run: String,
-  id: ActionId,
-  outcome: invocation.Outcome,
-  watcher: Subject(Nil),
+  offer: Offer(context),
   watching: Bool,
-  within: Int,
   tries: Int,
 ) -> Result(Nil, tool.SettleError) {
-  let again = fn(watching, tries) {
-    offer_settlement(setup, run, id, outcome, watcher, watching, within, tries)
-  }
+  let Offer(setup:, run:, id:, outcome:, watcher:, ..) = offer
   case command(setup, run, setup.env, controller.Settled(id, outcome), 8) {
     Ok(_) -> Ok(Nil)
+    Error(CommandRefused(controller.SettlementEarly(_))) if offer.from_task ->
+      Error(tool.NotAwaited)
     // Watch the run first, then offer again, so that the commit that
-    // confirms the stop is never missed.
+    // settles the question is never missed.
     Error(CommandRefused(controller.SettlementEarly(_))) if !watching ->
       case store.watch(setup.store, run, watcher) {
-        Ok(Nil) -> again(True, tries)
+        Ok(Nil) -> offer_settlement(offer, True, tries)
         Error(error) -> Error(tool.SettleFailed(string.inspect(error)))
       }
     Error(CommandRefused(controller.SettlementEarly(_))) ->
-      case process.receive(watcher, within) {
-        Ok(Nil) -> again(True, tries)
+      case process.receive(watcher, offer.within) {
+        Ok(Nil) -> offer_settlement(offer, True, tries)
         Error(Nil) -> Error(tool.NotAwaited)
       }
+    Error(CommandRefused(controller.SettlementRecorded(_))) ->
+      Error(tool.AlreadyRecorded)
     Error(CommandRefused(_)) -> Error(tool.NotAwaited)
-    Error(Busy) if tries > 1 -> again(watching, tries - 1)
+    Error(Busy) if tries > 1 -> offer_settlement(offer, watching, tries - 1)
     Error(Busy) -> Error(tool.SettleFailed("the run's runner is busy"))
     Error(Contended) -> Error(tool.SettleFailed("every commit lost a race"))
     Error(OwnerUnknown) ->

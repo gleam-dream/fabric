@@ -188,9 +188,12 @@ pub type Rejection {
   AlreadyAnswered
   /// The action does not await a late settlement.
   SettlementNotAwaited(ActionId)
-  /// The run is stopping and the action's task may still run: a
-  /// settlement is awaited only once the executor confirmed the stop.
+  /// The action's task may still run: a settlement is awaited only once
+  /// its task was stopped (a stopping run's executor confirmed the stop)
+  /// or it became uncertain.
   SettlementEarly(ActionId)
+  /// The action already has a definite result: nothing is lost.
+  SettlementRecorded(ActionId)
 }
 
 type Transition =
@@ -229,7 +232,28 @@ pub fn step(env: Env(context), state: State, event: Event) -> Transition {
   case event {
     Answer(reference, answer, reviewer) ->
       answer_approval(env, state, reference, answer, reviewer)
+    Settled(id, _) ->
+      step_phase(env, state, event)
+      |> result.map_error(settlement_refused(state, id, _))
     _ -> step_phase(env, state, event)
+  }
+}
+
+/// Why a settlement of `id` was refused: early, or else whether the action
+/// already has a definite result (nothing is lost) or not.
+fn settlement_refused(
+  state: State,
+  id: ActionId,
+  rejection: Rejection,
+) -> Rejection {
+  let actions = list.append(state.history, current(state))
+  case rejection, list.find(actions, fn(action) { action.id == id }) {
+    SettlementEarly(_), _ | _, Error(Nil) -> rejection
+    _, Ok(action) ->
+      case model_content(action.state) {
+        Ok(_) -> SettlementRecorded(id)
+        Error(Nil) -> SettlementNotAwaited(id)
+      }
   }
 }
 
@@ -277,12 +301,16 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
       )
       Ok(settle(env, State(..state, phase: Acting(turn, actions))))
     }
+    // The task of a running action may still act, or have died without
+    // its loss being applied yet: its settlement is early.
     Acting(turn, actions), Settled(id, outcome) -> {
       use actions <- result.try(
-        update(actions, id, fn(action_state) {
-          case action_state, settled_state(outcome) {
-            run.Uncertain(_), Definite(settled) -> Ok(settled)
-            _, _ -> Error(SettlementNotAwaited(id))
+        update_record(actions, id, fn(action) {
+          case action.state, action.child, settled_state(outcome) {
+            run.Uncertain(_), _, Definite(settled) ->
+              Ok(ActionRecord(..action, state: settled))
+            run.Running, None, _ -> Error(SettlementEarly(id))
+            _, _, _ -> Error(SettlementNotAwaited(id))
           }
         }),
       )

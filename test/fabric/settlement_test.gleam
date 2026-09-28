@@ -26,6 +26,9 @@ type Then {
   Wait
   /// Die without reporting, as a task killed from outside would.
   Die
+  /// Settle its own call, send what `settle` returned, then return
+  /// `Paris`'s forecast.
+  SettleOwn(Subject(Result(Nil, tool.SettleError)))
 }
 
 type Handed {
@@ -52,6 +55,10 @@ fn settling_tool(
         Die -> {
           process.kill(process.self())
           Ok(Forecast("never"))
+        }
+        SettleOwn(settled) -> {
+          process.send(settled, tool.settle(settlement, Ok(Forecast("own"))))
+          Ok(Forecast("sunny"))
         }
       }
     },
@@ -95,9 +102,9 @@ pub fn a_stopped_tool_is_settled_definitely_before_the_run_ends_test() {
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
   only_state(run) |> should.equal(run.Succeeded("{\"summary\":\"cloudy\"}"))
 
-  // Exactly once: the action no longer waits for a settlement.
+  // Exactly once: the action has its result, and nothing is lost.
   tool.settle(handed.settlement, Error(tool.Explain("again")))
-  |> should.equal(Error(tool.NotAwaited))
+  |> should.equal(Error(tool.AlreadyRecorded))
 }
 
 /// A settlement that leaves the effect uncertain is recorded with its own
@@ -127,19 +134,37 @@ pub fn a_settlement_after_the_run_ended_is_refused_test() {
   fabric.snapshot(run) |> should.equal(Ok(before))
 }
 
-/// While the task runs, its own result is awaited, not a settlement; once
-/// it has reported, the action is settled.
-pub fn a_settlement_while_the_task_runs_is_refused_test() {
+/// While the task runs, its own result is awaited: a settlement offered
+/// meanwhile waits for it, and once the task has reported, the settlement
+/// is refused with nothing lost.
+pub fn a_settlement_while_the_task_runs_waits_for_its_report_test() {
   let #(run, handed) = start(process.new_subject(), Wait, 5000)
-  tool.settle(handed.settlement, Ok(Forecast("cloudy")))
-  |> should.equal(Error(tool.NotAwaited))
+  let offered = process.new_subject()
+  process.spawn(fn() {
+    process.send(
+      offered,
+      tool.settle(handed.settlement, Ok(Forecast("cloudy"))),
+    )
+  })
   process.send(handed.release, Nil)
+  process.receive(offered, 5000)
+  |> should.equal(Ok(Error(tool.AlreadyRecorded)))
   fabric.await(run, 5000)
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
   )
-  tool.settle(handed.settlement, Ok(Forecast("cloudy")))
-  |> should.equal(Error(tool.NotAwaited))
+}
+
+/// A handler that settles from its own task is refused at once: its return
+/// value is its result.
+pub fn a_handler_settling_its_own_call_is_refused_test() {
+  let settled = process.new_subject()
+  let #(run, _) = start(process.new_subject(), SettleOwn(settled), 5000)
+  process.receive(settled, 5000) |> should.equal(Ok(Error(tool.NotAwaited)))
+  fabric.await(run, 5000)
+  |> should.equal(
+    Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
+  )
 }
 
 /// A task that died without reporting leaves an uncertain effect, and the
@@ -165,7 +190,7 @@ pub fn a_settlement_after_a_reconciliation_is_refused_test() {
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
   let assert Ok(_) = fabric.reconcile(run, uncertain.id, "{\"summary\":\"?\"}")
   tool.settle(handed.settlement, Ok(Forecast("cloudy")))
-  |> should.equal(Error(tool.NotAwaited))
+  |> should.equal(Error(tool.AlreadyRecorded))
   fabric.await(run, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("final: {\"summary\":\"?\"}"))))
 }
@@ -285,4 +310,40 @@ pub fn a_settlement_after_the_bound_is_refused_while_stopping_test() {
   string.contains(evidence, "no settlement") |> should.be_true
   tool.settle(b, Ok(Forecast("rain"))) |> should.equal(Ok(Nil))
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+}
+
+/// A refused settlement is observed with why and with the summary the tool
+/// gave for a person: an uncertain settlement's evidence, or the summary of
+/// `settle_summarized`.
+pub fn a_refused_settlement_is_observed_test() {
+  let refused = process.new_subject()
+  let assert Ok(id) =
+    sinal.handler_id(
+      "settlement-refused-" <> int.to_string(int.random(1_000_000)),
+    )
+  let assert Ok(attached) =
+    sinal.observe(id, o.settlement_refused(), fn(_, refusal) {
+      process.send(refused, refusal)
+    })
+  let #(run, handed) = start(process.new_subject(), Wait, 20)
+  let assert Ok(_) = fabric.cancel(run)
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+
+  tool.settle(handed.settlement, Error(tool.Uncertain("the bank did not say")))
+  |> should.equal(Error(tool.NotAwaited))
+  tool.settle_summarized(
+    handed.settlement,
+    Ok(Forecast("cloudy")),
+    summary: "the service reported cloudy",
+  )
+  |> should.equal(Error(tool.NotAwaited))
+  let assert Ok(first) = process.receive(refused, 5000)
+  let assert Ok(second) = process.receive(refused, 5000)
+  let _ = sinal.detach(attached)
+  #(first.offered, first.reason, first.summary)
+  |> should.equal(#(o.EffectUncertain, o.NotAwaited, "the bank did not say"))
+  #(second.offered, second.reason, second.summary)
+  |> should.equal(#(o.ModelVisible, o.NotAwaited, "the service reported cloudy"))
+  first.action
+  |> should.equal(o.ActionRef(fabric.id(run), 1, "w", "lookup_weather"))
 }

@@ -6,8 +6,11 @@
 //// (a dropped event) are ignored, because observation never controls a run.
 
 import fabric/internal/controller.{type State}
+import fabric/internal/invocation
 import fabric/observation.{ActionRef} as o
+import fabric/policy.{type ActionId}
 import fabric/run.{type ActionRecord}
+import fabric/tool as fabric_tool
 import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -269,6 +272,41 @@ fn outcome_kind(outcome: run.Outcome) -> o.OutcomeKind {
     run.Cancelled -> o.Cancelled
     run.Failed(_) -> o.Failed
   }
+}
+
+/// A late settlement `outcome` of the action `id` of `run`, a call of
+/// `tool`, was refused with `error`; `summary` is what the tool gave a
+/// person to reconcile it. Emitted by the process that offered it: nothing
+/// was committed.
+pub fn settlement_refused(
+  run: String,
+  id: ActionId,
+  tool: String,
+  outcome: invocation.Outcome,
+  summary: String,
+  error: fabric_tool.SettleError,
+) -> Nil {
+  let offered = case outcome {
+    invocation.Returned(_) | invocation.FailedVisibly(_) -> o.ModelVisible
+    invocation.EffectUncertain(_) -> o.EffectUncertain
+    invocation.OutputUnencodable(_) | invocation.ArgumentsRejected(_) ->
+      o.HostFailure
+  }
+  let reason = case error {
+    fabric_tool.AlreadyRecorded -> o.AlreadyRecorded
+    fabric_tool.NotAwaited -> o.NotAwaited
+    fabric_tool.SettleFailed(_) -> o.NotReached
+  }
+  emit(
+    o.settlement_refused(),
+    Nil,
+    o.SettlementRefused(
+      ActionRef(run, id.turn, id.call_id, tool),
+      offered,
+      reason,
+      summary,
+    ),
+  )
 }
 
 fn emit(event: sinal.Event(m, d), measurements: m, metadata: d) -> Nil {
