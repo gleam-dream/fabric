@@ -42,6 +42,9 @@ pub type ConfigError {
   /// A tool bound with `tool.bind_settling` waits no positive time for its
   /// settlement.
   SettlementBoundNotPositive(name: String, within: Int)
+  /// A tool bound with `tool.bind_settling` waits longer than the longest
+  /// timer the runtime can set (2^32 - 1 ms): its bound would never pass.
+  SettlementBoundTooLarge(name: String, within: Int)
   MaxTurnsNotPositive(Int)
   MaxConcurrencyNotPositive(Int)
   TokenBudgetNotPositive(Int)
@@ -360,5 +363,7 @@ fn tool_error(error: registry.RegistryError) -> ConfigError {
     registry.SchemaUnavailable(name) -> ToolSchemaUnavailable(name)
     registry.SettlementBoundNotPositive(name, within) ->
       SettlementBoundNotPositive(name, within)
+    registry.SettlementBoundTooLarge(name, within) ->
+      SettlementBoundTooLarge(name, within)
   }
 }

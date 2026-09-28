@@ -169,7 +169,8 @@ pub fn bind(
 /// Binds a typed handler that also receives its invocation's `Settlement`
 /// (see the module documentation), and whose stopped run waits up to
 /// `within` milliseconds for that settlement before recording an uncertain
-/// effect. The handler's own result is used when it returns; the
+/// effect. `within` must be positive and at most 2^32 - 1, the longest
+/// timer the runtime sets (`agent.validate` checks it). The handler's own result is used when it returns; the
 /// settlement matters only once its task was stopped. `classify` is as for
 /// `bind`.
 pub fn bind_settling(
