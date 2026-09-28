@@ -107,18 +107,24 @@ fn book_trip(
       let #(#(trip, flight), hotel) = pair
       case trip.city {
         "Slowtown" -> report(reports, "gate:charge")
-        "Latetown" | "Latemordor" | "Lateslow" ->
+        "Latetown" | "Latemordor" | "Lateslow" | "Retrytown" ->
           report(reports, "charge:declined")
         _ -> report(reports, "charge")
       }
-      case string.starts_with(trip.city, "Late") {
+      case string.starts_with(trip.city, "Late") || trip.city == "Retrytown" {
         True -> Error(CardDeclined)
         False -> Ok(Itinerary(flight, hotel, "CH-1"))
       }
     })
-    |> saga.compensate(max_attempts: 2, with: fn(_, _, _) {
-      report(reports, "charge:retry-later")
-      saga.RetryAfter(60_000)
+    |> saga.compensate(max_attempts: 2, with: fn(pair, _, _) {
+      let #(#(trip, _), _) = pair
+      case trip.city {
+        "Retrytown" -> saga.Retry
+        _ -> {
+          report(reports, "charge:retry-later")
+          saga.RetryAfter(60_000)
+        }
+      }
     })
   let assert Ok(workflow) =
     saga.define("book_trip", fn(trip) {
@@ -295,6 +301,23 @@ pub fn cancelling_the_run_cancels_the_workflow_test() {
   // Saga undoes the completed steps in reverse order.
   reported(reports)
   |> should.equal(["hotel:release:HT-Slowtown", "flight:release:FL-Slowtown"])
+}
+
+/// A step that failed after retries may have had an earlier attempt that
+/// crashed or timed out, which Saga does not report: the call is an
+/// uncertain effect, not the last attempt's typed failure.
+pub fn a_failure_after_retries_is_uncertain_test() {
+  let reports = process.new_subject()
+  let run = start("Retrytown", reports)
+  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  string.contains(uncertain.evidence, "failed after retries")
+  |> should.be_true
+  reported(reports)
+  |> should.equal([
+    "flight:reserve:Retrytown", "hotel:reserve:Retrytown", "charge:declined",
+    "charge:declined", "hotel:release:HT-Retrytown",
+    "flight:release:FL-Retrytown",
+  ])
 }
 
 /// Waits until the charge was declined and its retry scheduled.

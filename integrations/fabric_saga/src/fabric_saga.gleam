@@ -8,10 +8,10 @@
 //// | Saga outcome | Tool result |
 //// | --- | --- |
 //// | `Completed(output)` | the output |
-//// | `Failed` by a step's typed error, every completed step undone | a definite failure the model sees: `explain(error)` |
+//// | `Failed` by a step's typed error on its only attempt, every completed step undone | a definite failure the model sees: `explain(error)` |
 //// | `Failed` past the deadline, every completed step undone | a definite failure the model sees |
 //// | `Cancelled`, every completed step undone | a definite failure the model sees: the workflow was cancelled and every completed step undone |
-//// | anything that left an effect in place or unknown: an undo that failed, a step interrupted, crashed, held, or without an undo, `CompletedWithUnknownEffects`, `Unresolved`, a lost run | an uncertain effect |
+//// | anything that left an effect in place or unknown: an undo that failed, a step interrupted, crashed, held, or without an undo, a step that failed after retries (an earlier attempt may have crashed or timed out, and Saga reports only the last), `CompletedWithUnknownEffects`, `Unresolved`, a lost run | an uncertain effect |
 ////
 //// Cancelling the Fabric run (or any stop of the tool's task) cancels the
 //// Saga run: the workflow is started by the tool's task, which owns it, and
@@ -277,7 +277,8 @@ fn outcome(
 }
 
 /// A failure's cause, when compensation completed. A step that crashed or
-/// timed out may have had its effect, so only typed errors and a missed
+/// timed out may have had its effect, and so may a step that failed after
+/// retries, so only a typed error on a step's only attempt and a missed
 /// deadline are definite.
 fn failed(
   cause: execution.Cause(error),
@@ -285,14 +286,16 @@ fn failed(
 ) -> Stopped {
   case cause {
     execution.StepFailed(_, error) -> Definitely(explain(error))
-    execution.RetryLimitReached(_, saga.Returned(error))
-    | execution.RetrySuperseded(_, saga.Returned(error)) ->
-      Definitely(explain(error))
     execution.DeadlineExceeded -> Definitely("the workflow missed its deadline")
-    execution.StepCrashed(step, _)
-    | execution.StepTimedOut(step)
-    | execution.RetryLimitReached(step, _)
-    | execution.RetrySuperseded(step, _) ->
+    // Saga reports only the last attempt: an earlier one may have crashed
+    // or timed out with its effect unknown.
+    execution.RetryLimitReached(step, _) | execution.RetrySuperseded(step, _) ->
+      Unknown(
+        "step "
+        <> saga.address_to_string(step)
+        <> " failed after retries; an earlier attempt may have crashed or timed out, so its effect is unknown",
+      )
+    execution.StepCrashed(step, _) | execution.StepTimedOut(step) ->
       Unknown(
         "step "
         <> saga.address_to_string(step)
