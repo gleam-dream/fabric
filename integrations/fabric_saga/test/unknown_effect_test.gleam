@@ -10,6 +10,7 @@ import fabric/agent
 import fabric/model
 import fabric/policy
 import fabric/run
+import fabric/testing
 import fabric/tool
 import fabric_saga
 import fabric_saga/support/watched
@@ -41,7 +42,7 @@ fn definition() -> tool.Definition(String, String) {
 
 /// Calls the tool once, then answers with every result it saw.
 fn model_once() -> model.Model {
-  let assert Ok(call) = tool.call(definition(), "c1", "go")
+  let assert Ok(call) = testing.call(definition(), "c1", "go")
   model.new(fn(request: model.Request) {
     let results =
       list.filter_map(request.messages, fn(message) {

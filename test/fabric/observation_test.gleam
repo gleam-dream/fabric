@@ -15,6 +15,7 @@ import fabric/support/apps
 import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
+import fabric/testing
 import fabric/tool
 import gleam/erlang/atom
 import gleam/erlang/process.{type Pid, type Subject}
@@ -326,7 +327,7 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
         |> codec.imap(Topic, fn(t) { t.topic }),
       codec.string(),
     )
-  let assert Ok(call) = tool.call(research, "r", Topic("gleam"))
+  let assert Ok(call) = testing.call(research, "r", Topic("gleam"))
   let parent =
     agent.new("lead", scripted.plan([call]), [], policy.always_allow())
     |> agent.with_sub_agent(

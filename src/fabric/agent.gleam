@@ -2,7 +2,8 @@
 ////
 //// A `Spec` describes an agent: its name, model, tools, policy, and
 //// `Limits`. `build` checks it once and reports every problem at once; only
-//// `build` makes the `Agent` that `fabric.start` and `fabric.recover` take,
+//// `build` makes the `Agent` that `fabric.start`, `fabric.open` and
+//// `fabric.recover` take,
 //// so a run never starts under an invalid agent. Building starts nothing.
 
 import fabric/internal/registry.{type Registry}

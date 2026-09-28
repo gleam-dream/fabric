@@ -20,6 +20,7 @@ import fabric/support/flaky
 import fabric/support/probe.{type Probe}
 import fabric/support/restart
 import fabric/support/scripted
+import fabric/testing
 import fabric/tool
 import gleam/erlang/process
 import gleam/list
@@ -254,7 +255,7 @@ fn research() -> tool.Definition(Topic, Summary) {
 }
 
 fn research_call() -> model.ToolCall {
-  let assert Ok(call) = tool.call(research(), "r", Topic("gleam"))
+  let assert Ok(call) = testing.call(research(), "r", Topic("gleam"))
   call
 }
 
