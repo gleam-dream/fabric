@@ -11,11 +11,12 @@ import gleam/option.{type Option}
 
 /// The work a committed transition starts, bound to the context it runs
 /// with: how a dispatched tool's body is invoked, and how a delegation's
-/// child run (`parent` state, action, child run id, call) is started.
+/// child run (`parent` state, action, child run id, call) is started,
+/// returning the event that reports the start.
 pub type Work {
   Work(
     invoke: fn(ToolCall) -> invocation.Outcome,
-    start_child: fn(State, ActionId, String, ToolCall) -> Result(Nil, String),
+    start_child: fn(State, ActionId, String, ToolCall) -> controller.Event,
   )
 }
 
