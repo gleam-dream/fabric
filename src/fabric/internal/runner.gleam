@@ -309,6 +309,9 @@ type Runner(context) {
     /// The run's own work, for the events the runner applies itself.
     work: Work,
     self: Subject(Message),
+    /// The events that report effects the runner performed (a child run
+    /// was started): a draining runner applies them before its handoff.
+    reports: Subject(Event),
     state: State,
     revision: Int,
     executor: Option(Executor),
@@ -492,30 +495,78 @@ fn write(
 /// calls reach that process only, so a runner that has not yet noticed the
 /// stop never commits through the next process. It exits without doing
 /// anything if the caller or the store goes before its first state.
+///
+/// A caller that is itself a runner of the factory (starting a child run,
+/// or delivering its end to an idle parent) never waits for a factory that
+/// is stopping, which waits for that caller in turn: the start is made by
+/// a helper process, and a shutdown the caller receives meanwhile gives it
+/// up (`Error`) and is put back for the caller's own receive loop, which
+/// then drains. Exactly one side decides (`claim`): a runner the helper
+/// started after the caller gave up is abandoned before its first state.
 fn prepare(
   setup: Setup(context),
 ) -> Result(#(Pid, Subject(Message), Subject(Go)), Nil) {
-  use #(pinned, factory) <- result.try(store.runners(setup.store))
+  use #(pinned, factory, factory_pid) <- result.try(store.runners(setup.store))
   use store_pid <- result.try(store.pid(pinned))
-  let ready = process.new_subject()
   let caller = process.self()
-  use pid <- result.try(
-    store.start_runner(factory, fn(parent) {
-      process.spawn(fn() {
-        begin(setup, pinned, #(store_pid, parent, caller), ready)
+  let answer = process.new_subject()
+  let wanted = claim.new()
+  process.spawn_unlinked(fn() {
+    let ready = process.new_subject()
+    let started = case
+      store.start_runner(factory, fn(parent) {
+        process.spawn(fn() {
+          begin(setup, pinned, #(store_pid, parent, caller), ready)
+        })
       })
-    }),
-  )
-  let monitor = process.monitor(pid)
-  let started =
-    process.new_selector()
-    |> process.select_map(ready, Ok)
-    |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
-    |> process.selector_receive_forever
-  process.demonitor_process(monitor)
-  use #(mailbox, go) <- result.map(started)
-  #(pid, mailbox, go)
+    {
+      Error(Nil) -> Error(Nil)
+      Ok(pid) -> {
+        let monitor = process.monitor(pid)
+        let started =
+          process.new_selector()
+          |> process.select_map(ready, fn(ready) {
+            let #(mailbox, go) = ready
+            Ok(#(pid, mailbox, go))
+          })
+          |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
+          |> process.selector_receive_forever
+        process.demonitor_process(monitor)
+        started
+      }
+    }
+    case claim.accept(wanted), started {
+      True, _ -> process.send(answer, started)
+      False, Ok(#(_, _, go)) -> process.send(go, Abandon)
+      False, Error(Nil) -> Nil
+    }
+  })
+  case await_or_shutdown(answer, factory_pid) {
+    Ok(started) -> started
+    Error(Nil) -> {
+      requeue_shutdown(factory_pid)
+      case claim.withdraw(wanted) {
+        True -> {
+          store.draining(pinned, factory_pid)
+          Error(Nil)
+        }
+        // The helper answered first: its answer is on the way.
+        False -> process.receive_forever(answer)
+      }
+    }
+  }
 }
+
+/// Receives from `answer`, or the caller's own trapped exit signal
+/// `shutdown` from `factory` (`Error`), whichever comes first; any other
+/// message stays queued.
+@external(erlang, "fabric_ffi", "await_or_shutdown")
+fn await_or_shutdown(answer: Subject(a), factory: Pid) -> Result(a, Nil)
+
+/// Queues the exit signal `shutdown` from `factory` to the caller again, as
+/// the message its receive loop takes.
+@external(erlang, "fabric_ffi", "requeue_shutdown")
+fn requeue_shutdown(factory: Pid) -> Nil
 
 /// The runner's life, in the process its factory linked to it. `owners`
 /// are the store process it belongs to, its factory, and the caller that
@@ -545,6 +596,7 @@ fn begin(
         setup:,
         work: own,
         self:,
+        reports: process.new_subject(),
         state:,
         revision:,
         executor: None,
@@ -606,13 +658,25 @@ fn is_shutdown(reason: process.ExitReason) -> Bool {
 fn serve(runner: Runner(context)) -> Nil {
   case controller.needs_runner(runner.state), runner.draining {
     False, _ -> shutdown(runner)
-    // Draining, with no tool body running and no model reply awaited.
-    True, True if runner.model_task == None ->
-      case controller.tools_running(runner.state) {
-        True -> receive(runner)
-        False -> hand_off(runner)
+    // Draining: the run is handed off once no tool body runs and no model
+    // reply is awaited, with the reports of the effects it performed
+    // applied.
+    True, True -> {
+      case runner.model_task, controller.tools_running(runner.state) {
+        None, False ->
+          case process.receive(runner.reports, 0) {
+            Error(Nil) -> hand_off(runner)
+            Ok(event) ->
+              case apply(runner, event) {
+                Ok(runner) -> serve(runner)
+                Error(Refused(_)) -> serve(runner)
+                Error(Superseded) -> shutdown(runner)
+              }
+          }
+        _, _ -> receive(runner)
       }
-    True, _ -> receive(runner)
+    }
+    True, False -> receive(runner)
   }
 }
 
@@ -655,6 +719,7 @@ fn receive(runner: Runner(context)) -> Nil {
   let selector =
     process.new_selector()
     |> process.select(runner.self)
+    |> process.select_map(runner.reports, live.Apply)
     |> process.select_monitors(fn(_) { live.StoreDown })
     |> process.select_trapped_exits(fn(exit) {
       live.Exited(exit.pid, exit.reason)
@@ -1033,7 +1098,7 @@ fn perform(
       }
     controller.StartChild(id, child, call) -> {
       let report = work.start_child(runner.state, id, child, call)
-      process.send(runner.self, live.Apply(report))
+      process.send(runner.reports, report)
       runner
     }
     controller.AwaitSettlement(id, within) -> {
