@@ -6,6 +6,7 @@
 
 import fabric
 import fabric/agent.{type Agent}
+import fabric/model
 import fabric/observation as o
 import fabric/policy
 import fabric/run.{Requirement}
@@ -512,6 +513,46 @@ pub fn a_handoff_releases_the_lease_as_already_expired_test() {
   fabric.await(there, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   probe.count(probe, "start:a") |> should.equal(1)
+}
+
+/// A start committed while the store drains has no runner and an expired
+/// lease. Another node can recover it at once, before the first store stops.
+pub fn a_start_committed_during_drain_is_recovered_on_another_node_test() {
+  let probe = probe.new()
+  let memory = testing.leased_memory()
+  let assert Ok(a) =
+    store.leased(
+      process.new_name("draining"),
+      node: "a",
+      lease: nodes.long,
+      backend: memory.backend,
+    )
+  let app = restart.application(a)
+  let b = nodes.node(memory.backend, "b", nodes.long)
+  let assert Ok(_) = fabric.start(a, one_slow(probe), Nil, "hold the drain")
+  let running = probe.arrival(probe)
+  restart.begin_stop(app)
+  restart.draining(a)
+
+  let next =
+    agent.new(
+      "next",
+      scripted.model(fn(_) { model.FinalAnswer("done", None) }),
+      [],
+      policy.always_allow(),
+    )
+    |> support.agent
+  let assert Ok(started) = fabric.start(a, next, Nil, "go")
+  nodes.holding(memory.backend, fabric.id(started))
+  |> should.equal(Ok(#("a", False)))
+  let assert Ok(there) = fabric.open(b, next, Nil, fabric.id(started))
+  fabric.await(there, 0) |> should.equal(Ok(run.Unattended))
+  let assert Ok(there) = fabric.recover(b, next, Nil, fabric.id(started))
+  fabric.await(there, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("done"))))
+
+  probe.release(running)
+  restart.stopped(app)
 }
 
 /// A renewal sent while the runner worked but applied after its handoff
