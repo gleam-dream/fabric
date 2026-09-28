@@ -1,7 +1,9 @@
 //// Effects Saga's report does not prove absent: a step that paid and then
 //// crashed must never reach the model as a definite failure it could
-//// retry. Steps report to the test, which waits on those reports and on
-//// Saga's own step events, never on sleeps.
+//// retry, whatever its recovery decider did next, and neither may a
+//// recovery decision or an undo that crashed. Steps report to the test,
+//// which waits on those reports and on Saga's own step events, never on
+//// sleeps.
 
 import fabric
 import fabric/agent
@@ -104,8 +106,10 @@ pub fn a_crash_its_decider_aborted_is_uncertain_test() {
 
   let run = start(workflow)
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
-  string.contains(uncertain.evidence, "pay") |> should.be_true
+  string.contains(uncertain.evidence, "attempt 1 of step pay crashed")
+  |> should.be_true
   string.contains(uncertain.evidence, "Declined") |> should.be_false
+  string.contains(uncertain.evidence, "after paying") |> should.be_false
   next(reports) |> should.equal("paid")
 }
 
@@ -166,6 +170,89 @@ pub fn a_sibling_that_crashed_while_settling_is_uncertain_test() {
 
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
   let _ = sinal.detach(attached)
-  string.contains(uncertain.evidence, "b crashed") |> should.be_true
+  string.contains(uncertain.evidence, "attempt 1 of step b crashed")
+  |> should.be_true
   next(reports) |> should.equal("b paid")
+}
+
+/// The first attempt pays and crashes; the decider retries and the second
+/// attempt succeeds. Saga reaches the output, but the first payment's
+/// effect is unknown: the call is an uncertain effect naming it.
+pub fn a_crash_retried_to_success_is_uncertain_test() {
+  let reports = process.new_subject()
+  let attempts = process.new_subject()
+  let pay =
+    saga.step("pay", fn(_: String) -> Result(String, Failure) {
+      // The test answers whether this attempt crashes after paying.
+      let crashes = process.new_subject()
+      process.send(attempts, crashes)
+      let assert Ok(crash) = process.receive(crashes, 5000)
+      process.send(reports, "paid")
+      case crash {
+        True -> panic as "crashed after paying"
+        False -> Ok("receipt")
+      }
+    })
+    |> saga.compensate(max_attempts: 2, with: fn(_, _, _) { saga.Retry })
+  let assert Ok(workflow) = saga.define("pay_retried", saga.perform(_, pay))
+
+  let run = start(workflow)
+  let assert Ok(first) = process.receive(attempts, 5000)
+  process.send(first, True)
+  let assert Ok(second) = process.receive(attempts, 5000)
+  process.send(second, False)
+
+  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  string.contains(uncertain.evidence, "attempt 1 of step pay crashed")
+  |> should.be_true
+  string.contains(uncertain.evidence, "attempt 2") |> should.be_false
+  string.contains(uncertain.evidence, "after paying") |> should.be_false
+  [next(reports), next(reports)] |> should.equal(["paid", "paid"])
+}
+
+/// The attempt returns a typed error and its recovery decider crashes: the
+/// decision's effect (a cleanup it may have begun) is unknown.
+pub fn a_crashed_recovery_decision_is_uncertain_test() {
+  let pay =
+    saga.step("pay", fn(_: String) -> Result(String, Failure) {
+      Error(Declined)
+    })
+    |> saga.compensate(max_attempts: 1, with: fn(_, _, _) {
+      panic as "crashed while cleaning up"
+    })
+  let assert Ok(workflow) = saga.define("decision_crash", saga.perform(_, pay))
+
+  let run = start(workflow)
+  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  string.contains(
+    uncertain.evidence,
+    "the recovery decision on attempt 1 of step pay crashed",
+  )
+  |> should.be_true
+  string.contains(uncertain.evidence, "cleaning up") |> should.be_false
+}
+
+/// `hold` completes, then `pay` fails with a typed error; undoing `hold`
+/// crashes, so whether the hold was released is unknown.
+pub fn a_crashed_undo_is_uncertain_test() {
+  let reports = process.new_subject()
+  let hold =
+    saga.step("hold", fn(x: String) -> Result(String, Failure) { Ok(x) })
+    |> saga.undo(fn(_, _) {
+      process.send(reports, "releasing")
+      panic as "crashed while releasing"
+    })
+  let pay =
+    saga.step("pay", fn(_: String) -> Result(String, Failure) {
+      Error(Declined)
+    })
+  let assert Ok(workflow) =
+    saga.define("undo_crash", fn(x) { saga.perform(saga.perform(x, hold), pay) })
+
+  let run = start(workflow)
+  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  string.contains(uncertain.evidence, "the undo of step hold crashed")
+  |> should.be_true
+  string.contains(uncertain.evidence, "while releasing") |> should.be_false
+  next(reports) |> should.equal("releasing")
 }

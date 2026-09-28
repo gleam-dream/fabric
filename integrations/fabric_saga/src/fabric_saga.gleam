@@ -4,19 +4,18 @@
 //// so the model sees one tool while Saga orders the steps, retries them as
 //// the workflow says, and compensates what completed when a step fails.
 //// Saga's outcome becomes the tool's result. A result is definite only
-//// when Saga's report proves that no attempt of any step has an effect of
-//// unknown status: a typed error that a step's single attempt returned is
-//// known, while a crash, an exit, a timeout, or an interruption is not.
-//// Saga does not report a crashed attempt of a step with a recovery
-//// decider (`saga.compensate`), so an outcome in which such a step may
-//// have been attempted is uncertain:
+//// when Saga's report proves that every effect of the run is known and
+//// none is left in place: Saga names every step attempt, recovery decision
+//// and undo that ended without a result (`execution.unknown_effects`),
+//// whatever was decided afterwards, so a crashed attempt that was retried,
+//// continued or aborted is never hidden:
 ////
 //// | Saga outcome | Tool result |
 //// | --- | --- |
-//// | `Completed(output)`, and no step has a recovery decider | the output |
-//// | `Failed` by a typed error of a step with no recovery decider, or past the deadline; every sibling failure such a typed error; nothing left in place; no step with a recovery decider attempted | a definite failure the model sees: `explain(error)` (or the missed deadline) |
+//// | `Completed(output)` | the output |
+//// | `Failed` by a typed error (`StepFailed`, or a retry limit whose last attempt returned one), past the deadline, or by an output crash; no unknown effect; nothing left in place (no undo or cleanup that returned an error, no step without an undo, none held) | a definite failure the model sees: `explain(error)` (or the missed deadline, or the output that could not be computed) |
 //// | `Cancelled`, with the same conditions | a definite failure the model sees: the workflow was cancelled and every completed step undone |
-//// | anything else: a step with a recovery decider that may have been attempted (a step is not attempted when it depends on a step that failed), a crash, timeout, or retry cause or sibling failure, an undo or compensation that failed, a step interrupted, held, or without an undo, `CompletedWithUnknownEffects`, `Unresolved`, a lost run | an uncertain effect whose evidence summarizes Saga's report (outcome kinds and step addresses, never application data) |
+//// | anything else: `CompletedWithUnknownEffects`, an unknown effect of any action, an effect left in place, a crash or timeout cause, `Unresolved`, a lost run | an uncertain effect whose evidence summarizes Saga's report (outcome kinds, actions and step addresses, never application data) |
 ////
 //// Cancelling the Fabric run (or any stop of the tool's task) cancels the
 //// Saga run: the workflow is started by the tool's task, which owns it, and
@@ -55,9 +54,7 @@ pub fn tool(
   rollback_within rollback_within: Int,
 ) -> Result(tool.Tool(context), List(execution.ConfigError)) {
   use config <- result.map(execution.validate(config))
-  let judge = fn(delivery) {
-    outcome(delivery, saga.describe(workflow), explain)
-  }
+  let judge = fn(delivery) { outcome(delivery, explain) }
   tool.bind_settling(
     definition,
     fn(_context, input, settlement) {
@@ -259,11 +256,10 @@ fn deliver(receiver: Receiver(o, e, u), delivery: Delivery(o, e, u)) -> Nil {
 
 fn outcome(
   delivery: Delivery(output, error, undo_error),
-  steps: List(saga.StepDescriptor),
   explain: fn(error) -> String,
 ) -> Result(output, Stopped) {
   case delivery {
     RunLost -> Error(Unknown("the workflow run was lost"))
-    Delivered(outcome) -> verdict.classify(outcome, steps, explain)
+    Delivered(outcome) -> verdict.classify(outcome, explain)
   }
 }
