@@ -157,7 +157,8 @@ pub fn a_blocked_renewal_still_renews_at_both_levels_test() {
       fabric_postgres.settings(connection, node: "a")
       |> fabric_postgres.with_schema(schema)
     let backend = fabric_postgres.backend(settings)
-    let assert Ok(Nil) = backend.insert("run-a1", "a", store.Claim("o1", 0))
+    let assert Ok(Nil) =
+      backend.insert("run-a1", "a", store.Claim("o1", 60_000))
     behind(
       holder,
       "UPDATE " <> table(schema) <> " SET revision = 2, record = 'b'",
