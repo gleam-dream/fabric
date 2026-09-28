@@ -474,3 +474,131 @@ pub fn an_approval_after_a_restart_matches_beamweaver_test() {
   observe(run, probe) |> should.equal(fixture("hitl_cold_restart"))
   restart.remove_dir(dir)
 }
+
+// --- sub-agent gate ------------------------------------------------------------
+
+/// The same rules as the capture's `:subagent` script: parent and child
+/// share them, told apart by their first user message.
+fn delegation_model(probe: Probe) -> model.Model {
+  model.new(fn(request: model.Request) {
+    let who = case request.messages {
+      [model.UserMessage(text), ..] -> text
+      _ -> ""
+    }
+    let seen = scripted.results(request.messages) |> list.map(plain)
+    probe.record(
+      probe,
+      "model:" <> who <> ":tool_msgs=" <> int.to_string(list.length(seen)),
+    )
+    Ok(case who, seen {
+      "go", [] ->
+        model.ToolRequest(
+          "",
+          [
+            scripted.call(
+              "call_task",
+              "task",
+              "{\"subagent_type\":\"researcher\",\"description\":\"Paris\"}",
+            ),
+          ],
+          None,
+        )
+      "Paris", [] ->
+        model.ToolRequest(
+          "",
+          [scripted.call("call_c", "lookup", "{\"city\":\"Paris\"}")],
+          None,
+        )
+      _, seen -> final(seen)
+    })
+  })
+}
+
+pub type Task {
+  Task(subagent_type: String, description: String)
+}
+
+/// BeamWeaver's `task` tool as a Fabric delegation: its description is the
+/// child's prompt and the child's final text its result. Starting the
+/// child needs a review, as `interrupt_on: %{"task" => true}` does.
+fn delegation_agent(probe: Probe) -> agent.Agent(Nil) {
+  let assert Ok(task_codec) =
+    codec.record2(
+      codec.required("subagent_type", codec.string()),
+      codec.required("description", codec.string()),
+      Task,
+      fn(task) { task.subagent_type },
+      fn(task) { task.description },
+    )
+  let researcher =
+    agent.new(delegation_model(probe), [lookup(probe)], policy.always_allow())
+    |> agent.with_identity("researcher", 1)
+  agent.new(delegation_model(probe), [], fn(_, action: policy.Action) {
+    case action.target {
+      policy.StartAgent(..) ->
+        Ok(policy.RequireApproval(policy.Requirement("review", 1)))
+      policy.InvokeTool -> Ok(policy.Allow)
+    }
+  })
+  |> agent.with_sub_agent(
+    tool.define("task", "Start a sub-agent", task_codec, codec.string()),
+    to: researcher,
+    prompt: fn(task: Task) { task.description },
+    result: fn(outcome) {
+      case outcome {
+        run.Completed(text) -> Ok(text)
+        _ -> Error(tool.Explain("the sub-agent did not complete"))
+      }
+    },
+  )
+}
+
+/// Approving the start of a sub-agent runs the child once (its model and
+/// its tool) and its answer is the delegation's result; nothing of the
+/// child exists at the pause.
+pub fn an_approved_sub_agent_start_matches_beamweaver_test() {
+  let probe = probe.new()
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), delegation_agent(probe), Nil, "go")
+  let #(pause, pending) = paused(run, probe)
+  pause |> should.equal(pause_fixture("subagent_gate_approve"))
+  let assert Ok(_) =
+    fabric.answer(run, pending.reference, run.Approve, None, Nil)
+  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  observe(run, probe) |> should.equal(fixture("subagent_gate_approve"))
+}
+
+/// Rejecting the start answers the delegation with an error and the child
+/// never runs. The rejection's wording is package specific, so the final
+/// answer, which embeds it, is not compared.
+pub fn a_rejected_sub_agent_start_matches_beamweaver_test() {
+  let probe = probe.new()
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), delegation_agent(probe), Nil, "go")
+  let #(pause, pending) = paused(run, probe)
+  pause |> should.equal(pause_fixture("subagent_gate_reject"))
+  let assert Ok(_) =
+    fabric.answer(
+      run,
+      pending.reference,
+      run.Reject("no sub-agent today"),
+      None,
+      Nil,
+    )
+  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  let without_final = fn(observed: Observed) {
+    Observed(
+      ..observed,
+      transcript: list.filter(observed.transcript, fn(entry) {
+        case entry {
+          Assistant(_) -> False
+          _ -> True
+        }
+      }),
+    )
+  }
+  let oracle = fixture("subagent_gate_reject")
+  without_final(observe(run, probe)) |> should.equal(without_final(oracle))
+  oracle.tool_effects |> should.equal([])
+  oracle.model_calls |> should.equal(2)
+}
