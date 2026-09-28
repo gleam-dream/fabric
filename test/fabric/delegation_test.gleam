@@ -627,7 +627,8 @@ pub fn delegations_beyond_the_child_limit_are_refused_test() {
 }
 
 /// A child that delegates in turn: by default a run's children may not
-/// start their own (depth 1), and `with_max_depth` on the root allows it.
+/// start their own (depth 1), and a root whose `Limits.max_depth` is 2
+/// allows it.
 pub fn nested_delegation_is_bounded_by_the_root_depth_test() {
   let probe = probe.new()
   let middle =
