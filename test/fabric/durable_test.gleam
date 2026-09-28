@@ -6,6 +6,7 @@
 import fabric
 import fabric/agent.{type Agent}
 import fabric/internal/controller
+import fabric/internal/family
 import fabric/internal/record
 import fabric/model
 import fabric/policy
@@ -624,6 +625,32 @@ pub fn opening_a_live_run_through_another_store_leaves_it_running_test() {
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   states(run_b) |> should.equal([run.Succeeded("\"a\"")])
   probe.count(probe, "start:a") |> should.equal(1)
+  restart.remove_dir(dir)
+}
+
+/// A family read as `Unattended` is read again before it is reported so:
+/// here store B, which knows no runner, read the run while A's runner
+/// drove it, and the run finished before the second read, which reports
+/// the finished run. Only a second read that finds the family unchanged
+/// is unattended (`snapshot` and command results use this rule).
+pub fn a_family_that_moved_on_since_it_read_unattended_is_read_again_test() {
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let a = support.directory(dir)
+  let assert Ok(run_a) = fabric.start(a, one_slow(probe), Nil, "go")
+  let running = probe.arrival(probe)
+  let b = reopen(dir)
+  let id = support.text(fabric.id(run_a))
+  let assert Ok(first) = family.load(b, id)
+  family.status(first) |> should.equal(run.Unattended)
+  let assert Ok(same) = family.settle(b, first, 3)
+  family.status(same) |> should.equal(run.Unattended)
+
+  probe.release(running)
+  let assert Ok(run.Finished(_)) = fabric.await(run_a, 5000)
+  let assert Ok(again) = family.settle(b, first, 3)
+  family.status(again)
+  |> should.equal(run.Finished(run.Completed("final: \"a\"")))
   restart.remove_dir(dir)
 }
 
