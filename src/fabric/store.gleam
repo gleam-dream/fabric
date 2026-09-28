@@ -313,7 +313,8 @@ pub fn with_drain(
 /// `fabric.recover`). A runner still busy when the window ends is killed,
 /// and its running tools become uncertain effects.
 ///
-/// The handoff gives back the turn of a model call that was never issued,
+/// The handoff gives back the turn of a model call that was never issued
+/// (also one waiting out a retry backoff, which is then never issued),
 /// keeps queued tools queued, and asks again for an approved tool that
 /// never started (its approval was checked with a context that does not
 /// outlive the runner; the old reference is then stale). A stopped tool

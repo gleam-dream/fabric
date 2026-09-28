@@ -268,11 +268,11 @@ runner-less, ready for `fabric.recover`.
   approved start).
 - **Commands during a drain** are taken and committed, but start nothing:
   an approval the draining runner takes is asked for again at the
-  handoff. A launch while the store's runners drain (the first draining
-  runner tells its store's process, which then hands the factory out no
-  more) commits its work with no runner, which reads `Unattended`; this
-  keeps a runner delivering its end to an idle parent from waiting on the
-  factory that waits for it.
+  handoff. A launch while the store's runners drain commits its work
+  with no runner, which reads `Unattended`; this keeps a runner delivering
+  its end to an idle parent from waiting on the factory that waits for it.
+  (Fixed after review, below: the store now learns of the drain before
+  any runner is signalled.)
 - **Suspended and finished runs** have no process and are untouched.
 - **`store.start`** starts the same subtree through a keeper process linked
   to the caller: a subtree that fails to start is `Unavailable` rather than
@@ -327,6 +327,42 @@ excluded): `fabric` 17, `fabric/agent` 11, `fabric/llm` 1, `fabric/model`
 `fabric/store` 11, `fabric/testing` 1, `fabric/tool` 10: 120 in all.
 
 S2's gates passed against the same sibling revisions as S1's.
+
+### Review of S1 and S2
+
+An independent review of `7901edb..03fd943` found S1 sound and these in
+S2; each is fixed test-first or deferred:
+
+- **Fixed: a start during the drain could deadlock it (major).** The
+  store learned of a drain only when the first runner handled its own
+  shutdown; until then a runner could call `factory_supervisor.start_child`
+  (a child start, a delivery to an idle parent, a handler's `start`),
+  which waits for the stopping factory that waits for that runner, until
+  the window killed it and a finished tool's result was lost. A sentinel
+  child stopped before the factory now tells the store's process first,
+  and a runner that already holds the factory starts through a helper and
+  gives the start up on its own shutdown (`823e407`;
+  `a_delegation_approved_ahead_of_the_stop_does_not_hold_up_the_drain_test`,
+  `a_delegation_decided_during_the_stop_does_not_hold_up_the_drain_test`).
+  A draining runner also applies the reports of effects it performed (a
+  child it started) before its handoff.
+- **Fixed: a retry backoff during the drain (minor).** The model task
+  takes a claim before calling the model; a draining runner that withdraws
+  it first stops the task, and the handoff gives the turn back (`484570d`;
+  `a_retry_backoff_is_not_waited_for_and_its_turn_is_given_back_test`).
+- **Documented, event deferred to S7: a failed handoff (minor).** A
+  handoff whose commit fails leaves the record as a lost runner does; an
+  unissued model call then keeps its turn charged, and recovery counts one
+  turn more. The runner and `store.supervised` documentation say so; S7's
+  drain summary will count failed handoffs.
+- **Fixed: `fabric.recover` documentation (nit):** approved queued tools
+  ask again rather than being dispatched.
+- **Fixed: the factory's name (nit)** is made when the subtree starts,
+  never for a request-only `Store` value, and the `$runners` suffix is
+  documented as reserved.
+- **Fixed: missing tests (nit):** two `Store` values of one name
+  (`two_store_values_of_one_name_share_the_runners_test`) and a start
+  racing the shutdown (the two drain tests above).
 
 ## Public API (slice 3: ergonomics pass)
 
