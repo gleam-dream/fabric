@@ -456,31 +456,51 @@ fn serve(runner: Runner(context)) -> Nil {
           })
         }
         // Nothing starts once an ancestor stops: a run that finds one
-        // stopping or ended cancels itself. The body starts as soon as its
-        // start is stored: a handler of this commit does not hold it past a
-        // later cancellation.
+        // stopping or ended cancels itself. The ancestors are read before
+        // the start is stored and again after it: an ancestor that stops
+        // after the second read does so after the start was stored, and its
+        // cancellation reaches this run with the tool running, so the tool
+        // is recorded uncertain. The body starts as soon as that second
+        // read finds them open: a handler of this commit does not hold it
+        // past a later cancellation.
         live.Fence(id, reply) ->
           case ancestors_open(runner.setup.store, runner.state.parent) {
             False -> {
               process.send(reply, False)
               apply(runner, controller.Cancel)
             }
-            True ->
-              commit_answering(
-                runner,
-                controller.step(
-                  runner.setup.env,
-                  runner.state,
-                  controller.ToolStarting(id),
-                ),
-                runner.work,
-                fn(answer) {
-                  process.send(reply, case answer {
-                    live.Applied(_) -> True
-                    _ -> False
-                  })
-                },
-              )
+            True -> {
+              let open_after = process.new_subject()
+              let started =
+                commit_answering(
+                  runner,
+                  controller.step(
+                    runner.setup.env,
+                    runner.state,
+                    controller.ToolStarting(id),
+                  ),
+                  runner.work,
+                  fn(answer) {
+                    let start = case answer {
+                      live.Applied(_) -> {
+                        let open =
+                          ancestors_open(
+                            runner.setup.store,
+                            runner.state.parent,
+                          )
+                        process.send(open_after, open)
+                        open
+                      }
+                      _ -> False
+                    }
+                    process.send(reply, start)
+                  },
+                )
+              case started, process.receive(open_after, 0) {
+                Ok(runner), Ok(False) -> apply(runner, controller.Cancel)
+                started, _ -> started
+              }
+            }
           }
         live.Executed(executor.Reported(id, outcome)) ->
           apply(runner, controller.ToolReported(id, outcome))

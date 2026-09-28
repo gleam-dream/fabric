@@ -15,6 +15,7 @@ import fabric/policy.{ActionId}
 import fabric/run
 import fabric/store
 import fabric/support/apps
+import fabric/support/flaky
 import fabric/support/probe.{type Probe}
 import fabric/support/scripted
 import fabric/tool
@@ -521,6 +522,54 @@ pub fn an_answer_racing_the_parent_cancellation_starts_nothing_test() {
     fabric.await(child, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
     probe.entries(probe) |> should.equal([])
   })
+}
+
+/// A child's fence reads its ancestors open, and the root's cancellation
+/// commits while the child is storing the tool's start: the child reads its
+/// ancestors again once the start is stored, so the body never runs.
+pub fn a_start_racing_an_ancestor_cancellation_never_runs_test() {
+  let probe = probe.new()
+  let backend = flaky.new()
+  let starts = process.new_subject()
+  let assert Ok(id) =
+    sinal.handler_id("fence-race-" <> int.to_string(int.random(1_000_000_000)))
+  let assert Ok(attached) =
+    sinal.observe(id, o.model_turn(), fn(_, turn: o.ModelTurn) {
+      case string.ends_with(turn.run, "-1"), turn.turn {
+        // The child's first turn queued `t1`: its next write stores the
+        // start of `t1`. The test holds that write before the runner goes
+        // on.
+        True, 1 -> {
+          let armed = process.new_subject()
+          process.send(starts, #(turn.run, armed))
+          let assert Ok(Nil) = process.receive(armed, 5000)
+          Nil
+        }
+        _, _ -> Nil
+      }
+    })
+  let assert Ok(run) =
+    fabric.start(
+      flaky.store(backend),
+      delegating(two_payments(probe, policy.always_allow())),
+      Nil,
+      "go",
+    )
+  let assert Ok(#(child, armed)) = process.receive(starts, 5000)
+  let held = flaky.hold(backend, fn(run) { run == child })
+  // A read through the backend: the hold is in place before the runner
+  // writes again.
+  let _ = store.get(flaky.store(backend), child)
+  process.send(armed, Nil)
+  let assert Ok(_) = process.receive(held, 5000)
+  let _ = sinal.detach(attached)
+
+  let assert Ok(_) = fabric.cancel(run)
+  flaky.release_held(backend)
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  let assert Ok(child) = fabric.child(run, child)
+  fabric.await(child, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  probe.entries(probe) |> should.equal([])
 }
 
 // --- a settling child -----------------------------------------------------------
