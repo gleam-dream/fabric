@@ -295,6 +295,34 @@ pub fn a_store_that_cannot_renew_kills_its_runners_before_their_leases_expire_te
   probe.count(probe, "end:a") |> should.equal(0)
 }
 
+/// A lease event's handler runs outside the store's process: one that
+/// blocks on a failed renewal holds up no read or commit through the store.
+pub fn a_slow_lease_event_handler_does_not_hold_up_the_store_test() {
+  let probe = probe.new()
+  let memory = store.leased_memory()
+  let unreachable =
+    store.LeasedBackend(..memory.backend, renew: fn(_, _, _) {
+      Error(store.Unavailable("the backend is unreachable"))
+    })
+  let a = nodes.node(unreachable, "a", 1000)
+  let entered = process.new_subject()
+  let assert Ok(id) =
+    sinal.handler_id("lease-test-slow" <> int.to_string(int.random(1_000_000)))
+  let assert Ok(attachment) =
+    sinal.observe(id, o.renewal_failed(), fn(_, _failed) {
+      process.send(entered, Nil)
+      process.sleep(2000)
+    })
+  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let _ = probe.arrival(probe)
+  let assert Ok(Nil) = process.receive(entered, 5000)
+  let read = process.new_subject()
+  process.spawn(fn() { process.send(read, fabric.snapshot(run)) })
+  let assert Ok(Ok(_)) = process.receive(read, 500)
+  let _ = sinal.detach(attachment)
+  Nil
+}
+
 /// A healthy store renews its runners' leases in time: a tool that runs
 /// through several lease durations keeps its lease and finishes.
 pub fn renewals_keep_a_lease_live_past_its_duration_test() {
