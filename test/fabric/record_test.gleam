@@ -124,6 +124,7 @@ fn phases() -> List(controller.Phase) {
       controller.Stopping(1, [], controller.HostFault(failure), False)
     }),
     list.map(outcomes, controller.Ended),
+    [controller.NeverStarted],
   ])
 }
 
@@ -151,15 +152,15 @@ pub fn every_record_shape_survives_a_round_trip_test() {
 
 pub fn the_record_is_versioned_json_test() {
   let encoded = record.encode(base())
-  string.starts_with(encoded, "{\"format\":\"fabric.run\",\"version\":2,")
+  string.starts_with(encoded, "{\"format\":\"fabric.run\",\"version\":3,")
   |> should.be_true
 }
 
 pub fn another_version_is_unsupported_test() {
   let encoded =
     record.encode(base())
-    |> string.replace("\"version\":2,", "\"version\":3,")
-  record.decode(encoded) |> should.equal(Error(record.UnsupportedVersion(3)))
+    |> string.replace("\"version\":3,", "\"version\":4,")
+  record.decode(encoded) |> should.equal(Error(record.UnsupportedVersion(4)))
 }
 
 /// A version 1 record (written before sub-agents) is read as a root run
@@ -291,4 +292,33 @@ pub fn a_record_continues_only_under_its_agent_and_tools_test() {
     registry.new([apps.weather_tool(), apps.transfer_tool()])
   record.check(waiting, run.Identity("desk", 3), both)
   |> should.equal(Ok(waiting))
+}
+
+/// A child cancelled before it started is its own phase. A version 2
+/// record stored it as an ended, cancelled run with no transcript, and is
+/// read as never started; a run's end is otherwise never inferred from its
+/// transcript.
+pub fn a_child_that_never_started_is_explicit_test() {
+  let base = base()
+  let tombstone =
+    controller.State(
+      ..base,
+      transcript: [],
+      history: [],
+      phase: controller.Ended(run.Cancelled),
+    )
+  let version_2 =
+    record.encode(tombstone)
+    |> string.replace("\"version\":3,", "\"version\":2,")
+  let assert Ok(read) = record.decode(version_2)
+  read.phase |> should.equal(controller.NeverStarted)
+  controller.child_result(read) |> should.equal(Ok(controller.ChildMissing))
+
+  // In the current version the phase says it, not the transcript.
+  let assert Ok(current) = record.decode(record.encode(tombstone))
+  current.phase |> should.equal(controller.Ended(run.Cancelled))
+  controller.child_result(current)
+  |> should.equal(Ok(controller.ChildFinished(run.Cancelled, False)))
+  controller.status(controller.State(..base, phase: controller.NeverStarted))
+  |> should.equal(run.Finished(run.Cancelled))
 }

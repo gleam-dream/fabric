@@ -101,6 +101,11 @@ pub type Phase {
     tools_stopped: Bool,
   )
   Ended(Outcome)
+  /// A child run cancelled before it was ever stored, recorded by its
+  /// cancelling parent (`never_started`) so that a start or recovery racing
+  /// the cancellation finds it ended and never runs it. It reads as
+  /// `Finished(Cancelled)` and, for its delegation, as a missing child.
+  NeverStarted
 }
 
 pub type State {
@@ -259,7 +264,7 @@ fn settlement_refused(
 
 fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
   case state.phase, event {
-    Ended(_), _ -> Error(RunEnded)
+    Ended(_), _ | NeverStarted, _ -> Error(RunEnded)
 
     AwaitingModel(turn), ModelReplied(t, reply) if t == turn ->
       Ok(model_replied(env, state, turn, reply))
@@ -426,7 +431,7 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
 /// still waits on, in case an earlier request did not reach them.
 pub fn cancel(state: State) -> Transition {
   case state.phase {
-    Ended(_) -> Error(RunEnded)
+    Ended(_) | NeverStarted -> Error(RunEnded)
     AwaitingModel(_) ->
       Ok(#(State(..state, phase: Ended(run.Cancelled)), [AbortModel]))
     Acting(turn, actions) -> Ok(stop(state, turn, actions, CancelRequested))
@@ -478,7 +483,7 @@ pub fn cancel_unattended(
     Acting(turn, actions) -> State(..state, phase: Acting(turn, apply(actions)))
     Stopping(turn, actions, reason, halted) ->
       stopped_when_idle(state, turn, apply(actions), reason, halted)
-    AwaitingModel(_) | Ended(_) -> state
+    AwaitingModel(_) | Ended(_) | NeverStarted -> state
   }
   case stopping, state.phase {
     True, Ended(_) -> Ok(#(state, []))
@@ -752,7 +757,8 @@ fn answer_approval(
   }
   case reference.run == state.run, state.phase {
     False, _ -> Error(WrongReference)
-    True, Ended(_) -> Error(after_end(state.history, reference))
+    True, Ended(_) | True, NeverStarted ->
+      Error(after_end(state.history, reference))
     True, Stopping(actions:, ..) ->
       Error(after_end(list.append(state.history, actions), reference))
     True, Acting(turn, actions) ->
@@ -1413,7 +1419,7 @@ pub fn abandon(state: State) -> State {
       )
     Stopping(turn, actions, reason, _) ->
       finish_stop(state, turn, actions, reason, lost_evidence, [])
-    AwaitingModel(_) | Ended(_) -> state
+    AwaitingModel(_) | Ended(_) | NeverStarted -> state
   }
 }
 
@@ -1433,7 +1439,7 @@ pub fn recover(env: Env(context), state: State) -> #(State, List(Effect)) {
       #(state, dispatch(current(state)))
     }
     Stopping(actions:, ..) -> #(state, cancel_children(actions))
-    Ended(_) -> #(state, [])
+    Ended(_) | NeverStarted -> #(state, [])
   }
 }
 
@@ -1462,7 +1468,7 @@ fn ask_again(state: State, turn: Int, actions: List(ActionRecord)) -> State {
 fn current(state: State) -> List(ActionRecord) {
   case state.phase {
     Acting(_, actions) | Stopping(actions:, ..) -> actions
-    AwaitingModel(_) | Ended(_) -> []
+    AwaitingModel(_) | Ended(_) | NeverStarted -> []
   }
 }
 
@@ -1477,7 +1483,7 @@ pub fn active_children(state: State) -> List(#(ActionId, String, String)) {
           _, _ -> Error(Nil)
         }
       })
-    AwaitingModel(_) | Ended(_) -> []
+    AwaitingModel(_) | Ended(_) | NeverStarted -> []
   }
 }
 
@@ -1504,7 +1510,7 @@ pub fn never_started(
     transcript: [],
     history: [],
     approvals_issued: 0,
-    phase: Ended(run.Cancelled),
+    phase: NeverStarted,
   )
 }
 
@@ -1512,7 +1518,7 @@ pub fn never_started(
 /// cancelled before it started (`never_started`) is missing.
 pub fn child_result(state: State) -> Result(ChildResult, Nil) {
   case state.phase {
-    Ended(_) if state.transcript == [] -> Ok(ChildMissing)
+    NeverStarted -> Ok(ChildMissing)
     Ended(outcome) ->
       Ok(ChildFinished(
         outcome,
@@ -1532,6 +1538,7 @@ pub fn child_result(state: State) -> Result(ChildResult, Nil) {
 pub fn status(state: State) -> Status {
   case state.phase {
     Ended(outcome) -> run.Finished(outcome)
+    NeverStarted -> run.Finished(run.Cancelled)
     AwaitingModel(_) | Stopping(..) -> run.Working
     Acting(_, actions) ->
       case in_flight(actions) {
@@ -1571,7 +1578,7 @@ pub fn needs_runner(state: State) -> Bool {
   case state.phase {
     AwaitingModel(_) | Stopping(..) -> True
     Acting(_, actions) -> in_flight(actions)
-    Ended(_) -> False
+    Ended(_) | NeverStarted -> False
   }
 }
 

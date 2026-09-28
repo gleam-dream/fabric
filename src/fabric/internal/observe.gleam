@@ -90,7 +90,7 @@ fn turn_result(turn: Int, after: State) -> Option(o.TurnResult) {
     controller.Ended(run.Failed(_)) -> Some(o.ToolRequest)
     controller.Ended(run.BudgetExhausted(_))
     | controller.Ended(run.BudgetUnverifiable(_)) -> Some(o.BudgetStop)
-    controller.Ended(run.Cancelled) -> None
+    controller.Ended(run.Cancelled) | controller.NeverStarted -> None
   }
 }
 
@@ -98,7 +98,9 @@ fn every_action(state: State) -> List(ActionRecord) {
   case state.phase {
     controller.Acting(_, actions) | controller.Stopping(actions:, ..) ->
       list.append(state.history, actions)
-    controller.AwaitingModel(_) | controller.Ended(_) -> state.history
+    controller.AwaitingModel(_)
+    | controller.Ended(_)
+    | controller.NeverStarted -> state.history
   }
 }
 

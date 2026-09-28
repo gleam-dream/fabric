@@ -220,7 +220,9 @@ fn actions(state: State) -> List(run.ActionRecord) {
   case state.phase {
     controller.Acting(_, actions) | controller.Stopping(actions:, ..) ->
       list.append(state.history, actions)
-    controller.AwaitingModel(_) | controller.Ended(_) -> state.history
+    controller.AwaitingModel(_)
+    | controller.Ended(_)
+    | controller.NeverStarted -> state.history
   }
 }
 
@@ -235,7 +237,7 @@ pub fn ancestors_open(
 ) -> Result(Bool, ReadError) {
   use #(_, state) <- result.try(runner.load(store, id))
   case state.phase {
-    controller.Ended(_) -> Ok(True)
+    controller.Ended(_) | controller.NeverStarted -> Ok(True)
     _ -> runner.read_ancestors(store, state.parent, 64, 0)
   }
 }

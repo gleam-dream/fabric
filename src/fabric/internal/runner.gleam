@@ -544,7 +544,9 @@ fn lose_all(
         action.child == None
         && { action.state == run.Queued || action.state == run.Running }
       })
-    controller.AwaitingModel(_) | controller.Ended(_) -> []
+    controller.AwaitingModel(_)
+    | controller.Ended(_)
+    | controller.NeverStarted -> []
   }
   case held {
     [] ->
@@ -1146,7 +1148,9 @@ pub fn read_ancestors(
         Error(problem) -> Error(problem)
         Ok(#(_, above)) ->
           case above.phase {
-            controller.Stopping(..) | controller.Ended(_) -> Ok(False)
+            controller.Stopping(..)
+            | controller.Ended(_)
+            | controller.NeverStarted -> Ok(False)
             controller.Acting(..) | controller.AwaitingModel(_) ->
               read_ancestors(store, above.parent, links - 1, 0)
           }
