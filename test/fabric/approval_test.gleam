@@ -6,9 +6,10 @@
 import fabric
 import fabric/agent.{type Agent}
 import fabric/model
-import fabric/policy.{ActionId, Requirement}
-import fabric/run
+import fabric/policy
+import fabric/run.{ActionId, Requirement}
 import fabric/store
+import fabric/support
 import fabric/support/apps
 import fabric/support/flaky
 import fabric/support/probe.{type Probe}
@@ -161,7 +162,7 @@ pub fn refused_answers_are_distinct_and_keep_the_pause_test() {
   let #(run, pending) = suspended(probe)
   let reference = pending.reference
 
-  approve(run, run.ApprovalRef(..reference, run: "run-other"))
+  approve(run, run.ApprovalRef(..reference, run: support.id("run-other")))
   |> should.equal(Error(fabric.WrongReference))
   approve(run, run.ApprovalRef(..reference, id: ActionId(1, "nope")))
   |> should.equal(Error(fabric.WrongReference))
@@ -397,7 +398,7 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
   let reject = run.Reject("not today")
 
   // The second writer reads the record, and its write is held.
-  let held = flaky.hold(backend, fn(written) { written == id })
+  let held = flaky.hold(backend, fn(written) { written == support.text(id) })
   let second = process.new_subject()
   let second_store = flaky.store(backend)
   process.spawn(fn() {

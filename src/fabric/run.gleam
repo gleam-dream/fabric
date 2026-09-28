@@ -2,8 +2,62 @@
 //// run is exactly its stored `Snapshot`, with no process behind it.
 
 import fabric/model.{type Message, type ModelError, type ToolCall}
-import fabric/policy.{type ActionId, type Requirement}
+import gleam/list
 import gleam/option.{type Option}
+import gleam/string
+
+/// The id of a run Fabric issued. Every operation takes one; a string from
+/// outside (a link, a form, a job payload) becomes one only through
+/// `parse_id`.
+pub opaque type RunId {
+  RunId(String)
+}
+
+/// A run id in the shape Fabric issues: 1 to 128 letters, digits, `-` and
+/// `_`. Anything else names no run. A well-formed id may still name no
+/// stored run; commands then report `RunNotFound`.
+pub fn parse_id(text: String) -> Result(RunId, Nil) {
+  let length = string.length(text)
+  let allowed =
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+  case
+    length >= 1
+    && length <= 128
+    && list.all(string.to_graphemes(text), string.contains(allowed, _))
+  {
+    True -> Ok(RunId(text))
+    False -> Error(Nil)
+  }
+}
+
+pub fn id_to_string(id: RunId) -> String {
+  let RunId(text) = id
+  text
+}
+
+/// A run id Fabric issued or read from a record it wrote.
+@internal
+pub fn issued(text: String) -> RunId {
+  RunId(text)
+}
+
+/// Identifies an action within one run. A provider call id alone is not
+/// unique: providers reuse ids on later turns.
+pub type ActionId {
+  ActionId(turn: Int, call_id: String)
+}
+
+/// Names one action of one run: the delegation that started a sub-agent
+/// run, or an uncertain effect to reconcile.
+pub type ActionRef {
+  ActionRef(run: RunId, id: ActionId)
+}
+
+/// Which approval an action needs. `version` lets an application change the
+/// requirement for an action and have stale approvals refused.
+pub type Requirement {
+  Requirement(name: String, version: Int)
+}
 
 pub type Status {
   /// A model call or a tool is in flight.
@@ -21,12 +75,7 @@ pub type Status {
 /// or a form) and rebuild it later; `fabric.answer` checks it against the
 /// stored record.
 pub type ApprovalRef {
-  ApprovalRef(
-    run: String,
-    id: ActionId,
-    requirement: Requirement,
-    revision: Int,
-  )
+  ApprovalRef(run: RunId, id: ActionId, requirement: Requirement, revision: Int)
 }
 
 pub type PendingApproval {
@@ -72,12 +121,7 @@ pub type Incompatibility {
 /// An effect of unknown status in `run`: this run, or one of its
 /// sub-agent runs (reconcile it on that run's handle, see `fabric.child`).
 pub type UncertainAction {
-  UncertainAction(run: String, id: ActionId, tool: String, evidence: String)
-}
-
-/// The action of the parent run that started a sub-agent run.
-pub type Parent {
-  Parent(run: String, action: ActionId)
+  UncertainAction(run: RunId, id: ActionId, tool: String, evidence: String)
 }
 
 pub type Outcome {
@@ -160,7 +204,7 @@ pub type ActionRecord {
     call: ToolCall,
     state: ActionState,
     approvals: List(Approval),
-    child: Option(String),
+    child: Option(RunId),
   )
 }
 
@@ -172,13 +216,13 @@ pub type TokenUsage {
 
 pub type Snapshot {
   Snapshot(
-    run: String,
+    run: RunId,
     agent: Identity,
     /// Increases by one each time recovery takes over work that no live
     /// runner owned.
     incarnation: Int,
-    /// The parent action of a sub-agent run; `None` for a root run.
-    parent: Option(Parent),
+    /// The delegation that started a sub-agent run; `None` for a root run.
+    parent: Option(ActionRef),
     status: Status,
     turns_used: Int,
     max_turns: Int,

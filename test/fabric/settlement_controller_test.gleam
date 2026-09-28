@@ -6,8 +6,8 @@ import fabric/internal/controller.{type State}
 import fabric/internal/invocation
 import fabric/internal/registry
 import fabric/model.{ToolCall, ToolRequest}
-import fabric/policy.{ActionId}
-import fabric/run
+import fabric/policy
+import fabric/run.{ActionId}
 import fabric/support/apps.{Forecast}
 import fabric/tool
 import gleam/list
@@ -73,7 +73,7 @@ fn cancelled() -> State {
   |> step(controller.Cancel)
 }
 
-fn settle(id: policy.ActionId, content: String) -> controller.Event {
+fn settle(id: run.ActionId, content: String) -> controller.Event {
   controller.Settled(id, invocation.Returned(content))
 }
 

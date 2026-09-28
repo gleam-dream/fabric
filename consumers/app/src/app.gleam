@@ -213,7 +213,7 @@ pub fn desk_policy(
     "guest", "reserve_book" -> Ok(policy.Deny("guests cannot reserve"))
     // A junior member's reservation waits for a guardian's approval.
     "junior", "reserve_book" ->
-      Ok(policy.RequireApproval(policy.Requirement("guardian", 1)))
+      Ok(policy.RequireApproval(run.Requirement("guardian", 1)))
     _, _ -> Ok(policy.Allow)
   }
 }
@@ -331,8 +331,7 @@ pub fn purchasing_policy(
   action: policy.Action,
 ) -> Result(policy.Decision, String) {
   case action.tool {
-    "order_book" ->
-      Ok(policy.RequireApproval(policy.Requirement("treasurer", 1)))
+    "order_book" -> Ok(policy.RequireApproval(run.Requirement("treasurer", 1)))
     _ -> Ok(policy.Allow)
   }
 }
@@ -378,7 +377,7 @@ pub fn front_desk_policy(
 ) -> Result(policy.Decision, String) {
   case action.target {
     policy.StartAgent(..) ->
-      Ok(policy.RequireApproval(policy.Requirement("committee", 1)))
+      Ok(policy.RequireApproval(run.Requirement("committee", 1)))
     policy.InvokeTool -> desk_policy(member, action)
   }
 }

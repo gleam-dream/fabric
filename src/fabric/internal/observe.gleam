@@ -8,8 +8,7 @@
 import fabric/internal/controller.{type State}
 import fabric/internal/invocation
 import fabric/observation.{ActionRef} as o
-import fabric/policy.{type ActionId}
-import fabric/run.{type ActionRecord}
+import fabric/run.{type ActionId, type ActionRecord}
 import fabric/tool as fabric_tool
 import gleam/dict
 import gleam/list
@@ -37,7 +36,7 @@ fn started(before: Option(State), after: State) -> Nil {
           after.run,
           after.agent.name,
           after.agent.version,
-          option.map(after.parent, fn(parent) { parent.run }),
+          option.map(after.parent, fn(parent) { run.id_to_string(parent.run) }),
         ),
       )
   }
@@ -160,7 +159,8 @@ fn action_changed(
   }
   case after.child {
     None -> tool_changed(reference, old_state, after.state)
-    Some(child) -> child_changed(reference, child, old_state, after.state)
+    Some(child) ->
+      child_changed(reference, run.id_to_string(child), old_state, after.state)
   }
 }
 

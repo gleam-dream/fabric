@@ -46,10 +46,10 @@ import fabric/agent.{type Agent, type ConfigError}
 import fabric/internal/controller.{type State}
 import fabric/internal/family
 import fabric/internal/runner
-import fabric/policy.{type ActionId}
 import fabric/run.{
-  type Answer, type ApprovalRef, type Incompatibility, type PendingApproval,
-  type Snapshot, type Status,
+  type ActionId, type Answer, type ApprovalRef, type Incompatibility,
+  type PendingApproval, type RunId, type Snapshot, type Status, id_to_string,
+  issued,
 }
 import fabric/store.{type Store}
 import gleam/erlang/process
@@ -197,8 +197,9 @@ pub fn recover(
   store: Store,
   agent: Agent(context),
   context: context,
-  id: String,
+  id: RunId,
 ) -> Result(Run(context), RecoverError) {
+  let id = id_to_string(id)
   use admitted <- result.try(
     agent.admit(agent) |> result.map_error(RecoverInvalidAgent),
   )
@@ -211,8 +212,8 @@ pub fn recover(
   }
 }
 
-pub fn id(run: Run(context)) -> String {
-  run.id
+pub fn id(run: Run(context)) -> RunId {
+  issued(run.id)
 }
 
 /// Opens the sub-agent run `id`, a descendant of `run`, with `run`'s agent
@@ -220,8 +221,9 @@ pub fn id(run: Run(context)) -> String {
 /// or cancelling it. Its end still reaches its parent.
 pub fn child(
   run: Run(context),
-  id: String,
+  id: RunId,
 ) -> Result(Run(context), RecordError) {
+  let id = id_to_string(id)
   family.locate(run.setup, run.id, id)
   |> result.map(fn(setup) { Run(id:, setup:) })
   |> result.map_error(record_error)
@@ -362,21 +364,22 @@ pub fn answer(
   reviewer reviewer: Option(String),
   context context: context,
 ) -> Result(Status, CommandError) {
-  use target <- result.try(case reference.run == run.id {
+  let target_id = id_to_string(reference.run)
+  use target <- result.try(case target_id == run.id {
     True -> Ok(run.setup)
     False ->
-      case family.locate(run.setup, run.id, reference.run) {
+      case family.locate(run.setup, run.id, target_id) {
         Ok(setup) -> Ok(setup)
         Error(runner.NotFound) -> Error(WrongReference)
         Error(problem) -> Error(Unreadable(record_error(problem)))
       }
   })
-  use Nil <- result.try(open_to_commands(run, reference.run))
+  use Nil <- result.try(open_to_commands(run, target_id))
   let recheck = controller.Env(..target.env, context:)
   use state <- result.try(
     runner.command(
       target,
-      reference.run,
+      target_id,
       recheck,
       controller.Answer(reference, answer, reviewer),
       retries,
@@ -388,7 +391,7 @@ pub fn answer(
       pending.reference.id == reference.id
       && pending.reference.revision != reference.revision
     })
-  case reissued, reference.run == run.id {
+  case reissued, target_id == run.id {
     Ok(pending), _ -> Error(RequirementChanged(pending))
     Error(Nil), True -> Ok(status_after(run, state))
     Error(Nil), False -> status(run) |> result.map_error(Unreadable)
@@ -448,8 +451,13 @@ pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
 /// as such, and ends on its own. A sub-agent run
 /// that was never stored is stored as cancelled before it started (naming
 /// no agent), and its delegation is recorded as not started.
-pub fn cancel_stored(store: Store, id: String) -> Result(Status, CommandError) {
-  runner.cancel_unattended(store, id, agent.default_command_timeout, retries)
+pub fn cancel_stored(store: Store, id: RunId) -> Result(Status, CommandError) {
+  runner.cancel_unattended(
+    store,
+    id_to_string(id),
+    agent.default_command_timeout,
+    retries,
+  )
   |> result.map(controller.status)
   |> result.map_error(command_error)
 }

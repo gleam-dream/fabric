@@ -6,7 +6,7 @@ import fabric/internal/controller.{type Effect, type Rejection, type State}
 import fabric/internal/executor
 import fabric/internal/invocation
 import fabric/model.{type ModelError, type Reply, type ToolCall}
-import fabric/policy.{type ActionId}
+import fabric/run.{type ActionId}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/option.{type Option}
 

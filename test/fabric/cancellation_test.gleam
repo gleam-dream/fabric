@@ -11,9 +11,10 @@ import fabric/internal/controller
 import fabric/internal/record
 import fabric/model
 import fabric/observation as o
-import fabric/policy.{ActionId}
-import fabric/run
+import fabric/policy
+import fabric/run.{type RunId, ActionId}
 import fabric/store
+import fabric/support
 import fabric/support/apps
 import fabric/support/flaky
 import fabric/support/probe.{type Probe}
@@ -177,7 +178,7 @@ pub fn a_held_child_is_cancelled_through_its_record_test() {
 
   let assert Ok(_) = fabric.cancel(run)
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
-  let assert Ok(child_run) = fabric.child(run, held.run)
+  let assert Ok(child_run) = fabric.child(run, support.id(held.run))
   fabric.status(child_run) |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert [run.Uncertain(_)] = states(run)
   let assert Ok(before) = fabric.snapshot(child_run)
@@ -317,7 +318,8 @@ pub fn a_runner_whose_handler_cancelled_its_run_calls_no_model_test() {
     sinal.handler_id("self-cancel-" <> int.to_string(int.random(1_000_000_000)))
   let assert Ok(attached) =
     sinal.observe(id, o.tool_settled(), fn(_, settled: o.ToolSettled) {
-      let cancelled = fabric.cancel_stored(memory, settled.action.run)
+      let cancelled =
+        fabric.cancel_stored(memory, support.id(settled.action.run))
       process.send(runners, #(process.self(), cancelled))
     })
   let assert Ok(run) =
@@ -371,7 +373,7 @@ fn store_stopping_root(store: store.Store, id: String) -> Nil {
             call,
             run.Delegated,
             [],
-            Some(id <> "-1"),
+            Some(support.id(id <> "-1")),
           ),
         ],
         controller.CancelRequested,
@@ -390,14 +392,14 @@ fn store_orphaned_child(
   agent: run.Identity,
   transcript: List(model.Message),
   phase: controller.Phase,
-) -> String {
+) -> RunId {
   let child = id <> "-1"
   let state =
     controller.State(
       run: child,
       agent:,
       incarnation: 1,
-      parent: Some(run.Parent(id, ActionId(1, "r"))),
+      parent: Some(run.ActionRef(support.id(id), ActionId(1, "r"))),
       depth: 1,
       limits: limits(1, 2),
       turns_used: 1,
@@ -409,7 +411,7 @@ fn store_orphaned_child(
     )
   let assert Ok(1) =
     store.insert(store, child, record.encode(state), store.Keep)
-  child
+  support.id(child)
 }
 
 /// A child whose root is stopping is recovered with a queued payment: at
@@ -468,7 +470,7 @@ pub fn a_sub_agent_under_a_stopping_ancestor_never_starts_test() {
   probe.entries(probe) |> should.equal([])
   // The grandchild is a tombstone: cancelled before it ever started.
   let assert Ok(store.Entry(record: stored, ..)) =
-    store.get(store, child <> "-1")
+    store.get(store, support.text(child) <> "-1")
   let assert Ok(controller.State(phase: controller.NeverStarted, ..)) =
     record.decode(stored)
 }
@@ -489,7 +491,7 @@ pub fn an_answer_racing_the_parent_cancellation_starts_nothing_test() {
           let _ = process.receive(release, 3000)
           Ok(policy.Allow)
         }
-        _ -> Ok(policy.RequireApproval(policy.Requirement("t", 1)))
+        _ -> Ok(policy.RequireApproval(run.Requirement("t", 1)))
       }
     }
     let assert Ok(run) =
@@ -567,7 +569,7 @@ pub fn a_start_racing_an_ancestor_cancellation_never_runs_test() {
   let assert Ok(_) = fabric.cancel(run)
   flaky.release_held(backend)
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
-  let assert Ok(child) = fabric.child(run, child)
+  let assert Ok(child) = fabric.child(run, support.id(child))
   fabric.await(child, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
   probe.entries(probe) |> should.equal([])
 }
@@ -592,7 +594,7 @@ pub fn a_reattached_sub_agent_under_a_stopping_ancestor_never_starts_test() {
           r,
           run.Delegated,
           [],
-          Some("run-elders-1-1"),
+          Some(support.id("run-elders-1-1")),
         ),
       ]),
     )
@@ -604,7 +606,7 @@ pub fn a_reattached_sub_agent_under_a_stopping_ancestor_never_starts_test() {
   probe.entries(probe) |> should.equal([])
   // The grandchild is a tombstone: cancelled before it ever started.
   let assert Ok(store.Entry(record: stored, ..)) =
-    store.get(store, child <> "-1")
+    store.get(store, support.text(child) <> "-1")
   let assert Ok(controller.State(phase: controller.NeverStarted, ..)) =
     record.decode(stored)
 }
@@ -652,7 +654,7 @@ pub fn cancel_stored_of_a_parent_with_a_settling_child_test() {
   string.contains(evidence, "still stopping") |> should.be_true
   string.contains(evidence, "cannot be continued") |> should.be_false
 
-  let assert Ok(child) = fabric.child(run, fabric.id(run) <> "-1")
+  let assert Ok(child) = fabric.child(run, support.child_id(fabric.id(run), 1))
   tool.settle(settlement, Ok(apps.Forecast("cloudy"))) |> should.equal(Ok(Nil))
   fabric.await(child, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
   states(child) |> should.equal([run.Succeeded("{\"summary\":\"cloudy\"}")])

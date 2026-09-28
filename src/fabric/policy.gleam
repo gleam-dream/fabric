@@ -9,11 +9,7 @@
 //// approval. An `Error` is a policy failure: the run stops as a host failure
 //// and nothing is allowed by default.
 
-/// Identifies an action within one run. A provider call id alone is not
-/// unique: providers reuse ids on later turns.
-pub type ActionId {
-  ActionId(turn: Int, call_id: String)
-}
+import fabric/run.{type ActionId, type Requirement, type RunId}
 
 /// What an action does when it is allowed.
 pub type Target {
@@ -26,18 +22,12 @@ pub type Target {
 
 pub type Action {
   Action(
-    run: String,
+    run: RunId,
     id: ActionId,
     tool: String,
     arguments_json: String,
     target: Target,
   )
-}
-
-/// Which approval an action needs. `version` lets an application change the
-/// requirement for an action and have stale approvals refused.
-pub type Requirement {
-  Requirement(name: String, version: Int)
 }
 
 pub type Decision {

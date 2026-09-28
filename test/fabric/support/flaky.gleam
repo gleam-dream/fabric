@@ -5,6 +5,7 @@
 //// request, to order a write after a concurrent one.
 
 import fabric/internal/record
+import fabric/run.{type RunId}
 import fabric/store.{type Store}
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -92,8 +93,9 @@ pub fn drop_held(flaky: Flaky) -> Nil {
 
 /// The next writes of `run` meet `faults`, in order, before any faults
 /// armed for every run; later writes of `run` pass.
-pub fn arm_run(flaky: Flaky, run: String, faults: List(Fault)) -> Nil {
-  arm_where(flaky, fn(written) { written == run }, faults)
+pub fn arm_run(flaky: Flaky, id: RunId, faults: List(Fault)) -> Nil {
+  let id = run.id_to_string(id)
+  arm_where(flaky, fn(written) { written == id }, faults)
 }
 
 /// The next writes of runs that `matches` meet `faults`, in order, before

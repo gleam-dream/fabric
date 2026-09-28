@@ -8,6 +8,7 @@ import fabric/observation as o
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/support
 import fabric/support/apps
 import fabric/support/scripted
 import fabric/tool
@@ -41,7 +42,7 @@ pub fn a_runner_started_by_a_command_works_while_its_handlers_run_test() {
         scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":1}"),
       ]),
       [announcing_transfer(started)],
-      fn(_, _) { Ok(policy.RequireApproval(policy.Requirement("t", 1))) },
+      fn(_, _) { Ok(policy.RequireApproval(run.Requirement("t", 1))) },
     )
   let assert Ok(run) = fabric.start(store.in_memory(), agent, Nil, "pay")
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
@@ -51,7 +52,7 @@ pub fn a_runner_started_by_a_command_works_while_its_handlers_run_test() {
     sinal.handler_id("command-path-" <> int.to_string(int.random(1_000_000)))
   let assert Ok(attached) =
     sinal.observe(id, o.approval_answered(), fn(_, answered) {
-      case answered.action.run == fabric.id(run) {
+      case answered.action.run == support.text(fabric.id(run)) {
         // Runs in the caller of `answer`, which owns `started`.
         True -> process.send(seen, process.receive(started, 2000))
         False -> Nil
@@ -76,7 +77,7 @@ fn approval_agent() -> agent.Agent(Nil) {
       scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":1}"),
     ]),
     [apps.transfer_tool()],
-    fn(_, _) { Ok(policy.RequireApproval(policy.Requirement("t", 1))) },
+    fn(_, _) { Ok(policy.RequireApproval(run.Requirement("t", 1))) },
   )
 }
 
@@ -92,7 +93,7 @@ pub fn a_command_with_no_runner_emits_its_events_in_the_caller_test() {
     sinal.handler_id("command-caller-" <> int.to_string(int.random(1_000_000)))
   let assert Ok(attached) =
     sinal.observe(id, o.run_cancelled(), fn(_, cancelled: o.RunCancelled) {
-      case cancelled.run == fabric.id(run) {
+      case cancelled.run == support.text(fabric.id(run)) {
         True -> process.send(ran_in, process.self())
         False -> Nil
       }
@@ -125,7 +126,7 @@ pub fn a_handler_in_a_commands_caller_can_command_the_run_test() {
           fn(_) { tool.Explain("failed") },
         ),
       ],
-      fn(_, _) { Ok(policy.RequireApproval(policy.Requirement("t", 1))) },
+      fn(_, _) { Ok(policy.RequireApproval(run.Requirement("t", 1))) },
     )
     |> agent.with_command_timeout(300)
   let assert Ok(run) = fabric.start(memory, agent, Nil, "pay")
@@ -137,7 +138,7 @@ pub fn a_handler_in_a_commands_caller_can_command_the_run_test() {
     )
   let assert Ok(attached) =
     sinal.observe(id, o.approval_answered(), fn(_, answered) {
-      case answered.action.run == fabric.id(run) {
+      case answered.action.run == support.text(fabric.id(run)) {
         True ->
           process.send(outcome, fabric.cancel_stored(memory, fabric.id(run)))
         False -> Nil

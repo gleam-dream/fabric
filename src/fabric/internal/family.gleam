@@ -9,8 +9,7 @@
 import fabric/internal/controller.{type State}
 import fabric/internal/registry
 import fabric/internal/runner.{type ReadError, type Setup}
-import fabric/policy.{type ActionId}
-import fabric/run.{type PendingApproval, type Status}
+import fabric/run.{type ActionId, type PendingApproval, type Status}
 import fabric/store
 import gleam/list
 import gleam/option.{None, Some}
@@ -134,7 +133,12 @@ pub fn own_pending(state: State) -> List(PendingApproval) {
         case action.state {
           run.AwaitingApproval(requirement, revision) ->
             Ok(run.PendingApproval(
-              run.ApprovalRef(state.run, action.id, requirement, revision),
+              run.ApprovalRef(
+                run.issued(state.run),
+                action.id,
+                requirement,
+                revision,
+              ),
               action.call.name,
               action.call.arguments_json,
             ))
@@ -190,7 +194,7 @@ pub fn locate(
       use #(_, state) <- result.try(runner.load(setup.store, id))
       let links =
         list.filter_map(actions(state), fn(action) {
-          case action.child {
+          case option.map(action.child, run.id_to_string) {
             Some(child) ->
               case child == target || string.starts_with(target, child <> "-") {
                 True -> Ok(#(action, child))
@@ -295,7 +299,7 @@ fn reattach(setup: Setup(context), id: String) -> Nil {
           list.each(actions, fn(action) {
             case action.state, action.child {
               run.Delegated, Some(child) ->
-                reattach_child(setup, state, action, child)
+                reattach_child(setup, state, action, run.id_to_string(child))
               _, _ -> Nil
             }
           })

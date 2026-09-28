@@ -3,9 +3,10 @@
 
 import fabric
 import fabric/agent
+import fabric/internal/runner
 import fabric/model.{AssistantMessage, ToolResultMessage, UserMessage}
-import fabric/policy.{ActionId}
-import fabric/run
+import fabric/policy
+import fabric/run.{ActionId}
 import fabric/store
 import fabric/support/apps
 import fabric/support/flaky
@@ -30,7 +31,7 @@ fn transfers_need_approval(
 ) -> Result(policy.Decision, String) {
   case action.tool {
     "transfer_funds" ->
-      Ok(policy.RequireApproval(policy.Requirement("transfer", 1)))
+      Ok(policy.RequireApproval(run.Requirement("transfer", 1)))
     _ -> Ok(policy.Allow)
   }
 }
@@ -124,7 +125,7 @@ pub fn approval_suspends_the_run_as_data_test() {
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   pending.reference.id |> should.equal(ActionId(1, "t"))
   pending.reference.requirement
-  |> should.equal(policy.Requirement("transfer", 1))
+  |> should.equal(run.Requirement("transfer", 1))
   // No process holds the suspended run.
   restart.runner(held, fabric.id(run)) |> should.equal(Error(Nil))
   let assert [run.Succeeded(_), run.AwaitingApproval(_, 1)] = states(run)
@@ -463,13 +464,18 @@ pub fn an_exit_signal_from_outside_stops_the_runner_test() {
   fabric.await(run, 5000) |> should.equal(Error(fabric.NoRunner))
 }
 
+/// A string in another shape never becomes a run id, and a stored-run read
+/// by such a string finds nothing without asking the backend.
 pub fn a_run_id_that_fabric_never_issues_is_not_found_test() {
+  run.parse_id("../escape") |> should.equal(Error(Nil))
+  run.parse_id("") |> should.equal(Error(Nil))
+  run.parse_id(string.repeat("a", 129)) |> should.equal(Error(Nil))
+  let assert Ok(id) = run.parse_id("run-A_1")
+  run.id_to_string(id) |> should.equal("run-A_1")
+
   let dir = restart.temp_dir()
   let assert Ok(store) = store.directory(dir)
-  let agent = agent.new(scripted.plan([]), [], policy.always_allow())
-  fabric.recover(store, agent, Nil, "../escape")
-  |> should.equal(Error(fabric.RecoverUnreadable(fabric.RunNotFound)))
-  fabric.cancel_stored(store, "")
-  |> should.equal(Error(fabric.Unreadable(fabric.RunNotFound)))
+  runner.load(store, "../escape") |> should.equal(Error(runner.NotFound))
+  runner.load(store, "") |> should.equal(Error(runner.NotFound))
   restart.remove_dir(dir)
 }

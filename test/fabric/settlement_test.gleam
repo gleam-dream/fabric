@@ -10,6 +10,7 @@ import fabric/observation as o
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/support
 import fabric/support/apps.{type City, type Forecast, Forecast}
 import fabric/support/scripted
 import fabric/tool
@@ -345,7 +346,12 @@ pub fn a_refused_settlement_is_observed_test() {
   #(second.offered, second.reason, second.summary)
   |> should.equal(#(o.ModelVisible, o.NotAwaited, "the service reported cloudy"))
   first.action
-  |> should.equal(o.ActionRef(fabric.id(run), 1, "w", "lookup_weather"))
+  |> should.equal(o.ActionRef(
+    support.text(fabric.id(run)),
+    1,
+    "w",
+    "lookup_weather",
+  ))
 }
 
 /// A bound past the longest timer the runtime can set would never fire,
