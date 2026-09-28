@@ -193,7 +193,7 @@ fn offer_settlement(
     Error(CommandRefused(controller.SettlementEarly(_))) if !watching ->
       case store.watch(setup.store, run, watcher) {
         Ok(Nil) -> offer_settlement(offer, True, tries)
-        Error(error) -> Error(tool.SettleFailed(string.inspect(error)))
+        Error(error) -> Error(tool.SettleUnconfirmed(string.inspect(error)))
       }
     Error(CommandRefused(controller.SettlementEarly(_))) ->
       case process.receive(watcher, offer.within) {
@@ -204,12 +204,15 @@ fn offer_settlement(
       Error(tool.AlreadyRecorded)
     Error(CommandRefused(_)) -> Error(tool.NotAwaited)
     Error(Busy) if tries > 1 -> offer_settlement(offer, watching, tries - 1)
-    Error(Busy) -> Error(tool.SettleFailed("the run's runner is busy"))
-    Error(Contended) -> Error(tool.SettleFailed("every commit lost a race"))
+    Error(Busy) -> Error(tool.SettleUnconfirmed("the run's runner is busy"))
+    Error(Contended) ->
+      Error(tool.SettleUnconfirmed("every commit lost a race"))
     Error(OwnerUnknown) ->
-      Error(tool.SettleFailed("no runner known to this store drives the run"))
+      Error(tool.SettleUnconfirmed(
+        "no runner known to this store drives the run",
+      ))
     Error(Unreadable(problem)) ->
-      Error(tool.SettleFailed(describe_read(problem)))
+      Error(tool.SettleUnconfirmed(describe_read(problem)))
   }
 }
 

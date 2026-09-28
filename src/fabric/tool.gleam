@@ -35,7 +35,8 @@
 //// `AlreadyRecorded` when the action has a definite result (its task
 //// reported, or it was settled or reconciled), `NotAwaited` when it does
 //// not (the bound passed, or the run ended with the action uncertain), and
-//// the refusal needs a person. A settlement offered while the action's
+//// the refusal needs a person; `SettleUnconfirmed` when the store did not
+//// confirm either way. A settlement offered while the action's
 //// task may still run waits for it to report or be stopped, up to the
 //// tool's bound between commits of the run; one the handler offers from
 //// its own task is refused at once. The handle reaches the run through the
@@ -43,6 +44,7 @@
 
 import fabric/internal/invocation.{type Outcome}
 import fabric/model.{type ToolCall}
+import fabric/policy
 import fabric/run
 import gleam/int
 import gleam/option.{type Option, None, Some}
@@ -107,9 +109,10 @@ pub type SettleError {
   /// knows reaches the run only through a person (`fabric.reconcile`); the
   /// refusal is observed as `settlement_refused` (`fabric/observation`).
   NotAwaited
-  /// The run could not be read or written. A write the store reported
-  /// unavailable has an unknown outcome.
-  SettleFailed(detail: String)
+  /// The run could not be read or written, or its runner did not take the
+  /// settlement: whether it was recorded is not confirmed. A write the
+  /// store reported unavailable has an unknown outcome.
+  SettleUnconfirmed(reason: String)
 }
 
 /// Whether a tool runs a handler or starts a sub-agent run (see
@@ -205,23 +208,10 @@ pub fn bind_settling(
 /// Settles the invocation's result: an output, encoded with the tool's
 /// output codec, or a typed failure, `Explain` (definite) or `Uncertain`.
 /// Blocks until the run has recorded or refused it. A refusal is observed
-/// (`settlement_refused`) with an uncertain settlement's evidence; see
-/// `settle_summarized` to give a definite one a summary.
+/// (`settlement_refused`) with `summary`: what a person needs to reconcile
+/// the action when the run did not record the settlement. The summary goes
+/// to observation handlers, so it must not carry secrets.
 pub fn settle(
-  settlement: Settlement(output),
-  result: Result(output, Failure),
-) -> Result(Nil, SettleError) {
-  let summary = case result {
-    Error(Uncertain(evidence)) -> evidence
-    Ok(_) | Error(Explain(_)) -> ""
-  }
-  settle_summarized(settlement, result, summary:)
-}
-
-/// `settle`, observing a refusal with `summary`: what a person needs to
-/// reconcile the action when the run did not record the settlement. The
-/// summary goes to observation handlers, so it must not carry secrets.
-pub fn settle_summarized(
   settlement: Settlement(output),
   result: Result(output, Failure),
   summary summary: String,
@@ -327,6 +317,31 @@ fn delegated(
   }
 }
 
+/// The typed input of `action` when it calls `definition`: the policy's
+/// typed match on a tool. `Error(Nil)` when the action calls another tool.
+/// The runtime decoded the same arguments with the same codec before the
+/// policy ran, so a call of `definition` always decodes.
+///
+/// ```gleam
+/// fn policy(member: Member, action: policy.Action) {
+///   case tool.input(reserve_definition(), action) {
+///     Ok(Reservation(isbn:)) -> check_reservation(member, isbn)
+///     Error(Nil) -> Ok(policy.Allow)
+///   }
+/// }
+/// ```
+pub fn input(
+  definition: Definition(input, output),
+  action: policy.Action,
+) -> Result(input, Nil) {
+  case action.tool == definition.name {
+    False -> Error(Nil)
+    True ->
+      codec.decode_json(definition.input, action.arguments_json)
+      |> result.replace_error(Nil)
+  }
+}
+
 /// A call to `definition` with `input` encoded by its input codec, as a
 /// model would request it. For scripted models and tests: the arguments
 /// always decode under the tool bound from the same definition.
@@ -345,6 +360,7 @@ pub fn call(
   )
 }
 
+@internal
 pub fn name(tool: Tool(context)) -> String {
   tool.name
 }

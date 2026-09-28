@@ -115,7 +115,7 @@ fn run(
             RunLost -> "the workflow run was lost"
           }
           case
-            tool.settle_summarized(
+            tool.settle(
               settlement,
               judge(delivery) |> result.map_error(failure),
               summary:,
@@ -126,7 +126,7 @@ fn run(
             // Not recorded, and the call has no definite result: Fabric
             // observes the refusal (`settlement_refused`) with `summary`,
             // for a person to reconcile the call.
-            Error(tool.NotAwaited) | Error(tool.SettleFailed(_)) -> Nil
+            Error(tool.NotAwaited) | Error(tool.SettleUnconfirmed(_)) -> Nil
           }
         },
         rollback_within:,
