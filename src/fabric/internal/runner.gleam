@@ -872,20 +872,25 @@ fn cancel_child(
   case child_setup {
     // This agent no longer delegates the call (it may be a plain tool
     // now): the child is cancelled with no agent, and its end is applied
-    // with nothing to map it.
-    Error(Nil) -> {
-      let ended =
+    // with nothing to map it. A child still stopping delivers its end
+    // itself.
+    Error(Nil) ->
+      case
         end_child(setup.store, parent, action, child, setup.command_timeout, 3)
-      let _ =
-        command(
-          setup,
-          parent.run,
-          setup.env,
-          controller.ChildEnded(action, ended),
-          16,
-        )
-      Nil
-    }
+      {
+        controller.ChildStopping -> Nil
+        ended -> {
+          let _ =
+            command(
+              setup,
+              parent.run,
+              setup.env,
+              controller.ChildEnded(action, ended),
+              16,
+            )
+          Nil
+        }
+      }
     Ok(child_setup) ->
       case cancel_until_stopping(child_setup, parent, action, child, 0) {
         Error(detail) ->
@@ -1065,7 +1070,7 @@ pub fn end_child(
     Ok(#(_, child_state)) ->
       case controller.child_result(child_state) {
         Ok(result) -> result
-        Error(Nil) -> controller.ChildLost("it did not end")
+        Error(Nil) -> controller.ChildStopping
       }
   }
 }

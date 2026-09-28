@@ -162,6 +162,10 @@ pub type ChildResult {
   ChildFinished(outcome: Outcome, unknown_effects: Bool)
   /// The child's record cannot be read or continued.
   ChildLost(detail: String)
+  /// The child was cancelled and is still stopping (it waits for a stopped
+  /// tool's settlement or for its own children): it has not ended, and
+  /// delivers its end itself.
+  ChildStopping
   /// The child was never stored (its start was cut short).
   ChildMissing
 }
@@ -656,6 +660,12 @@ fn child_ended(
     ChildMissing -> #(run.NotStarted, None)
     ChildLost(detail) -> #(
       run.Uncertain(named <> " cannot be continued: " <> detail),
+      None,
+    )
+    ChildStopping -> #(
+      run.Uncertain(
+        named <> " was cancelled and is still stopping; its end is not applied",
+      ),
       None,
     )
     ChildFinished(_, True) -> #(

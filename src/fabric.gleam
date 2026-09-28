@@ -440,7 +440,9 @@ pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
 /// a lost runner is abandoned (running tools become uncertain effects) and
 /// the run ends `Cancelled` in one commit. Active sub-agent runs are
 /// cancelled first, the same way; their delegations are recorded as
-/// uncertain effects, since no agent maps their outcome. A sub-agent run
+/// uncertain effects, since no agent maps their outcome. A sub-agent that
+/// is still stopping (it waits for a stopped tool's settlement) is recorded
+/// as such, and ends on its own. A sub-agent run
 /// that was never stored is stored as cancelled before it started (naming
 /// no agent), and its delegation is recorded as not started.
 pub fn cancel_stored(store: Store, id: String) -> Result(Status, CommandError) {

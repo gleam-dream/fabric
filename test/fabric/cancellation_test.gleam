@@ -405,3 +405,52 @@ pub fn an_answer_racing_the_parent_cancellation_starts_nothing_test() {
     probe.entries(probe) |> should.equal([])
   })
 }
+
+// --- a settling child -----------------------------------------------------------
+
+/// A child whose tool hands its settlement to `handed` and waits.
+fn settling_child(
+  handed: Subject(tool.Settlement(apps.Forecast)),
+) -> Agent(Nil) {
+  agent.new(
+    scripted.plan([scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}")]),
+    [
+      tool.bind_settling(
+        apps.weather_definition(),
+        fn(_, _, settlement) {
+          process.send(handed, settlement)
+          let never = process.new_subject()
+          let _ = process.receive_forever(never)
+          Ok(apps.Forecast("never"))
+        },
+        fn(_: Nil) { tool.Explain("failed") },
+        within: 5000,
+      ),
+    ],
+    policy.always_allow(),
+  )
+  |> agent.with_identity("forecaster", 1)
+}
+
+/// `cancel_stored` of a parent whose child waits for a stopped tool's
+/// settlement: the parent ends at once, recording that the child is still
+/// stopping (not that it was lost), and the child then ends with its
+/// settlement.
+pub fn cancel_stored_of_a_parent_with_a_settling_child_test() {
+  let store = store.in_memory()
+  let handed = process.new_subject()
+  let assert Ok(run) =
+    fabric.start(store, delegating(settling_child(handed)), Nil, "go")
+  let assert Ok(settlement) = process.receive(handed, 5000)
+
+  fabric.cancel_stored(store, fabric.id(run))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
+  let assert [run.Uncertain(evidence)] = states(run)
+  string.contains(evidence, "still stopping") |> should.be_true
+  string.contains(evidence, "cannot be continued") |> should.be_false
+
+  let assert Ok(child) = fabric.child(run, fabric.id(run) <> "-1")
+  tool.settle(settlement, Ok(apps.Forecast("cloudy"))) |> should.equal(Ok(Nil))
+  fabric.await(child, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  states(child) |> should.equal([run.Succeeded("{\"summary\":\"cloudy\"}")])
+}
