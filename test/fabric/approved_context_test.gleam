@@ -21,6 +21,7 @@ import fabric/support/probe.{type Probe}
 import fabric/support/restart
 import fabric/support/scripted
 import fabric/tool
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -299,22 +300,30 @@ pub fn an_approved_sub_agent_starts_with_the_recheck_context_test() {
   ])
 }
 
-/// The child of an approved start was never stored (the store failed the
-/// insert). Recovery has no context that passed a recheck for it, so it
-/// asks for the approval again instead of starting the child; the child
-/// then starts as whoever answers.
+/// The child of an approved start was never stored (its runner was lost
+/// while storing it). Recovery has no context that passed a recheck for
+/// it, so it asks for the approval again instead of starting the child;
+/// the child then starts as whoever answers.
 pub fn an_approved_sub_agent_never_stored_is_asked_for_again_test() {
   let probe = probe.new()
   let backend = flaky.new()
-  let store = flaky.store(backend)
-  let assert Ok(run) =
-    fabric.start(store, delegating(probe), "carol", "look it up")
+  let #(owner, #(first, run)) =
+    restart.owned(fn() {
+      let store = flaky.store(backend)
+      let assert Ok(run) =
+        fabric.start(store, delegating(probe), "carol", "look it up")
+      #(store, run)
+    })
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
-  // The answer commits; the child's insert fails.
-  flaky.arm(backend, [flaky.Pass, flaky.FailBefore])
+  // The answer commits; its runner is lost while it stores the child.
+  let held = flaky.hold(backend, string.ends_with(_, "-1"))
   let assert Ok(_) = approve(run, pending, "alice")
-  fabric.await(run, 5000) |> should.equal(Error(fabric.NoRunner))
+  let assert Ok(_) = process.receive(held, 5000)
+  restart.kill(owner)
+  restart.gone(store.pid(first))
+  flaky.drop_held(backend)
 
+  let store = flaky.store(backend)
   let assert Ok(run) =
     fabric.recover(store, delegating(probe), "rita", fabric.id(run))
   let assert Ok(run.Suspended([renewed], [])) = fabric.status(run)

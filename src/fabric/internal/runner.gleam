@@ -625,11 +625,7 @@ fn perform(
         }
       }
     controller.StartChild(id, child, call) -> {
-      let report = case work.start_child(runner.state, id, child, call) {
-        Ok(Nil) -> controller.ChildStarted(id)
-        Error(detail) ->
-          controller.ToolReported(id, invocation.ArgumentsRejected(detail))
-      }
+      let report = work.start_child(runner.state, id, child, call)
       process.send(runner.self, live.Apply(report))
       runner
     }
@@ -650,9 +646,12 @@ fn perform(
 }
 
 /// Stores and starts the child run `child` of the delegation `call`, with
-/// `context`. A child that already exists (started before a restart) is
-/// left alone: recovery reattaches it. `Error` when the delegation no
-/// longer accepts the arguments or no longer exists.
+/// `context`, and returns the event that reports it: `ChildStarted` once
+/// the child is stored (by this start or an earlier one, which recovery
+/// reattaches; or as a cancelled tombstone, which cancellation applies);
+/// rejected arguments when the delegation no longer accepts them or no
+/// longer exists; and a lost child when the store keeps failing, since the
+/// last write's outcome is unknown.
 fn start_child(
   setup: Setup(context),
   context: context,
@@ -660,26 +659,55 @@ fn start_child(
   id: ActionId,
   child: String,
   call: model.ToolCall,
-) -> Result(Nil, String) {
-  use child_setup <- result.try(
-    child_setup(setup, call.name, parent.run, id)
-    |> result.replace_error("no sub-agent is delegated as " <> call.name),
-  )
-  let child_setup =
-    Setup(
-      ..child_setup,
-      env: controller.Env(..child_setup.env, context: context),
-    )
-  use prompt <- result.map(registry.prompt(
-    setup.env.registry,
-    call.name,
-    call.arguments_json,
-  ))
-  let #(state, effects) = child_state(child_setup, child, prompt, parent, id)
-  // AlreadyExists: an earlier start stored it. Any other failure leaves
-  // the child missing, which recovery repairs.
-  let _ = launch(child_setup, None, state, effects)
-  Nil
+) -> controller.Event {
+  let rejected = fn(detail) {
+    controller.ToolReported(id, invocation.ArgumentsRejected(detail))
+  }
+  case child_setup(setup, call.name, parent.run, id) {
+    Error(Nil) -> rejected("no sub-agent is delegated as " <> call.name)
+    Ok(child_setup) ->
+      case registry.prompt(setup.env.registry, call.name, call.arguments_json) {
+        Error(detail) -> rejected(detail)
+        Ok(prompt) -> {
+          let child_setup =
+            Setup(
+              ..child_setup,
+              env: controller.Env(..child_setup.env, context: context),
+            )
+          let #(state, effects) =
+            child_state(child_setup, child, prompt, parent, id)
+          case store_child(child_setup, state, effects, 0) {
+            Ok(Nil) -> controller.ChildStarted(id)
+            Error(error) ->
+              controller.ChildEnded(
+                id,
+                controller.ChildLost(
+                  "it could not be stored: " <> string.inspect(error),
+                ),
+              )
+          }
+        }
+      }
+  }
+}
+
+/// Inserts and starts a child run, trying an `Unavailable` insert again
+/// after the runner's bounded backoff. `AlreadyExists` means an earlier
+/// attempt or start stored it.
+fn store_child(
+  setup: Setup(context),
+  state: State,
+  effects: List(Effect),
+  attempt: Int,
+) -> Result(Nil, store.StoreError) {
+  case launch(setup, None, state, effects) {
+    Ok(_) | Error(store.AlreadyExists) -> Ok(Nil)
+    Error(store.Unavailable(_)) if attempt < unavailable_retries -> {
+      process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
+      store_child(setup, state, effects, attempt + 1)
+    }
+    Error(error) -> Error(error)
+  }
 }
 
 /// Cancels the child run `child` of `parent`'s delegation `action`. Its

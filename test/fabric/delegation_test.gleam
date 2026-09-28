@@ -856,3 +856,28 @@ pub fn recovery_does_not_start_a_child_after_its_parent_was_cancelled_test() {
   probe.count(probe, "child:model") |> should.equal(0)
   probe.count(probe, "pay:bob") |> should.equal(0)
 }
+
+/// Storing a child fails once: the runner tries again, and the child runs.
+pub fn a_child_whose_first_insert_fails_still_starts_test() {
+  let probe = probe.new()
+  let backend = flaky.new()
+  flaky.arm_where(backend, first_child, [flaky.FailBefore])
+  let assert Ok(run) =
+    fabric.start(flaky.store(backend), eager_family(probe), Nil, "go")
+  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  probe.count(probe, "pay:bob") |> should.equal(1)
+}
+
+/// A child that cannot be stored at all is not reported started: the
+/// delegation is an uncertain effect naming the failure.
+pub fn a_child_that_cannot_be_stored_is_uncertain_test() {
+  let probe = probe.new()
+  let backend = flaky.new()
+  flaky.arm_where(backend, first_child, list.repeat(flaky.FailBefore, 64))
+  let assert Ok(run) =
+    fabric.start(flaky.store(backend), eager_family(probe), Nil, "go")
+  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  string.contains(uncertain.evidence, "could not be stored")
+  |> should.be_true
+  probe.count(probe, "child:model") |> should.equal(0)
+}

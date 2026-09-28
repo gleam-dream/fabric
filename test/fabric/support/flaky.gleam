@@ -22,7 +22,7 @@ type Message {
   Get(String, Subject(Result(store.Stored, store.StoreError)))
   Write(String, Option(Int), String, Subject(Result(Nil, store.StoreError)))
   Arm(List(Fault))
-  ArmRun(String, List(Fault))
+  ArmWhere(fn(String) -> Bool, List(Fault))
   Hold(fn(String) -> Bool, Subject(String))
   ReleaseHeld
   DropHeld
@@ -48,7 +48,7 @@ pub fn new() -> Flaky {
   process.spawn_unlinked(fn() {
     let subject = process.new_subject()
     process.send(ready, subject)
-    loop(subject, State(dict.new(), [], dict.new(), NotHolding))
+    loop(subject, State(dict.new(), [], #(fn(_) { False }, []), NotHolding))
   })
   let assert Ok(subject) = process.receive(ready, 1000)
   Flaky(subject)
@@ -82,7 +82,17 @@ pub fn drop_held(flaky: Flaky) -> Nil {
 /// The next writes of `run` meet `faults`, in order, before any faults
 /// armed for every run; later writes of `run` pass.
 pub fn arm_run(flaky: Flaky, run: String, faults: List(Fault)) -> Nil {
-  process.send(flaky.subject, ArmRun(run, faults))
+  arm_where(flaky, fn(written) { written == run }, faults)
+}
+
+/// The next writes of runs that `matches` meet `faults`, in order, before
+/// any faults armed for every run. Arming again replaces this.
+pub fn arm_where(
+  flaky: Flaky,
+  matches: fn(String) -> Bool,
+  faults: List(Fault),
+) -> Nil {
+  process.send(flaky.subject, ArmWhere(matches, faults))
 }
 
 pub fn store(flaky: Flaky) -> Store {
@@ -102,7 +112,7 @@ type State {
   State(
     records: Dict(String, store.Stored),
     faults: List(Fault),
-    by_run: Dict(String, List(Fault)),
+    targeted: #(fn(String) -> Bool, List(Fault)),
     held: Held,
   )
 }
@@ -110,11 +120,8 @@ type State {
 fn loop(subject: Subject(Message), state: State) -> Nil {
   case process.receive_forever(subject) {
     Arm(faults) -> loop(subject, State(..state, faults:))
-    ArmRun(run, run_faults) ->
-      loop(
-        subject,
-        State(..state, by_run: dict.insert(state.by_run, run, run_faults)),
-      )
+    ArmWhere(matches, targeted) ->
+      loop(subject, State(..state, targeted: #(matches, targeted)))
     Hold(matches, notify) ->
       loop(subject, State(..state, held: Holding(matches, notify)))
     ReleaseHeld ->
@@ -172,11 +179,12 @@ fn write(
   record: String,
   reply: Subject(Result(Nil, store.StoreError)),
 ) -> State {
-  let State(records:, faults:, by_run:, ..) = state
-  let #(fault, faults, by_run) = case dict.get(by_run, run), faults {
-    Ok([fault, ..rest]), _ -> #(fault, faults, dict.insert(by_run, run, rest))
-    _, [] -> #(Pass, [], by_run)
-    _, [fault, ..rest] -> #(fault, rest, by_run)
+  let State(records:, faults:, targeted:, ..) = state
+  let #(matches, aimed) = targeted
+  let #(fault, faults, targeted) = case matches(run), aimed, faults {
+    True, [fault, ..rest], _ -> #(fault, faults, #(matches, rest))
+    _, _, [] -> #(Pass, [], targeted)
+    _, _, [fault, ..rest] -> #(fault, rest, targeted)
   }
   let outcome = case expected, dict.get(records, run) {
     None, Ok(_) -> Error(store.AlreadyExists)
@@ -194,5 +202,5 @@ fn write(
     _, Error(error) -> #(Error(error), records)
   }
   process.send(reply, reply_with)
-  State(..state, records:, faults:, by_run:)
+  State(..state, records:, faults:, targeted:)
 }
