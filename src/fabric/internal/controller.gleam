@@ -18,6 +18,13 @@
 //// `answer` resolves an approval request of the current batch; `abandon`
 //// and `recover` take over a record whose runner was lost.
 ////
+//// An approved action runs with the context its answer's policy recheck
+//// passed with: the effects of that step (its `Dispatch` or `StartChild`)
+//// belong to the step's environment, and the runner performs them with its
+//// context. That context is not stored. An approved action that had not
+//// started when its runner was lost therefore asks for its approval again:
+//// a stored answer alone does not authorize a later incarnation.
+////
 //// A delegation (a call that starts a sub-agent run) is admitted like a
 //// tool call, after checking the run's sub-agent budgets. When allowed it
 //// is committed `Running` with its child run id (the fence), the runner
@@ -246,12 +253,8 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
       use actions <- result.try(child_started(actions, id))
       Ok(#(State(..state, phase: Acting(turn, actions)), []))
     }
-    Acting(turn, actions), ChildEnded(id, ChildMissing) -> {
-      // A child that was never stored is started again by recovery; in a
-      // live batch this report is out of date.
-      let _ = #(turn, actions)
-      Error(ReportNotExpected(id))
-    }
+    Acting(turn, actions), ChildEnded(id, ChildMissing) ->
+      child_missing(state, turn, actions, id)
     Acting(turn, actions), ChildEnded(id, result) -> {
       use #(actions, fault) <- result.try(child_ended(
         actions,
@@ -425,6 +428,35 @@ fn cancel_children(actions: List(ActionRecord)) -> List(Effect) {
 }
 
 // --- sub-agents ----------------------------------------------------------------
+
+/// Recovery found no record of a delegated child. An approved start asks
+/// for its approval again, with no child: the context that passed its
+/// recheck is gone. An allowed one is started again by recovery, and in a
+/// live batch the report is out of date.
+fn child_missing(
+  state: State,
+  turn: Int,
+  actions: List(ActionRecord),
+  id: ActionId,
+) -> Transition {
+  let issued = state.approvals_issued + 1
+  use actions <- result.map(
+    update_record(actions, id, fn(action) {
+      case action.state, action.child, list.last(action.approvals) {
+        run.Delegated, Some(_), Ok(approval) ->
+          Ok(
+            ActionRecord(
+              ..action,
+              state: run.AwaitingApproval(approval.requirement, issued),
+              child: None,
+            ),
+          )
+        _, _, _ -> Error(ReportNotExpected(id))
+      }
+    }),
+  )
+  #(State(..state, approvals_issued: issued, phase: Acting(turn, actions)), [])
+}
 
 fn child_started(
   actions: List(ActionRecord),
@@ -1219,7 +1251,8 @@ pub fn abandon(state: State) -> State {
 
 /// `abandon`, then restarts the work that is safe to restart: queued
 /// actions are dispatched again and a lost model call is issued again as a
-/// new attempt against the turn budget.
+/// new attempt against the turn budget. A queued action that was approved
+/// is not: it asks for its approval again (`ask_again`).
 ///
 /// Delegated actions are left to the runtime, which reattaches their child
 /// runs; a stop still waiting for child runs asks to cancel them again.
@@ -1227,9 +1260,41 @@ pub fn recover(env: Env(context), state: State) -> #(State, List(Effect)) {
   let state = abandon(state)
   case state.phase {
     AwaitingModel(_) -> call_model(env, state)
-    Acting(_, actions) -> #(state, dispatch(actions))
+    Acting(turn, actions) -> {
+      let state = ask_again(state, turn, actions)
+      #(state, dispatch(current(state)))
+    }
     Stopping(_, actions, _) -> #(state, cancel_children(actions))
     Ended(_) -> #(state, [])
+  }
+}
+
+/// Queued actions that an answer approved ask for their approval again,
+/// under the requirement last answered, as new requests: the approval was
+/// checked with the answer's context, which a later incarnation does not
+/// have. The earlier answers stay in the approvals; they authorize nothing.
+fn ask_again(state: State, turn: Int, actions: List(ActionRecord)) -> State {
+  let #(issued, actions) =
+    list.map_fold(actions, state.approvals_issued, fn(issued, action) {
+      case action.state, list.last(action.approvals) {
+        run.Queued, Ok(approval) -> #(
+          issued + 1,
+          ActionRecord(
+            ..action,
+            state: run.AwaitingApproval(approval.requirement, issued + 1),
+          ),
+        )
+        _, _ -> #(issued, action)
+      }
+    })
+  State(..state, approvals_issued: issued, phase: Acting(turn, actions))
+}
+
+/// The actions of the current batch.
+fn current(state: State) -> List(ActionRecord) {
+  case state.phase {
+    Acting(_, actions) | Stopping(_, actions, _) -> actions
+    AwaitingModel(_) | Ended(_) -> []
   }
 }
 
@@ -1320,10 +1385,6 @@ fn in_flight(actions: List(ActionRecord)) -> Bool {
 }
 
 pub fn snapshot(state: State) -> run.Snapshot {
-  let current = case state.phase {
-    Acting(_, actions) | Stopping(_, actions, _) -> actions
-    AwaitingModel(_) | Ended(_) -> []
-  }
   run.Snapshot(
     run: state.run,
     agent: state.agent,
@@ -1334,6 +1395,6 @@ pub fn snapshot(state: State) -> run.Snapshot {
     max_turns: state.limits.max_turns,
     usage: state.usage,
     transcript: state.transcript,
-    actions: list.append(state.history, current),
+    actions: list.append(state.history, current(state)),
   )
 }

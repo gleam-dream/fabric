@@ -95,7 +95,9 @@ pub fn new(
 /// policy sees `policy.StartAgent` as the action's target, and may require
 /// an approval like for any tool; no child run exists before it is
 /// allowed. The child is its own run with its own budgets and policy, and
-/// shares this agent's context type and store. Its approvals are this
+/// shares this agent's context type and store. It starts with the context
+/// its start was allowed with: this run's, or for an approved start, the
+/// context the answer was checked with. Its approvals are this
 /// run's pending approvals (their references name the child run), and
 /// cancelling this run cancels it.
 ///

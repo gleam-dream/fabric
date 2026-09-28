@@ -7,6 +7,12 @@
 //// exits, and the stored record is all that remains. A runner whose commit
 //// fails stops: a newer owner exists, or the store is gone.
 ////
+//// Effects run with the context of the step that produced them: the
+//// runner's own events with the run's context (its `Setup`), a command
+//// with the context it was given (`command`). An answer's recheck context
+//// thus reaches exactly the tool or child run the answer approved, and the
+//// runner keeps the run's context for everything else.
+////
 //// A runner is claimed in the same commit that hands it work (`launch`),
 //// so there is never a moment where the record needs a runner and the
 //// store knows none. Ownership: the runner is linked to nobody above it; it
@@ -19,7 +25,7 @@ import fabric/internal/bounded
 import fabric/internal/controller.{type Effect, type Event, type State}
 import fabric/internal/executor.{type Executor}
 import fabric/internal/invocation
-import fabric/internal/live.{type Message}
+import fabric/internal/live.{type Message, type Work}
 import fabric/internal/observe
 import fabric/internal/record
 import fabric/internal/registry
@@ -88,6 +94,25 @@ pub fn setup(
     children: admitted.children,
     policy_timeout: admitted.policy_timeout,
     parent:,
+  )
+}
+
+/// The work of `setup`'s run performed with `context`: tool bodies are
+/// invoked with it, and a child run is started with it (while the child's
+/// link back to the run keeps `setup`).
+pub fn work(setup: Setup(context), context: context) -> Work {
+  live.Work(
+    invoke: fn(call: model.ToolCall) {
+      registry.invoke(
+        setup.env.registry,
+        context,
+        call.name,
+        call.arguments_json,
+      )
+    },
+    start_child: fn(parent, id, child, call) {
+      start_child(setup, context, parent, id, child, call)
+    },
   )
 }
 
@@ -171,6 +196,8 @@ pub fn child_state(
 type Runner(context) {
   Runner(
     setup: Setup(context),
+    /// The run's own work, for the events the runner applies itself.
+    work: Work,
     self: Subject(Message),
     state: State,
     revision: Int,
@@ -183,7 +210,7 @@ type Runner(context) {
 }
 
 type Go {
-  Go(revision: Int, state: State, effects: List(Effect))
+  Go(revision: Int, state: State, effects: List(Effect), work: Work)
 }
 
 /// Commits `state` over `expected` (`None`: inserts the run) and, when the
@@ -196,6 +223,18 @@ type Go {
 /// the observations of the transition.
 pub fn launch(
   setup: Setup(context),
+  before: Option(#(Int, State)),
+  state: State,
+  effects: List(Effect),
+) -> Result(Int, store.StoreError) {
+  launch_with(setup, work(setup, setup.env.context), before, state, effects)
+}
+
+/// `launch`, with `effects` performed with `work`; the runner keeps
+/// `setup`'s context for everything after them.
+fn launch_with(
+  setup: Setup(context),
+  work: Work,
   before: Option(#(Int, State)),
   state: State,
   effects: List(Effect),
@@ -222,7 +261,7 @@ pub fn launch(
       case write(setup.store, state.run, expected, encoded, claim) {
         Ok(revision) -> {
           observe.committed(observed, state)
-          process.send(go, Go(revision, state, effects))
+          process.send(go, Go(revision, state, effects, work))
           Ok(revision)
         }
         Error(error) -> {
@@ -266,11 +305,12 @@ fn prepare(setup: Setup(context)) -> #(Pid, Subject(Message), Subject(Go)) {
         |> process.selector_receive_forever
       case first {
         Error(Nil) -> Nil
-        Ok(Go(revision, state, effects)) -> {
+        Ok(Go(revision, state, effects, first)) -> {
           process.demonitor_process(caller_monitor)
           process.trap_exits(True)
-          Runner(setup, self, state, revision, None, None, 0)
-          |> perform(effects)
+          let own = work(setup, setup.env.context)
+          Runner(setup, own, self, state, revision, None, None, 0)
+          |> perform(effects, first)
           |> serve
         }
       }
@@ -292,8 +332,9 @@ fn serve(runner: Runner(context)) -> Nil {
         })
       let next = case process.selector_receive_forever(selector) {
         live.StoreDown -> Error(Superseded)
-        live.Command(step, reply) -> {
-          let outcome = commit(runner, step(runner.state))
+        live.Command(step, work, reply) -> {
+          let work = option.unwrap(work, runner.work)
+          let outcome = commit(runner, step(runner.state), work)
           process.send(reply, case outcome {
             Ok(runner) -> live.Applied(runner.state)
             Error(Refused(rejection)) -> live.Refused(rejection)
@@ -404,14 +445,20 @@ fn apply(
   runner: Runner(context),
   event: Event,
 ) -> Result(Runner(context), ApplyError) {
-  commit(runner, controller.step(runner.setup.env, runner.state, event))
+  commit(
+    runner,
+    controller.step(runner.setup.env, runner.state, event),
+    runner.work,
+  )
 }
 
 /// Commit before effect: the next state is stored before any of its effects
 /// run, so a lost runner never leaves an effect the record does not know.
+/// The effects are performed with `work`, the context of the step.
 fn commit(
   runner: Runner(context),
   transition: Result(#(State, List(Effect)), controller.Rejection),
+  work: Work,
 ) -> Result(Runner(context), ApplyError) {
   use #(state, effects) <- result.try(transition |> result.map_error(Refused))
   // A sub-agent run that ended keeps its registration until it has
@@ -429,7 +476,7 @@ fn commit(
     Error(_) -> Error(Superseded)
     Ok(revision) -> {
       observe.committed(Some(runner.state), state)
-      let runner = perform(Runner(..runner, state:, revision:), effects)
+      let runner = perform(Runner(..runner, state:, revision:), effects, work)
       deliver(runner.setup, state)
       Ok(runner)
     }
@@ -473,7 +520,11 @@ fn persist(
   }
 }
 
-fn perform(runner: Runner(context), effects: List(Effect)) -> Runner(context) {
+fn perform(
+  runner: Runner(context),
+  effects: List(Effect),
+  work: Work,
+) -> Runner(context) {
   use runner, effect <- list.fold(effects, runner)
   case effect {
     controller.CallModel(turn, request) -> {
@@ -510,7 +561,13 @@ fn perform(runner: Runner(context), effects: List(Effect)) -> Runner(context) {
         Some(executor) -> executor
         None -> start_executor(runner)
       }
-      executor.submit(executor, actions)
+      executor.submit(
+        executor,
+        list.map(actions, fn(action) {
+          let #(id, call) = action
+          executor.Job(id, fn() { work.invoke(call) })
+        }),
+      )
       Runner(..runner, executor: Some(executor))
     }
     controller.StopTools ->
@@ -525,9 +582,7 @@ fn perform(runner: Runner(context), effects: List(Effect)) -> Runner(context) {
         }
       }
     controller.StartChild(id, child, call) -> {
-      let report = case
-        start_child(runner.setup, runner.state, id, child, call)
-      {
+      let report = case work.start_child(runner.state, id, child, call) {
         Ok(Nil) -> controller.ChildStarted(id)
         Error(detail) ->
           controller.ToolReported(id, invocation.ArgumentsRejected(detail))
@@ -551,12 +606,13 @@ fn perform(runner: Runner(context), effects: List(Effect)) -> Runner(context) {
   }
 }
 
-/// Stores and starts the child run `child` of the delegation `call`. A
-/// child that already exists (started before a restart) is left alone:
-/// recovery reattaches it. `Error` when the delegation no longer accepts
-/// the arguments or no longer exists.
+/// Stores and starts the child run `child` of the delegation `call`, with
+/// `context`. A child that already exists (started before a restart) is
+/// left alone: recovery reattaches it. `Error` when the delegation no
+/// longer accepts the arguments or no longer exists.
 fn start_child(
   setup: Setup(context),
+  context: context,
   parent: State,
   id: ActionId,
   child: String,
@@ -566,6 +622,11 @@ fn start_child(
     child_setup(setup, call.name, parent.run, id)
     |> result.replace_error("no sub-agent is delegated as " <> call.name),
   )
+  let child_setup =
+    Setup(
+      ..child_setup,
+      env: controller.Env(..child_setup.env, context: context),
+    )
   use prompt <- result.map(registry.prompt(
     setup.env.registry,
     call.name,
@@ -686,8 +747,9 @@ pub fn describe_read(error: ReadError) -> String {
 /// Sends `event` to the run's live runner, or applies it to the stored
 /// record and starts a runner if the transition produced work. A lost race
 /// reads the newer record and checks the command again. `env` is the
-/// environment the event is stepped with (an answer's recheck context);
-/// work the command starts runs with `setup`'s.
+/// environment the event is stepped with (an answer's recheck context),
+/// and the work that step starts runs with `env`'s context too; the runner
+/// keeps `setup`'s (the run's) context for everything else.
 pub fn command(
   setup: Setup(context),
   id: String,
@@ -708,10 +770,15 @@ pub fn command(
       False -> Error(Contended)
     }
   }
+  let work = work(setup, env.context)
   case live_runner(entry, state) {
     Some(mailbox) ->
       case
-        send_live(mailbox, fn(state) { controller.step(env, state, event) })
+        send_live(
+          mailbox,
+          fn(state) { controller.step(env, state, event) },
+          Some(work),
+        )
       {
         Ok(live.Applied(state)) -> Ok(state)
         Ok(live.Refused(rejection)) -> Error(CommandRefused(rejection))
@@ -734,7 +801,9 @@ pub fn command(
         True, controller.Cancel | False, _ -> Ok(Nil)
         True, _ -> Error(OwnerUnknown)
       })
-      case launch(setup, Some(#(entry.revision, state)), next, effects) {
+      case
+        launch_with(setup, work, Some(#(entry.revision, state)), next, effects)
+      {
         Ok(_) -> Ok(next)
         Error(store.Conflict(_)) -> retry()
         Error(error) -> Error(Unreadable(StoreFailed(error)))
@@ -743,18 +812,21 @@ pub fn command(
   }
 }
 
-/// `Error(Nil)` when the runner exited before answering.
+/// Applies `step` through the live runner; the effects of the step are
+/// performed with `work`, or with the run's own work (`None`). `Error(Nil)`
+/// when the runner exited before answering.
 pub fn send_live(
   mailbox: Subject(live.Message),
   step: fn(State) ->
     Result(#(State, List(controller.Effect)), controller.Rejection),
+  work: Option(Work),
 ) -> Result(live.CommandReply, Nil) {
   case process.subject_owner(mailbox) {
     Error(Nil) -> Error(Nil)
     Ok(pid) -> {
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
-      process.send(mailbox, live.Command(step, reply))
+      process.send(mailbox, live.Command(step, work, reply))
       let answer =
         process.new_selector()
         |> process.select_map(reply, Ok)
@@ -847,19 +919,10 @@ fn retry_delay(initial: Int, failures: Int) -> Int {
 
 fn start_executor(runner: Runner(context)) -> Executor {
   let self = runner.self
-  let env = runner.setup.env
   executor.start(
     executor.Hooks(
       max_in_flight: runner.setup.max_concurrency,
       fence: fn(id) { process.call_forever(self, live.Fence(id, _)) },
-      invoke: fn(call) {
-        registry.invoke(
-          env.registry,
-          env.context,
-          call.name,
-          call.arguments_json,
-        )
-      },
       report: fn(report) { process.send(self, live.Executed(report)) },
     ),
   )

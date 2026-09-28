@@ -26,11 +26,17 @@
 //// reference, `child` opens a child's handle, cancelling a parent cancels
 //// its children, and recovering a parent recovers its children.
 ////
+//// A run's context is a live value, never stored: the one given to `start`
+//// or `recover`, held by the handle and its runner. An approved action is
+//// the exception: it runs with the context its answer was checked with
+//// (see `answer`).
+////
 //// After a restart, `recover` opens a stored run under the same agent. If
 //// work was in flight when its runner was lost, recovery takes it over as a
 //// new incarnation: tools that had started become uncertain effects, which
 //// are never retried and must be reconciled; queued tools and a lost model
-//// call are started again. "Never retried" holds as long as the store keeps
+//// call are started again, except approved ones, which ask for their
+//// approval again. "Never retried" holds as long as the store keeps
 //// every commit it acknowledged: the directory store does not flush the
 //// directory entry, so after an operating-system crash or power loss (not
 //// a process or VM crash) the latest revisions may be missing, and a tool
@@ -156,6 +162,12 @@ pub fn start(
 /// queued tools are dispatched again, and a lost model call is issued again
 /// against the turn budget. A suspended or finished run is opened
 /// unchanged. Calling it again is harmless.
+///
+/// An approved tool or sub-agent start that had not started is not run
+/// with `context`: the context its answer was checked with is gone, and a
+/// stored approval alone does not authorize a later incarnation. It asks
+/// for its approval again, as a new request under the requirement last
+/// answered (the old reference is then stale).
 ///
 /// Sub-agent runs are recovered with their parent: a child that was never
 /// stored is started, a child whose end the parent missed is applied to
@@ -305,9 +317,13 @@ pub fn pending(
 /// Answers an approval request of the run or of one of its sub-agents (the
 /// reference names the run). `context` is the application's current
 /// context: the policy is checked again with it, and a current denial or
-/// policy failure wins over an approval. It is used for that check only:
-/// the approved action runs with the run's context (the one the run was
-/// started or recovered with), whether or not a runner was live.
+/// policy failure wins over an approval. The approved action runs with
+/// exactly this context, whether or not a runner was live: the tool body
+/// receives it, and an approved sub-agent start starts the child run with
+/// it. It does not become the run's context: the run's other actions keep
+/// the context it was started or recovered with. If the run's runner is
+/// lost before the approved action starts, recovery asks again (see
+/// `recover`).
 ///
 /// Works with no process holding the run: the answer is committed to the
 /// stored record with compare-and-set, so of concurrent answers exactly one
@@ -402,7 +418,7 @@ fn cancel_stored_loop(
   }
   case runner.live_runner(entry, state) {
     Some(mailbox) ->
-      case runner.send_live(mailbox, controller.cancel) {
+      case runner.send_live(mailbox, controller.cancel, None) {
         Ok(live.Applied(state)) -> Ok(controller.status(state))
         Ok(live.Refused(rejection)) -> Error(refusal(rejection))
         Ok(live.Superseded) | Error(Nil) -> retry()
