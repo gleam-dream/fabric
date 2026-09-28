@@ -31,7 +31,9 @@
 //// the run it observes is refused at once with `fabric.RunnerBusy`, and a
 //// command from elsewhere that the runner does not take within the
 //// agent's command timeout is refused the same way and never applied
-//// later. Handlers that call Fabric should run in a forwarder.
+//// later. A cancellation is the exception: it is committed to the record,
+//// abandoning the held runner's work, and the runner stops at its next
+//// commit. Handlers that call Fabric should run in a forwarder.
 ////
 //// An event may be missing: a process that dies between its commit and
 //// its emit, or a commit made through a store in another VM, emits

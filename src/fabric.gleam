@@ -119,7 +119,8 @@ pub type CommandError {
   /// handler holds it, or the command was sent from such a handler running
   /// in the run's own runner. Nothing was changed, and the command will not
   /// be applied later. Try again, or route Fabric's events through a
-  /// forwarder (see `fabric/observation`).
+  /// forwarder (see `fabric/observation`). `cancel` and `cancel_stored`
+  /// never return it: they commit the cancellation to the record instead.
   RunnerBusy
   /// The record could not be read or written. A write the store reports
   /// `Unavailable` (as `Unreadable(StoreFailed(Unavailable(_)))`) has an
@@ -410,7 +411,13 @@ pub fn answer(
 /// same backend), the cancellation is committed to the record at once and
 /// reported `Finished(Cancelled)`, but the owner's tool bodies keep running
 /// until its runner next tries to commit and stops; they are recorded as
-/// uncertain effects.
+/// uncertain effects. A runner that does not take the cancellation within
+/// the command timeout (a synchronous handler holds it) is treated the same
+/// way: its work is abandoned in the record, and once released it commits
+/// nothing more, so no tool body starts after the cancellation (a body
+/// starts only once its start is committed) and no model turn is recorded.
+/// A sub-agent is cancelled the same way; its delegation becomes an
+/// uncertain effect only when the store keeps failing.
 pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
   runner.command(run.setup, run.id, run.setup.env, controller.Cancel, retries)
   |> result.map(status_after(run, _))
@@ -425,7 +432,7 @@ pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
 /// then). A run whose runner is live in this store is cancelled through
 /// that runner, as `cancel` would, which must take it within
 /// `agent.default_command_timeout` (there is no agent to configure it);
-/// otherwise the work of
+/// otherwise (a lost runner, or one a handler holds) the work of
 /// a lost runner is abandoned (running tools become uncertain effects) and
 /// the run ends `Cancelled` in one commit. Active sub-agent runs are
 /// cancelled first, the same way; their delegations are recorded as
