@@ -791,6 +791,48 @@ pub fn a_child_that_cannot_be_cancelled_can_no_longer_act_test() {
   probe.count(probe, "pay:bob") |> should.equal(0)
 }
 
+/// The twin of the approval case for a reconciliation: the child is
+/// suspended on an effect of unknown status and cannot be cancelled at
+/// all. The parent still ends, and the child's effect is refused through
+/// the parent and through the child's own handle with `RunEnded`, because
+/// cancelling an ancestor wins over reconciling a descendant.
+pub fn a_child_that_cannot_be_cancelled_can_no_longer_be_reconciled_test() {
+  let probe = probe.new()
+  let backend = flaky.new()
+  let family =
+    delegating(
+      probe,
+      [research_call("r", "gleam")],
+      working_researcher(
+        probe,
+        [
+          scripted.call(
+            "t",
+            "transfer_funds",
+            "{\"to\":\"bob\",\"amount\":5000}",
+          ),
+        ],
+        [apps.transfer_tool()],
+        policy.always_allow(),
+      ),
+      policy.always_allow(),
+    )
+  let assert Ok(run) = fabric.start(flaky.store(backend), family, Nil, "go")
+  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  let child = child_of(run)
+  uncertain.reference.run |> should.equal(fabric.id(child))
+  flaky.arm_run(backend, fabric.id(child), list.repeat(flaky.FailBefore, 64))
+
+  let assert Ok(_) = fabric.cancel(run)
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  let assert run.Uncertain(evidence) = only_action(run).state
+  string.contains(evidence, "could not be cancelled") |> should.be_true
+  fabric.reconcile(run, uncertain.reference, "{\"receipt\":\"r-1\"}")
+  |> should.equal(Error(fabric.RunEnded))
+  fabric.reconcile(child, uncertain.reference, "{\"receipt\":\"r-1\"}")
+  |> should.equal(Error(fabric.RunEnded))
+}
+
 /// A family whose child pays as soon as it runs.
 fn eager_family(probe: Probe) -> Agent(Nil) {
   delegating(
