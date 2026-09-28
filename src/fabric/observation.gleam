@@ -40,8 +40,9 @@
 //// An event may be missing: a process that dies between its commit and
 //// its emit, or a commit made through a store in another VM, emits
 //// nothing here. A routed event is also dropped when its forwarder is full
-//// (counted in the forwarder's `dropped_event`) or not running (not
-//// counted), and in-flight events are lost if the forwarder stops. Events
+//// or not running (both counted and reported through the forwarder's
+//// `dropped_event`, those made while it is down by its next incarnation),
+//// and in-flight events are lost if the forwarder stops. Events
 //// of one commit are emitted in the order listed below, and one process's
 //// events keep their order through one route; events of different runs,
 //// of one run through several processes, or split across a route change

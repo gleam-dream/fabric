@@ -39,7 +39,9 @@
 //// (for example by its supervisor) knows no runner, so every run with work
 //// in flight reads as `Unattended` until `fabric.recover` takes it over. An
 //// in-memory store keeps its records in its process, so a restart loses
-//// them; a directory or application backend keeps them. Several stores may
+//// them; a directory or application backend keeps them (the directory
+//// store only up to a power loss: it is for development, tests, and one
+//// host). Several stores may
 //// open the same backend (for example the same directory): the backend's
 //// compare-and-set keeps their commits safe, but each only knows its own
 //// runners.
@@ -118,8 +120,12 @@ pub fn in_memory(name: Name(Message)) -> Store {
   Store(name, fn() { Ok(memory_backend()) }, None)
 }
 
-/// A durable store in `path`, registered as `name`; the directory is
-/// created when the store starts, if missing. Each run is a directory
+/// A store in the directory `path`, registered as `name`, for development,
+/// tests, and a single host: its records survive a process or VM crash,
+/// but not a power loss or an operating-system crash (see Atomicity). In
+/// production use a database backend through `new` (a Postgres adapter is
+/// planned) or another application backend. The directory is created
+/// when the store starts, if missing. Each run is a directory
 /// holding one file per revision, `<revision>.json`. Every revision name is
 /// kept, but revisions older than the previous one are emptied, so disk use
 /// follows the latest record rather than every record written. Starting the
@@ -135,8 +141,11 @@ pub fn in_memory(name: Name(Message)) -> Store {
 /// directory entry itself is not flushed: after a power loss or an
 /// operating-system crash (not a process or VM crash) the most recent
 /// revisions may be missing, and since an older revision is emptied once
-/// two newer ones are published, the run may then read as `Unavailable`.
-/// Network filesystems without atomic hard links are not supported.
+/// two newer ones are published, the run may then read as `Unavailable`;
+/// a tool whose start was among the lost revisions could run again.
+/// Flushing the directory entry would need a native extension, which Fabric
+/// does not ship. Network filesystems without atomic hard links are not
+/// supported.
 pub fn directory(name: Name(Message), path: String) -> Store {
   Store(
     name,

@@ -184,6 +184,42 @@ an idle run is data in the store with no process holding it.
   separate package `integrations/fabric_saga`, so Fabric does not depend on
   Saga (oversight `fabric-design.md`, package ownership).
 
+## Production runtime: limits and supervised runners
+
+The accepted production-runtime design (2026-09-28, at `7901edb`; user
+decisions D1 to D5) is built in slices. This section records the slices
+built so far; the backlog below the list keeps the rest (leases, the
+Postgres adapter, the sweeper, the write-version window, operations).
+
+### S1: limits
+
+- **Timer-fed limits are validated.** Erlang crashes a receive whose
+  timeout is 2^32 ms or more (`timeout_value`). `agent.build` reports
+  `PolicyTimeoutTooLarge(value, limit)` and `CommandTimeoutTooLarge(value,
+limit)` above 2^32 - 1, and `ModelRetryDelayTooLarge(value, limit)` above
+  (2^32 - 1) / 64, since the delay doubles up to 64 times
+  (`timer_fed_limits_must_fit_a_timer_test`, runner_test). Every other
+  value that feeds a timer was checked: the settlement bound was already
+  validated (`SettlementBoundTooLarge`), `fabric_saga`'s `rollback_within`
+  is that bound, the store's backend timeout is internal, and the store
+  retries use constants.
+- **`await` waits in parts.** A `within` of 2^32 ms or more is waited at
+  most 2^32 - 1 ms at a time until its deadline; no API change
+  (`an_await_longer_than_a_timer_returns_the_outcome_test`, durable_test).
+- **The directory store is for development, tests and one host** (D4). It
+  survives a process or VM crash, not a power loss or an operating-system
+  crash: flushing the directory entry needs a NIF (`file:open` of a
+  directory is `eisdir` in every mode), which Fabric does not ship.
+  Production uses a database backend through `store.new`; the Postgres
+  adapter is slice S4. The `store` and `fabric` module documentation, the
+  README and CAPABILITIES say so.
+
+S1's gates passed against llm_wire `a822ea4`, json_blueprint `ecf5c60`,
+sinal `858dfa3` and saga `4a93b04`, each with a clean working tree. Sinal
+`858dfa3` counts sends dropped while a forwarder is down (`Dropped`'s new
+`unavailable`); Fabric names no `Dropped` field, so only the
+`fabric/observation` documentation changed.
+
 ## Public API (slice 3: ergonomics pass)
 
 The current public surface. The sections after this one are the history
@@ -234,6 +270,8 @@ pub type ConfigError { DuplicateToolName(String)  InvalidToolName(String)  ToolS
                        SettlementBoundNotPositive(name, within)  SettlementBoundTooLarge(name, within)
                        MaxTurnsNotPositive(Int)  MaxConcurrencyNotPositive(Int)  TokenBudgetNotPositive(Int)
                        PolicyTimeoutNotPositive(Int)  ModelRetryDelayNegative(Int)  CommandTimeoutNotPositive(Int)
+                       PolicyTimeoutTooLarge(value: Int, limit: Int)  CommandTimeoutTooLarge(value: Int, limit: Int)
+                       ModelRetryDelayTooLarge(value: Int, limit: Int)   // added in S1
                        InvalidIdentity(name, version)  MaxChildrenNegative(Int)  MaxDepthNegative(Int)
                        MaxChildrenTooLarge(value: Int, limit: Int)  MaxDepthTooLarge(value: Int, limit: Int) }
 pub fn default_limits() -> Limits   // 8 turns, 4 tools at once, no token budget, 4 children, depth 1,
@@ -1024,12 +1062,13 @@ adopted here:
 ## Tested sibling revisions
 
 Fabric resolves its siblings as `../` path dependencies. The gates after
-the slice 3 ergonomics pass passed against these revisions, each with a
-clean working tree:
+the production-runtime slices (above) passed against these revisions, each
+with a clean working tree (the slice 3 ergonomics pass used sinal
+`c886825`):
 
 | Package        | Revision  | Relationship                                                                  |
 | -------------- | --------- | ----------------------------------------------------------------------------- |
 | llm_wire       | `a822ea4` | Direct dependency (`fabric/llm`, `llm_wire/testing` in tests)                 |
 | json_blueprint | `ecf5c60` | Direct dependency (tool codecs)                                               |
-| sinal          | `c886825` | Direct dependency since slice 2b (`fabric/observation`)                       |
+| sinal          | `858dfa3` | Direct dependency since slice 2b (`fabric/observation`)                       |
 | saga           | `4a93b04` | Dependency of `integrations/fabric_saga` and the consumer only; not of Fabric |
