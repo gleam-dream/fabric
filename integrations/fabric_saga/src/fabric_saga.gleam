@@ -3,15 +3,20 @@
 //// The workflow takes the tool's decoded input and produces its output,
 //// so the model sees one tool while Saga orders the steps, retries them as
 //// the workflow says, and compensates what completed when a step fails.
-//// Saga's outcome becomes the tool's result:
+//// Saga's outcome becomes the tool's result. A result is definite only
+//// when Saga's report proves that no attempt of any step has an effect of
+//// unknown status: a typed error that a step's single attempt returned is
+//// known, while a crash, an exit, a timeout, or an interruption is not.
+//// Saga does not report a crashed attempt of a step with a recovery
+//// decider (`saga.compensate`), so an outcome in which such a step may
+//// have been attempted is uncertain:
 ////
 //// | Saga outcome | Tool result |
 //// | --- | --- |
-//// | `Completed(output)` | the output |
-//// | `Failed` by a step's typed error on its only attempt, every completed step undone | a definite failure the model sees: `explain(error)` |
-//// | `Failed` past the deadline, every completed step undone | a definite failure the model sees |
-//// | `Cancelled`, every completed step undone | a definite failure the model sees: the workflow was cancelled and every completed step undone |
-//// | anything that left an effect in place or unknown: an undo that failed, a step interrupted, crashed, held, or without an undo, a step that failed after retries (an earlier attempt may have crashed or timed out, and Saga reports only the last), `CompletedWithUnknownEffects`, `Unresolved`, a lost run | an uncertain effect |
+//// | `Completed(output)`, and no step has a recovery decider | the output |
+//// | `Failed` by a typed error of a step with no recovery decider, or past the deadline; every sibling failure such a typed error; nothing left in place; no step with a recovery decider attempted | a definite failure the model sees: `explain(error)` (or the missed deadline) |
+//// | `Cancelled`, with the same conditions | a definite failure the model sees: the workflow was cancelled and every completed step undone |
+//// | anything else: a step with a recovery decider that may have been attempted (a step is not attempted when it depends on a step that failed), a crash, timeout, or retry cause or sibling failure, an undo or compensation that failed, a step interrupted, held, or without an undo, `CompletedWithUnknownEffects`, `Unresolved`, a lost run | an uncertain effect whose evidence summarizes Saga's report (outcome kinds and step addresses, never application data) |
 ////
 //// Cancelling the Fabric run (or any stop of the tool's task) cancels the
 //// Saga run: the workflow is started by the tool's task, which owns it, and
@@ -25,21 +30,13 @@
 //// and changes nothing; the action stays an uncertain effect.
 
 import fabric/tool
+import fabric_saga/internal/verdict.{type Stopped, Definitely, Unknown}
 import gleam/erlang/process.{type Pid, type Subject}
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import saga
 import saga/execution
-
-/// Why the workflow did not produce its output.
-type Stopped {
-  /// Nothing the workflow did is left in place; the model may see this.
-  Definitely(message: String)
-  /// An effect may be left in place.
-  Unknown(evidence: String)
-}
 
 /// A tool bound to `workflow`, run with `config` for every call. `explain`
 /// renders a step's typed error for the model. When the call's task is
@@ -55,10 +52,13 @@ pub fn tool(
   rollback_within rollback_within: Int,
 ) -> Result(tool.Tool(context), List(execution.ConfigError)) {
   use config <- result.map(execution.validate(config))
+  let judge = fn(delivery) {
+    outcome(delivery, saga.describe(workflow), explain)
+  }
   tool.bind_settling(
     definition,
     fn(_context, input, settlement) {
-      run(workflow, input, config, explain, settlement, rollback_within)
+      run(workflow, input, config, judge, settlement, rollback_within)
     },
     failure,
     within: rollback_within,
@@ -91,7 +91,7 @@ fn run(
   workflow: saga.Workflow(input, output, error, undo_error),
   input: input,
   config: execution.Config,
-  explain: fn(error) -> String,
+  judge: fn(Delivery(output, error, undo_error)) -> Result(output, Stopped),
   settlement: tool.Settlement(output),
   rollback_within: Int,
 ) -> Result(output, Stopped) {
@@ -113,7 +113,7 @@ fn run(
           let _ =
             tool.settle(
               settlement,
-              outcome(delivery, explain) |> result.map_error(failure),
+              judge(delivery) |> result.map_error(failure),
             )
           Nil
         },
@@ -141,7 +141,7 @@ fn run(
         })
         |> process.selector_receive_forever
       case delivered {
-        Ok(delivery) -> outcome(delivery, explain)
+        Ok(delivery) -> judge(delivery)
         Error(Nil) -> Error(Unknown("the workflow's outcome was lost"))
       }
     }
@@ -244,111 +244,11 @@ fn deliver(receiver: Receiver(o, e, u), delivery: Delivery(o, e, u)) -> Nil {
 
 fn outcome(
   delivery: Delivery(output, error, undo_error),
+  steps: List(saga.StepDescriptor),
   explain: fn(error) -> String,
 ) -> Result(output, Stopped) {
   case delivery {
     RunLost -> Error(Unknown("the workflow run was lost"))
-    Delivered(execution.Completed(output)) -> Ok(output)
-    Delivered(execution.CompletedWithUnknownEffects(_, steps)) ->
-      Error(Unknown(
-        "the workflow completed, but these steps were interrupted and their effect is unknown: "
-        <> addresses(steps),
-      ))
-    Delivered(execution.Failed(cause, settlement)) ->
-      case left_in_place(settlement) {
-        Error(evidence) -> Error(Unknown(evidence))
-        Ok(Nil) -> Error(failed(cause, explain))
-      }
-    Delivered(execution.Cancelled(_, settlement)) ->
-      case left_in_place(settlement) {
-        Error(evidence) -> Error(Unknown(evidence))
-        Ok(Nil) ->
-          Error(Definitely(
-            "the workflow was cancelled; every completed step was undone",
-          ))
-      }
-    Delivered(execution.Unresolved(step, _, _)) ->
-      Error(Unknown(
-        "the workflow held the effects of step "
-        <> saga.address_to_string(step)
-        <> " unresolved",
-      ))
+    Delivered(outcome) -> verdict.classify(outcome, steps, explain)
   }
-}
-
-/// A failure's cause, when compensation completed. A step that crashed or
-/// timed out may have had its effect, and so may a step that failed after
-/// retries, so only a typed error on a step's only attempt and a missed
-/// deadline are definite.
-fn failed(
-  cause: execution.Cause(error),
-  explain: fn(error) -> String,
-) -> Stopped {
-  case cause {
-    execution.StepFailed(_, error) -> Definitely(explain(error))
-    execution.DeadlineExceeded -> Definitely("the workflow missed its deadline")
-    // Saga reports only the last attempt: an earlier one may have crashed
-    // or timed out with its effect unknown.
-    execution.RetryLimitReached(step, _) | execution.RetrySuperseded(step, _) ->
-      Unknown(
-        "step "
-        <> saga.address_to_string(step)
-        <> " failed after retries; an earlier attempt may have crashed or timed out, so its effect is unknown",
-      )
-    execution.StepCrashed(step, _) | execution.StepTimedOut(step) ->
-      Unknown(
-        "step "
-        <> saga.address_to_string(step)
-        <> " crashed or timed out; its effect is unknown",
-      )
-    execution.OutputCrashed(crash) ->
-      Unknown("the workflow's output crashed: " <> string.inspect(crash))
-  }
-}
-
-/// `Error(evidence)` when the settlement left an effect in place or of
-/// unknown status.
-fn left_in_place(
-  settlement: execution.Settlement(error, undo_error),
-) -> Result(Nil, String) {
-  let undo_failed =
-    list.map(settlement.undo_failures, fn(failure) {
-      case failure {
-        execution.UndoFailed(step, _)
-        | execution.UndoCrashed(step, _)
-        | execution.UndoTimedOut(step) -> step
-      }
-    })
-  let compensation_failed =
-    list.map(settlement.compensation_failures, fn(failure) {
-      case failure {
-        execution.CleanupFailed(step, _)
-        | execution.CompensationCrashed(step, _)
-        | execution.CompensationTimedOut(step) -> step
-      }
-    })
-  let problems =
-    [
-      #("not undone", undo_failed),
-      #("compensation failed", compensation_failed),
-      #("interrupted", settlement.interrupted),
-      #("held", settlement.held),
-      #("without an undo", settlement.not_undoable),
-    ]
-    |> list.filter(fn(entry) { entry.1 != [] })
-  case problems {
-    [] -> Ok(Nil)
-    _ ->
-      Error(
-        "the workflow left effects in place: "
-        <> string.join(
-          list.map(problems, fn(entry) { entry.0 <> " " <> addresses(entry.1) }),
-          "; ",
-        ),
-      )
-  }
-}
-
-fn addresses(steps: List(saga.StepAddress)) -> String {
-  string.join(list.map(steps, saga.address_to_string), ", ")
 }
