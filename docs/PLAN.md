@@ -160,7 +160,17 @@ an idle run is data in the store with no process holding it.
   active. An end that arrives after that is refused.
 - **Observations are derived from committed transitions.** The runtime
   compares the state before and after every successful commit and emits
-  Sinal events from the committing process; the controller emits nothing.
+  Sinal events with `sinal/forwarder.emit_routed`; the controller emits
+  nothing. Handlers run in the committing process unless the application
+  routes `[fabric]` through a forwarder. A command is answered before its
+  commit's events are emitted, and a runner that does not take a command
+  within the command timeout refuses it (`RunnerBusy`).
+- **A tool may settle its result after its task was stopped.** A tool
+  bound with `tool.bind_settling` receives a typed `Settlement(output)`. A
+  stopping run waits for the settlement of each stopped settling tool, up to
+  its bound; an uncertain action accepts one definite settlement, like a
+  reconciliation of exactly that action. The first accepted settlement is
+  the only one; anything else is `NotAwaited` and changes nothing.
 - **Saga stays optional.** A Saga workflow becomes a tool through the
   separate package `integrations/fabric_saga`, so Fabric does not depend on
   Saga (oversight `fabric-design.md`, package ownership).
@@ -184,6 +194,19 @@ the separate package `fabric_saga`, `fabric_saga.tool(definition, workflow,
 config, explain:) -> Result(Tool(c), List(execution.ConfigError))`. Adding
 fields and variants is a breaking change for code that constructs or
 exhaustively matches these types.
+
+## Public API after the slice 2b review
+
+Beside the slice 2b API: `tool.bind_settling(definition, handler, classify,
+within:)`, whose handler takes a third argument `tool.Settlement(output)`;
+`tool.settle(settlement, Result(output, Failure)) -> Result(Nil,
+SettleError)` with `SettleError { NotAwaited  SettleFailed(detail) }`;
+`agent.with_command_timeout` (default `agent.default_command_timeout`, 5000
+ms); the constants `agent.max_children_limit` (999) and
+`agent.max_depth_limit` (16); the `ConfigError` variants
+`CommandTimeoutNotPositive`, `MaxChildrenTooLarge`, `MaxDepthTooLarge`, and
+`SettlementBoundNotPositive(name, within)`; `CommandError.RunnerBusy`; and
+`fabric_saga.tool(.., explain:, rollback_within:)`.
 
 ## Public API at slice 2a
 
@@ -397,7 +420,7 @@ under process or VM loss. Its findings were fixed test-first:
 
 | Finding                                                                                                          | Resolution and evidence                                                                                                                                                                                                                                                       |
 | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unparseable Anthropic or Google tool arguments failed the next turn                                              | Replayed as `{"unparsed_arguments": text}`; the record keeps the original (`unparseable_arguments_replay_to_anthropic_as_an_object_test`). llm_wire itself should replay arguments it reported as invalid (proposed sibling change).                                          |
+| Unparseable Anthropic or Google tool arguments failed the next turn                                              | llm_wire `a822ea4` replays reported-invalid arguments for every provider; the adapter passes them through and the record keeps the original (`unparseable_arguments_replay_to_anthropic_as_an_object_test`, `unparseable_arguments_replay_to_openai_verbatim_test`).          |
 | A second `Store` over one directory answered `RecoveryRequired` and advised a takeover                           | Commands are checked against the stored record first; `OwnerUnknown` replaces `RecoveryRequired` (`a_second_store_checks_commands_before_reporting_an_unknown_owner_test`).                                                                                                   |
 | An agent change stranded paused runs                                                                             | `fabric.cancel_stored(store, id)` needs no agent; `cancel` through a handle skips the compatibility check (`a_stranded_run_is_cancelled_without_an_agent_test`, `cancel_stored_stops_a_live_run_through_its_runner_test`).                                                    |
 | One transient `Unavailable` stalled the run                                                                      | Store read-back and runner retry (`a_runner_retries_a_commit_the_store_could_not_make_test`, `a_write_the_backend_made_despite_an_error_is_confirmed_test`).                                                                                                                  |
@@ -428,6 +451,44 @@ Deferred, with reasons:
 - Ergonomics (five error types, `answer` needing a context for a rejection,
   a Store linked to its opener, an opaque run id) are recorded for an API
   review; none was changed here.
+
+## Slice 2b review fixes
+
+An independent review of slice 2b (at `a43018a`) found one blocker, three
+major and eight minor findings, and nits. Fixed test-first, one commit each:
+
+| Finding                                                                                                | Resolution and evidence                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| B1: one transient store failure left a parent's cancellation incomplete, and the child could still act | `cancel_child` retries until the child reads stopping or ended, else records `ChildLost`; cancelling a stopping run cancels its children again; `answer` and `reconcile` refuse with `RunEnded` when an ancestor is stopping or ended (`a_transient_store_failure_does_not_leave_a_child_uncancelled_test`, `a_child_that_cannot_be_cancelled_can_no_longer_act_test`, `cancelling_a_stopping_run_cancels_its_children_again_test`).                           |
+| M1: a start or recovery racing a cancel ran a child under a cancelled parent                           | A canceller that finds no child inserts a cancelled tombstone (insert-if-absent), which reads as a missing child (`a_child_stored_after_its_parent_was_cancelled_never_runs_test`, `recovery_does_not_start_a_child_after_its_parent_was_cancelled_test`).                                                                                                                                                                                                     |
+| M2: a synchronous handler could wedge its runner                                                       | A command is answered before its commit's events; commands carry an acceptance deadline (`agent.with_command_timeout`) and are refused as `RunnerBusy`, never applied late; a command from the runner's own process is refused at once; handlers that call Fabric should run in a forwarder (`a_handler_commanding_its_own_run_is_refused_test`, `a_command_returns_before_its_handlers_run_test`, `a_command_to_a_runner_held_by_a_handler_is_refused_test`). |
+| M3: an identical record by another writer confirmed a lost write                                       | Every encoding carries a fresh write token; the runner retries a commit with the same text (`an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test`).                                                                                                                                                                                                                                                                                       |
+| m1: corrupt or cyclic child links; child ids past 128 characters                                       | Links must extend the run id (`family_links_must_extend_the_run_id_test`); `max_children <= 999` and `max_depth <= 16` (`delegation_limits_keep_child_ids_valid_test`).                                                                                                                                                                                                                                                                                        |
+| m2: a transient child insert failure was ignored and reported started                                  | The insert is retried; a child that cannot be stored is a lost child, and `ChildStarted` is sent only for a stored one (`a_child_whose_first_insert_fails_still_starts_test`, `a_child_that_cannot_be_stored_is_uncertain_test`).                                                                                                                                                                                                                              |
+| m3: `cancel_stored` on a child does not deliver its end                                                | Documented on `cancel_stored`: recovering the parent applies it.                                                                                                                                                                                                                                                                                                                                                                                               |
+| m4: command-path writes reported `Unavailable` though they may land                                    | Documented on `StartFailed`, `Unreadable`, and the store contract as an unknown outcome; the write token makes read-back reliable.                                                                                                                                                                                                                                                                                                                             |
+| m5: pruning empties a revision before the directory is flushed                                         | Documented on `store.directory`; deferred (below).                                                                                                                                                                                                                                                                                                                                                                                                             |
+| m6: `RetryLimitReached(_, Returned(e))` was definite                                                   | Uncertain: Saga reports only the last attempt (`a_failure_after_retries_is_uncertain_test`).                                                                                                                                                                                                                                                                                                                                                                   |
+| m7: `reconcile` is not routed by run                                                                   | Deferred (below).                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| m8: delegations offered with no child allowed                                                          | Left out of the model request when `max_children` is 0 or no depth is left (`delegations_are_offered_only_when_a_child_may_start_test`).                                                                                                                                                                                                                                                                                                                       |
+| Nit: a handle whose agent lost the delegation cancelled no children                                    | `cancel_child` falls back to the agent-less cancellation and applies the child's end unmapped (`cancelling_does_not_depend_on_the_current_delegations_test`).                                                                                                                                                                                                                                                                                                  |
+
+Deferred, with reasons:
+
+- **Flushing the directory before pruning (m5).** Erlang's `file` module
+  refuses to open a directory (`eisdir`), so an `fsync` of the directory
+  needs a NIF or a port; the loss is limited to power loss or an OS crash.
+- **`reconcile` routed by run (m7).** It takes an `ActionId` of the handle's
+  run; routing it like `answer` needs a reference type (an
+  `UncertainAction`, or a new one) and changes every caller. An API
+  decision.
+- **Typed child output (m7).** A delegation maps `run.Outcome` text; a
+  typed child output needs a structured final answer (slice 3).
+- **Delegation limits apart from `Budget` (m7).** `ChildLimit` and
+  `DepthLimit` share `run.Budget` with turn and token limits.
+- **Nits:** `run_recovered` is emitted for the cancel of an orphaned run
+  (the cancel increments the incarnation); `child_started` is not emitted
+  when a child's end is applied before its start report.
 
 ## Slice 2b — sub-agents, observations, Saga workflows as tools
 
@@ -487,9 +548,12 @@ Implemented. Acceptance, each with its executed evidence
    `sub_agents_cancellation_and_recovery_are_observed_test`).
 8. **A Saga workflow as a tool** (`fabric_saga`), tested with the `book_trip`
    shape: completion, a hotel failure that releases the flight (typed,
-   definite), a release that fails (uncertain), Fabric cancellation that
-   cancels the Saga run and lets Saga undo the hotel and the flight
-   (uncertain in Fabric), and an invalid configuration refused up front.
+   definite), a release that fails (uncertain), a step that failed after
+   retries (uncertain), Fabric cancellation that cancels the Saga run and
+   settles the stopped call with Saga's rollback (definite when every
+   completed step was undone, uncertain when an undo failed or a step was
+   interrupted, refused once the call's bound has passed), and an invalid
+   configuration refused up front.
 9. **Consumer**: a purchasing sub-agent gated by the committee whose own
    order approval surfaces at the front desk, cancelling the desk with the
    purchaser paused, an interlibrary loan as a Saga tool, and application
@@ -505,9 +569,6 @@ Backlog from this slice:
   its children's tokens), and no elapsed-time budget.
 - **Child context.** A child shares its parent's context type and receives
   the parent's run context; a delegation cannot derive a narrower context.
-- **Cooperative cancellation.** Cancelling kills tool tasks, so a Saga tool's
-  clean compensation is still recorded as an uncertain effect (see the Saga
-  friction below).
 - **Recovery of a child alone.** `recover` on a child id works, but the child
   then has no parent link in that handle; its end reaches the parent only
   when the parent is recovered or its runner delivers it.
@@ -525,8 +586,6 @@ Backlog from this slice:
   only a run reference.
 - Streamed model progress through llm_wire `session.stream`, with
   cancellation closing the stream.
-- Cooperative cancellation (a grace period before tool tasks are killed),
-  so a Saga tool can report a definite compensation.
 - Budgets shared across a sub-agent family.
 - Structured final output via llm_wire's structured session.
 - Elapsed-time budget with a trusted clock and per-tool timeouts.
@@ -574,41 +633,39 @@ changed):
 
 ## Slice 2b friction
 
-No sibling was changed. Proposed, with evidence:
+Each item was resolved by a sibling change made from this evidence and
+adopted here:
 
-- **llm_wire should replay arguments it reported invalid.** With
-  `ReportInvalidToolCalls`, llm_wire returns calls whose arguments are not
-  JSON and then refuses to prepare a request that replays them
-  (`canonical_json` in `internal/api.gleam`, for Anthropic and Google), so a
-  caller must rewrite them. Fabric replays `{"unparsed_arguments": text}`
-  (`unparseable_arguments_replay_to_anthropic_as_an_object_test`); llm_wire
-  could do the same for the calls it reported.
-- **Saga: learn an outcome after the owner is gone.** A Saga run is awaited
-  only by the process that started it (`execution.await`, `NotOwner`), and
-  it is cancelled when that owner exits. A Fabric tool runs the workflow in
-  its task, so cancelling the Fabric run kills the owner: Saga compensates
-  correctly (`cancelling_the_run_cancels_the_workflow_test` observes the
-  hotel and flight released) but nobody can learn that it did, and Fabric
-  must record an uncertain effect. A start option that reports the outcome
-  to a given `Subject` (or lets a named process await) would let a
-  supervising process record a definite compensation. A settle window
-  (`settle_timeout`, default 5000 ms) also delays that compensation.
-- **Sinal: a handler that blocks holds up the emitter.** `sinal.emit` runs
-  handlers synchronously; Fabric documents that a slow handler delays the
-  run and points to `sinal/forwarder`, whose supervised name and capacity
-  are application configuration. An emit option that routes through a
-  forwarder when one is configured would let a library emit safely without
-  owning that configuration.
+- **llm_wire should replay arguments it reported invalid** (resolved in
+  llm_wire `a822ea4`). Anthropic and Google now wrap non-object argument
+  text as `{"unparsed_arguments": text}` and OpenAI replays it verbatim;
+  `fabric/llm` passes the recorded arguments through
+  (`unparseable_arguments_replay_to_anthropic_as_an_object_test`,
+  `unparseable_arguments_replay_to_openai_verbatim_test`).
+- **Saga: learn an outcome after the owner is gone** (resolved in saga
+  `eb9e784`). `execution.start_reporting` delivers the outcome, after
+  rollback, to a subject that may belong to another process. `fabric_saga`
+  owns it in a receiver per call, and with the settlement seam
+  (`tool.bind_settling`) a cancelled call records a definite failure when
+  Saga undid every completed step
+  (`a_cancellation_that_undid_every_step_is_definite_test`). The settle
+  window (`settle_timeout`) still delays that settlement; `rollback_within`
+  bounds how long Fabric waits.
+- **Sinal: a handler that blocks holds up the emitter** (resolved in sinal
+  `c886825`). `forwarder.emit_routed` follows the application's routes;
+  Fabric emits with it, and `consumers/app` routes `[fabric]` at start
+  (`a_routed_handler_runs_in_the_forwarder_and_does_not_stall_the_run_test`,
+  `an_unrouted_handler_runs_in_the_runner_test`).
 
 ## Tested sibling revisions
 
-Fabric resolves its siblings as `../` path dependencies. The gates of slice 2b
-(and of 2a, at the same revisions) passed against these revisions, each with
-a clean working tree:
+Fabric resolves its siblings as `../` path dependencies. The gates after the
+slice 2b review passed against these revisions, each with a clean working
+tree:
 
 | Package        | Revision  | Relationship                                                                  |
 | -------------- | --------- | ----------------------------------------------------------------------------- |
-| llm_wire       | `3b126fe` | Direct dependency (`fabric/llm`, `llm_wire/testing` in tests)                 |
+| llm_wire       | `a822ea4` | Direct dependency (`fabric/llm`, `llm_wire/testing` in tests)                 |
 | json_blueprint | `ecf5c60` | Direct dependency (tool codecs)                                               |
-| sinal          | `f4622b6` | Direct dependency since slice 2b (`fabric/observation`)                       |
-| saga           | `f241395` | Dependency of `integrations/fabric_saga` and the consumer only; not of Fabric |
+| sinal          | `c886825` | Direct dependency since slice 2b (`fabric/observation`)                       |
+| saga           | `eb9e784` | Dependency of `integrations/fabric_saga` and the consumer only; not of Fabric |

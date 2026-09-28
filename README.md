@@ -57,13 +57,25 @@ let desk =
          }
        })
 
-// A Saga workflow as one typed tool (package fabric_saga).
+// A Saga workflow as one typed tool (package fabric_saga). A cancelled call
+// waits up to `rollback_within` ms for Saga's rollback: every completed step
+// undone is a definite failure, anything left in place an uncertain effect.
 let assert Ok(book_trip) =
   fabric_saga.tool(trip_definition, book_trip_workflow, execution.config(),
-    explain: describe_trip_error)
+    explain: describe_trip_error, rollback_within: 10_000)
+
+// A tool whose effect outlives its task settles its result late: the handler
+// gets a typed `tool.Settlement(output)`, and a stopped run waits up to
+// `within` ms for `tool.settle(settlement, result)`.
+let lookup =
+  tool.bind_settling(weather_definition, handler, classify, within: 5000)
 ```
 
 Observations: attach Sinal handlers to the events of `fabric/observation`.
+They run in the committing process unless the application routes `[fabric]`
+through a `sinal/forwarder` (`forwarder.route` at start, `forwarder.unroute`
+at shutdown), which keeps a slow handler from holding up a run; handlers that
+call Fabric should run there.
 
 `consumers/app` is a complete external application using public imports only.
 
