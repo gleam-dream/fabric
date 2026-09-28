@@ -233,13 +233,7 @@ pub fn a_run_is_observed_after_each_commit_test() {
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   let paused = until(events, "approval_requested")
   let assert Ok(_) =
-    fabric.answer(
-      run,
-      pending.reference,
-      run.Approve,
-      reviewer: None,
-      context: Nil,
-    )
+    fabric.approve(run, pending.reference, reviewer: None, context: Nil)
   let rest = until(events, "run_finished")
   release(attachments)
 

@@ -1,12 +1,12 @@
 //// Fabric's Sinal events: what a run did, for logs, metrics, and traces.
 ////
-//// Observation is diagnostic, never a source of truth: the run's record
-//// is. Every event is emitted after the commit of the transition it
-//// describes, by the process that made the commit (a runner, or the
-//// caller of `start`, `answer`, `cancel`, `reconcile`, `recover`, or
-//// `cancel_stored`), and never by the pure controller. It is emitted with
-//// `sinal/forwarder.emit_routed`, so the application chooses where
-//// handlers run:
+//// Observation is diagnostic, never a source of truth: the run's record is.
+//// Every event is emitted after the commit of the transition it describes, by
+//// the process that made the commit (a runner, or the caller of `start`,
+//// `approve`, `reject`, `cancel`, `reconcile`, `recover`, or `cancel_stored`),
+//// and never by the pure controller. It is emitted with
+//// `sinal/forwarder.emit_routed`, so the application chooses where handlers
+//// run:
 ////
 //// - By default, synchronously in the committing process. A handler that
 ////   blocks holds up that run's progress.
@@ -20,23 +20,22 @@
 //// A handler that fails (returns an error or raises) is detached by Sinal
 //// and telemetry and never affects the run.
 ////
-//// A command (`answer`, `cancel`, `reconcile`, `cancel_stored`) that a
-//// live runner applies is answered once its commit is stored, before that
-//// commit's events are emitted. A command applied with no runner (to a
+//// A command (`approve`, `reject`, `cancel`, `reconcile`, `cancel_stored`)
+//// that a live runner applies is answered once its commit is stored, before
+//// that commit's events are emitted. A command applied with no runner (to a
 //// suspended run, or a cancellation that takes over a lost or held run) is
-//// committed by its caller, which emits the commit's events itself before
-//// the command returns: a synchronous handler then holds up the caller,
-//// while a runner the commit started is already working. A synchronous
-//// handler running in a runner holds that runner: a command it sends to
-//// the run it observes is refused at once with `fabric.RunnerBusy`, and a
-//// command from elsewhere that the runner does not take within the
-//// agent's command timeout is refused the same way and never applied
-//// later. A cancellation is the exception: it is committed to the record,
-//// abandoning the held runner's work. A runner held by a handler of
-//// another process is then killed, with its model call and tool bodies;
-//// a runner whose own handler cancelled its run calls no model and starts
-//// no child afterwards, and stops at its next commit. Handlers that call
-//// Fabric should run in a forwarder.
+//// committed by its caller, which emits the commit's events itself before the
+//// command returns: a synchronous handler then holds up the caller, while a
+//// runner the commit started is already working. A synchronous handler running
+//// in a runner holds that runner: a command it sends to the run it observes is
+//// refused at once with `fabric.RunnerBusy`, and a command from elsewhere that
+//// the runner does not take within the agent's command timeout is refused the
+//// same way and never applied later. A cancellation is the exception: it is
+//// committed to the record, abandoning the held runner's work. A runner held
+//// by a handler of another process is then killed, with its model call and
+//// tool bodies; a runner whose own handler cancelled its run calls no model
+//// and starts no child afterwards, and stops at its next commit. Handlers that
+//// call Fabric should run in a forwarder.
 ////
 //// An event may be missing: a process that dies between its commit and
 //// its emit, or a commit made through a store in another VM, emits
@@ -50,17 +49,28 @@
 ////
 //// | Event | Name | When |
 //// | --- | --- | --- |
-//// | `run_started` | `[fabric, run, start]` | the run's first record is stored (a sub-agent run names its parent) |
-//// | `run_recovered` | `[fabric, run, recover]` | a recovery took over lost work (new incarnation) |
-//// | `model_turn` | `[fabric, model, stop]` | a model attempt's reply or failure was committed |
-//// | `approval_answered` | `[fabric, approval, answer]` | an answer was committed (also one a changed requirement superseded) |
-//// | `approval_requested` | `[fabric, approval, request]` | an action started waiting for an approval |
-//// | `tool_dispatched` | `[fabric, tool, start]` | a tool's fence was committed: its body may run |
-//// | `tool_settled` | `[fabric, tool, stop]` | a dispatched tool's result was committed |
-//// | `child_started` | `[fabric, child, start]` | a delegation's child run is stored and runs |
-//// | `child_settled` | `[fabric, child, stop]` | a child run's end was applied to its delegation |
-//// | `settlement_refused` | `[fabric, tool, settlement, refuse]` | a late settlement was refused (see below) |
-//// | `run_cancelled` | `[fabric, run, cancel]` | a cancellation was committed |
+//// | `run_started` | `[fabric, run, start]` | the run's first record is stored
+//// (a sub-agent run names its parent) |
+//// | `run_recovered` | `[fabric, run, recover]` | a recovery took over lost
+//// work (new incarnation) |
+//// | `model_turn` | `[fabric, model, stop]` | a model attempt's reply or
+//// failure was committed |
+//// | `approval_answered` | `[fabric, approval, answer]` | an answer was
+//// committed (also one a changed requirement superseded) |
+//// | `approval_requested` | `[fabric, approval, request]` | an action started
+//// waiting for an approval |
+//// | `tool_dispatched` | `[fabric, tool, start]` | a tool's fence was
+//// committed: its body may run |
+//// | `tool_settled` | `[fabric, tool, stop]` | a dispatched tool's result was
+//// committed |
+//// | `child_started` | `[fabric, child, start]` | a delegation's child run is
+//// stored and runs |
+//// | `child_settled` | `[fabric, child, stop]` | a child run's end was applied
+//// to its delegation |
+//// | `settlement_refused` | `[fabric, tool, settlement, refuse]` | a late
+//// settlement was refused (see below) |
+//// | `run_cancelled` | `[fabric, run, cancel]` | a cancellation was committed
+//// |
 //// | `run_finished` | `[fabric, run, stop]` | the run ended |
 ////
 //// A late settlement (`tool.bind_settling`) of a stopped action is
@@ -226,7 +236,8 @@ pub type RunTotals {
   RunTotals(turns: Int, input_tokens: Int, output_tokens: Int)
 }
 
-// --- descriptors ---------------------------------------------------------------
+// --- descriptors
+// ---------------------------------------------------------------
 
 pub fn run_started() -> Event(Nil, RunStarted) {
   let assert Ok(parent) = fields.optional(text("parent"))
@@ -455,7 +466,8 @@ pub fn run_finished() -> Event(RunTotals, RunFinished) {
   )
 }
 
-// --- field helpers -------------------------------------------------------------
+// --- field helpers
+// -------------------------------------------------------------
 
 fn event(
   name: List(String),

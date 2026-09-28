@@ -73,11 +73,11 @@ pub type Status {
   Finished(Outcome)
 }
 
-/// Identifies one approval request. `revision` is unique within the run
-/// and survives restarts, so a reference stays answerable until it is
-/// answered, superseded by a new requirement, or voided by the run ending.
-/// References are plain data: an application may serialize one (into a link
-/// or a form) and rebuild it later; `fabric.answer` checks it against the
+/// Identifies one approval request. `revision` is unique within the run and
+/// survives restarts, so a reference stays answerable until it is answered,
+/// superseded by a new requirement, or voided by the run ending. References are
+/// plain data: an application may serialize one (into a link or a form) and
+/// rebuild it later; `fabric.approve` and `fabric.reject` check it against the
 /// stored record.
 pub type ApprovalRef {
   ApprovalRef(run: RunId, id: ActionId, requirement: Requirement, revision: Int)
@@ -94,9 +94,9 @@ pub type Answer {
   Reject(reason: String)
 }
 
-/// An answered approval request, kept on its action. `reviewer` is the
-/// identity the application passed to `fabric.answer`, as given: Fabric
-/// records it and does not authenticate it.
+/// An answered approval request, kept on its action. `reviewer` is the identity
+/// the application passed to `fabric.approve` or `fabric.reject`, as given:
+/// Fabric records it and does not authenticate it.
 pub type Approval {
   Approval(
     requirement: Requirement,

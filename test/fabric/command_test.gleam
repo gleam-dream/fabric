@@ -59,13 +59,7 @@ pub fn a_runner_started_by_a_command_works_while_its_handlers_run_test() {
       }
     })
   let answered =
-    fabric.answer(
-      run,
-      pending.reference,
-      run.Approve,
-      reviewer: None,
-      context: Nil,
-    )
+    fabric.approve(run, pending.reference, reviewer: None, context: Nil)
   let _ = sinal.detach(attached)
   let assert Ok(_) = answered
   process.receive(seen, 0) |> should.equal(Ok(Ok(Nil)))
@@ -145,13 +139,7 @@ pub fn a_handler_in_a_commands_caller_can_command_the_run_test() {
       }
     })
   let assert Ok(_) =
-    fabric.answer(
-      run,
-      pending.reference,
-      run.Approve,
-      reviewer: None,
-      context: Nil,
-    )
+    fabric.approve(run, pending.reference, reviewer: None, context: Nil)
   let _ = sinal.detach(attached)
   let assert Ok(Ok(_)) = process.receive(outcome, 0)
   fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))

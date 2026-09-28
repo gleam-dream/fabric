@@ -118,10 +118,9 @@ pub fn a_guardian_approves_a_junior_reservation_test() {
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   pending.tool |> should.equal("reserve_book")
   let assert Ok(_) =
-    fabric.answer(
+    fabric.approve(
       run,
       pending.reference,
-      run.Approve,
       reviewer: Some("guardian-ann"),
       context: app.member("junior"),
     )
@@ -145,12 +144,11 @@ pub fn a_rejected_reservation_is_explained_to_the_model_test() {
     )
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   let assert Ok(_) =
-    fabric.answer(
+    fabric.reject(
       run,
       pending.reference,
-      run.Reject("ask again tomorrow"),
+      reason: "ask again tomorrow",
       reviewer: Some("guardian-ann"),
-      context: app.member("junior"),
     )
   fabric.await(run, 5000)
   |> should.equal(
@@ -172,10 +170,9 @@ pub fn a_paused_reservation_can_be_cancelled_test() {
     )
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
   fabric.cancel(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.answer(
+  fabric.approve(
     run,
     pending.reference,
-    run.Approve,
     reviewer: None,
     context: app.member("junior"),
   )
@@ -217,10 +214,9 @@ pub fn a_paused_reservation_survives_a_restart_test() {
     fabric.recover(store, app.librarian(), app.member("junior"), id)
   let assert Ok([pending]) = fabric.pending(run)
   let assert Ok(_) =
-    fabric.answer(
+    fabric.approve(
       run,
       pending.reference,
-      run.Approve,
       reviewer: Some("guardian-ann"),
       context: app.member("junior"),
     )
@@ -260,10 +256,9 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
   committee.tool |> should.equal("acquire")
   committee.reference.run |> should.equal(fabric.id(desk))
   let assert Ok(_) =
-    fabric.answer(
+    fabric.approve(
       desk,
       committee.reference,
-      run.Approve,
       reviewer: Some("committee-chair"),
       context: app.member("ada"),
     )
@@ -272,10 +267,9 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
   treasurer.tool |> should.equal("order_book")
   { treasurer.reference.run != fabric.id(desk) } |> should.be_true
   let assert Ok(_) =
-    fabric.answer(
+    fabric.approve(
       desk,
       treasurer.reference,
-      run.Approve,
       reviewer: Some("treasurer-tom"),
       context: app.member("ada"),
     )
@@ -301,10 +295,9 @@ pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
     )
   let assert Ok(run.Suspended([committee], [])) = fabric.await(desk, 5000)
   let assert Ok(_) =
-    fabric.answer(
+    fabric.approve(
       desk,
       committee.reference,
-      run.Approve,
       reviewer: None,
       context: app.member("ada"),
     )
@@ -314,10 +307,9 @@ pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
   let assert Ok(_) = fabric.cancel(desk)
   fabric.await(desk, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.await(purchaser, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.answer(
+  fabric.approve(
     desk,
     treasurer.reference,
-    run.Approve,
     reviewer: None,
     context: app.member("ada"),
   )
@@ -397,19 +389,17 @@ pub fn observations_show_what_a_run_did_test() {
     )
   let assert Ok(run.Suspended([committee], [])) = fabric.await(desk, 5000)
   let assert Ok(_) =
-    fabric.answer(
+    fabric.approve(
       desk,
       committee.reference,
-      run.Approve,
       reviewer: None,
       context: app.member("ada"),
     )
   let assert Ok(run.Suspended([treasurer], [])) = fabric.await(desk, 5000)
   let assert Ok(_) =
-    fabric.answer(
+    fabric.approve(
       desk,
       treasurer.reference,
-      run.Approve,
       reviewer: None,
       context: app.member("ada"),
     )
