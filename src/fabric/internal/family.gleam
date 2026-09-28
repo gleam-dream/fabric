@@ -7,6 +7,7 @@
 //// the parent's pending approvals without a second owner of the decision.
 
 import fabric/internal/controller.{type State}
+import fabric/internal/observe
 import fabric/internal/registry
 import fabric/internal/runner.{type ReadError, type Setup}
 import fabric/run.{type ActionId, type PendingApproval, type Status}
@@ -319,6 +320,10 @@ pub fn take_over(
       let #(next, effects) = controller.recover(setup.env, state)
       case runner.launch(setup, Some(#(entry.revision, state)), next, effects) {
         Ok(_) -> {
+          case entry.holding {
+            store.HeldElsewhere(owner:, ..) -> observe.taken_over(next, owner)
+            store.HeldHere | store.Unheld -> Nil
+          }
           reattach(setup, id)
           Ok(Nil)
         }

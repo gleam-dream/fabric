@@ -4,7 +4,9 @@
 //// Every event is emitted after the commit of the transition it describes, by
 //// the process that made the commit (a runner, or the caller of `start`,
 //// `approve`, `reject`, `cancel`, `reconcile`, `recover`, or `cancel_stored`),
-//// and never by the pure controller. It is emitted with
+//// and never by the pure controller. The lease events of a leased store
+//// (`lease_lost`, `renewal_failed`) describe no commit: its store's
+//// process emits them, after the kill or the failed renewal. It is emitted with
 //// `sinal/forwarder.emit_routed`, so the application chooses where handlers
 //// run:
 ////
@@ -56,6 +58,14 @@
 //// work (new incarnation) |
 //// | `run_handed_off` | `[fabric, run, hand_off]` | a runner drained by a
 //// shutdown committed its run's handoff (see `store.supervised`) |
+//// | `run_taken_over` | `[fabric, run, take_over]` | a recovery through a
+//// leased store took over a run whose lease another owner held, after the
+//// commit (with `run_recovered`) |
+//// | `lease_lost` | `[fabric, lease, lose]` | a leased store killed a
+//// runner whose lease it lost (`Revoked`) or could no longer renew in time
+//// (`Unrenewed`) |
+//// | `renewal_failed` | `[fabric, lease, renew, fail]` | a leased store's
+//// batch renewal failed |
 //// | `model_turn` | `[fabric, model, stop]` | a model attempt's reply or
 //// failure was committed |
 //// | `approval_answered` | `[fabric, approval, answer]` | an answer was
@@ -124,6 +134,33 @@ pub type RunRecovered {
 /// on with the next.
 pub type RunHandedOff {
   RunHandedOff(run: String, incarnation: Int)
+}
+
+/// A recovery took over a run whose lease another owner held (expired, or
+/// of an earlier process of the recovering store), as `incarnation`.
+pub type RunTakenOver {
+  RunTakenOver(run: String, incarnation: Int, previous_owner: String)
+}
+
+/// Why a leased store killed a runner.
+pub type LeaseLoss {
+  /// The renewal no longer returned the run: another owner took it over,
+  /// or a cancellation took its lease.
+  Revoked
+  /// No renewal succeeded for so long that the lease could have expired
+  /// (the backend was unreachable).
+  Unrenewed
+}
+
+/// A leased store (`owner`) killed the runner of `run`, with its model call
+/// and tool bodies.
+pub type LeaseLost {
+  LeaseLost(run: String, owner: String, reason: LeaseLoss)
+}
+
+/// A leased store's renewal of the leases of its `runs` runners failed.
+pub type RenewalFailed {
+  RenewalFailed(owner: String, runs: Int)
 }
 
 /// What a model attempt produced.
@@ -282,6 +319,58 @@ pub fn run_handed_off() -> Event(Nil, RunHandedOff) {
       |> fields.imap(
         fn(values) { RunHandedOff(values.0, values.1) },
         fn(handed) { #(handed.run, handed.incarnation) },
+      ),
+  )
+}
+
+pub fn run_taken_over() -> Event(Nil, RunTakenOver) {
+  event(
+    ["run", "take_over"],
+    fields.empty(),
+    both(text("run"), both(int("incarnation"), text("previous_owner")))
+      |> fields.imap(
+        fn(values) {
+          let #(run, #(incarnation, previous)) = values
+          RunTakenOver(run, incarnation, previous)
+        },
+        fn(taken) { #(taken.run, #(taken.incarnation, taken.previous_owner)) },
+      ),
+  )
+}
+
+pub fn lease_lost() -> Event(Nil, LeaseLost) {
+  event(
+    ["lease", "lose"],
+    fields.empty(),
+    both(
+      both(text("run"), text("owner")),
+      kind("reason", lease_loss_name, [Revoked, Unrenewed]),
+    )
+      |> fields.imap(
+        fn(values) {
+          let #(#(run, owner), reason) = values
+          LeaseLost(run, owner, reason)
+        },
+        fn(lost) { #(#(lost.run, lost.owner), lost.reason) },
+      ),
+  )
+}
+
+fn lease_loss_name(reason: LeaseLoss) -> String {
+  case reason {
+    Revoked -> "revoked"
+    Unrenewed -> "unrenewed"
+  }
+}
+
+pub fn renewal_failed() -> Event(Nil, RenewalFailed) {
+  event(
+    ["lease", "renew", "fail"],
+    fields.empty(),
+    both(text("owner"), int("runs"))
+      |> fields.imap(
+        fn(values) { RenewalFailed(values.0, values.1) },
+        fn(failed) { #(failed.owner, failed.runs) },
       ),
   )
 }

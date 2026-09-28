@@ -200,25 +200,126 @@ pub fn an_approval_needing_another_nodes_runner_is_unattended_test() {
 }
 
 /// A cancellation from another node wins over the live lease: it is
-/// committed at once, the running tool becomes an uncertain effect, and
-/// the old runner can commit nothing more.
+/// committed at once and the running tool becomes an uncertain effect. The
+/// old owner learns of it at its next renewal and kills its runner, with
+/// the tool's body, which never finishes.
 pub fn a_cancellation_from_another_node_wins_over_a_live_lease_test() {
   let probe = probe.new()
   let memory = store.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
+  let events = capture()
   let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
   let running = probe.arrival(probe)
+  let body = body(running)
   let assert Ok(runner) = restart.runner(a, fabric.id(run))
   let assert Ok(there) = fabric.open(b, one_slow(probe), Nil, fabric.id(run))
   fabric.cancel(there)
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   nodes.holding(memory.backend, fabric.id(run)) |> should.equal(Error(Nil))
-  let revision = nodes.revision(memory.backend, fabric.id(run))
-  probe.release(running)
-  restart.gone(runner)
-  nodes.revision(memory.backend, fabric.id(run)) |> should.equal(revision)
   let assert [run.Uncertain(_)] = states(there)
+  store.renew_now(a)
+  restart.gone(runner)
+  restart.gone(body)
+  probe.count(probe, "end:a") |> should.equal(0)
+  lines(events, 1)
+  |> should.equal([
+    "lease_lost " <> support.text(fabric.id(run)) <> " a revoked",
+  ])
+  release(events)
+}
+
+/// A run whose lease expired is taken over by a recovery on another node.
+/// The old owner's next renewal no longer returns it, so the old runner is
+/// killed with the body it was running: the tool is an uncertain effect of
+/// the new incarnation, never run again.
+pub fn a_lost_lease_kills_the_runner_and_its_running_body_test() {
+  let probe = probe.new()
+  let memory = store.leased_memory()
+  let a = nodes.node(memory.backend, "a", nodes.long)
+  let b = nodes.node(memory.backend, "b", nodes.long)
+  let events = capture()
+  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let running = probe.arrival(probe)
+  let body = body(running)
+  let assert Ok(runner) = restart.runner(a, fabric.id(run))
+  memory.advance(nodes.long + 1)
+  let assert Ok(there) = fabric.recover(b, one_slow(probe), Nil, fabric.id(run))
+  // The new incarnation has nothing in flight: it waits for the uncertain
+  // effect to be reconciled, and the lease is free.
+  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(there, 0)
+  nodes.holding(memory.backend, fabric.id(run)) |> should.equal(Error(Nil))
+  store.renew_now(a)
+  restart.gone(runner)
+  restart.gone(body)
+  let id = support.text(fabric.id(run))
+  lines(events, 2)
+  |> should.equal([
+    "run_taken_over " <> id <> " 2 a",
+    "lease_lost " <> id <> " a revoked",
+  ])
+  release(events)
+  let assert Ok(_) = fabric.reconcile(there, uncertain.reference, "\"a\"")
+  fabric.await(there, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
+  probe.count(probe, "start:a") |> should.equal(1)
+  probe.count(probe, "end:a") |> should.equal(0)
+}
+
+/// A store whose renewals fail (the backend is unreachable) kills its
+/// runners, with their tool bodies, before their leases could have
+/// expired: by the backend's clock, the lease is still live when the body
+/// is gone.
+pub fn a_store_that_cannot_renew_kills_its_runners_before_their_leases_expire_test() {
+  let probe = probe.new()
+  let memory = store.leased_memory()
+  let unreachable =
+    store.LeasedBackend(..memory.backend, renew: fn(_, _, _) {
+      Error(store.Unavailable("the backend is unreachable"))
+    })
+  let a = nodes.node(unreachable, "a", 1000)
+  let events = capture()
+  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let body = body(probe.arrival(probe))
+  let assert Ok(runner) = restart.runner(a, fabric.id(run))
+  restart.gone(body)
+  nodes.holding(memory.backend, fabric.id(run))
+  |> should.equal(Ok(#("a", True)))
+  restart.gone(runner)
+  let id = support.text(fabric.id(run))
+  let #(before, lost) = until(events, "lease_lost")
+  lost |> should.equal("lease_lost " <> id <> " a unrenewed")
+  { before != [] && list.all(before, fn(line) { line == "renewal_failed 1" }) }
+  |> should.be_true
+  release(events)
+  probe.count(probe, "end:a") |> should.equal(0)
+}
+
+/// A healthy store renews its runners' leases in time: a tool that runs
+/// through several lease durations keeps its lease and finishes.
+pub fn renewals_keep_a_lease_live_past_its_duration_test() {
+  let probe = probe.new()
+  let memory = store.leased_memory()
+  let renewals = process.new_subject()
+  let counted =
+    store.LeasedBackend(..memory.backend, renew: fn(owner, runs, ttl) {
+      let renewed = memory.backend.renew(owner, runs, ttl)
+      process.send(renewals, renewed)
+      renewed
+    })
+  let a = nodes.node(counted, "a", 150)
+  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let running = probe.arrival(probe)
+  let id = support.text(fabric.id(run))
+  // Ten renewals take over three lease durations.
+  list.each(list.repeat(Nil, 10), fn(_) {
+    process.receive(renewals, 5000) |> should.equal(Ok(Ok([id])))
+  })
+  nodes.holding(memory.backend, fabric.id(run))
+  |> should.equal(Ok(#("a", True)))
+  probe.release(running)
+  fabric.await(run, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
 }
 
 /// A runner commits only while its store holds the run's lease: once
@@ -254,4 +355,105 @@ pub fn a_tool_start_is_refused_once_another_owner_claimed_the_lease_test() {
   states(run) |> should.equal([run.Queued])
   nodes.holder(memory.backend, fabric.id(run))
   |> should.equal(store.Held("sweeper", True))
+}
+
+// --- instruments -------------------------------------------------------------------
+
+/// The process of a tool body waiting at its barrier.
+fn body(arrival: probe.Arrival) -> process.Pid {
+  let assert Ok(pid) = process.subject_owner(arrival.release)
+  pid
+}
+
+type Capture {
+  Capture(lines: process.Subject(String), attachments: List(sinal.Attachment))
+}
+
+/// Captures the lease events and takeovers, one line each.
+fn capture() -> Capture {
+  let lines = process.new_subject()
+  let suffix = int.to_string(int.random(1_000_000_000))
+  Capture(lines, [
+    attach_line(
+      lines,
+      "lease-lost" <> suffix,
+      o.lease_lost(),
+      fn(lost: o.LeaseLost) {
+        let assert Ok(#(node, _)) = string.split_once(lost.owner, "/")
+        "lease_lost "
+        <> lost.run
+        <> " "
+        <> node
+        <> " "
+        <> case lost.reason {
+          o.Revoked -> "revoked"
+          o.Unrenewed -> "unrenewed"
+        }
+      },
+    ),
+    attach_line(
+      lines,
+      "lease-taken" <> suffix,
+      o.run_taken_over(),
+      fn(taken: o.RunTakenOver) {
+        let assert Ok(#(node, _)) = string.split_once(taken.previous_owner, "/")
+        "run_taken_over "
+        <> taken.run
+        <> " "
+        <> int.to_string(taken.incarnation)
+        <> " "
+        <> node
+      },
+    ),
+    attach_line(
+      lines,
+      "lease-failed" <> suffix,
+      o.renewal_failed(),
+      fn(failed: o.RenewalFailed) {
+        "renewal_failed " <> int.to_string(failed.runs)
+      },
+    ),
+  ])
+}
+
+fn attach_line(
+  lines: process.Subject(String),
+  name: String,
+  event: sinal.Event(Nil, d),
+  line: fn(d) -> String,
+) -> sinal.Attachment {
+  let assert Ok(id) = sinal.handler_id(name)
+  let assert Ok(attachment) =
+    sinal.observe(id, event, fn(_, metadata) {
+      process.send(lines, line(metadata))
+    })
+  attachment
+}
+
+/// The next `count` captured lines.
+fn lines(capture: Capture, count: Int) -> List(String) {
+  list.map(list.repeat(Nil, count), fn(_) {
+    let assert Ok(line) = process.receive(capture.lines, 5000)
+    line
+  })
+}
+
+/// The captured lines up to the first one that starts with `prefix`, and
+/// that line.
+fn until(capture: Capture, prefix: String) -> #(List(String), String) {
+  let assert Ok(line) = process.receive(capture.lines, 5000)
+  case string.starts_with(line, prefix) {
+    True -> #([], line)
+    False -> {
+      let #(before, found) = until(capture, prefix)
+      #([line, ..before], found)
+    }
+  }
+}
+
+fn release(capture: Capture) -> Nil {
+  list.each(capture.attachments, fn(attachment) {
+    let _ = sinal.detach(attachment)
+    Nil
+  })
 }

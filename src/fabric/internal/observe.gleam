@@ -31,6 +31,25 @@ pub fn handed_off(state: State) -> Nil {
   emit(o.run_handed_off(), Nil, o.RunHandedOff(state.run, state.incarnation))
 }
 
+/// A recovery took over `state` from the lease of `previous_owner`.
+pub fn taken_over(state: State, previous_owner: String) -> Nil {
+  emit(
+    o.run_taken_over(),
+    Nil,
+    o.RunTakenOver(state.run, state.incarnation, previous_owner),
+  )
+}
+
+/// The leased store `owner` killed the runner of `run`.
+pub fn lease_lost(run: String, owner: String, reason: o.LeaseLoss) -> Nil {
+  emit(o.lease_lost(), Nil, o.LeaseLost(run, owner, reason))
+}
+
+/// The leased store `owner` failed to renew the leases of `runs` runners.
+pub fn renewal_failed(owner: String, runs: Int) -> Nil {
+  emit(o.renewal_failed(), Nil, o.RenewalFailed(owner, runs))
+}
+
 fn started(before: Option(State), after: State) -> Nil {
   case before {
     Some(_) -> Nil
