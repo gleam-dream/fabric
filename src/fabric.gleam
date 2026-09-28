@@ -397,7 +397,8 @@ fn wait(
 /// (see `await`).
 pub fn snapshot(run: Run(context)) -> Result(Snapshot, RecordError) {
   use node <- result.map(
-    family.load(run.setup.store, run.id) |> result.map_error(record_error),
+    family.load_settled(run.setup.store, run.id)
+    |> result.map_error(record_error),
   )
   run.Snapshot(..controller.snapshot(node.state), status: family.status(node))
 }
@@ -542,7 +543,7 @@ fn family_status_after(
   case target_id == run.id {
     True -> Ok(status_after(run, state))
     False ->
-      family.load(run.setup.store, run.id)
+      family.load_settled(run.setup.store, run.id)
       |> result.map(family.status)
       |> result.map_error(fn(problem) { Unreadable(record_error(problem)) })
   }
@@ -665,10 +666,15 @@ fn status_after(run: Run(context), state: State) -> Status {
 }
 
 /// The family's status right after `state` of the run `id` was committed,
-/// with its children and its runner read now.
+/// with its children and its runner read now. A family that reads
+/// `Unattended` is read again, as `snapshot` does.
 fn committed_status(store: Store, id: String, state: State) -> Status {
   case store.get(store, id) {
-    Ok(entry) -> family.status(family.with_children(store, id, entry, state))
+    Ok(entry) ->
+      family.with_children(store, id, entry, state)
+      |> family.settle(store, _, 3)
+      |> result.map(family.status)
+      |> result.unwrap(run.Unattended)
     Error(_) -> controller.status(state)
   }
 }

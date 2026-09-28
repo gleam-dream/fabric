@@ -33,6 +33,36 @@ pub fn load(store: store.Store, id: String) -> Result(Node, ReadError) {
   with_children(store, id, entry, state)
 }
 
+/// `load`, read again while the family reads `Unattended`. Records are read
+/// one by one, so a child can end, and its parent move on, between the
+/// reads of one load: the family is unattended only when a second read
+/// finds it unchanged. A family that keeps changing is read at most
+/// `retries` more times.
+pub fn load_settled(store: store.Store, id: String) -> Result(Node, ReadError) {
+  use node <- result.try(load(store, id))
+  settle(store, node, retries)
+}
+
+/// `node`, or a later read of its family when it reads `Unattended` and a
+/// second read finds it changed (see `load_settled`).
+pub fn settle(
+  store: store.Store,
+  node: Node,
+  tries: Int,
+) -> Result(Node, ReadError) {
+  case status(node) {
+    run.Unattended if tries > 0 ->
+      case load(store, node.id) {
+        Ok(again) if again == node -> Ok(node)
+        Ok(again) -> settle(store, again, tries - 1)
+        Error(problem) -> Error(problem)
+      }
+    _ -> Ok(node)
+  }
+}
+
+const retries = 3
+
 /// `state` of `id` with its active descendants read now.
 pub fn with_children(
   store: store.Store,
