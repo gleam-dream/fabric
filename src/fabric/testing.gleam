@@ -34,8 +34,8 @@ pub type Check {
 
 /// The checks a leased backend must pass, each against a backend made by
 /// `new`: compare-and-set, the lease conditions of each `store.Lease`,
-/// renewal without a new revision, and `claim_expired` with disjoint
-/// results for concurrent claimers. Run ids are fresh random ids, so a
+/// renewal of live leases only and without a new revision, and
+/// `claim_expired` with disjoint results for concurrent claimers. Run ids are fresh random ids, so a
 /// backend may share its storage between checks; an expired lease is made
 /// with a `ttl` of 0, so no clock control is needed. Run each check in a
 /// test and fail it on `Error`.
@@ -51,7 +51,7 @@ pub fn leased_backend_checks(new: fn() -> LeasedBackend) -> List(Check) {
     Check("claim waits for another owner's live lease", fn() { claims(new()) }),
     Check("hold requires the owner", fn() { holds(new()) }),
     Check("seize and release win over a live lease", fn() { seizes(new()) }),
-    Check("renew extends its owner's leases without a new revision", fn() {
+    Check("renew extends its owner's live leases without a new revision", fn() {
       renews(new())
     }),
     Check("claim_expired claims only expired leases", fn() {
@@ -385,15 +385,11 @@ fn renews(backend: LeasedBackend) -> Result(Nil, String) {
     backend.renew("o1", [expired, live, other, free, fresh()], long)
     |> result.map_error(fn(error) { "renew: " <> string.inspect(error) }),
   )
+  use _ <- result.try(expect("the runs renewed", renewed, [live]))
   use _ <- result.try(expect(
-    "the runs renewed",
-    list.sort(renewed, string.compare),
-    list.sort([expired, live], string.compare),
-  ))
-  use _ <- result.try(expect(
-    "an expired lease renewed",
+    "an expired lease is not renewed",
     backend.get(expired),
-    Ok(store.Current(1, "a", store.Held("o1", True))),
+    Ok(store.Current(1, "a", store.Held("o1", False))),
   ))
   use _ <- result.try(expect(
     "another owner's lease",

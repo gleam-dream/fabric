@@ -46,8 +46,10 @@
 ////   `LeaseRefused(holder)` and writes nothing. After the write, a `Claim`
 ////   or `Seize` owner holds the lease for `ttl` and a `Release` frees it.
 //// - `renew(owner, runs, ttl)` extends, to `ttl` from now, the lease of
-////   each of `runs` that `owner` holds (live or expired), and returns
-////   those runs. It changes no revision.
+////   each of `runs` that `owner` holds while it is still live, and
+////   returns those runs. An expired lease is not renewed, so a renewal
+////   sent before a handoff (which leaves the lease expired) and applied
+////   after it does not make the lease live again. It changes no revision.
 //// - `claim_expired(owner, ttl, limit)` claims for `owner` up to `limit`
 ////   runs whose lease is held and expired, and returns them. It changes
 ////   no revision, and concurrent calls never return the same run.
@@ -154,7 +156,8 @@ pub type LeasedBackend {
     insert: fn(String, String, Lease) -> Result(Nil, StoreError),
     /// `compare_and_set(run, expected, record, lease)`.
     compare_and_set: fn(String, Int, String, Lease) -> Result(Nil, StoreError),
-    /// `renew(owner, runs, ttl)`: returns the runs renewed.
+    /// `renew(owner, runs, ttl)`: returns the runs renewed, those whose
+    /// lease `owner` holds live.
     renew: fn(String, List(String), Int) -> Result(List(String), StoreError),
     /// `claim_expired(owner, ttl, limit)`: returns the runs claimed.
     claim_expired: fn(String, Int, Int) -> Result(List(String), StoreError),
@@ -1694,7 +1697,8 @@ fn leased_serve(
       let renewed =
         list.filter(list.unique(runs), fn(run) {
           case dict.get(rows, run) {
-            Ok(Row(lease: Some(#(holding, _)), ..)) -> holding == owner
+            Ok(Row(lease: Some(#(holding, until)), ..)) ->
+              holding == owner && until > now
             _ -> False
           }
         })
