@@ -174,8 +174,9 @@ pub fn review(
 /// At boot, when the previous owner is known to be gone, `recover` takes
 /// over work whose runner was lost. A run handed off by a drained shutdown
 /// goes on with nothing uncertain; after a crash, running tools become
-/// uncertain effects, never retried. Never recover a run another process
-/// may drive.
+/// uncertain effects, never retried. On an unleased store, never recover
+/// a run another process may drive; a leased store's `recover` leaves a run
+/// alone while another node holds its lease.
 pub fn resume(
   runs: store.Store,
   desk: Agent(Context),

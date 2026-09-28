@@ -77,8 +77,11 @@
 //// or application backend keeps them (the directory store only up to a
 //// power loss: it is for development, tests, and one host). Several
 //// stores may open the same backend (for example the same directory): the
-//// backend's compare-and-set keeps their commits safe, but each only
-//// knows its own runners.
+//// backend's compare-and-set keeps their commits safe, but each unleased
+//// store only knows its own runners. Several nodes that share one
+//// database coordinate through leases instead (`leased`): a store knows
+//// which node drives each run, and never takes over a run another node
+//// drives.
 
 import fabric/internal/bounded
 import fabric/internal/executor
