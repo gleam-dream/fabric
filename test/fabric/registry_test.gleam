@@ -1,3 +1,5 @@
+import fabric
+import fabric/agent
 import fabric/internal/invocation
 import fabric/internal/registry
 import fabric/model
@@ -5,8 +7,11 @@ import fabric/policy
 import fabric/run
 import fabric/support
 import fabric/support/apps
+import fabric/support/scripted
 import fabric/tool
-import gleam/option
+import gleam/option.{None, Some}
+import gleam/result
+import gleam/string
 import gleeunit/should
 import json/blueprint/codec
 
@@ -154,7 +159,8 @@ fn unsettled(_, _) -> Result(Nil, tool.SettleError) {
 }
 
 /// A policy matches an action on a tool's definition and reads its typed
-/// input; any other tool, or arguments the codec refuses, match nothing.
+/// input; any other tool matches nothing, and a call of the tool's name
+/// whose arguments the definition's codec refuses is an error.
 pub fn a_policy_reads_the_typed_input_of_its_tool_test() {
   let action = fn(tool, arguments) {
     policy.Action(
@@ -169,12 +175,47 @@ pub fn a_policy_reads_the_typed_input_of_its_tool_test() {
     apps.transfer_definition(),
     action("transfer_funds", "{\"to\":\"bob\",\"amount\":10}"),
   )
-  |> should.equal(Ok(apps.Transfer("bob", 10)))
+  |> should.equal(Ok(Some(apps.Transfer("bob", 10))))
   tool.input(
     apps.transfer_definition(),
     action("lookup_weather", "{\"city\":\"Paris\"}"),
   )
-  |> should.equal(Error(Nil))
-  tool.input(apps.transfer_definition(), action("transfer_funds", "{}"))
-  |> should.equal(Error(Nil))
+  |> should.equal(Ok(None))
+  let assert Error(detail) =
+    tool.input(apps.transfer_definition(), action("transfer_funds", "{}"))
+  string.contains(detail, "transfer_funds") |> should.be_true
+}
+
+/// A policy written as the README writes it fails closed when the
+/// definition it matches on has drifted from the tool the agent runs: a
+/// call of that name whose arguments the policy's codec refuses stops the
+/// run as a policy failure instead of being allowed.
+pub fn a_drifted_definition_fails_the_policy_closed_test() {
+  let drifted =
+    tool.define(
+      "transfer_funds",
+      "An older transfer.",
+      codec.field("iban", codec.string()),
+      codec.string(),
+    )
+  let gate = fn(_context: Nil, action: policy.Action) {
+    use transfer <- result.try(tool.input(drifted, action))
+    case transfer {
+      Some(_) -> Ok(policy.RequireApproval(run.Requirement("treasurer", 1)))
+      None -> Ok(policy.Allow)
+    }
+  }
+  let desk =
+    agent.new(
+      "desk",
+      scripted.plan([
+        scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":5}"),
+      ]),
+      [apps.transfer_tool()],
+      gate,
+    )
+    |> support.agent
+  let assert Ok(handle) = fabric.start(support.store(), desk, Nil, "Pay")
+  let assert Ok(run.Finished(run.Failed(run.PolicyFailed(_, _)))) =
+    fabric.await(handle, 5000)
 }

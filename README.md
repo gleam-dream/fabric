@@ -26,10 +26,12 @@ let weather =
   })
 
 // One policy gates every effect. `tool.input` matches an action on a
-// tool's definition and gives its typed input.
+// tool's definition and gives its typed input (`None` for another tool);
+// arguments that definition cannot read are an error, which stops the run.
 let my_policy = fn(context, action: policy.Action) {
-  case tool.input(transfer_definition, action) {
-    Ok(transfer) if transfer.amount > 100 ->
+  use transfer <- result.try(tool.input(transfer_definition, action))
+  case transfer {
+    Some(transfer) if transfer.amount > 100 ->
       Ok(policy.RequireApproval(run.Requirement("treasurer", 1)))
     _ -> Ok(policy.Allow)
   }

@@ -24,6 +24,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/static_supervisor
+import gleam/result
 import gleam/string
 import json/blueprint/codec.{type Codec}
 import saga
@@ -212,12 +213,14 @@ pub fn desk_policy(
   member: Member,
   action: policy.Action,
 ) -> Result(policy.Decision, String) {
-  // Typed matching: `Ok(reservation)` only for a call of this definition.
-  case member.id, tool.input(reserve_definition(), action) {
+  // Typed matching: `Some(reservation)` only for a call of this
+  // definition; arguments it cannot read fail the policy.
+  use reservation <- result.try(tool.input(reserve_definition(), action))
+  case member.id, reservation {
     "", _ -> Error("member directory unavailable")
-    "guest", Ok(_) -> Ok(policy.Deny("guests cannot reserve"))
+    "guest", Some(_) -> Ok(policy.Deny("guests cannot reserve"))
     // A junior member's reservation waits for a guardian's approval.
-    "junior", Ok(Reservation(isbn: _)) ->
+    "junior", Some(Reservation(isbn: _)) ->
       Ok(policy.RequireApproval(run.Requirement("guardian", 1)))
     _, _ -> Ok(policy.Allow)
   }
@@ -344,9 +347,10 @@ pub fn purchasing_policy(
   _member: Member,
   action: policy.Action,
 ) -> Result(policy.Decision, String) {
-  case tool.input(order_definition(), action) {
-    Ok(_) -> Ok(policy.RequireApproval(run.Requirement("treasurer", 1)))
-    Error(Nil) -> Ok(policy.Allow)
+  use order <- result.try(tool.input(order_definition(), action))
+  case order {
+    Some(_) -> Ok(policy.RequireApproval(run.Requirement("treasurer", 1)))
+    None -> Ok(policy.Allow)
   }
 }
 

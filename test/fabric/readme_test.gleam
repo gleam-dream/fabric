@@ -16,12 +16,14 @@ import fabric/tool
 import gleam/erlang/process
 import gleam/option.{Some}
 import gleam/otp/static_supervisor
+import gleam/result
 import gleeunit/should
 
 /// A transfer above 10 waits for a treasurer; anything else is allowed.
 fn my_policy(_context: Nil, action: policy.Action) {
-  case tool.input(apps.transfer_definition(), action) {
-    Ok(transfer) if transfer.amount > 10 ->
+  use transfer <- result.try(tool.input(apps.transfer_definition(), action))
+  case transfer {
+    Some(transfer) if transfer.amount > 10 ->
       Ok(policy.RequireApproval(run.Requirement("treasurer", 1)))
     _ -> Ok(policy.Allow)
   }
