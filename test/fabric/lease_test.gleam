@@ -451,6 +451,104 @@ pub fn a_handoff_releases_the_lease_as_already_expired_test() {
   probe.count(probe, "start:a") |> should.equal(1)
 }
 
+/// A renewal sent while the runner worked but applied after its handoff
+/// does not make the handed-off lease live again: a renewal extends only
+/// live leases, so another node still takes the run over at once.
+pub fn a_renewal_applied_after_the_handoff_leaves_the_lease_expired_test() {
+  let probe = probe.new()
+  let memory = store.leased_memory()
+  let relay = relay()
+  let renewing = process.new_subject()
+  let backend =
+    store.LeasedBackend(
+      ..memory.backend,
+      renew: fn(owner, runs, ttl) {
+        // Held until the handoff has been committed.
+        let go = process.new_subject()
+        process.send(renewing, Nil)
+        process.send(relay, Pending(go))
+        let applied = process.receive_forever(go)
+        let renewed = memory.backend.renew(owner, runs, ttl)
+        process.send(applied, Nil)
+        renewed
+      },
+      compare_and_set: fn(run, expected, record, lease) {
+        let outcome =
+          memory.backend.compare_and_set(run, expected, record, lease)
+        case lease {
+          store.Claim(_, 0) -> {
+            let applied = process.new_subject()
+            process.send(relay, HandedOff(applied))
+            let _ = process.receive(applied, 5000)
+            Nil
+          }
+          _ -> Nil
+        }
+        outcome
+      },
+    )
+  let assert Ok(a) =
+    store.leased(
+      process.new_name("renewing"),
+      node: "a",
+      lease: nodes.long,
+      backend:,
+    )
+  let app = restart.application(a)
+  let b = nodes.node(memory.backend, "b", nodes.long)
+  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let running = probe.arrival(probe)
+  store.renew_now(a)
+  let assert Ok(Nil) = process.receive(renewing, 5000)
+  restart.begin_stop(app)
+  restart.draining(a)
+  probe.release(running)
+  restart.stopped(app)
+
+  nodes.holding(memory.backend, fabric.id(run))
+  |> should.equal(Ok(#("a", False)))
+  let assert Ok(there) = fabric.recover(b, one_slow(probe), Nil, fabric.id(run))
+  fabric.await(there, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
+  probe.count(probe, "start:a") |> should.equal(1)
+}
+
+type Relay {
+  /// A renewal waits for the subject to confirm its application on.
+  Pending(go: process.Subject(process.Subject(Nil)))
+  /// A handoff was committed: release the pending renewal, if any, and
+  /// confirm once it was applied.
+  HandedOff(applied: process.Subject(Nil))
+}
+
+/// Orders a pending renewal after a handoff's commit.
+fn relay() -> process.Subject(Relay) {
+  let ready = process.new_subject()
+  process.spawn(fn() {
+    let relay = process.new_subject()
+    process.send(ready, relay)
+    relay_loop(relay, None)
+  })
+  process.receive_forever(ready)
+}
+
+fn relay_loop(
+  relay: process.Subject(Relay),
+  pending: option.Option(process.Subject(process.Subject(Nil))),
+) -> Nil {
+  case process.receive_forever(relay), pending {
+    Pending(go), _ -> relay_loop(relay, option.Some(go))
+    HandedOff(applied), option.Some(go) -> {
+      process.send(go, applied)
+      relay_loop(relay, None)
+    }
+    HandedOff(applied), None -> {
+      process.send(applied, Nil)
+      relay_loop(relay, None)
+    }
+  }
+}
+
 /// A runner commits only while its store holds the run's lease: once
 /// another owner claimed the expired lease, the runner's next commit, the
 /// fence of a tool's start, is refused, and the tool's body never starts.
