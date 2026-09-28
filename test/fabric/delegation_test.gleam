@@ -481,12 +481,55 @@ pub fn recovering_the_parent_recovers_its_child_test() {
   |> should.equal(
     Ok(
       run.Suspended([], [
-        run.UncertainAction(child_id, ActionId(1, "s"), "slow", lost),
+        run.UncertainAction(
+          run.ActionRef(child_id, ActionId(1, "s")),
+          "slow",
+          lost,
+        ),
       ]),
     ),
   )
   let assert Ok(child) = fabric.child(run, child_id)
-  let assert Ok(_) = fabric.reconcile(child, ActionId(1, "s"), "\"s\"")
+  let assert Ok(_) =
+    fabric.reconcile(
+      child,
+      run.ActionRef(fabric.id(child), ActionId(1, "s")),
+      "\"s\"",
+    )
+  fabric.await(run, 5000)
+  |> should.equal(
+    Ok(run.Finished(run.Completed("final: {\"summary\":\"found \\\"s\\\"\"}"))),
+  )
+  probe.count(probe, "start:s") |> should.equal(1)
+  restart.remove_dir(dir)
+}
+
+/// A child's uncertain effect surfaces in the parent's status with a
+/// reference naming the child, and is reconciled through the parent's
+/// handle.
+pub fn a_child_effect_is_reconciled_through_the_parent_test() {
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let parent =
+    delegating(
+      probe,
+      [research_call("r", "gleam")],
+      working_researcher(
+        probe,
+        [scripted.slow("s", "s")],
+        [scripted.gated_tool(probe)],
+        policy.always_allow(),
+      ),
+      policy.always_allow(),
+    )
+  let #(owner, old, run) = start_owned(dir, parent, "go")
+  let _ = probe.arrival(probe)
+  crash(owner, old)
+
+  let assert Ok(run) = fabric.recover(reopen(dir), parent, Nil, fabric.id(run))
+  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 0)
+  { uncertain.reference.run != fabric.id(run) } |> should.be_true
+  let assert Ok(_) = fabric.reconcile(run, uncertain.reference, "\"s\"")
   fabric.await(run, 5000)
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"found \\\"s\\\"\"}"))),
@@ -516,12 +559,12 @@ pub fn an_unreadable_child_is_an_uncertain_effect_of_the_parent_test() {
   let assert Ok(run) =
     fabric.recover(reopen(dir), paying_family(probe), Nil, fabric.id(run))
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 0)
-  uncertain.run |> should.equal(fabric.id(run))
+  uncertain.reference.run |> should.equal(fabric.id(run))
   uncertain.tool |> should.equal("research")
   string.contains(uncertain.evidence, support.text(pending.reference.run))
   |> should.be_true
   let assert Ok(_) =
-    fabric.reconcile(run, uncertain.id, "{\"summary\":\"unknown\"}")
+    fabric.reconcile(run, uncertain.reference, "{\"summary\":\"unknown\"}")
   fabric.await(run, 5000)
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"unknown\"}"))),

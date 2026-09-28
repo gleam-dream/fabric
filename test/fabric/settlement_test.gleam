@@ -189,7 +189,8 @@ pub fn a_settlement_resolves_an_uncertain_effect_test() {
 pub fn a_settlement_after_a_reconciliation_is_refused_test() {
   let #(run, handed) = start(process.new_subject(), Die, 5000)
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
-  let assert Ok(_) = fabric.reconcile(run, uncertain.id, "{\"summary\":\"?\"}")
+  let assert Ok(_) =
+    fabric.reconcile(run, uncertain.reference, "{\"summary\":\"?\"}")
   tool.settle(handed.settlement, Ok(Forecast("cloudy")))
   |> should.equal(Error(tool.AlreadyRecorded))
   fabric.await(run, 5000)

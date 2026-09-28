@@ -184,14 +184,13 @@ pub fn uncertain_effect_blocks_until_reconciled_test() {
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
   uncertain
   |> should.equal(run.UncertainAction(
-    fabric.id(run),
-    ActionId(1, "t"),
+    run.ActionRef(fabric.id(run), ActionId(1, "t")),
     "transfer_funds",
     "gateway timed out after sending",
   ))
   restart.runner(held, fabric.id(run)) |> should.equal(Error(Nil))
   let assert Ok(run.Working) =
-    fabric.reconcile(run, uncertain.id, "{\"receipt\":\"confirmed\"}")
+    fabric.reconcile(run, uncertain.reference, "{\"receipt\":\"confirmed\"}")
   fabric.await(run, 5000)
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"receipt\":\"confirmed\"}"))),
