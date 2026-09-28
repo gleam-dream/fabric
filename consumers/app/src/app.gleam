@@ -431,6 +431,8 @@ pub fn loan_tool() -> tool.Tool(Member) {
         let NoCourier(title) = error
         "no courier carries " <> title
       },
+      // A stopped loan waits this long for Saga to undo what it booked.
+      rollback_within: 10_000,
     )
   loan
 }
