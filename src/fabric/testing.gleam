@@ -35,10 +35,13 @@ pub type Check {
 /// The checks a leased backend must pass, each against a backend made by
 /// `new`: compare-and-set, the lease conditions of each `store.Lease`,
 /// renewal of live leases only and without a new revision, and
-/// `claim_expired` with disjoint results for concurrent claimers. Run ids are fresh random ids, so a
-/// backend may share its storage between checks; an expired lease is made
-/// with a `ttl` of 0, so no clock control is needed. Run each check in a
-/// test and fail it on `Error`.
+/// `claim_expired` with disjoint results for concurrent claimers, also
+/// while a `Hold` races it. `claim_expired` claims any expired lease in
+/// the backend's storage, so each call of `new` must return a backend over
+/// storage of its own that starts empty (a fresh table, schema, or
+/// process), and the checks must run one at a time. An expired lease is
+/// made with a `ttl` of 0, so no clock control is needed. Run each check
+/// in a test and fail it on `Error`.
 pub fn leased_backend_checks(new: fn() -> LeasedBackend) -> List(Check) {
   [
     Check("insert stores revision 1 with its lease", fn() { inserts(new()) }),
@@ -60,6 +63,10 @@ pub fn leased_backend_checks(new: fn() -> LeasedBackend) -> List(Check) {
     Check("concurrent claim_expired calls are disjoint", fn() {
       disjoint_claims(new())
     }),
+    Check(
+      "a hold racing claim_expired keeps the lease and record consistent",
+      fn() { hold_races_claim(new()) },
+    ),
   ]
 }
 
@@ -531,6 +538,70 @@ fn claim_until_empty(
       claim_until_empty(backend, owner, list.append(claimed, more), tries - 1)
     Error(error) -> Error("claim_expired: " <> string.inspect(error))
   }
+}
+
+/// Holds (a record written by the owner of an expired lease) race a claim
+/// of every expired lease by another owner. For each run, either the claim
+/// took it, and the hold was refused by the claimed lease or wrote the
+/// record before the claim; or the claim skipped it, and the hold wrote the
+/// record with the lease unchanged. The claim never changes a revision and
+/// never loses a hold's record.
+fn hold_races_claim(backend: LeasedBackend) -> Result(Nil, String) {
+  let runs = list.map(list.repeat(Nil, 10), fn(_) { fresh() })
+  use _ <- result.try(
+    list.try_each(runs, fn(run) {
+      expect("insert", backend.insert(run, "a", store.Claim("o1", 0)), Ok(Nil))
+    }),
+  )
+  let outcomes =
+    together(list.length(runs) + 1, fn(i) {
+      case list.drop(runs, i) {
+        [run, ..] ->
+          Error(backend.compare_and_set(run, 1, "held", store.Hold("o1")))
+        [] -> Ok(backend.claim_expired("o2", long, 100))
+      }
+    })
+  use claimed <- result.try(case list.last(outcomes) {
+    Ok(Ok(Ok(claimed))) -> Ok(claimed)
+    other -> Error("claim_expired: " <> string.inspect(other))
+  })
+  list.zip(runs, outcomes)
+  |> list.try_each(fn(entry) {
+    let #(run, outcome) = entry
+    let hold = case outcome {
+      Error(hold) -> hold
+      Ok(_) -> Error(store.Unavailable("no hold"))
+    }
+    let found = backend.get(run)
+    case list.contains(claimed, run), hold {
+      True, Ok(Nil) ->
+        expect(
+          "a run held, then claimed",
+          found,
+          Ok(store.Current(2, "held", store.Held("o2", True))),
+        )
+      True, _ -> {
+        use _ <- result.try(expect(
+          "a hold after the claim",
+          hold,
+          Error(store.LeaseRefused(store.Held("o2", True))),
+        ))
+        expect(
+          "a run claimed, then refused to the hold",
+          found,
+          Ok(store.Current(1, "a", store.Held("o2", True))),
+        )
+      }
+      False, _ -> {
+        use _ <- result.try(expect("a hold of a run not claimed", hold, Ok(Nil)))
+        expect(
+          "a run held and not claimed",
+          found,
+          Ok(store.Current(2, "held", store.Held("o1", False))),
+        )
+      }
+    }
+  })
 }
 
 @external(erlang, "fabric_ffi", "random_id")
