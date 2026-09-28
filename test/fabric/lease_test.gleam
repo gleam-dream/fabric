@@ -15,6 +15,7 @@ import fabric/support/nodes
 import fabric/support/probe.{type Probe}
 import fabric/support/restart
 import fabric/support/scripted
+import fabric/testing
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -50,7 +51,7 @@ fn states(run: fabric.Run(context)) -> List(run.ActionState) {
 }
 
 pub fn a_leased_store_checks_its_settings_test() {
-  let backend = store.leased_memory().backend
+  let backend = testing.leased_memory().backend
   let name = process.new_name("settings")
   let leased = fn(node, lease) {
     store.leased(name, node:, lease:, backend:) |> result_error
@@ -82,7 +83,7 @@ fn result_error(
 /// the runner works, and released when nothing is left in flight.
 pub fn a_runner_holds_its_runs_lease_while_it_works_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
   let running = probe.arrival(probe)
@@ -98,7 +99,7 @@ pub fn a_runner_holds_its_runs_lease_while_it_works_test() {
 /// knows no runner of it.
 pub fn a_live_lease_elsewhere_reads_working_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
@@ -116,7 +117,7 @@ pub fn a_live_lease_elsewhere_reads_working_test() {
 /// it is: its runner keeps working and nothing becomes uncertain.
 pub fn recover_does_not_take_a_live_lease_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
@@ -140,7 +141,7 @@ pub fn recover_does_not_take_a_live_lease_test() {
 /// it claims the lease and runs the approved tool.
 pub fn an_approval_of_an_idle_run_on_another_node_claims_the_lease_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let agent =
@@ -171,7 +172,7 @@ pub fn an_approval_of_an_idle_run_on_another_node_claims_the_lease_test() {
 /// `RunUnattended` and changes nothing; through that node it works.
 pub fn an_approval_needing_another_nodes_runner_is_unattended_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let agent =
@@ -205,7 +206,7 @@ pub fn an_approval_needing_another_nodes_runner_is_unattended_test() {
 /// the tool's body, which never finishes.
 pub fn a_cancellation_from_another_node_wins_over_a_live_lease_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let events = capture()
@@ -235,7 +236,7 @@ pub fn a_cancellation_from_another_node_wins_over_a_live_lease_test() {
 /// the new incarnation, never run again.
 pub fn a_lost_lease_kills_the_runner_and_its_running_body_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let events = capture()
@@ -272,7 +273,7 @@ pub fn a_lost_lease_kills_the_runner_and_its_running_body_test() {
 /// is gone.
 pub fn a_store_that_cannot_renew_kills_its_runners_before_their_leases_expire_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let unreachable =
     store.LeasedBackend(..memory.backend, renew: fn(_, _, _) {
       Error(store.Unavailable("the backend is unreachable"))
@@ -299,7 +300,7 @@ pub fn a_store_that_cannot_renew_kills_its_runners_before_their_leases_expire_te
 /// blocks on a failed renewal holds up no read or commit through the store.
 pub fn a_slow_lease_event_handler_does_not_hold_up_the_store_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let unreachable =
     store.LeasedBackend(..memory.backend, renew: fn(_, _, _) {
       Error(store.Unavailable("the backend is unreachable"))
@@ -328,7 +329,7 @@ pub fn a_slow_lease_event_handler_does_not_hold_up_the_store_test() {
 /// renewal never leaves the next one to start after the fence.
 pub fn a_tick_during_a_renewal_is_made_up_when_it_completes_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let calls = process.new_subject()
   let slow =
     store.LeasedBackend(..memory.backend, renew: fn(owner, runs, ttl) {
@@ -361,7 +362,7 @@ pub fn a_tick_during_a_renewal_is_made_up_when_it_completes_test() {
 /// through several lease durations keeps its lease and finishes.
 pub fn renewals_keep_a_lease_live_past_its_duration_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let renewals = process.new_subject()
   let counted =
     store.LeasedBackend(..memory.backend, renew: fn(owner, runs, ttl) {
@@ -390,7 +391,7 @@ pub fn renewals_keep_a_lease_live_past_its_duration_test() {
 /// took it.
 pub fn an_expired_lease_is_taken_over_once_by_racing_recoveries_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let #(owner, a) =
     restart.owned(fn() { nodes.node(memory.backend, "a", nodes.long) })
   let events = capture()
@@ -435,7 +436,7 @@ pub fn an_expired_lease_is_taken_over_once_by_racing_recoveries_test() {
 /// until then.
 pub fn a_restarted_store_takes_its_earlier_processes_lease_at_once_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let name = process.new_name("restarting")
   let leased = fn() {
     let assert Ok(leased) =
@@ -468,7 +469,7 @@ pub fn a_restarted_store_takes_its_earlier_processes_lease_at_once_test() {
 /// again at least every third of the lease.
 pub fn an_await_on_another_node_sees_the_end_of_the_run_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let a = nodes.node(memory.backend, "a", 300)
   let b = nodes.node(memory.backend, "b", 300)
   let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
@@ -486,7 +487,7 @@ pub fn an_await_on_another_node_sees_the_end_of_the_run_test() {
 /// `Unattended` and recovers it at once, with nothing uncertain.
 pub fn a_handoff_releases_the_lease_as_already_expired_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let assert Ok(a) =
     store.leased(
       process.new_name("draining"),
@@ -518,7 +519,7 @@ pub fn a_handoff_releases_the_lease_as_already_expired_test() {
 /// live leases, so another node still takes the run over at once.
 pub fn a_renewal_applied_after_the_handoff_leaves_the_lease_expired_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let relay = relay()
   let renewing = process.new_subject()
   let backend =
@@ -616,7 +617,7 @@ fn relay_loop(
 /// fence of a tool's start, is refused, and the tool's body never starts.
 pub fn a_tool_start_is_refused_once_another_owner_claimed_the_lease_test() {
   let probe = probe.new()
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let replies = process.new_subject()
   let assert Ok(id) =

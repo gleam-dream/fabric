@@ -3,6 +3,7 @@
 import fabric/agent.{type Agent, type Spec}
 import fabric/run.{type RunId}
 import fabric/store.{type Store}
+import fabric/testing
 import gleam/erlang/process
 import gleam/int
 
@@ -40,7 +41,7 @@ pub fn store() -> Store {
           name,
           node: "fabric-test",
           lease: 1500,
-          backend: store.leased_memory().backend,
+          backend: testing.leased_memory().backend,
         )
       started(leased)
     }

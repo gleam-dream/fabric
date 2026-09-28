@@ -18,7 +18,7 @@ fn failures(new: fn() -> store.LeasedBackend) -> List(#(String, String)) {
 }
 
 pub fn the_in_memory_leased_backend_conforms_test() {
-  failures(fn() { store.leased_memory().backend })
+  failures(fn() { testing.leased_memory().backend })
   |> should.equal([])
 }
 
@@ -26,7 +26,7 @@ pub fn the_in_memory_leased_backend_conforms_test() {
 /// claim check, and only that one.
 pub fn a_backend_that_ignores_live_leases_fails_the_claim_check_test() {
   let broken = fn() {
-    let backend = store.leased_memory().backend
+    let backend = testing.leased_memory().backend
     store.LeasedBackend(
       ..backend,
       compare_and_set: fn(run, expected, record, lease) {
@@ -46,7 +46,7 @@ pub fn a_backend_that_ignores_live_leases_fails_the_claim_check_test() {
 /// The in-memory backend's clock moves forward on demand: a live lease
 /// expires once the clock passes its end.
 pub fn the_in_memory_clock_expires_a_lease_when_advanced_test() {
-  let memory = store.leased_memory()
+  let memory = testing.leased_memory()
   let assert Ok(Nil) =
     memory.backend.insert("run-a", "a", store.Claim("o1", 1000))
   memory.backend.get("run-a")
