@@ -146,6 +146,6 @@ pub fn a_typed_call_encodes_its_input_with_the_definition_test() {
 }
 
 /// No late settlement is expected from these tools.
-fn unsettled(_) -> Result(Nil, tool.SettleError) {
+fn unsettled(_, _) -> Result(Nil, tool.SettleError) {
   Error(tool.NotAwaited)
 }

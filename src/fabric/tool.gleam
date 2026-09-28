@@ -31,10 +31,15 @@
 ////
 //// Whichever is accepted first, a settlement or a reconciliation, is the
 //// only one: every later settlement is refused. A refused settlement
-//// changes nothing, and `settle` returns `NotAwaited`: the task is still
-//// running (or reported its own result), the action was settled or
-//// reconciled already, its bound passed, or the run has ended. The handle
-//// reaches the run through the store its invocation ran with.
+//// changes nothing. `settle` then says whether that loses anything:
+//// `AlreadyRecorded` when the action has a definite result (its task
+//// reported, or it was settled or reconciled), `NotAwaited` when it does
+//// not (the bound passed, or the run ended with the action uncertain), and
+//// the refusal needs a person. A settlement offered while the action's
+//// task may still run waits for it to report or be stopped, up to the
+//// tool's bound between commits of the run; one the handler offers from
+//// its own task is refused at once. The handle reaches the run through the
+//// store its invocation ran with.
 
 import fabric/internal/invocation.{type Outcome}
 import fabric/model.{type ToolCall}
@@ -76,10 +81,11 @@ pub opaque type Tool(context) {
   )
 }
 
-/// How the runtime receives one invocation's late settlement.
+/// How the runtime receives one invocation's late settlement, with the
+/// summary a refusal is observed with.
 @internal
 pub type Late =
-  fn(Outcome) -> Result(Nil, SettleError)
+  fn(Outcome, String) -> Result(Nil, SettleError)
 
 /// A handle on one invocation of a tool bound with `bind_settling`, to
 /// settle its result after its task was stopped. Whoever holds it may
@@ -88,12 +94,17 @@ pub opaque type Settlement(output) {
   Settlement(output: Codec(output), deliver: Late)
 }
 
-/// Why a settlement was not recorded.
+/// Why a settlement was not recorded. Nothing changed in either case.
 pub type SettleError {
-  /// The action does not await a settlement: its task is still running or
-  /// reported, it was settled or reconciled already, the run has ended, or
-  /// an uncertain settlement was offered for an effect that is already
-  /// uncertain. Nothing changed.
+  /// The action already has a definite result: its task reported, or it
+  /// was settled or reconciled. Nothing the settlement knows is lost.
+  AlreadyRecorded
+  /// The action does not await a settlement and has no definite result:
+  /// its task did not stop within the tool's bound, the bound passed, the
+  /// run ended with the action uncertain, or an uncertain settlement was
+  /// offered for an action that is already uncertain. What the settlement
+  /// knows reaches the run only through a person (`fabric.reconcile`); the
+  /// refusal is observed as `settlement_refused` (`fabric/observation`).
   NotAwaited
   /// The run could not be read or written. A write the store reported
   /// unavailable has an unknown outcome.
@@ -191,15 +202,35 @@ pub fn bind_settling(
 
 /// Settles the invocation's result: an output, encoded with the tool's
 /// output codec, or a typed failure, `Explain` (definite) or `Uncertain`.
-/// Blocks until the run has recorded or refused it.
+/// Blocks until the run has recorded or refused it. A refusal is observed
+/// (`settlement_refused`) with an uncertain settlement's evidence; see
+/// `settle_summarized` to give a definite one a summary.
 pub fn settle(
   settlement: Settlement(output),
   result: Result(output, Failure),
 ) -> Result(Nil, SettleError) {
-  settlement.deliver(case result {
-    Ok(value) -> encode(settlement.output, value)
-    Error(error) -> failure(error)
-  })
+  let summary = case result {
+    Error(Uncertain(evidence)) -> evidence
+    Ok(_) | Error(Explain(_)) -> ""
+  }
+  settle_summarized(settlement, result, summary:)
+}
+
+/// `settle`, observing a refusal with `summary`: what a person needs to
+/// reconcile the action when the run did not record the settlement. The
+/// summary goes to observation handlers, so it must not carry secrets.
+pub fn settle_summarized(
+  settlement: Settlement(output),
+  result: Result(output, Failure),
+  summary summary: String,
+) -> Result(Nil, SettleError) {
+  settlement.deliver(
+    case result {
+      Ok(value) -> encode(settlement.output, value)
+      Error(error) -> failure(error)
+    },
+    summary,
+  )
 }
 
 fn checker(input: Codec(input)) -> fn(String) -> Result(Nil, String) {

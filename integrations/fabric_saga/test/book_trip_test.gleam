@@ -14,6 +14,7 @@
 import fabric
 import fabric/agent
 import fabric/model
+import fabric/observation as o
 import fabric/policy
 import fabric/run
 import fabric/store
@@ -21,6 +22,7 @@ import fabric/tool
 import fabric_saga
 import fabric_saga/support/watched
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
@@ -28,6 +30,7 @@ import gleeunit/should
 import json/blueprint/codec
 import saga
 import saga/execution
+import sinal
 
 pub type Trip {
   Trip(city: String)
@@ -399,8 +402,8 @@ pub fn a_cancellation_whose_undo_failed_is_uncertain_test() {
 
 /// Saga's rollback outlasts the call's bound: the run ends with an
 /// uncertain effect. The outcome that arrives afterwards is refused: it is
-/// read against the record, nothing is written, and the record is
-/// unchanged.
+/// read against the record, nothing is written, the record is unchanged,
+/// and the refusal is observed with a summary of Saga's report.
 pub fn an_outcome_after_the_run_ended_is_refused_test() {
   let reports = process.new_subject()
   let backend = watched.new()
@@ -417,11 +420,26 @@ pub fn an_outcome_after_the_run_ended_is_refused_test() {
   let writes = watched.writes(backend)
 
   let read = watched.notify_reads(backend)
+  let refused = process.new_subject()
+  let assert Ok(id) =
+    sinal.handler_id("trip-refused-" <> int.to_string(int.random(1_000_000)))
+  let assert Ok(attached) =
+    sinal.observe(id, o.settlement_refused(), fn(_, refusal) {
+      process.send(refused, refusal)
+    })
   process.send(undo.release, Nil)
   next(reports).entry |> should.equal("flight:release:FL-Lateslow")
   let assert Ok(_) = process.receive(read, 5000)
+  let assert Ok(refusal) = process.receive(refused, 5000)
+  let _ = sinal.detach(attached)
   watched.writes(backend) |> should.equal(writes)
   fabric.snapshot(run) |> should.equal(Ok(before))
+  refusal.reason |> should.equal(o.NotAwaited)
+  refusal.action.tool |> should.equal("book_trip")
+  string.contains(refusal.summary, "Saga reported cancelled")
+  |> should.be_true
+  string.contains(refusal.summary, "undone reserve_hotel, reserve_flight")
+  |> should.be_true
 }
 
 pub fn an_invalid_config_is_refused_before_anything_runs_test() {

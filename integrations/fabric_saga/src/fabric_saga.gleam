@@ -28,7 +28,9 @@
 //// stopped Fabric run waits for that settlement, up to `rollback_within`
 //// milliseconds after the call's task was confirmed stopped, before it
 //// ends. A settlement that arrives later is refused and changes nothing;
-//// the action stays an uncertain effect.
+//// the action stays an uncertain effect, and Fabric observes the refusal
+//// (`settlement_refused`) with a summary of Saga's report, for a person to
+//// reconcile it.
 
 import fabric/tool
 import fabric_saga/internal/verdict.{type Stopped, Definitely, Unknown}
@@ -111,12 +113,24 @@ fn run(
         start:,
         coordinator: None,
         settle: fn(delivery) {
-          let _ =
-            tool.settle(
+          let summary = case delivery {
+            Delivered(outcome) -> "Saga reported " <> verdict.summary(outcome)
+            RunLost -> "the workflow run was lost"
+          }
+          case
+            tool.settle_summarized(
               settlement,
               judge(delivery) |> result.map_error(failure),
+              summary:,
             )
-          Nil
+          {
+            // Recorded, or the call already had its result: nothing lost.
+            Ok(Nil) | Error(tool.AlreadyRecorded) -> Nil
+            // Not recorded, and the call has no definite result: Fabric
+            // observes the refusal (`settlement_refused`) with `summary`,
+            // for a person to reconcile the call.
+            Error(tool.NotAwaited) | Error(tool.SettleFailed(_)) -> Nil
+          }
         },
         rollback_within:,
       ))
