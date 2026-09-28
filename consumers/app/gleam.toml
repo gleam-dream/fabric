@@ -8,7 +8,10 @@ gleam = ">= 1.18.0"
 gleam_stdlib = ">= 0.70.0 and < 1.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 fabric = { path = "../.." }
+fabric_saga = { path = "../../integrations/fabric_saga" }
 json_blueprint = { path = "../../../json_blueprint" }
+saga = { path = "../../../saga" }
+sinal = { path = "../../../sinal" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

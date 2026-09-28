@@ -2,7 +2,10 @@
 ////
 //// Two application-owned tools with different inputs, outputs, and errors,
 //// a policy that decides with the member in context, and a deterministic
-//// model scripted over the transcript.
+//// model scripted over the transcript. A front desk delegates acquisitions
+//// to a purchasing sub-agent (starting it needs the committee's approval,
+//// and each order the treasurer's) and arranges interlibrary loans with a
+//// Saga workflow exposed as one tool.
 
 import fabric/agent.{type Agent}
 import fabric/model.{
@@ -10,12 +13,16 @@ import fabric/model.{
   ToolResultMessage, Usage, UserMessage,
 }
 import fabric/policy
+import fabric/run
 import fabric/tool
+import fabric_saga
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import json/blueprint/codec.{type Codec}
+import saga
+import saga/execution
 
 // --- application types --------------------------------------------------------
 
@@ -240,4 +247,187 @@ pub fn misconfigured() -> Agent(Member) {
 
 pub fn check(agent: Agent(Member)) -> Result(Nil, List(agent.ConfigError)) {
   agent.validate(agent)
+}
+
+// --- acquisitions: a sub-agent ------------------------------------------------
+
+pub type Purchase {
+  Purchase(title: String)
+}
+
+pub type Order {
+  Order(summary: String)
+}
+
+fn purchase_codec() -> Codec(Purchase) {
+  codec.field("title", codec.string())
+  |> codec.imap(Purchase, fn(purchase) { purchase.title })
+}
+
+fn order_codec() -> Codec(Order) {
+  codec.field("order", codec.string())
+  |> codec.imap(Order, fn(order) { order.summary })
+}
+
+/// Delegating an acquisition starts the purchaser as a sub-agent.
+pub fn acquire_definition() -> tool.Definition(Purchase, Order) {
+  tool.define(
+    "acquire",
+    "Have the purchaser acquire a book the library does not have.",
+    purchase_codec(),
+    order_codec(),
+  )
+}
+
+/// Every order the purchaser places needs the treasurer's approval.
+pub fn purchasing_policy(
+  _member: Member,
+  action: policy.Action,
+) -> Result(policy.Decision, String) {
+  case action.tool {
+    "order_book" ->
+      Ok(policy.RequireApproval(policy.Requirement("treasurer", 1)))
+    _ -> Ok(policy.Allow)
+  }
+}
+
+/// Places a purchase order for a title.
+pub fn purchaser() -> Agent(Member) {
+  let order =
+    tool.define(
+      "order_book",
+      "Place a purchase order for a title.",
+      purchase_codec(),
+      codec.field("po", codec.string()),
+    )
+    |> tool.bind(
+      fn(_member, purchase: Purchase) -> Result(String, Nil) {
+        Ok("PO-" <> purchase.title)
+      },
+      fn(_) { tool.Explain("order failed") },
+    )
+  agent.new(
+    model.new(fn(request: model.Request) {
+      let usage = Some(Usage(input_tokens: 4, output_tokens: 2))
+      Ok(case prompt(request.messages), results(request.messages) {
+        "buy " <> title, [] ->
+          ToolRequest(
+            "",
+            [call("o1", "order_book", "{\"title\":\"" <> title <> "\"}")],
+            usage,
+          )
+        _, seen -> FinalAnswer("ordered " <> string.join(seen, ", "), usage)
+      })
+    }),
+    [order],
+    purchasing_policy,
+  )
+  |> agent.with_identity("purchaser", 1)
+}
+
+/// Starting the purchaser needs the acquisitions committee's approval.
+pub fn front_desk_policy(
+  member: Member,
+  action: policy.Action,
+) -> Result(policy.Decision, String) {
+  case action.target {
+    policy.StartAgent(..) ->
+      Ok(policy.RequireApproval(policy.Requirement("committee", 1)))
+    policy.InvokeTool -> desk_policy(member, action)
+  }
+}
+
+// --- interlibrary loans: a Saga workflow as a tool ------------------------------
+
+pub type Loan {
+  Loan(title: String)
+}
+
+pub type LoanError {
+  NoCourier(title: String)
+}
+
+/// Request a copy from a partner library, then book a courier for it. A
+/// title no courier carries cancels the request.
+pub fn loan_workflow() -> saga.Workflow(Loan, String, LoanError, Nil) {
+  let request =
+    saga.step("request_copy", fn(loan: Loan) { Ok("REQ-" <> loan.title) })
+    |> saga.undo(fn(_, _) { Ok(Nil) })
+  let courier =
+    saga.step("book_courier", fn(pair: #(Loan, String)) {
+      let #(loan, request) = pair
+      case loan.title {
+        "Lost Scroll" -> Error(NoCourier(loan.title))
+        _ -> Ok(request <> "/COURIER")
+      }
+    })
+  let assert Ok(workflow) =
+    saga.define("interlibrary_loan", fn(loan) {
+      let requested = saga.perform(loan, request)
+      saga.perform(saga.both(loan, requested), courier)
+    })
+  workflow
+}
+
+pub fn loan_tool() -> tool.Tool(Member) {
+  let assert Ok(loan) =
+    fabric_saga.tool(
+      tool.define(
+        "interlibrary_loan",
+        "Borrow a book from a partner library.",
+        codec.field("title", codec.string())
+          |> codec.imap(Loan, fn(loan) { loan.title }),
+        codec.field("delivery", codec.string()),
+      ),
+      loan_workflow(),
+      execution.config(),
+      explain: fn(error) {
+        let NoCourier(title) = error
+        "no courier carries " <> title
+      },
+    )
+  loan
+}
+
+// --- the front desk -------------------------------------------------------------
+
+/// Acquires a book through the purchaser, or borrows one through an
+/// interlibrary loan.
+pub fn front_desk() -> Agent(Member) {
+  agent.new(
+    model.new(fn(request: model.Request) {
+      let usage = Some(Usage(input_tokens: 10, output_tokens: 5))
+      Ok(case prompt(request.messages), results(request.messages) {
+        "acquire " <> title, [] ->
+          ToolRequest(
+            "",
+            [call("a1", "acquire", "{\"title\":\"" <> title <> "\"}")],
+            usage,
+          )
+        "borrow " <> title, [] ->
+          ToolRequest(
+            "",
+            [
+              call("l1", "interlibrary_loan", "{\"title\":\"" <> title <> "\"}"),
+            ],
+            usage,
+          )
+        _, seen -> FinalAnswer("done: " <> string.join(seen, " | "), usage)
+      })
+    }),
+    [loan_tool()],
+    front_desk_policy,
+  )
+  |> agent.with_identity("front-desk", 1)
+  |> agent.with_sub_agent(
+    acquire_definition(),
+    to: purchaser(),
+    prompt: fn(purchase: Purchase) { "buy " <> purchase.title },
+    result: fn(outcome) {
+      case outcome {
+        run.Completed(text) -> Ok(Order(text))
+        _ -> Error(tool.Explain("the purchase did not complete"))
+      }
+    },
+  )
 }

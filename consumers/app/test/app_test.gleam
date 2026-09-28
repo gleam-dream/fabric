@@ -1,5 +1,6 @@
 import app
 import fabric
+import fabric/observation
 import fabric/run
 import fabric/store
 import gleam/dynamic.{type Dynamic}
@@ -7,8 +8,10 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import gleeunit
 import gleeunit/should
+import sinal
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -182,7 +185,10 @@ pub fn a_paused_reservation_can_be_cancelled_test() {
 /// The process that started the run dies with its store; the paused run
 /// survives on disk, and a new process recovers and approves it.
 pub fn a_paused_reservation_survives_a_restart_test() {
-  let dir = "build/fabric-restart-" <> int.to_string(int.random(1_000_000_000))
+  let dir =
+    temp_root()
+    <> "/fabric-restart-"
+    <> int.to_string(int.random(1_000_000_000))
   let started = process.new_subject()
   let owner =
     process.spawn_unlinked(fn() {
@@ -224,3 +230,211 @@ pub fn a_paused_reservation_survives_a_restart_test() {
 
 @external(erlang, "file", "del_dir_r")
 fn delete_directory(path: String) -> Dynamic
+
+/// The system temporary directory, so a failed test leaves nothing in the
+/// project.
+fn temp_root() -> String {
+  case getenv("TMPDIR") {
+    Ok(dir) -> dir
+    Error(Nil) -> "/tmp"
+  }
+}
+
+@external(erlang, "app_test_ffi", "getenv")
+fn getenv(name: String) -> Result(String, Nil)
+
+// --- acquisitions through a sub-agent -------------------------------------------
+
+/// The committee approves starting the purchaser; the purchaser's order
+/// then waits for the treasurer, and that approval surfaces at the front
+/// desk, naming the purchaser's run. Both are answered through the desk.
+pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
+  let assert Ok(desk) =
+    fabric.start(
+      store.in_memory(),
+      app.front_desk(),
+      app.member("ada"),
+      "acquire Dune",
+    )
+  let assert Ok(run.Suspended([committee], [])) = fabric.await(desk, 5000)
+  committee.tool |> should.equal("acquire")
+  committee.reference.run |> should.equal(fabric.id(desk))
+  let assert Ok(_) =
+    fabric.answer(
+      desk,
+      committee.reference,
+      run.Approve,
+      reviewer: Some("committee-chair"),
+      context: app.member("ada"),
+    )
+
+  let assert Ok(run.Suspended([treasurer], [])) = fabric.await(desk, 5000)
+  treasurer.tool |> should.equal("order_book")
+  { treasurer.reference.run != fabric.id(desk) } |> should.be_true
+  let assert Ok(_) =
+    fabric.answer(
+      desk,
+      treasurer.reference,
+      run.Approve,
+      reviewer: Some("treasurer-tom"),
+      context: app.member("ada"),
+    )
+  fabric.await(desk, 5000)
+  |> should.equal(
+    Ok(
+      run.Finished(run.Completed(
+        "done: {\"order\":\"ordered {\\\"po\\\":\\\"PO-Dune\\\"}\"}",
+      )),
+    ),
+  )
+}
+
+/// Cancelling the desk while the purchaser waits for the treasurer cancels
+/// the purchaser too; its pending order is void.
+pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
+  let assert Ok(desk) =
+    fabric.start(
+      store.in_memory(),
+      app.front_desk(),
+      app.member("ada"),
+      "acquire Dune",
+    )
+  let assert Ok(run.Suspended([committee], [])) = fabric.await(desk, 5000)
+  let assert Ok(_) =
+    fabric.answer(
+      desk,
+      committee.reference,
+      run.Approve,
+      reviewer: None,
+      context: app.member("ada"),
+    )
+  let assert Ok(run.Suspended([treasurer], [])) = fabric.await(desk, 5000)
+  let assert Ok(purchaser) = fabric.child(desk, treasurer.reference.run)
+
+  let assert Ok(_) = fabric.cancel(desk)
+  fabric.await(desk, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.status(purchaser) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.answer(
+    desk,
+    treasurer.reference,
+    run.Approve,
+    reviewer: None,
+    context: app.member("ada"),
+  )
+  |> should.equal(Error(fabric.RunEnded))
+}
+
+// --- an interlibrary loan as a Saga workflow --------------------------------------
+
+pub fn an_interlibrary_loan_runs_as_one_tool_test() {
+  let assert Ok(loan) =
+    fabric.start(
+      store.in_memory(),
+      app.front_desk(),
+      app.member("ada"),
+      "borrow Dune",
+    )
+  fabric.await(loan, 5000)
+  |> should.equal(
+    Ok(run.Finished(run.Completed("done: {\"delivery\":\"REQ-Dune/COURIER\"}"))),
+  )
+
+  // No courier: the request was cancelled, so the failure is definite.
+  let assert Ok(lost) =
+    fabric.start(
+      store.in_memory(),
+      app.front_desk(),
+      app.member("ada"),
+      "borrow Lost Scroll",
+    )
+  fabric.await(lost, 5000)
+  |> should.equal(
+    Ok(
+      run.Finished(run.Completed(
+        "done: {\"error\":\"no courier carries Lost Scroll\"}",
+      )),
+    ),
+  )
+}
+
+// --- observations -----------------------------------------------------------------
+
+/// A handler the application attaches sees what the run did, after each
+/// commit.
+pub fn observations_show_what_a_run_did_test() {
+  let events = process.new_subject()
+  let assert Ok(started_id) = sinal.handler_id("app-started")
+  let assert Ok(started) =
+    sinal.observe(started_id, observation.run_started(), fn(_, meta) {
+      process.send(events, "started " <> meta.agent)
+    })
+  let assert Ok(child_id) = sinal.handler_id("app-child")
+  let assert Ok(child) =
+    sinal.observe(child_id, observation.child_started(), fn(_, meta) {
+      process.send(events, "delegated " <> meta.action.tool)
+    })
+  let assert Ok(finished_id) = sinal.handler_id("app-finished")
+  let assert Ok(finished) =
+    sinal.observe(finished_id, observation.run_finished(), fn(totals, meta) {
+      process.send(
+        events,
+        "finished "
+          <> string.inspect(meta.outcome)
+          <> " after "
+          <> int.to_string(totals.turns)
+          <> " turns",
+      )
+    })
+
+  let assert Ok(desk) =
+    fabric.start(
+      store.in_memory(),
+      app.front_desk(),
+      app.member("ada"),
+      "acquire Dune",
+    )
+  let assert Ok(run.Suspended([committee], [])) = fabric.await(desk, 5000)
+  let assert Ok(_) =
+    fabric.answer(
+      desk,
+      committee.reference,
+      run.Approve,
+      reviewer: None,
+      context: app.member("ada"),
+    )
+  let assert Ok(run.Suspended([treasurer], [])) = fabric.await(desk, 5000)
+  let assert Ok(_) =
+    fabric.answer(
+      desk,
+      treasurer.reference,
+      run.Approve,
+      reviewer: None,
+      context: app.member("ada"),
+    )
+  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(desk, 5000)
+  let seen = receive_until(events, "finished Completed after 2 turns", [])
+  list.each([started, child, finished], fn(attachment) {
+    let _ = sinal.detach(attachment)
+    Nil
+  })
+  seen
+  |> should.equal([
+    "started front-desk", "started purchaser", "delegated acquire",
+    "finished Completed after 2 turns", "finished Completed after 2 turns",
+  ])
+}
+
+/// Lines until `last` has arrived twice (the child's run and the desk's
+/// both finish after two turns).
+fn receive_until(
+  events: process.Subject(String),
+  last: String,
+  seen: List(String),
+) -> List(String) {
+  let assert Ok(line) = process.receive(events, 5000)
+  let seen = [line, ..seen]
+  case list.count(seen, fn(entry) { entry == last }) {
+    2 -> list.reverse(seen)
+    _ -> receive_until(events, last, seen)
+  }
+}
