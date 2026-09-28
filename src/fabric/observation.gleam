@@ -5,17 +5,30 @@
 //// describes, by the process that made the commit (a runner, or the
 //// caller of `start`, `answer`, `cancel`, `reconcile`, `recover`, or
 //// `cancel_stored`), and never by the pure controller. It is emitted with
-//// `sinal.emit`: handlers run synchronously in that process. A handler
-//// that fails (returns an error or raises) is detached by Sinal and
-//// telemetry and never affects the run; a handler that blocks holds up the
-//// run's progress, so hand slow work to another process (for example a
-//// `sinal/forwarder`).
+//// `sinal/forwarder.emit_routed`, so the application chooses where
+//// handlers run:
+////
+//// - By default, synchronously in the committing process. A handler that
+////   blocks holds up that run's progress.
+//// - If the application routes `[fabric]` (or a longer prefix) through a
+////   forwarder with `forwarder.route`, in the forwarder's process. A
+////   blocked handler then stalls the forwarder, never the run, and a
+////   handler cannot read the committing process's dictionary. Route at
+////   application start, once the forwarder is supervised, and `unroute`
+////   at shutdown.
+////
+//// A handler that fails (returns an error or raises) is detached by Sinal
+//// and telemetry and never affects the run.
 ////
 //// An event may be missing: a process that dies between its commit and
 //// its emit, or a commit made through a store in another VM, emits
-//// nothing here. Events of one commit are emitted in the order listed
-//// below; events of different runs, or of one run through several
-//// processes, have no global order.
+//// nothing here. A routed event is also dropped when its forwarder is full
+//// (counted in the forwarder's `dropped_event`) or not running (not
+//// counted), and in-flight events are lost if the forwarder stops. Events
+//// of one commit are emitted in the order listed below, and one process's
+//// events keep their order through one route; events of different runs,
+//// of one run through several processes, or split across a route change
+//// have no global order.
 ////
 //// | Event | Name | When |
 //// | --- | --- | --- |

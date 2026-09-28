@@ -360,8 +360,10 @@ pub fn an_interlibrary_loan_runs_as_one_tool_test() {
 // --- observations -----------------------------------------------------------------
 
 /// A handler the application attaches sees what the run did, after each
-/// commit.
+/// commit, from the forwarder the application routed Fabric's events
+/// through.
 pub fn observations_show_what_a_run_did_test() {
+  let assert Ok(observation) = app.start_observation()
   let events = process.new_subject()
   let assert Ok(started_id) = sinal.handler_id("app-started")
   let assert Ok(started) =
@@ -417,6 +419,7 @@ pub fn observations_show_what_a_run_did_test() {
     let _ = sinal.detach(attachment)
     Nil
   })
+  app.stop_observation(observation)
   seen
   |> should.equal([
     "started front-desk", "started purchaser", "delegated acquire",
