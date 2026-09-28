@@ -12,8 +12,13 @@
 //// AwaitingModel(turn) --reply--> Acting(batch) | Ended
 //// Acting(batch)       --all model-visible--> AwaitingModel(turn + 1)
 //// Acting(batch)       --cancel or host fault, tools or children active--> Stopping
-//// Stopping            --tools stopped and children ended--> Ended
+//// Stopping            --tools stopped, settlements in, children ended--> Ended
 //// ```
+////
+//// A stopped tool bound with `tool.bind_settling` stays running after the
+//// executor stops until its late settlement (`Settled`) arrives or its
+//// bound passes (`SettlementDue`). An uncertain action accepts one
+//// definite settlement, like a reconciliation.
 ////
 //// `answer` resolves an approval request of the current batch; `abandon`
 //// and `recover` take over a record whose runner was lost.
@@ -127,6 +132,11 @@ pub type Event {
   ChildStarted(ActionId)
   /// The child run of a delegation ended (or cannot be continued).
   ChildEnded(ActionId, ChildResult)
+  /// A late settlement of a stopped or uncertain action
+  /// (`tool.bind_settling`).
+  Settled(ActionId, invocation.Outcome)
+  /// A stopped action's bound for its settlement has passed.
+  SettlementDue(ActionId)
 }
 
 /// What became of a delegation's child run.
@@ -149,6 +159,8 @@ pub type Effect {
   StartChild(id: ActionId, child: String, call: ToolCall)
   /// Cancel these child runs (action, child run id).
   CancelChildren(List(#(ActionId, String)))
+  /// Report `SettlementDue(id)` after `within` milliseconds.
+  AwaitSettlement(id: ActionId, within: Int)
 }
 
 pub type Rejection {
@@ -163,6 +175,8 @@ pub type Rejection {
   StaleReference
   /// This approval request was already answered.
   AlreadyAnswered
+  /// The action does not await a late settlement.
+  SettlementNotAwaited(ActionId)
 }
 
 type Transition =
@@ -249,6 +263,17 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
       )
       Ok(settle(env, State(..state, phase: Acting(turn, actions))))
     }
+    Acting(turn, actions), Settled(id, outcome) -> {
+      use actions <- result.try(
+        update(actions, id, fn(action_state) {
+          case action_state, settled_state(outcome) {
+            run.Uncertain(_), Definite(settled) -> Ok(settled)
+            _, _ -> Error(SettlementNotAwaited(id))
+          }
+        }),
+      )
+      Ok(settle(env, State(..state, phase: Acting(turn, actions))))
+    }
     Acting(turn, actions), ChildStarted(id) -> {
       use actions <- result.try(child_started(actions, id))
       Ok(#(State(..state, phase: Acting(turn, actions)), []))
@@ -278,13 +303,58 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
       use actions <- result.try(update(actions, id, lose(id, why)))
       Ok(#(State(..state, phase: Stopping(turn, actions, reason)), []))
     }
-    Stopping(turn, actions, reason), ToolsStopped ->
-      Ok(
-        #(
-          finish_stop(state, turn, actions, reason, "stopped while running"),
-          [],
-        ),
+    Stopping(turn, actions, reason), ToolsStopped -> {
+      // A stopped tool that can settle late keeps running until its
+      // settlement arrives or its bound passes.
+      let awaiting =
+        list.filter_map(actions, fn(action) {
+          case
+            action.state,
+            action.child,
+            registry.settles_within(env.registry, action.call.name)
+          {
+            run.Running, None, Some(within) -> Ok(#(action.id, within))
+            _, _, _ -> Error(Nil)
+          }
+        })
+      let stopped =
+        finish_stop(
+          state,
+          turn,
+          actions,
+          reason,
+          "stopped while running",
+          list.map(awaiting, fn(entry) { entry.0 }),
+        )
+      Ok(#(
+        stopped,
+        list.map(awaiting, fn(entry) { AwaitSettlement(entry.0, entry.1) }),
+      ))
+    }
+    Stopping(turn, actions, reason), Settled(id, outcome) -> {
+      use actions <- result.try(
+        update(actions, id, fn(action_state) {
+          case action_state, settled_state(outcome) {
+            run.Running, Definite(settled) | run.Running, Indefinite(settled) ->
+              Ok(settled)
+            run.Uncertain(_), Definite(settled) -> Ok(settled)
+            _, _ -> Error(SettlementNotAwaited(id))
+          }
+        }),
       )
+      Ok(#(stopped_when_idle(state, turn, actions, reason), []))
+    }
+    Stopping(turn, actions, reason), SettlementDue(id) -> {
+      use actions <- result.try(
+        update(actions, id, fn(action_state) {
+          case action_state {
+            run.Running -> Ok(run.Uncertain(no_settlement))
+            _ -> Error(StaleEvent)
+          }
+        }),
+      )
+      Ok(#(stopped_when_idle(state, turn, actions, reason), []))
+    }
     Stopping(turn, actions, reason), ChildStarted(id) -> {
       use actions <- result.try(child_started(actions, id))
       Ok(#(State(..state, phase: Stopping(turn, actions, reason)), []))
@@ -367,21 +437,48 @@ pub fn cancel_unattended(
   }
 }
 
+const no_settlement = "stopped while running; no settlement arrived within the tool's bound"
+
+/// A late settlement as an action state: definite (the model may see it),
+/// or an effect that stays uncertain.
+type SettledState {
+  Definite(run.ActionState)
+  Indefinite(run.ActionState)
+}
+
+fn settled_state(outcome: invocation.Outcome) -> SettledState {
+  case outcome {
+    invocation.Returned(content) -> Definite(run.Succeeded(content))
+    invocation.FailedVisibly(content) -> Definite(run.ToolFailed(content))
+    invocation.EffectUncertain(evidence) -> Indefinite(run.Uncertain(evidence))
+    invocation.OutputUnencodable(detail)
+    | invocation.ArgumentsRejected(detail) ->
+      Indefinite(run.Uncertain(
+        "the settlement could not be recorded: " <> detail,
+      ))
+  }
+}
+
 /// The executor has confirmed that no tool runs: running tools become
-/// uncertain, queued ones not started. The run ends unless child runs of
-/// the batch are still ending.
+/// uncertain, queued ones not started, except the running ones in
+/// `awaiting`, which wait for their late settlement. The run ends unless
+/// child runs of the batch are still ending or settlements are awaited.
 fn finish_stop(
   state: State,
   turn: Int,
   actions: List(ActionRecord),
   reason: StopReason,
   evidence: String,
+  awaiting: List(ActionId),
 ) -> State {
   let actions =
     list.map(actions, fn(action) {
       case action.state, action.child {
         run.Running, None ->
-          ActionRecord(..action, state: run.Uncertain(evidence))
+          case list.contains(awaiting, action.id) {
+            True -> action
+            False -> ActionRecord(..action, state: run.Uncertain(evidence))
+          }
         run.Running, Some(_) -> ActionRecord(..action, state: run.Delegated)
         run.Queued, _ -> ActionRecord(..action, state: run.NotStarted)
         _, _ -> action
@@ -1261,7 +1358,7 @@ pub fn abandon(state: State) -> State {
         ),
       )
     Stopping(turn, actions, reason) ->
-      finish_stop(state, turn, actions, reason, lost_evidence)
+      finish_stop(state, turn, actions, reason, lost_evidence, [])
     AwaitingModel(_) | Ended(_) -> state
   }
 }

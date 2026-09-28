@@ -39,6 +39,9 @@ pub type ConfigError {
   InvalidToolName(String)
   /// The tool's input codec has no JSON Schema to declare to the model.
   ToolSchemaUnavailable(String)
+  /// A tool bound with `tool.bind_settling` waits no positive time for its
+  /// settlement.
+  SettlementBoundNotPositive(name: String, within: Int)
   MaxTurnsNotPositive(Int)
   MaxConcurrencyNotPositive(Int)
   TokenBudgetNotPositive(Int)
@@ -355,5 +358,7 @@ fn tool_error(error: registry.RegistryError) -> ConfigError {
     registry.DuplicateName(name) -> DuplicateToolName(name)
     registry.InvalidName(name) -> InvalidToolName(name)
     registry.SchemaUnavailable(name) -> ToolSchemaUnavailable(name)
+    registry.SettlementBoundNotPositive(name, within) ->
+      SettlementBoundNotPositive(name, within)
   }
 }

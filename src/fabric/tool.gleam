@@ -8,11 +8,31 @@
 ////
 //// The handler receives the run's context separately from the decoded
 //// business input.
+////
+//// A tool bound with `bind_settling` also receives a `Settlement`: a
+//// handle with which its result can be settled after the invocation's task
+//// was stopped (a cancellation, a host fault in another action, or a task
+//// that died), for a tool whose effect outlives its task, such as a
+//// workflow that compensates after it is cancelled. A settlement is
+//// accepted at most once per action, and only while the action awaits it:
+////
+//// - The run is stopping and the action's task was stopped: the run waits,
+////   up to the tool's bound, for the settlement before it ends. The
+////   settlement is recorded as the action's result, definite or uncertain.
+////   Past the bound the action is an uncertain effect.
+//// - The action is an uncertain effect of a run that has not ended: only a
+////   definite settlement is accepted, recorded like a reconciliation of
+////   exactly that action, and the run continues.
+////
+//// Otherwise `settle` returns `NotAwaited` and changes nothing: the task
+//// is still running or reported, the action was settled or reconciled
+//// already, or the run has ended. The handle reaches the run through the
+//// store its invocation ran with.
 
 import fabric/internal/invocation.{type Outcome}
 import fabric/model.{type ToolCall}
 import fabric/run
-import gleam/option.{None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import json/blueprint/codec.{type Codec}
 
@@ -41,9 +61,36 @@ pub opaque type Tool(context) {
     description: String,
     input_schema: Result(codec.Schema, codec.SchemaError),
     check: fn(String) -> Result(Nil, String),
-    invoke: fn(context, String) -> Outcome,
+    invoke: fn(context, String, Late) -> Outcome,
     kind: Kind,
+    /// For a tool bound with `bind_settling`: how long a stopped run waits
+    /// for its settlement, in milliseconds.
+    settles_within: Option(Int),
   )
+}
+
+/// How the runtime receives one invocation's late settlement.
+@internal
+pub type Late =
+  fn(Outcome) -> Result(Nil, SettleError)
+
+/// A handle on one invocation of a tool bound with `bind_settling`, to
+/// settle its result after its task was stopped. Whoever holds it may
+/// settle; the first settlement the run accepts is the only one.
+pub opaque type Settlement(output) {
+  Settlement(output: Codec(output), deliver: Late)
+}
+
+/// Why a settlement was not recorded.
+pub type SettleError {
+  /// The action does not await a settlement: its task is still running or
+  /// reported, it was settled or reconciled already, the run has ended, or
+  /// an uncertain settlement was offered for an effect that is already
+  /// uncertain. Nothing changed.
+  NotAwaited
+  /// The run could not be read or written. A write the store reported
+  /// unavailable has an unknown outcome.
+  SettleFailed(detail: String)
 }
 
 /// Whether a tool runs a handler or starts a sub-agent run (see
@@ -86,7 +133,8 @@ pub fn bind(
     input_schema: codec.schema(input),
     check: checker(input),
     kind: Handler,
-    invoke: fn(context, arguments) {
+    settles_within: None,
+    invoke: fn(context, arguments, _late) {
       case codec.decode_json(input, arguments) {
         Error(error) ->
           invocation.ArgumentsRejected(invocation.describe_decode_error(error))
@@ -98,6 +146,53 @@ pub fn bind(
       }
     },
   )
+}
+
+/// Binds a typed handler that also receives its invocation's `Settlement`
+/// (see the module documentation), and whose stopped run waits up to
+/// `within` milliseconds for that settlement before recording an uncertain
+/// effect. The handler's own result is used when it returns; the
+/// settlement matters only once its task was stopped. `classify` is as for
+/// `bind`.
+pub fn bind_settling(
+  definition: Definition(input, output),
+  handler: fn(context, input, Settlement(output)) -> Result(output, error),
+  classify: fn(error) -> Failure,
+  within milliseconds: Int,
+) -> Tool(context) {
+  let Definition(name:, description:, input:, output:) = definition
+  Tool(
+    name:,
+    description:,
+    input_schema: codec.schema(input),
+    check: checker(input),
+    kind: Handler,
+    settles_within: Some(milliseconds),
+    invoke: fn(context, arguments, late) {
+      case codec.decode_json(input, arguments) {
+        Error(error) ->
+          invocation.ArgumentsRejected(invocation.describe_decode_error(error))
+        Ok(value) ->
+          case handler(context, value, Settlement(output, late)) {
+            Ok(value) -> encode(output, value)
+            Error(error) -> failure(classify(error))
+          }
+      }
+    },
+  )
+}
+
+/// Settles the invocation's result: an output, encoded with the tool's
+/// output codec, or a typed failure, `Explain` (definite) or `Uncertain`.
+/// Blocks until the run has recorded or refused it.
+pub fn settle(
+  settlement: Settlement(output),
+  result: Result(output, Failure),
+) -> Result(Nil, SettleError) {
+  settlement.deliver(case result {
+    Ok(value) -> encode(settlement.output, value)
+    Error(error) -> failure(error)
+  })
 }
 
 fn checker(input: Codec(input)) -> fn(String) -> Result(Nil, String) {
@@ -140,7 +235,8 @@ pub fn delegation(
     description:,
     input_schema: codec.schema(input),
     check: checker(input),
-    invoke: fn(_, _) {
+    settles_within: None,
+    invoke: fn(_, _, _) {
       invocation.ArgumentsRejected(
         "a delegation starts a run; it is not invoked",
       )
@@ -207,10 +303,16 @@ pub fn kind(tool: Tool(context)) -> Kind {
 }
 
 @internal
+pub fn settles_within(tool: Tool(context)) -> Option(Int) {
+  tool.settles_within
+}
+
+@internal
 pub fn invoke(
   tool: Tool(context),
   context: context,
   arguments: String,
+  late: Late,
 ) -> Outcome {
-  tool.invoke(context, arguments)
+  tool.invoke(context, arguments, late)
 }

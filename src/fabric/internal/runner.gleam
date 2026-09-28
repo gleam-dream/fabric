@@ -33,6 +33,7 @@ import fabric/model.{type Model}
 import fabric/policy.{type ActionId}
 import fabric/run
 import fabric/store.{type Store}
+import fabric/tool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
@@ -105,18 +106,42 @@ pub fn setup(
 /// link back to the run keeps `setup`).
 pub fn work(setup: Setup(context), context: context) -> Work {
   live.Work(
-    invoke: fn(call: model.ToolCall) {
+    invoke: fn(run: String, id: ActionId, call: model.ToolCall) {
       registry.invoke(
         setup.env.registry,
         context,
         call.name,
         call.arguments_json,
+        fn(outcome) { settle_late(setup, run, id, outcome, 3) },
       )
     },
     start_child: fn(parent, id, child, call) {
       start_child(setup, context, parent, id, child, call)
     },
   )
+}
+
+/// Applies a late settlement of the action `id` of `run`
+/// (`tool.bind_settling`). A runner busy past the command timeout is asked
+/// again a few times.
+fn settle_late(
+  setup: Setup(context),
+  run: String,
+  id: ActionId,
+  outcome: invocation.Outcome,
+  tries: Int,
+) -> Result(Nil, tool.SettleError) {
+  case command(setup, run, setup.env, controller.Settled(id, outcome), 8) {
+    Ok(_) -> Ok(Nil)
+    Error(CommandRefused(_)) -> Error(tool.NotAwaited)
+    Error(Busy) if tries > 1 -> settle_late(setup, run, id, outcome, tries - 1)
+    Error(Busy) -> Error(tool.SettleFailed("the run's runner is busy"))
+    Error(Contended) -> Error(tool.SettleFailed("every commit lost a race"))
+    Error(OwnerUnknown) ->
+      Error(tool.SettleFailed("no runner known to this store drives the run"))
+    Error(Unreadable(problem)) ->
+      Error(tool.SettleFailed(describe_read(problem)))
+  }
 }
 
 /// The setup of the sub-agent that the delegation `name` of `run` starts,
@@ -608,7 +633,7 @@ fn perform(
         executor,
         list.map(actions, fn(action) {
           let #(id, call) = action
-          executor.Job(id, fn() { work.invoke(call) })
+          executor.Job(id, fn() { work.invoke(runner.state.run, id, call) })
         }),
       )
       Runner(..runner, executor: Some(executor))
@@ -627,6 +652,14 @@ fn perform(
     controller.StartChild(id, child, call) -> {
       let report = work.start_child(runner.state, id, child, call)
       process.send(runner.self, live.Apply(report))
+      runner
+    }
+    controller.AwaitSettlement(id, within) -> {
+      process.send_after(
+        runner.self,
+        within,
+        live.Apply(controller.SettlementDue(id)),
+      )
       runner
     }
     controller.CancelChildren(children) -> {

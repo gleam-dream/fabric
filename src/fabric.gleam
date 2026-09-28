@@ -389,7 +389,9 @@ pub fn answer(
 }
 
 /// Cancels a run that is active, suspended, or whose runner was lost, and
-/// its sub-agent runs through the store. A sub-agent's cancellation that
+/// its sub-agent runs through the store. A stopped tool bound with
+/// `tool.bind_settling` is waited for, up to its bound, until its late
+/// settlement records what happened. A sub-agent's cancellation that
 /// fails on a store error is tried again with a bounded backoff; one that
 /// still fails makes the delegation an uncertain effect, and the sub-agent
 /// then accepts no answer or reconciliation (see `RunEnded`). Cancelling a
@@ -498,6 +500,7 @@ fn refusal(rejection: controller.Rejection) -> CommandError {
     controller.WrongReference -> WrongReference
     controller.StaleReference -> StaleReference
     controller.AlreadyAnswered -> AlreadyAnswered
+    controller.SettlementNotAwaited(id) -> NotReconcilable(id)
   }
 }
 
