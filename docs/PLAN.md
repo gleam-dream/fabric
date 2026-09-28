@@ -389,11 +389,12 @@ backend simulate two nodes in one VM.
 - **A leased store** (`store.leased(name, node:, lease:, backend:)`)
   identifies its process as `<node>/<store name>/<random>`, new at each
   start. A commit that gives work to a new runner claims the lease (a
-  cancellation seizes it); every runner commit holds it, the tool fence
-  included, so a runner whose lease another owner claimed commits nothing
-  and starts no body
+  cancellation seizes it); every commit that keeps work in flight holds
+  it, the tool fence included, so a runner whose lease another owner
+  claimed starts no body
   (`a_tool_start_is_refused_once_another_owner_claimed_the_lease_test`); a
-  commit that leaves nothing in flight releases it; work committed with no
+  commit that leaves nothing in flight releases it with the revision check
+  alone; work committed with no
   runner (a draining store) and a handoff claim it as already expired
   (`a_handoff_releases_the_lease_as_already_expired_test`)
   (`a_runner_holds_its_runs_lease_while_it_works_test`).
@@ -453,11 +454,13 @@ Deviations from the accepted design, each the smallest safe variant:
   leases. Work committed with no runner is claimed the same way.
 - **The boot fast path** is a `Seize` at the same revision, retried by the
   store's process when a `Claim` is refused by a lease of the same node and
-  store name with another random part. A store name made by
-  `process.new_name` differs after a VM restart, so the fast path covers a
-  restarted store process in one VM (a store crash); after a VM restart the
-  lease is taken once it expires. An explicit store id could extend it
-  (S4/S5 decision).
+  store name with another random part. `process.new_name` uses a
+  VM-local positive integer suffix, which can repeat across VMs and after
+  a restart. The fast path covers a restarted process with the same name;
+  after a VM restart it applies only if that name is reused. Otherwise
+  recovery waits for expiry. Node ids must be unique across live VMs: a
+  duplicate node id can cause a live store to be mistaken for an earlier
+  process. S4 retains this contract without adding a store-id setting.
 - **A lease this store holds, with no runner of it here** (its runner
   crashed), reads `Unattended` on this node, which knows its runner is
   gone, and `Working` on other nodes until it expires; `recover` here takes
@@ -486,10 +489,137 @@ for that factory (`eaa5dbb`).
 S3's gates passed against llm_wire `a822ea4`, json_blueprint `ecf5c60`,
 sinal `858dfa3` and saga `4a93b04`, each with a clean working tree.
 
-Deferred: to S4, the Postgres backend running the conformance suite, and
-`pgo` notifications instead of polling; to S5, the sweeper
-(`claim_expired`, the boot scan) and a peer-VM test; to S7, the drain
-summary (with failed handoffs) and lease gauges.
+The Postgres backend and its conformance checks are implemented in S4.
+Notifications remain a later optimisation: cross-node `await` still polls.
+Deferred to S5: the sweeper (`claim_expired`, the boot scan) and a peer-VM
+test. Deferred to S7: the drain summary (with failed handoffs) and lease
+gauges.
+
+### S4: PostgreSQL store and leased shutdown coverage
+
+Implemented in `integrations/fabric_postgres`, a separate package that
+keeps `pog` out of Fabric core. The application owns the pool and passes
+its `pog.Connection`; the pool precedes `store.supervised` in a
+rest-for-one application supervisor. The store drains before the pool
+stops. See the [package README](../integrations/fabric_postgres/README.md)
+for the compiled and executed setup example.
+
+The public API:
+
+- `settings(connection, node:) -> Settings`, with a 30 000 ms lease and
+  schema `public`; `with_lease(settings, milliseconds) -> Settings`.
+- `with_schema(settings, schema) -> Result(Settings, SchemaError)` checks
+  the schema identifier before any SQL is built.
+- `migrate(settings) -> Result(Nil, MigrateError)` creates the schema and
+  applies forward-only numbered migrations in one transaction, under a
+  schema-specific advisory lock. `priv/migrations` carries the same
+  statements in cigogne format.
+- `store(name, settings) -> Result(Store, store.LeaseConfigError)` builds
+  the store; `backend(settings) -> store.LeasedBackend` exposes its port
+  for wrappers and the shared conformance checks.
+- `prune(settings, ended_for:, limit:) -> Result(Int, PruneError)` removes
+  whole finished families, oldest first. The limit counts families; the
+  result counts rows, including children. Every member must be ended or
+  never started, with no live lease. An ended child is never pruned alone.
+
+The schema stores each run's exact record text, revision, phase, root id,
+lease owner and expiry, and update time. The paired lease columns have a
+CHECK constraint; indexes cover expired leases, ended runs and families.
+Each write condition checks its revision and lease in one statement.
+Renewal changes only the expiry of a live lease held by that owner.
+`claim_expired` locks candidates with `FOR UPDATE SKIP LOCKED`.
+
+Executed acceptance (`integrations/fabric_postgres/test/fabric_postgres`):
+
+| Contract                                                               | Evidence                                                                                                                                               |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Shared leased backend contract, including renewal and competing claims | `conformance_test`: all ten `testing.leased_backend_checks`                                                                                            |
+| Idempotent and concurrent migration; schema isolation                  | `migrate_test`, including concurrent callers and a newer schema left alone                                                                             |
+| Conditional writes under READ COMMITTED and REPEATABLE READ            | `isolation_test`: a blocked statement produces 40001 under REPEATABLE READ; backend writes read back the committed row; racing writers have one winner |
+| Exact record bytes, including escaped NUL                              | `record_test.records_come_back_byte_for_byte_test`                                                                                                     |
+| Start, approval pause, store restart, answer, completion               | `fabric_run_test`                                                                                                                                      |
+| Two stores and two pools on one database                               | `nodes_test`: a live foreign lease, one takeover of an expired lease, cancellation from the other node                                                 |
+| Family-safe pruning and concurrent pruning                             | `prune_test`                                                                                                                                           |
+| Documented application setup                                           | `readme_test`: example text matches the compiled module and runs on PostgreSQL                                                                         |
+
+Deviations and scope:
+
+- **`phase` is parsed by the adapter and written with the record.** The
+  proposed PostgreSQL JSON-generated column rejects escaped NUL, which a
+  model reply or tool result may contain. Record text retains the exact
+  bytes; a record without a decodable phase stores NULL and is not pruned.
+  `root_id` remains a generated column.
+- **`with_schema` returns a checked result; `store` reuses
+  `LeaseConfigError`.** A separate configuration error adds no distinction.
+  `backend` is public so applications and conformance checks use the same
+  implementation.
+- **Pruning also checks every family member and its lease.** An ended
+  root alone is insufficient evidence that deleting its children is safe.
+- **Fresh storage per conformance check.** Each callback creates an empty
+  schema; fixed claim limits cannot be consumed by another check's rows.
+- **No notification listener or `stats` yet.** Cross-node waits use the S3
+  polling path. Notifications are an optimisation; gauges remain S7.
+  Sweeper recovery, peer-VM node-loss tests and the write-version window
+  remain S5 and S6.
+
+The completion gates passed: core **302**, external consumer **15**, Saga
+integration **35**, PostgreSQL integration **25**, with no failures. Each
+package passed `gleam format --check src test` and
+`gleam build --warnings-as-errors`. The first three ran `gleam test`; the
+PostgreSQL package ran only through `scripts/test-postgres.sh`, which
+creates and removes a private temporary cluster. Tested versions:
+PostgreSQL **16.15**, `pog` **4.1.0**, `pgo` **0.20.0**; sibling revisions
+are listed below. The core suite and existing CI do not start PostgreSQL;
+`nix flake check` checks repository formatting only. CI still requires the
+sibling path dependencies described under slice 1 friction.
+
+### S3 review resolved during S4
+
+The review of `03fd943..634e56a` found no blocker or major finding. Its
+remaining findings are resolved as follows:
+
+1. **A renewal could extend a handed-off lease.** Core and PostgreSQL now
+   renew only live leases (`966be87`, `23cb7c3`).
+   `a_renewal_applied_after_the_handoff_leaves_the_lease_expired_test`
+   orders the renewal after the handoff and proves another node can
+   recover immediately.
+2. **Lease event handlers could block the store.** Events are emitted by
+   separate processes (`6aaee83`);
+   `a_slow_lease_event_handler_does_not_hold_up_the_store_test` checks a held
+   handler. The observation module documents the emitting process.
+3. **Shutdown could queue behind work.** The runner takes a queued shutdown
+   before other messages (`1aa085a`);
+   `a_shutdown_queued_behind_a_report_is_taken_first_test` proves the
+   queued tool does not start before recovery.
+4. **A tool starting a run could deadlock the drain.** Waiting starts
+   check the store's drain state every 100 ms and give up when it stops
+   accepting runners (`4e50f43`).
+   `a_tool_body_starting_a_run_during_the_stop_does_not_hold_up_the_drain_test`
+   preserves the tool's result and the unattended new run.
+5. **Backend checks could claim each other's old rows.** The contract
+   requires a fresh empty backend per check (`8684f6a`); the suite also
+   checks a `Hold` racing `claim_expired`.
+6. **The adjustable clock belonged in test support.** `LeasedMemory` and
+   `leased_memory` now live in `fabric/testing` (`5d4e645`). This changes
+   the unreleased API; callers use `testing.leased_memory()`.
+7. **Drain coverage ran only on directory stores.** The twelve drain
+   scenarios also run on a leased backend that survives the store's
+   subtree. They cover children, reapproval, model replies, exhausted
+   windows and shutdown races. A separate two-node test proves a start
+   committed during drain is immediately recoverable elsewhere.
+8. **Generated names were described as unique across restarts.** The S3
+   deviation above now states their VM-local scope. The node-id contract
+   stays unchanged; no store-id setting is added.
+9. **Documentation overstated the lease condition.** A commit that keeps
+   work in flight requires ownership; a final release uses the revision
+   check alone. README, CAPABILITIES and `store.leased` now say this.
+10. **Immediate local recovery was undocumented.** `store.leased`,
+    `fabric.recover` and status documentation explain that this store's
+    own lease can be taken at once when its runner is gone.
+11. **An in-flight renewal could lose the next tick.** A tick received
+    during renewal is made up when it completes (`c67cfec`);
+    `a_tick_during_a_renewal_is_made_up_when_it_completes_test` verifies
+    the next renewal starts without waiting another interval.
 
 ## Public API (slice 3: ergonomics pass)
 
@@ -518,7 +648,7 @@ pub fn start(store: Store, agent: Agent(c), context: c, prompt: String) -> Resul
 pub fn open(store: Store, agent: Agent(c), context: c, id: RunId) -> Result(Run(c), RecordError)
   // reads and checks the record; never takes the run over or starts a runner
 pub fn recover(store: Store, agent: Agent(c), context: c, id: RunId) -> Result(Run(c), CommandError)
-  // takes over work whose runner is gone: at boot only
+  // takes over work whose runner is gone; a leased store leaves live foreign leases alone
 pub fn id(run: Run(c)) -> RunId
 pub fn child(run: Run(c), id: RunId) -> Result(Run(c), RecordError)
 pub fn await(run: Run(c), within: Int) -> Result(Status, RecordError)   // Ok(Working) at the deadline
@@ -1259,8 +1389,8 @@ Backlog from this slice:
 - Budgets shared across a sub-agent family.
 - Structured final output via llm_wire's structured session.
 - Elapsed-time budget with a trusted clock and per-tool timeouts.
-- Database store adapter (the port and a directory store exist) and Grind
-  delivery carrying only a run reference.
+- PostgreSQL storage is implemented in production S4. Grind delivery
+  carrying only a run reference remains.
 
 ## Slice 1 status and friction
 
@@ -1335,8 +1465,8 @@ adopted here:
 
 ## Tested sibling revisions
 
-Fabric resolves its siblings as `../` path dependencies. The gates after
-the production-runtime slices (above) passed against these revisions, each
+Fabric resolves its siblings as `../` path dependencies. The completion
+gates through production S4 passed against these revisions, each
 with a clean working tree (the slice 3 ergonomics pass used sinal
 `c886825`):
 

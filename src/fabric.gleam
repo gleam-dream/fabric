@@ -29,9 +29,10 @@
 //// `recover` takes over work whose runner is gone: on an unleased store,
 //// use it at boot, never on a run another process may still be driving; on
 //// a leased store (`store.leased`, several nodes sharing one database) it
-//// takes over only a run whose lease is free or expired, so it is safe at
-//// any time. Runners run under their store's subtree (`store.supervised`);
-//// when the application stops, each drains and hands its run off, and
+//// leaves a live foreign lease alone. It can also recover this store's
+//// own run whose runner is gone, so it is safe at any time. Runners run
+//// under their store's subtree (`store.supervised`). When the application
+//// stops, each drains and hands its run off, and
 //// `recover` goes on with it after the restart with nothing uncertain.
 ////
 //// A delegation (`agent.with_sub_agent`) starts a sub-agent run in the same
@@ -198,9 +199,10 @@ pub fn start(
 /// On a leased store (`store.leased`) it is safe to call at any time: a run
 /// whose lease another node holds live is left exactly as it is (the
 /// handle is returned, and the run reads `Working`), and only a free or
-/// expired lease, or one of an earlier process of this store, is taken
-/// over. Of several nodes recovering one run at once, exactly one takes it
-/// over.
+/// expired lease, one of an earlier process of this store, or this store's
+/// own lease whose runner is gone is taken over. This node reads that last
+/// case as `Unattended`; another node reads it as `Working` until expiry.
+/// Of several nodes recovering one run at once, exactly one takes it over.
 ///
 /// An unleased store knows only the runners it started. Recovering
 /// through another unleased `Store` (for example in another VM) while the
@@ -278,8 +280,9 @@ pub fn child(
 /// shutdown, or the run is driven through another `Store`; only the
 /// application knows which, and `recover` takes the run over, so call it
 /// only when the previous owner is known to be gone. On a leased store a
-/// run whose lease is live anywhere is `Working`, and `Unattended` means
-/// its lease is free or expired: `recover` takes it over.
+/// run whose lease is live elsewhere is `Working`. `Unattended` means its
+/// lease is free or expired, belongs to an earlier process of this store,
+/// or belongs to this store with no runner: `recover` takes it over.
 ///
 /// It wakes on commits made through this run's store and when a runner
 /// exits; on a leased store it also reads the run again at least every

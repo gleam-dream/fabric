@@ -2,7 +2,7 @@
 
 A bounded, typed LLM agent runtime for Gleam: typed application tools, an explicit policy gate, a pure agent controller, and a thin OTP runner with cancellation. It consumes llm_wire for providers and json_blueprint for tool codecs; typed workflows (DAGs) belong to Saga.
 
-Status: slice 1 (bounded agent execution), slice 2a (durable pause, approval, resume, cancellation, and restart), slice 2b (approval-gated sub-agents, Sinal observations, and Saga workflows as tools), the public API ergonomics pass (a built agent, one policy gate, typed run ids, a named supervisable store), and the first production-runtime slices (timer limits; runners supervised under the store's subtree, drained and handed off on shutdown; the leased store contract for several nodes sharing one database, with an in-memory leased backend) implemented; see [docs/PLAN.md](docs/PLAN.md), [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [docs/ORACLE.md](docs/ORACLE.md). Design: see [fabric-design.md](https://github.com/gleam-dream/oversight/blob/master/fabric-design.md) in [gleam-dream/oversight](https://github.com/gleam-dream/oversight). Not yet published to Hex.
+Status: slice 1 (bounded agent execution), slice 2a (durable pause, approval, resume, cancellation, and restart), slice 2b (approval-gated sub-agents, Sinal observations, and Saga workflows as tools), the public API ergonomics pass (a built agent, one policy gate, typed run ids, a named supervisable store), and the first production-runtime slices (timer limits; runners supervised under the store's subtree, drained and handed off on shutdown; the leased store contract for several nodes sharing one database, with an in-memory test backend and the PostgreSQL adapter) implemented; see [docs/PLAN.md](docs/PLAN.md), [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [docs/ORACLE.md](docs/ORACLE.md). Design: see [fabric-design.md](https://github.com/gleam-dream/oversight/blob/master/fabric-design.md) in [gleam-dream/oversight](https://github.com/gleam-dream/oversight). Not yet published to Hex.
 
 Behavioural oracle: BeamWeaver (partial migration of its agent loop).
 
@@ -268,19 +268,24 @@ scripts). `store.directory` keeps them in files, for development, tests and
 a single host: a record survives a process or VM crash, but not a power
 loss or an operating-system crash, after which the latest revisions may be
 missing and a tool whose start was among them could run again. In
-production, give Fabric a database backend through `store.new` (a Postgres
-adapter is planned) or another application backend.
+production, use [fabric_postgres](integrations/fabric_postgres/README.md),
+which supplies the leased backend, migrations and pruning of finished run
+families, or provide an application backend through `store.new` or
+`store.leased`.
 
 Several nodes that share one database coordinate through per-run leases:
 `store.leased(name, node: "app-1", lease: 30_000, backend:)` over a
 `store.LeasedBackend` (its contract is in the `fabric/store` docs, and
 `fabric/testing.leased_backend_checks` checks one; `testing.leased_memory()`
-is one in memory, for tests). A runner commits only while its node holds
-the run's lease; another node reads the run `Working`, answers an idle run
-itself, gets `RunUnattended` for a command that needs the other node's
+is one in memory, for tests). Every commit that keeps work in flight
+requires the runner's store to hold the lease; a final commit releases it
+with the revision check alone. Another node reads the run `Working`,
+answers an idle run itself, gets `RunUnattended` for a command that needs the other node's
 runner, and can always cancel. `recover` takes over only a free or expired
-lease, so it is safe to call at any time. Coordination over Erlang
-distribution is not supported.
+lease, or this store's lease whose runner is gone (including a lease of an
+earlier store process), so it is safe to call at any time. Node ids must
+be unique across live VMs; generated process names are unique only within
+a VM. Coordination over Erlang distribution is not supported.
 
 A Saga workflow is one typed tool too, from the separate package
 `integrations/fabric_saga`: `fabric_saga.tool(definition, workflow,
@@ -308,3 +313,15 @@ gleam test
 (cd integrations/fabric_saga && gleam test)
 nix flake check
 ```
+
+The PostgreSQL package has a separate gate. Its script starts and removes
+its own temporary cluster; it never uses an existing database:
+
+```sh
+(cd integrations/fabric_postgres && gleam format --check src test && gleam build --warnings-as-errors)
+integrations/fabric_postgres/scripts/test-postgres.sh
+```
+
+The root suite and CI do not run PostgreSQL tests. `nix flake check` checks
+formatting across the repository and starts no database. The packages use
+sibling path dependencies; see the tested revisions in [PLAN](docs/PLAN.md#tested-sibling-revisions).
