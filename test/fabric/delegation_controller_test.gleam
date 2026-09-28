@@ -13,6 +13,7 @@ import fabric/policy.{ActionId}
 import fabric/run
 import fabric/support/scripted
 import fabric/tool
+import gleam/list
 import gleam/option.{None, Some}
 import gleeunit/should
 import json/blueprint/codec
@@ -223,6 +224,35 @@ pub fn cancelling_a_stopping_run_cancels_its_children_again_test() {
   let #(again, effects) = step(stopping, controller.Cancel)
   again |> should.equal(stopping)
   effects |> should.equal([CancelChildren([#(ActionId(1, "a"), "run-p-1")])])
+}
+
+/// The tools offered to the model with `limits` at `depth`.
+fn offered(max_children: Int, max_depth: Int, depth: Int) -> List(String) {
+  let assert #(_, [CallModel(_, request)]) =
+    controller.start(
+      env(),
+      "run-p",
+      run.Identity("parent", 1),
+      controller.Limits(
+        max_turns: 4,
+        token_budget: None,
+        max_children:,
+        max_depth:,
+      ),
+      "go",
+      None,
+      depth,
+    )
+  list.map(request.tools, fn(spec) { spec.name })
+}
+
+/// A run that may start no sub-agent (no children allowed, as for a record
+/// written before sub-agents, or no depth left) is not offered delegations
+/// that would always be refused.
+pub fn delegations_are_offered_only_when_a_child_may_start_test() {
+  offered(4, 1, 0) |> should.equal(["ask", "slow"])
+  offered(0, 1, 0) |> should.equal(["slow"])
+  offered(4, 1, 1) |> should.equal(["slow"])
 }
 
 pub fn the_child_limit_counts_started_and_awaiting_children_test() {

@@ -1109,12 +1109,27 @@ fn call_model(env: Env(context), state: State) -> #(State, List(Effect)) {
         model.Request(
           system: env.system,
           messages: state.transcript,
-          tools: registry.declarations(env.registry),
+          tools: offered_tools(env, state),
         )
       #(State(..state, turns_used: turn, phase: AwaitingModel(turn)), [
         CallModel(turn, request),
       ])
     }
+  }
+}
+
+/// The tools declared to the model. Delegations are left out when this
+/// run may start no sub-agent at all (no children allowed, as for a record
+/// written before sub-agents, or no depth left): they would always be
+/// refused.
+fn offered_tools(env: Env(context), state: State) -> List(model.ToolSpec) {
+  let declared = registry.declarations(env.registry)
+  case state.limits.max_children == 0 || state.depth >= state.limits.max_depth {
+    False -> declared
+    True ->
+      list.filter(declared, fn(spec) {
+        !registry.is_delegation(env.registry, spec.name)
+      })
   }
 }
 
