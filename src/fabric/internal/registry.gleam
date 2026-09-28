@@ -3,6 +3,8 @@
 
 import fabric/internal/invocation.{type Outcome}
 import fabric/model
+import fabric/policy
+import fabric/run
 import fabric/tool.{type Tool}
 import gleam/dict.{type Dict}
 import gleam/list
@@ -94,5 +96,59 @@ pub fn invoke(
   case dict.get(registry.tools, name) {
     Error(Nil) -> invocation.ArgumentsRejected("tool is not registered")
     Ok(tool) -> tool.invoke(tool, context, arguments)
+  }
+}
+
+/// What a call to `name` does: invoke a tool or start a sub-agent.
+/// An unknown name is a tool call (admission refuses it first).
+pub fn target(registry: Registry(context), name: String) -> policy.Target {
+  case dict.get(registry.tools, name) {
+    Ok(tool) ->
+      case tool.kind(tool) {
+        tool.Delegation(agent:, ..) ->
+          policy.StartAgent(agent.name, agent.version)
+        tool.Handler -> policy.InvokeTool
+      }
+    Error(Nil) -> policy.InvokeTool
+  }
+}
+
+pub fn is_delegation(registry: Registry(context), name: String) -> Bool {
+  case target(registry, name) {
+    policy.StartAgent(..) -> True
+    policy.InvokeTool -> False
+  }
+}
+
+/// The prompt of the sub-agent a delegation call starts.
+pub fn prompt(
+  registry: Registry(context),
+  name: String,
+  arguments: String,
+) -> Result(String, String) {
+  case dict.get(registry.tools, name) {
+    Ok(tool) ->
+      case tool.kind(tool) {
+        tool.Delegation(prompt:, ..) -> prompt(arguments)
+        tool.Handler -> Error(name <> " is not a delegation")
+      }
+    Error(Nil) -> Error("no delegation named " <> name <> " is registered")
+  }
+}
+
+/// A sub-agent's outcome as the delegation call's result, or `Error` when
+/// no delegation of that name is registered.
+pub fn settle(
+  registry: Registry(context),
+  name: String,
+  outcome: run.Outcome,
+) -> Result(Outcome, Nil) {
+  case dict.get(registry.tools, name) {
+    Ok(tool) ->
+      case tool.kind(tool) {
+        tool.Delegation(settle:, ..) -> Ok(settle(outcome))
+        tool.Handler -> Error(Nil)
+      }
+    Error(Nil) -> Error(Nil)
   }
 }

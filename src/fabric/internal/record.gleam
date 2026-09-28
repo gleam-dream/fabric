@@ -10,9 +10,15 @@
 //// ```
 ////
 //// Sums are objects with a `"tag"`; an absent optional value is `null`.
-//// Decoding checks the format and version first: another version is
+//// Decoding checks the format and version first: an unknown version is
 //// `UnsupportedVersion`, anything unreadable is `Corrupt`. Compatibility
 //// with the agent that continues the run is a separate check.
+////
+//// Version 2 adds sub-agents: the run's `parent` and `depth`, the limits
+//// `max_children` and `max_depth`, each action's `child`, and the action
+//// states `delegated` and `limit_reached`. A version 1 record is read as a
+//// root run (no parent, depth 0) that may start no sub-agents (both limits
+//// 0) and whose actions started none; it is written back as version 2.
 
 import fabric/internal/controller.{type Phase, type State, State}
 import fabric/internal/registry.{type Registry}
@@ -25,12 +31,13 @@ import fabric/run.{
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 
 pub const format = "fabric.run"
 
-pub const version = 1
+pub const version = 2
 
 pub type DecodeError {
   UnsupportedVersion(found: Int)
@@ -47,10 +54,22 @@ pub fn encode(state: State) -> String {
     #("agent", identity(state.agent)),
     #("incarnation", json.int(state.incarnation)),
     #(
+      "parent",
+      json.nullable(state.parent, fn(parent) {
+        json.object([
+          #("run", json.string(parent.run)),
+          #("action", action_id(parent.action)),
+        ])
+      }),
+    ),
+    #("depth", json.int(state.depth)),
+    #(
       "limits",
       json.object([
         #("max_turns", json.int(state.limits.max_turns)),
         #("token_budget", json.nullable(state.limits.token_budget, json.int)),
+        #("max_children", json.int(state.limits.max_children)),
+        #("max_depth", json.int(state.limits.max_depth)),
       ]),
     ),
     #("turns_used", json.int(state.turns_used)),
@@ -127,6 +146,7 @@ fn action(action: ActionRecord) -> Json {
     #("call", tool_call(action.call)),
     #("state", action_state(action.state)),
     #("approvals", json.array(action.approvals, approval)),
+    #("child", json.nullable(action.child, json.string)),
   ])
 }
 
@@ -166,6 +186,22 @@ fn action_state(state: ActionState) -> Json {
       tag("reconciled", [#("content", json.string(content))])
     run.NotStarted -> tag("not_started", [])
     run.Faulted(detail) -> tag("faulted", [#("detail", json.string(detail))])
+    run.Delegated -> tag("delegated", [])
+    run.LimitReached(limit) ->
+      tag("limit_reached", [#("budget", budget(limit))])
+  }
+}
+
+fn budget(budget: run.Budget) -> Json {
+  case budget {
+    run.TurnLimit(limit) -> tag("turn_limit", [#("limit", json.int(limit))])
+    run.TokenLimit(limit, used) ->
+      tag("token_limit", [
+        #("limit", json.int(limit)),
+        #("used", json.int(used)),
+      ])
+    run.ChildLimit(limit) -> tag("child_limit", [#("limit", json.int(limit))])
+    run.DepthLimit(limit) -> tag("depth_limit", [#("limit", json.int(limit))])
   }
 }
 
@@ -206,6 +242,8 @@ fn outcome_json(outcome: Outcome) -> Json {
         #("limit", json.int(limit)),
         #("used", json.int(used)),
       ])
+    run.BudgetExhausted(other) ->
+      tag("budget_exhausted", [#("budget", budget(other))])
     run.BudgetUnverifiable(turn) ->
       tag("budget_unverifiable", [#("turn", json.int(turn))])
     run.Cancelled -> tag("cancelled", [])
@@ -252,9 +290,10 @@ pub fn decode(text: String) -> Result(State, DecodeError) {
     Error(error) -> Error(Corrupt(describe(error)))
     Ok(#(found, _)) if found != format ->
       Error(Corrupt("not a Fabric run record: format " <> found))
-    Ok(#(_, found)) if found != version -> Error(UnsupportedVersion(found))
-    Ok(_) ->
-      json.parse(text, state_decoder())
+    Ok(#(_, found)) if found != version && found != 1 ->
+      Error(UnsupportedVersion(found))
+    Ok(#(_, found)) ->
+      json.parse(text, state_decoder(found))
       |> result.map_error(fn(error) { Corrupt(describe(error)) })
   }
 }
@@ -278,17 +317,50 @@ fn describe(error: json.DecodeError) -> String {
   }
 }
 
-fn state_decoder() -> Decoder(State) {
+/// A field added in version 2: required from version 2 on, `default` in a
+/// version 1 record.
+fn since_2(
+  found: Int,
+  name: String,
+  default: a,
+  decoder: Decoder(a),
+  next: fn(a) -> Decoder(b),
+) -> Decoder(b) {
+  case found {
+    1 -> next(default)
+    _ -> decode.field(name, decoder, next)
+  }
+}
+
+fn state_decoder(found: Int) -> Decoder(State) {
   use run <- decode.field("run", decode.string)
   use agent <- decode.field("agent", identity_decoder())
   use incarnation <- decode.field("incarnation", decode.int)
+  use parent <- since_2(
+    found,
+    "parent",
+    None,
+    decode.optional({
+      use run <- decode.field("run", decode.string)
+      use action <- decode.field("action", action_id_decoder())
+      decode.success(run.Parent(run, action))
+    }),
+  )
+  use depth <- since_2(found, "depth", 0, decode.int)
   use limits <- decode.field("limits", {
     use max_turns <- decode.field("max_turns", decode.int)
     use token_budget <- decode.field(
       "token_budget",
       decode.optional(decode.int),
     )
-    decode.success(controller.Limits(max_turns:, token_budget:))
+    use max_children <- since_2(found, "max_children", 0, decode.int)
+    use max_depth <- since_2(found, "max_depth", 0, decode.int)
+    decode.success(controller.Limits(
+      max_turns:,
+      token_budget:,
+      max_children:,
+      max_depth:,
+    ))
   })
   use turns_used <- decode.field("turns_used", decode.int)
   use usage <- decode.field("usage", {
@@ -298,13 +370,15 @@ fn state_decoder() -> Decoder(State) {
     decode.success(run.TokenUsage(input, output, unreported))
   })
   use transcript <- decode.field("transcript", decode.list(message_decoder()))
-  use history <- decode.field("history", decode.list(action_decoder()))
+  use history <- decode.field("history", decode.list(action_decoder(found)))
   use approvals_issued <- decode.field("approvals_issued", decode.int)
-  use phase <- decode.field("phase", phase_decoder())
+  use phase <- decode.field("phase", phase_decoder(found))
   decode.success(State(
     run:,
     agent:,
     incarnation:,
+    parent:,
+    depth:,
     limits:,
     turns_used:,
     usage:,
@@ -383,12 +457,13 @@ fn requirement_decoder() -> Decoder(Requirement) {
   decode.success(Requirement(name, version))
 }
 
-fn action_decoder() -> Decoder(ActionRecord) {
+fn action_decoder(found: Int) -> Decoder(ActionRecord) {
   use id <- decode.field("id", action_id_decoder())
   use call <- decode.field("call", tool_call_decoder())
   use state <- decode.field("state", action_state_decoder())
   use approvals <- decode.field("approvals", decode.list(approval_decoder()))
-  decode.success(ActionRecord(id, call, state, approvals))
+  use child <- since_2(found, "child", None, decode.optional(decode.string))
+  decode.success(ActionRecord(id, call, state, approvals, child))
 }
 
 fn approval_decoder() -> Decoder(Approval) {
@@ -427,11 +502,37 @@ fn action_state_decoder() -> Decoder(ActionState) {
     "reconciled" -> Ok(string_field("content", run.Reconciled))
     "not_started" -> Ok(decode.success(run.NotStarted))
     "faulted" -> Ok(string_field("detail", run.Faulted))
+    "delegated" -> Ok(decode.success(run.Delegated))
+    "limit_reached" ->
+      Ok(
+        decode.field("budget", budget_decoder(), fn(budget) {
+          decode.success(run.LimitReached(budget))
+        }),
+      )
     _ -> Error(Nil)
   }
 }
 
-fn phase_decoder() -> Decoder(Phase) {
+fn budget_decoder() -> Decoder(run.Budget) {
+  use found <- tagged(run.TurnLimit(0))
+  let limit = fn(build) {
+    decode.field("limit", decode.int, fn(limit) { decode.success(build(limit)) })
+  }
+  case found {
+    "turn_limit" -> Ok(limit(run.TurnLimit))
+    "token_limit" ->
+      Ok({
+        use limit <- decode.field("limit", decode.int)
+        use used <- decode.field("used", decode.int)
+        decode.success(run.TokenLimit(limit, used))
+      })
+    "child_limit" -> Ok(limit(run.ChildLimit))
+    "depth_limit" -> Ok(limit(run.DepthLimit))
+    _ -> Error(Nil)
+  }
+}
+
+fn phase_decoder(version: Int) -> Decoder(Phase) {
   use found <- tagged(controller.AwaitingModel(0))
   case found {
     "awaiting_model" ->
@@ -443,13 +544,19 @@ fn phase_decoder() -> Decoder(Phase) {
     "acting" ->
       Ok({
         use turn <- decode.field("turn", decode.int)
-        use actions <- decode.field("actions", decode.list(action_decoder()))
+        use actions <- decode.field(
+          "actions",
+          decode.list(action_decoder(version)),
+        )
         decode.success(controller.Acting(turn, actions))
       })
     "stopping" ->
       Ok({
         use turn <- decode.field("turn", decode.int)
-        use actions <- decode.field("actions", decode.list(action_decoder()))
+        use actions <- decode.field(
+          "actions",
+          decode.list(action_decoder(version)),
+        )
         use reason <- decode.field("reason", {
           use found <- tagged(controller.CancelRequested)
           case found {
@@ -493,6 +600,12 @@ fn outcome_decoder() -> Decoder(Outcome) {
         use used <- decode.field("used", decode.int)
         decode.success(run.BudgetExhausted(run.TokenLimit(limit, used)))
       })
+    "budget_exhausted" ->
+      Ok(
+        decode.field("budget", budget_decoder(), fn(budget) {
+          decode.success(run.BudgetExhausted(budget))
+        }),
+      )
     "budget_unverifiable" ->
       Ok(
         decode.field("turn", decode.int, fn(turn) {
@@ -567,8 +680,16 @@ pub fn check(
   let tools =
     list.filter_map(current, fn(action) {
       let name = action.call.name
-      case action.state {
-        run.Queued | run.AwaitingApproval(..) ->
+      let pending = case action.state, action.child {
+        run.Queued, _ | run.AwaitingApproval(..), _ -> True
+        // A delegation whose child is active needs its delegation to map
+        // the child's outcome, and to start the child again if it was
+        // never stored.
+        run.Delegated, _ | run.Running, Some(_) -> True
+        _, _ -> False
+      }
+      case pending {
+        True ->
           case registry.admit(registry, name, action.call.arguments_json) {
             Ok(Nil) -> Error(Nil)
             Error(registry.NotRegistered) ->
@@ -576,7 +697,7 @@ pub fn check(
             Error(registry.MalformedArguments(detail)) ->
               Ok(run.ArgumentsNotAccepted(action.id, name, detail))
           }
-        _ -> Error(Nil)
+        False -> Error(Nil)
       }
     })
   case list.append(identity, tools) {

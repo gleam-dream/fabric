@@ -1,0 +1,681 @@
+//// Sub-agents through the public API: starting a child run is an action
+//// behind the parent's policy gate, a child's own approvals surface to the
+//// parent, cancelling the parent cancels its children through the store,
+//// and recovering the parent recovers its children. Includes BeamWeaver
+//// anti-oracle row B1: a child's pause is never swallowed as a tool result.
+//// Tests wait on barriers and committed statuses, never on sleeps.
+
+import fabric
+import fabric/agent.{type Agent}
+import fabric/model
+import fabric/policy.{ActionId, Requirement}
+import fabric/run
+import fabric/store.{type Store}
+import fabric/support/apps
+import fabric/support/probe.{type Probe}
+import fabric/support/restart
+import fabric/support/scripted
+import fabric/tool
+import gleam/erlang/process.{type Pid}
+import gleam/list
+import gleam/option.{None, Some}
+import gleam/string
+import gleeunit/should
+import json/blueprint/codec
+
+// --- the application -----------------------------------------------------------
+
+pub type Topic {
+  Topic(topic: String)
+}
+
+pub type Summary {
+  Summary(summary: String)
+}
+
+fn research() -> tool.Definition(Topic, Summary) {
+  tool.define(
+    "research",
+    "Delegate research on a topic to a researcher.",
+    codec.field("topic", codec.string())
+      |> codec.imap(Topic, fn(topic) { topic.topic }),
+    codec.field("summary", codec.string())
+      |> codec.imap(Summary, fn(summary) { summary.summary }),
+  )
+}
+
+fn research_call(id: String, topic: String) -> model.ToolCall {
+  let assert Ok(call) = tool.call(research(), id, Topic(topic))
+  call
+}
+
+/// A model that records each call in the ledger before replying.
+fn recorded(
+  probe: Probe,
+  name: String,
+  reply: fn(List(model.Message)) -> model.Reply,
+) -> model.Model {
+  model.new(fn(request: model.Request) {
+    probe.record(probe, name <> ":model")
+    Ok(reply(request.messages))
+  })
+}
+
+/// The prompt a run was started with.
+fn prompt(messages: List(model.Message)) -> String {
+  case messages {
+    [model.UserMessage(text), ..] -> text
+    _ -> ""
+  }
+}
+
+/// A researcher that answers at once.
+fn quick_researcher(probe: Probe) -> Agent(Nil) {
+  agent.new(
+    recorded(probe, "child", fn(messages) {
+      model.FinalAnswer("found " <> prompt(messages), None)
+    }),
+    [],
+    policy.always_allow(),
+  )
+  |> agent.with_identity("researcher", 1)
+}
+
+/// A researcher that calls `tools` first (as `plan` does), then answers.
+fn working_researcher(
+  probe: Probe,
+  calls: List(model.ToolCall),
+  tools: List(tool.Tool(Nil)),
+  policy: policy.Policy(Nil),
+) -> Agent(Nil) {
+  agent.new(
+    recorded(probe, "child", fn(messages) {
+      case scripted.results(messages) {
+        [] -> model.ToolRequest("", calls, None)
+        seen -> model.FinalAnswer("found " <> string.join(seen, ","), None)
+      }
+    }),
+    tools,
+    policy,
+  )
+  |> agent.with_identity("researcher", 1)
+}
+
+fn delegating(
+  probe: Probe,
+  calls: List(model.ToolCall),
+  child: Agent(Nil),
+  policy: policy.Policy(Nil),
+) -> Agent(Nil) {
+  agent.new(
+    recorded(probe, "parent", fn(messages) {
+      case scripted.results(messages) {
+        [] -> model.ToolRequest("", calls, None)
+        seen -> model.FinalAnswer("final: " <> string.join(seen, " | "), None)
+      }
+    }),
+    [],
+    policy,
+  )
+  |> agent.with_sub_agent(
+    research(),
+    to: child,
+    prompt: fn(topic: Topic) { topic.topic },
+    result: fn(outcome) {
+      case outcome {
+        run.Completed(text) -> Ok(Summary(text))
+        _ -> Error(tool.Explain("research did not complete"))
+      }
+    },
+  )
+}
+
+/// Starting a sub-agent needs an approval; tools do not.
+fn review_delegation(
+  probe: Probe,
+) -> fn(Nil, policy.Action) -> Result(policy.Decision, String) {
+  fn(_, action: policy.Action) {
+    case action.target {
+      policy.StartAgent(name, version) -> {
+        probe.record(
+          probe,
+          "gate:"
+            <> name
+            <> "/"
+            <> string.inspect(version)
+            <> ":"
+            <> action.tool,
+        )
+        Ok(policy.RequireApproval(Requirement("delegate", 1)))
+      }
+      policy.InvokeTool -> Ok(policy.Allow)
+    }
+  }
+}
+
+fn transfers_need_approval(
+  _: Nil,
+  action: policy.Action,
+) -> Result(policy.Decision, String) {
+  case action.tool {
+    "transfer_funds" -> Ok(policy.RequireApproval(Requirement("transfer", 1)))
+    _ -> Ok(policy.Allow)
+  }
+}
+
+/// A transfer tool that records each payment.
+fn paying_tool(probe: Probe) -> tool.Tool(Nil) {
+  tool.bind(
+    apps.transfer_definition(),
+    fn(_, transfer: apps.Transfer) -> Result(apps.Receipt, Nil) {
+      probe.record(probe, "pay:" <> transfer.to)
+      Ok(apps.Receipt("r-" <> transfer.to))
+    },
+    fn(_) { tool.Explain("failed") },
+  )
+}
+
+fn transfer_call() -> model.ToolCall {
+  scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":10}")
+}
+
+// --- instruments ---------------------------------------------------------------
+
+fn start_owned(
+  dir: String,
+  agent: Agent(Nil),
+  prompt: String,
+) -> #(Pid, Store, fabric.Run(Nil)) {
+  let #(owner, #(store, run)) =
+    restart.owned(fn() {
+      let assert Ok(store) = store.directory(dir)
+      let assert Ok(run) = fabric.start(store, agent, Nil, prompt)
+      #(store, run)
+    })
+  #(owner, store, run)
+}
+
+fn crash(owner: Pid, store: Store) -> Nil {
+  restart.kill(owner)
+  restart.gone(store.pid(store))
+}
+
+fn reopen(dir: String) -> Store {
+  let assert Ok(store) = store.directory(dir)
+  store
+}
+
+fn only_action(run: fabric.Run(Nil)) -> run.ActionRecord {
+  let assert Ok(snapshot) = fabric.snapshot(run)
+  let assert [action] = snapshot.actions
+  action
+}
+
+fn child_of(run: fabric.Run(Nil)) -> fabric.Run(Nil) {
+  let assert Some(id) = only_action(run).child
+  let assert Ok(child) = fabric.child(run, id)
+  child
+}
+
+fn child_states(child: fabric.Run(Nil)) -> List(run.ActionState) {
+  let assert Ok(snapshot) = fabric.snapshot(child)
+  list.map(snapshot.actions, fn(action) { action.state })
+}
+
+const lost = "the runner was lost while the tool ran; its effect may have happened"
+
+// --- approval before start -----------------------------------------------------
+
+/// The parent's policy sees the start of a sub-agent as an action with its
+/// target, and requires an approval. Until it is approved no child record
+/// exists, also across a restart; once approved, the child runs as its own
+/// run and its result is the parent's tool result.
+pub fn a_sub_agent_starts_only_after_approval_even_across_a_restart_test() {
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let parent =
+    delegating(
+      probe,
+      [research_call("r", "gleam")],
+      quick_researcher(probe),
+      review_delegation(probe),
+    )
+  let #(owner, old, run) = start_owned(dir, parent, "look it up")
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  pending.tool |> should.equal("research")
+  pending.reference.run |> should.equal(fabric.id(run))
+  only_action(run).child |> should.equal(None)
+  restart.list_dir(dir) |> should.equal(Ok([fabric.id(run)]))
+  crash(owner, old)
+
+  let assert Ok(run) = fabric.recover(reopen(dir), parent, Nil, fabric.id(run))
+  fabric.pending(run) |> should.equal(Ok([pending]))
+  restart.list_dir(dir) |> should.equal(Ok([fabric.id(run)]))
+  let assert Ok(_) =
+    fabric.answer(
+      run,
+      pending.reference,
+      run.Approve,
+      reviewer: None,
+      context: Nil,
+    )
+  fabric.await(run, 5000)
+  |> should.equal(
+    Ok(run.Finished(run.Completed("final: {\"summary\":\"found gleam\"}"))),
+  )
+
+  let action = only_action(run)
+  action.state |> should.equal(run.Succeeded("{\"summary\":\"found gleam\"}"))
+  let assert Some(child_id) = action.child
+  let assert Ok(child) = fabric.child(run, child_id)
+  let assert Ok(snapshot) = fabric.snapshot(child)
+  snapshot.agent |> should.equal(run.Identity("researcher", 1))
+  snapshot.parent
+  |> should.equal(Some(run.Parent(fabric.id(run), ActionId(1, "r"))))
+  snapshot.status |> should.equal(run.Finished(run.Completed("found gleam")))
+  probe.entries(probe)
+  |> should.equal([
+    "parent:model", "gate:researcher/1:research", "gate:researcher/1:research",
+    "child:model", "parent:model",
+  ])
+  restart.remove_dir(dir)
+}
+
+/// A rejected start never creates the child; the model sees the rejection.
+pub fn a_rejected_sub_agent_never_starts_test() {
+  let probe = probe.new()
+  let parent =
+    delegating(
+      probe,
+      [research_call("r", "gleam")],
+      quick_researcher(probe),
+      review_delegation(probe),
+    )
+  let assert Ok(run) = fabric.start(store.in_memory(), parent, Nil, "go")
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(_) =
+    fabric.answer(
+      run,
+      pending.reference,
+      run.Reject("not today"),
+      reviewer: Some("ann"),
+      context: Nil,
+    )
+  fabric.await(run, 5000)
+  |> should.equal(
+    Ok(
+      run.Finished(run.Completed(
+        "final: {\"error\":\"rejected\",\"detail\":\"not today\"}",
+      )),
+    ),
+  )
+  only_action(run).child |> should.equal(None)
+  probe.count(probe, "child:model") |> should.equal(0)
+}
+
+// --- a child's own approvals ----------------------------------------------------
+
+/// A parent whose researcher pays, and the researcher's payments need an
+/// approval.
+fn paying_family(probe: Probe) -> Agent(Nil) {
+  delegating(
+    probe,
+    [research_call("r", "gleam")],
+    working_researcher(
+      probe,
+      [transfer_call()],
+      [paying_tool(probe)],
+      transfers_need_approval,
+    ),
+    policy.always_allow(),
+  )
+}
+
+/// Anti-oracle B1: BeamWeaver turns a sub-agent's pause into a tool result
+/// and lets the parent finish. Here the child's pending approval is the
+/// parent's pending approval, with a reference that names the child run;
+/// the parent does not continue until it is answered through the parent,
+/// and the child's completion then feeds the parent's waiting action.
+pub fn a_child_pause_surfaces_to_the_parent_and_is_answered_through_it_test() {
+  let probe = probe.new()
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), paying_family(probe), Nil, "go")
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Some(child_id) = only_action(run).child
+  pending.reference.run |> should.equal(child_id)
+  pending.tool |> should.equal("transfer_funds")
+  fabric.pending(run) |> should.equal(Ok([pending]))
+  fabric.status(run) |> should.equal(Ok(run.Suspended([pending], [])))
+  only_action(run).state |> should.equal(run.Delegated)
+  probe.count(probe, "parent:model") |> should.equal(1)
+  probe.count(probe, "pay:bob") |> should.equal(0)
+
+  let assert Ok(_) =
+    fabric.answer(
+      run,
+      pending.reference,
+      run.Approve,
+      reviewer: None,
+      context: Nil,
+    )
+  fabric.await(run, 5000)
+  |> should.equal(
+    Ok(
+      run.Finished(run.Completed(
+        "final: {\"summary\":\"found {\\\"receipt\\\":\\\"r-bob\\\"}\"}",
+      )),
+    ),
+  )
+  probe.count(probe, "pay:bob") |> should.equal(1)
+  fabric.answer(
+    run,
+    pending.reference,
+    run.Approve,
+    reviewer: None,
+    context: Nil,
+  )
+  |> should.equal(Error(fabric.AlreadyAnswered))
+}
+
+// --- cancellation ---------------------------------------------------------------
+
+/// Cancelling the parent cancels its paused child through the store: no
+/// process holds either run. The child's pending approval is void.
+pub fn cancelling_the_parent_cancels_a_paused_child_test() {
+  let probe = probe.new()
+  let assert Ok(run) =
+    fabric.start(store.in_memory(), paying_family(probe), Nil, "go")
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let child = child_of(run)
+
+  let assert Ok(_) = fabric.cancel(run)
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  child_states(child) |> should.equal([run.NotStarted])
+  only_action(run).state
+  |> should.equal(run.ToolFailed("{\"error\":\"research did not complete\"}"))
+  fabric.answer(
+    run,
+    pending.reference,
+    run.Approve,
+    reviewer: None,
+    context: Nil,
+  )
+  |> should.equal(Error(fabric.RunEnded))
+  probe.count(probe, "pay:bob") |> should.equal(0)
+}
+
+/// Cancelling the parent while its child runs a tool stops that tool; the
+/// child's effect is unknown, so the parent's action is uncertain whatever
+/// the application's mapping would say.
+pub fn cancelling_the_parent_stops_an_active_child_test() {
+  let probe = probe.new()
+  let parent =
+    delegating(
+      probe,
+      [research_call("r", "gleam")],
+      working_researcher(
+        probe,
+        [scripted.slow("s", "s")],
+        [scripted.gated_tool(probe)],
+        policy.always_allow(),
+      ),
+      policy.always_allow(),
+    )
+  let assert Ok(run) = fabric.start(store.in_memory(), parent, Nil, "go")
+  let running = probe.arrival(probe)
+  running.name |> should.equal("s")
+  let child = child_of(run)
+
+  let assert Ok(run.Working) = fabric.cancel(run)
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  child_states(child) |> should.equal([run.Uncertain("stopped while running")])
+  let assert run.Uncertain(evidence) = only_action(run).state
+  string.contains(evidence, fabric.id(child)) |> should.be_true
+  probe.count(probe, "end:s") |> should.equal(0)
+}
+
+/// A child's model reply that would arrive after the parent was cancelled
+/// is never recorded: the child ends cancelled, its model call aborted, and
+/// the parent's model is not called again.
+pub fn a_child_reply_after_the_parent_was_cancelled_is_discarded_test() {
+  let probe = probe.new()
+  let slow_child =
+    agent.new(
+      model.new(fn(_) {
+        probe.gate(probe, "child-model")
+        Ok(model.FinalAnswer("too late", None))
+      }),
+      [],
+      policy.always_allow(),
+    )
+  let parent =
+    delegating(
+      probe,
+      [research_call("r", "gleam")],
+      slow_child,
+      policy.always_allow(),
+    )
+  let assert Ok(run) = fabric.start(store.in_memory(), parent, Nil, "go")
+  let replying = probe.arrival(probe)
+  let child = child_of(run)
+  let assert Ok(_) = fabric.cancel(run)
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  probe.release(replying)
+  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  only_action(run).state
+  |> should.equal(run.ToolFailed("{\"error\":\"research did not complete\"}"))
+  probe.count(probe, "parent:model") |> should.equal(1)
+}
+
+// --- restart --------------------------------------------------------------------
+
+/// Every process is lost while the child runs a tool. Recovering the parent
+/// recovers the child: its running tool is an uncertain effect of the
+/// child, reported through the parent and reconciled on the child's handle;
+/// the child then completes and feeds the parent.
+pub fn recovering_the_parent_recovers_its_child_test() {
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let parent =
+    delegating(
+      probe,
+      [research_call("r", "gleam")],
+      working_researcher(
+        probe,
+        [scripted.slow("s", "s")],
+        [scripted.gated_tool(probe)],
+        policy.always_allow(),
+      ),
+      policy.always_allow(),
+    )
+  let #(owner, old, run) = start_owned(dir, parent, "go")
+  let _ = probe.arrival(probe)
+  let child_id = case only_action(run).child {
+    Some(id) -> id
+    None -> panic as "the child was not linked"
+  }
+  crash(owner, old)
+
+  let assert Ok(run) = fabric.recover(reopen(dir), parent, Nil, fabric.id(run))
+  fabric.status(run)
+  |> should.equal(
+    Ok(
+      run.Suspended([], [
+        run.UncertainAction(child_id, ActionId(1, "s"), "slow", lost),
+      ]),
+    ),
+  )
+  let assert Ok(child) = fabric.child(run, child_id)
+  let assert Ok(_) = fabric.reconcile(child, ActionId(1, "s"), "\"s\"")
+  fabric.await(run, 5000)
+  |> should.equal(
+    Ok(run.Finished(run.Completed("final: {\"summary\":\"found \\\"s\\\"\"}"))),
+  )
+  probe.count(probe, "start:s") |> should.equal(1)
+  restart.remove_dir(dir)
+}
+
+/// A child record that cannot be read after a restart has an unknown
+/// effect: the parent's action becomes uncertain and is reconciled on the
+/// parent.
+pub fn an_unreadable_child_is_an_uncertain_effect_of_the_parent_test() {
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let #(owner, old, run) = start_owned(dir, paying_family(probe), "go")
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  crash(owner, old)
+  let assert Ok(Nil) =
+    restart.write_file(
+      dir <> "/" <> pending.reference.run <> "/99999999999999999999.json",
+      "{\"format\":\"fabric.run\",\"version\":2,\"run\":",
+    )
+
+  let assert Ok(run) =
+    fabric.recover(reopen(dir), paying_family(probe), Nil, fabric.id(run))
+  let assert Ok(run.Suspended([], [uncertain])) = fabric.status(run)
+  uncertain.run |> should.equal(fabric.id(run))
+  uncertain.tool |> should.equal("research")
+  string.contains(uncertain.evidence, pending.reference.run) |> should.be_true
+  let assert Ok(_) =
+    fabric.reconcile(run, uncertain.id, "{\"summary\":\"unknown\"}")
+  fabric.await(run, 5000)
+  |> should.equal(
+    Ok(run.Finished(run.Completed("final: {\"summary\":\"unknown\"}"))),
+  )
+  restart.remove_dir(dir)
+}
+
+// --- budgets --------------------------------------------------------------------
+
+/// At most `max_children` child runs per run: a delegation beyond it is
+/// refused before the policy, and the model sees why.
+pub fn delegations_beyond_the_child_limit_are_refused_test() {
+  let probe = probe.new()
+  let parent =
+    delegating(
+      probe,
+      [
+        research_call("a", "one"),
+        research_call("b", "two"),
+        research_call("c", "three"),
+      ],
+      quick_researcher(probe),
+      policy.always_allow(),
+    )
+    |> agent.with_max_children(2)
+  let assert Ok(run) = fabric.start(store.in_memory(), parent, Nil, "go")
+  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  let assert Ok(snapshot) = fabric.snapshot(run)
+  list.map(snapshot.actions, fn(action) { action.state })
+  |> should.equal([
+    run.Succeeded("{\"summary\":\"found one\"}"),
+    run.Succeeded("{\"summary\":\"found two\"}"),
+    run.LimitReached(run.ChildLimit(2)),
+  ])
+  probe.count(probe, "child:model") |> should.equal(2)
+}
+
+/// A child that delegates in turn: by default a run's children may not
+/// start their own (depth 1), and `with_max_depth` on the root allows it.
+pub fn nested_delegation_is_bounded_by_the_root_depth_test() {
+  let probe = probe.new()
+  let middle =
+    delegating(
+      probe,
+      [research_call("m", "deeper")],
+      quick_researcher(probe),
+      policy.always_allow(),
+    )
+    |> agent.with_identity("middle", 1)
+  let root = fn() {
+    agent.new(
+      scripted.plan([research_call("r", "gleam")]),
+      [],
+      policy.always_allow(),
+    )
+    |> agent.with_sub_agent(
+      research(),
+      to: middle,
+      prompt: fn(topic: Topic) { topic.topic },
+      result: fn(outcome) {
+        case outcome {
+          run.Completed(text) -> Ok(Summary(text))
+          _ -> Error(tool.Explain("no"))
+        }
+      },
+    )
+  }
+
+  let assert Ok(shallow) = fabric.start(store.in_memory(), root(), Nil, "go")
+  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(shallow, 5000)
+  let assert Ok(snapshot) = fabric.snapshot(child_of(shallow))
+  list.map(snapshot.actions, fn(action) { action.state })
+  |> should.equal([run.LimitReached(run.DepthLimit(1))])
+
+  let assert Ok(deep) =
+    fabric.start(
+      store.in_memory(),
+      root() |> agent.with_max_depth(2),
+      Nil,
+      "go",
+    )
+  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(deep, 5000)
+  let assert Ok(snapshot) = fabric.snapshot(child_of(deep))
+  list.map(snapshot.actions, fn(action) { action.state })
+  |> should.equal([run.Succeeded("{\"summary\":\"found deeper\"}")])
+}
+
+// --- configuration --------------------------------------------------------------
+
+pub fn a_delegation_is_validated_with_its_child_test() {
+  let probe = probe.new()
+  let broken = quick_researcher(probe) |> agent.with_max_turns(0)
+  delegating(probe, [], broken, policy.always_allow())
+  |> agent.with_max_children(-1)
+  |> agent.validate
+  |> should.equal(
+    Error([
+      agent.MaxChildrenNegative(-1),
+      agent.InvalidChild("research", [agent.MaxTurnsNotPositive(0)]),
+    ]),
+  )
+  agent.new(scripted.plan([]), [apps.weather_tool()], policy.always_allow())
+  |> agent.with_sub_agent(
+    tool.define(
+      "lookup_weather",
+      "Clashes with the tool.",
+      codec.field("city", codec.string()),
+      codec.string(),
+    ),
+    to: quick_researcher(probe),
+    prompt: fn(city) { city },
+    result: fn(_) { Ok("") },
+  )
+  |> agent.validate
+  |> should.equal(Error([agent.DuplicateToolName("lookup_weather")]))
+}
+
+/// With no agent, `cancel_stored` cancels a paused child first and then its
+/// parent in one commit; the delegation is recorded uncertain, since no
+/// agent maps the child's outcome.
+pub fn cancel_stored_cancels_the_children_first_test() {
+  let probe = probe.new()
+  let store = store.in_memory()
+  let assert Ok(run) = fabric.start(store, paying_family(probe), Nil, "go")
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let child = child_of(run)
+  fabric.cancel_stored(store, fabric.id(run))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  let assert run.Uncertain(_) = only_action(run).state
+  fabric.answer(
+    run,
+    pending.reference,
+    run.Approve,
+    reviewer: None,
+    context: Nil,
+  )
+  |> should.equal(Error(fabric.RunEnded))
+}

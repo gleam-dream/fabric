@@ -2,8 +2,9 @@
 ////
 //// A `Policy(context)` is supplied by the application and runs before any
 //// effect. It sees one `Action` at a time: which run, which model turn,
-//// which provider call, which target, and the exact arguments the model
-//// sent (already validated against the tool's input codec). It allows the
+//// which provider call, which tool or delegation, the exact arguments the
+//// model sent (already validated against the input codec), and whether the
+//// action invokes a tool or starts a sub-agent. It allows the
 //// action, denies it with a reason the model will see, or requires an
 //// approval. An `Error` is a policy failure: the run stops as a host failure
 //// and nothing is allowed by default.
@@ -14,8 +15,23 @@ pub type ActionId {
   ActionId(turn: Int, call_id: String)
 }
 
+/// What an action does when it is allowed.
+pub type Target {
+  /// An application tool runs.
+  InvokeTool
+  /// A sub-agent run starts: the agent definition named `name` and
+  /// `version`, reached through the delegation `Action.tool`.
+  StartAgent(name: String, version: Int)
+}
+
 pub type Action {
-  Action(run: String, id: ActionId, tool: String, arguments_json: String)
+  Action(
+    run: String,
+    id: ActionId,
+    tool: String,
+    arguments_json: String,
+    target: Target,
+  )
 }
 
 /// Which approval an action needs. `version` lets an application change the

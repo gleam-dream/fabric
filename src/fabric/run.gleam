@@ -69,8 +69,15 @@ pub type Incompatibility {
   ArgumentsNotAccepted(id: ActionId, tool: String, detail: String)
 }
 
+/// An effect of unknown status in `run`: this run, or one of its
+/// sub-agent runs (reconcile it on that run's handle, see `fabric.child`).
 pub type UncertainAction {
-  UncertainAction(id: ActionId, tool: String, evidence: String)
+  UncertainAction(run: String, id: ActionId, tool: String, evidence: String)
+}
+
+/// The action of the parent run that started a sub-agent run.
+pub type Parent {
+  Parent(run: String, action: ActionId)
 }
 
 pub type Outcome {
@@ -89,6 +96,10 @@ pub type Outcome {
 pub type Budget {
   TurnLimit(limit: Int)
   TokenLimit(limit: Int, used: Int)
+  /// A run starts at most `limit` sub-agent runs.
+  ChildLimit(limit: Int)
+  /// Sub-agents nest at most `limit` levels below the root run.
+  DepthLimit(limit: Int)
 }
 
 /// Failures of the host rather than of the model or a tool's business logic.
@@ -124,19 +135,27 @@ pub type ActionState {
   Reconciled(content: String)
   /// Withdrawn before it started (cancellation, a budget, or a host failure).
   NotStarted
+  /// A sub-agent run (`ActionRecord.child`) is working on it; its outcome
+  /// becomes this action's result.
+  Delegated
+  /// A delegation refused before the policy because it would exceed a
+  /// sub-agent budget; the model sees why.
+  LimitReached(Budget)
   /// The host could not complete the action: its output could not be
   /// encoded, or its tool changed after admission. The run stopped.
   Faulted(detail: String)
 }
 
 /// `approvals` lists the answered approval requests of the action, oldest
-/// first.
+/// first. `child` names the sub-agent run a delegation started, from the
+/// moment it is started, and stays after the action settles.
 pub type ActionRecord {
   ActionRecord(
     id: ActionId,
     call: ToolCall,
     state: ActionState,
     approvals: List(Approval),
+    child: Option(String),
   )
 }
 
@@ -153,6 +172,8 @@ pub type Snapshot {
     /// Increases by one each time recovery takes over work that no live
     /// runner owned.
     incarnation: Int,
+    /// The parent action of a sub-agent run; `None` for a root run.
+    parent: Option(Parent),
     status: Status,
     turns_used: Int,
     max_turns: Int,

@@ -19,6 +19,13 @@
 //// runner, or are applied to the stored record when there is none, and a
 //// runner is started if the command produced work.
 ////
+//// A delegation (`agent.with_sub_agent`) starts a sub-agent run in the
+//// same store, behind the same policy gate as a tool. The family is read
+//// together: a child's pending approvals and uncertain effects are the
+//// parent's (their references name the child run), `answer` routes by the
+//// reference, `child` opens a child's handle, cancelling a parent cancels
+//// its children, and recovering a parent recovers its children.
+////
 //// After a restart, `recover` opens a stored run under the same agent. If
 //// work was in flight when its runner was lost, recovery takes it over as a
 //// new incarnation: tools that had started become uncertain effects, which
@@ -30,8 +37,8 @@
 //// whose start was among them could run again.
 
 import fabric/agent.{type Agent, type ConfigError}
-import fabric/internal/bounded
-import fabric/internal/controller.{type Event, type State}
+import fabric/internal/controller.{type State}
+import fabric/internal/family
 import fabric/internal/live
 import fabric/internal/record
 import fabric/internal/runner
@@ -46,13 +53,12 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
 
 /// A handle on one run, for the agent and context it was started or
 /// recovered with. It holds no process: it can be dropped and rebuilt with
 /// `recover`.
 pub opaque type Run(context) {
-  Run(id: String, setup: runner.Setup(context), agent: run.Identity)
+  Run(id: String, setup: runner.Setup(context))
 }
 
 pub type StartError {
@@ -130,187 +136,173 @@ pub fn start(
   context: context,
   prompt: String,
 ) -> Result(Run(context), StartError) {
-  use #(setup, admitted) <- result.try(
-    prepare(store, agent, context) |> result.map_error(InvalidAgent),
+  use admitted <- result.try(
+    agent.admit(agent) |> result.map_error(InvalidAgent),
   )
+  let setup = runner.setup(store, admitted, context, None)
   let id = "run-" <> random_id()
-  let limits =
-    controller.Limits(
-      max_turns: admitted.max_turns,
-      token_budget: admitted.token_budget,
-    )
-  let #(state, effects) =
-    controller.start(setup.env, id, admitted.identity, limits, prompt)
+  let #(state, effects) = runner.root_state(setup, id, prompt)
   use _ <- result.map(
     runner.launch(setup, None, state, effects) |> result.map_error(StartFailed),
   )
-  Run(id:, setup:, agent: admitted.identity)
+  Run(id:, setup:)
 }
 
 /// Opens the stored run `id` under `agent` and `context`. When work was in
-/// flight and no runner in this VM drives it, recovery takes the work over
-/// as a new incarnation (committed with compare-and-set, so concurrent
+/// flight and no runner in this store drives it, recovery takes the work
+/// over as a new incarnation (committed with compare-and-set, so concurrent
 /// recoveries have one winner): running tools become uncertain effects,
 /// queued tools are dispatched again, and a lost model call is issued again
 /// against the turn budget. A suspended or finished run is opened
 /// unchanged. Calling it again is harmless.
 ///
-/// A store knows only the runners of its own VM. Recovering through a store
-/// in another VM while the run's runner is still alive takes the run over:
-/// the older runner can no longer commit and stops, and its running tools
-/// become uncertain effects. Recover in another VM only when the previous
-/// owner is known to be gone (for example at boot).
+/// Sub-agent runs are recovered with their parent: a child that was never
+/// stored is started, a child whose end the parent missed is applied to
+/// it, an active child is recovered in turn, and a child that cannot be
+/// read or continued becomes an uncertain effect of the delegation.
+///
+/// A store knows only the runners it started. Recovering through another
+/// `Store` (for example in another VM) while the run's runner is still
+/// alive takes the run over: the older runner can no longer commit and
+/// stops, and its running tools become uncertain effects. Recover through
+/// another store only when the previous owner is known to be gone (for
+/// example at boot).
 pub fn recover(
   store: Store,
   agent: Agent(context),
   context: context,
   id: String,
 ) -> Result(Run(context), RecoverError) {
-  use #(setup, admitted) <- result.try(
-    prepare(store, agent, context) |> result.map_error(RecoverInvalidAgent),
+  use admitted <- result.try(
+    agent.admit(agent) |> result.map_error(RecoverInvalidAgent),
   )
-  let run = Run(id:, setup:, agent: admitted.identity)
-  take_over(run, retries) |> result.replace(run)
-}
-
-fn take_over(run: Run(context), tries: Int) -> Result(Nil, RecoverError) {
-  use #(entry, state) <- result.try(
-    load_checked(run) |> result.map_error(RecoverUnreadable),
-  )
-  case live_runner(entry, state), controller.needs_runner(state) {
-    Some(_), _ | None, False -> Ok(Nil)
-    None, True -> {
-      let #(state, effects) = controller.recover(run.setup.env, state)
-      case runner.launch(run.setup, Some(entry.revision), state, effects) {
-        Ok(_) -> Ok(Nil)
-        Error(store.Conflict(_)) if tries > 1 -> take_over(run, tries - 1)
-        Error(store.Conflict(_)) -> Error(RecoverContended)
-        Error(error) -> Error(RecoverUnreadable(StoreFailed(error)))
-      }
-    }
+  let setup = runner.setup(store, admitted, context, None)
+  case family.take_over(setup, id, retries) {
+    Ok(Nil) -> Ok(Run(id:, setup:))
+    Error(family.TakeOverContended) -> Error(RecoverContended)
+    Error(family.TakeOverUnreadable(problem)) ->
+      Error(RecoverUnreadable(record_error(problem)))
   }
-}
-
-fn prepare(
-  store: Store,
-  agent: Agent(context),
-  context: context,
-) -> Result(
-  #(runner.Setup(context), agent.Admitted(context)),
-  List(ConfigError),
-) {
-  use admitted <- result.map(agent.admit(agent))
-  let env =
-    controller.Env(
-      registry: admitted.registry,
-      policy: contain_policy(admitted.policy, admitted.policy_timeout),
-      context:,
-      system: admitted.system_prompt,
-    )
-  #(
-    runner.Setup(
-      env:,
-      model: admitted.model,
-      max_concurrency: admitted.max_concurrency,
-      model_retry_delay: admitted.model_retry_delay,
-      store:,
-    ),
-    admitted,
-  )
 }
 
 pub fn id(run: Run(context)) -> String {
   run.id
 }
 
+/// Opens the sub-agent run `id`, a descendant of `run`, with `run`'s agent
+/// and context: its snapshot, reconciling its uncertain effects, answering
+/// or cancelling it. Its end still reaches its parent.
+pub fn child(
+  run: Run(context),
+  id: String,
+) -> Result(Run(context), RecordError) {
+  family.locate(run.setup, run.id, id)
+  |> result.map(fn(setup) { Run(id:, setup:) })
+  |> result.map_error(record_error)
+}
+
 /// Blocks until the run is no longer `Working` (suspended or finished), or
 /// until `within` milliseconds pass. It wakes on commits made through this
-/// run's store and when the run's runner exits.
+/// run's store and when a runner exits. A run whose sub-agents work is
+/// working; one waiting only on paused sub-agents is suspended on their
+/// approvals.
 pub fn await(run: Run(context), within: Int) -> Result(Status, AwaitError) {
   let watcher = process.new_subject()
   let deadline = now() + within
-  case store.watch(run.setup.store, run.id, watcher) {
-    Error(error) -> Error(AwaitUnreadable(StoreFailed(error)))
-    Ok(Nil) -> {
-      let monitor = process.monitor(store.pid(run.setup.store))
-      let outcome = wait(run, watcher, monitor, deadline)
-      process.demonitor_process(monitor)
-      store.unwatch(run.setup.store, run.id, watcher)
-      outcome
-    }
-  }
+  let monitor = process.monitor(store.pid(run.setup.store))
+  let outcome = wait(run, watcher, monitor, [], deadline)
+  process.demonitor_process(monitor)
+  outcome
 }
 
 fn wait(
   run: Run(context),
   watcher: process.Subject(Nil),
   monitor: process.Monitor,
+  watched: List(String),
   deadline: Int,
 ) -> Result(Status, AwaitError) {
-  use #(entry, state) <- result.try(
-    load(run) |> result.map_error(AwaitUnreadable),
-  )
-  case controller.status(state), live_runner(entry, state) {
-    run.Working, None -> Error(NoRunner)
-    run.Working, Some(_) -> {
-      let woken =
-        process.new_selector()
-        |> process.select_map(watcher, Ok)
-        |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
-        |> process.selector_receive(int.max(0, deadline - now()))
-      case woken {
-        Error(Nil) -> Error(StillWorking)
-        Ok(Error(Nil)) ->
-          Error(
-            AwaitUnreadable(
-              StoreFailed(store.Unavailable("the store is closed")),
-            ),
-          )
-        Ok(Ok(Nil)) -> wait(run, watcher, monitor, deadline)
+  let done = fn(outcome) {
+    list.each(watched, store.unwatch(run.setup.store, _, watcher))
+    outcome
+  }
+  case family.load(run.setup.store, run.id) {
+    Error(problem) -> done(Error(AwaitUnreadable(record_error(problem))))
+    Ok(node) -> {
+      // Watch every record of the family before deciding; a record seen
+      // for the first time is read again after it is watched, so no
+      // commit is missed.
+      let fresh =
+        list.filter(family.ids(node), fn(id) { !list.contains(watched, id) })
+      let watching =
+        list.try_each(fresh, fn(id) {
+          store.watch(run.setup.store, id, watcher)
+        })
+      case watching, fresh, family.view(node) {
+        Error(error), _, _ -> done(Error(AwaitUnreadable(StoreFailed(error))))
+        Ok(Nil), [_, ..], _ ->
+          wait(run, watcher, monitor, list.append(watched, fresh), deadline)
+        Ok(Nil), [], family.View(run.Working, False) ->
+          case family.load(run.setup.store, run.id) {
+            Ok(again) if again == node -> done(Error(NoRunner))
+            _ -> wait(run, watcher, monitor, watched, deadline)
+          }
+        Ok(Nil), [], family.View(run.Working, True) -> {
+          let woken =
+            process.new_selector()
+            |> process.select_map(watcher, Ok)
+            |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
+            |> process.selector_receive(int.max(0, deadline - now()))
+          case woken {
+            Error(Nil) -> done(Error(StillWorking))
+            Ok(Error(Nil)) ->
+              done(
+                Error(
+                  AwaitUnreadable(
+                    StoreFailed(store.Unavailable("the store is closed")),
+                  ),
+                ),
+              )
+            Ok(Ok(Nil)) -> wait(run, watcher, monitor, watched, deadline)
+          }
+        }
+        Ok(Nil), [], family.View(status, _) -> done(Ok(status))
       }
     }
-    status, _ -> Ok(status)
   }
 }
 
+/// The status of the run and its sub-agents (see `await`).
 pub fn status(run: Run(context)) -> Result(Status, RecordError) {
-  use #(_, state) <- result.map(load(run))
-  controller.status(state)
+  family.load(run.setup.store, run.id)
+  |> result.map(fn(node) { family.view(node).status })
+  |> result.map_error(record_error)
 }
 
+/// The run's own record; `status` covers its sub-agents too.
 pub fn snapshot(run: Run(context)) -> Result(Snapshot, RecordError) {
-  use #(_, state) <- result.map(load(run))
-  controller.snapshot(state)
+  use node <- result.map(
+    family.load(run.setup.store, run.id) |> result.map_error(record_error),
+  )
+  run.Snapshot(
+    ..controller.snapshot(node.state),
+    status: family.view(node).status,
+  )
 }
 
-/// The approval requests waiting for an answer, oldest first. They can be
-/// answered while other tools of the batch still run.
+/// The approval requests waiting for an answer: the run's own, oldest
+/// first, then its sub-agents'. They can be answered while other work
+/// still runs.
 pub fn pending(
   run: Run(context),
 ) -> Result(List(PendingApproval), RecordError) {
-  use #(_, state) <- result.map(load(run))
-  pending_of(state)
+  family.load(run.setup.store, run.id)
+  |> result.map(family.pending)
+  |> result.map_error(record_error)
 }
 
-fn pending_of(state: State) -> List(PendingApproval) {
-  case state.phase {
-    controller.Acting(_, actions) ->
-      list.filter_map(actions, fn(action) {
-        case action.state {
-          run.AwaitingApproval(requirement, revision) ->
-            Ok(run.PendingApproval(
-              run.ApprovalRef(state.run, action.id, requirement, revision),
-              action.call.name,
-              action.call.arguments_json,
-            ))
-          _ -> Error(Nil)
-        }
-      })
-    _ -> []
-  }
-}
-
-/// Answers an approval request. `context` is the application's current
+/// Answers an approval request of the run or of one of its sub-agents (the
+/// reference names the run). `context` is the application's current
 /// context: the policy is checked again with it, and a current denial or
 /// policy failure wins over an approval. It is used for that check only:
 /// the approved action runs with the run's context (the one the run was
@@ -330,30 +322,44 @@ pub fn answer(
   reviewer reviewer: Option(String),
   context context: context,
 ) -> Result(Status, CommandError) {
-  let recheck = controller.Env(..run.setup.env, context:)
-  use state <- result.try(command(
-    run,
-    recheck,
-    controller.Answer(reference, answer, reviewer),
-    retries,
-  ))
+  use target <- result.try(case reference.run == run.id {
+    True -> Ok(run.setup)
+    False ->
+      case family.locate(run.setup, run.id, reference.run) {
+        Ok(setup) -> Ok(setup)
+        Error(runner.NotFound) -> Error(WrongReference)
+        Error(problem) -> Error(Unreadable(record_error(problem)))
+      }
+  })
+  let recheck = controller.Env(..target.env, context:)
+  use state <- result.try(
+    runner.command(
+      target,
+      reference.run,
+      recheck,
+      controller.Answer(reference, answer, reviewer),
+      retries,
+    )
+    |> result.map_error(command_error),
+  )
   let reissued =
-    list.find(pending_of(state), fn(pending) {
+    list.find(family.own_pending(state), fn(pending) {
       pending.reference.id == reference.id
       && pending.reference.revision != reference.revision
     })
-  case reissued {
-    Ok(pending) -> Error(RequirementChanged(pending))
-    Error(Nil) -> Ok(controller.status(state))
+  case reissued, reference.run == run.id {
+    Ok(pending), _ -> Error(RequirementChanged(pending))
+    Error(Nil), True -> Ok(status_after(run, state))
+    Error(Nil), False -> status(run) |> result.map_error(Unreadable)
   }
 }
 
-/// Cancels a run that is active, suspended, or whose runner was lost.
-/// Running tools are stopped and recorded as uncertain effects, never
-/// retried; queued actions and pending approvals are recorded as not
-/// started. Returns the status right after the cancellation was committed:
-/// `Working` while tools are being stopped, then `Finished(Cancelled)` (see
-/// `await`).
+/// Cancels a run that is active, suspended, or whose runner was lost, and
+/// its sub-agent runs through the store. Running tools are stopped and
+/// recorded as uncertain effects, never retried; queued actions and pending
+/// approvals are recorded as not started. Returns the status right after
+/// the cancellation was committed: `Working` while tools are being stopped
+/// or sub-agents cancelled, then `Finished(Cancelled)` (see `await`).
 ///
 /// Through a `Store` that does not drive the run (another `Store` over the
 /// same backend), the cancellation is committed to the record at once and
@@ -361,8 +367,9 @@ pub fn answer(
 /// until its runner next tries to commit and stops; they are recorded as
 /// uncertain effects.
 pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
-  command(run, run.setup.env, controller.Cancel, retries)
-  |> result.map(controller.status)
+  runner.command(run.setup, run.id, run.setup.env, controller.Cancel, retries)
+  |> result.map(status_after(run, _))
+  |> result.map_error(command_error)
 }
 
 /// Cancels the stored run `id` with no agent: for a run that cannot be
@@ -370,7 +377,9 @@ pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
 /// that no longer exists). A run whose runner is live in this store is
 /// cancelled through that runner, as `cancel` would; otherwise the work of
 /// a lost runner is abandoned (running tools become uncertain effects) and
-/// the run ends `Cancelled` in one commit.
+/// the run ends `Cancelled` in one commit. Active sub-agent runs are
+/// cancelled first, the same way; their delegations are recorded as
+/// uncertain effects, since no agent maps their outcome.
 pub fn cancel_stored(store: Store, id: String) -> Result(Status, CommandError) {
   cancel_stored_loop(store, id, retries)
 }
@@ -381,7 +390,8 @@ fn cancel_stored_loop(
   tries: Int,
 ) -> Result(Status, CommandError) {
   use #(entry, state) <- result.try(
-    load_record(store, id) |> result.map_error(Unreadable),
+    runner.load(store, id)
+    |> result.map_error(fn(problem) { Unreadable(record_error(problem)) }),
   )
   let retry = fn() {
     case tries > 1 {
@@ -389,19 +399,34 @@ fn cancel_stored_loop(
       False -> Error(Contended)
     }
   }
-  case live_runner(entry, state) {
+  case runner.live_runner(entry, state) {
     Some(mailbox) ->
-      case send_live(mailbox, controller.cancel) {
+      case runner.send_live(mailbox, controller.cancel) {
         Ok(live.Applied(state)) -> Ok(controller.status(state))
         Ok(live.Refused(rejection)) -> Error(refusal(rejection))
         Ok(live.Superseded) | Error(Nil) -> retry()
       }
     None -> {
-      let transition = case controller.needs_runner(state) {
-        True -> controller.cancel_abandoned(state)
-        False -> controller.cancel(state)
-      }
-      use #(next, _) <- result.try(transition |> result.map_error(refusal))
+      // Children first, so that the parent ends in one commit.
+      let ended =
+        list.map(controller.active_children(state), fn(active) {
+          let #(action, _, child) = active
+          let _ = cancel_stored(store, child)
+          #(action, case runner.load(store, child) {
+            Error(runner.NotFound) -> controller.ChildMissing
+            Error(problem) ->
+              controller.ChildLost(runner.describe_read(problem))
+            Ok(#(_, child_state)) ->
+              case controller.child_result(child_state) {
+                Ok(result) -> result
+                Error(Nil) -> controller.ChildLost("it did not end")
+              }
+          })
+        })
+      use #(next, _) <- result.try(
+        controller.cancel_unattended(state, ended)
+        |> result.map_error(refusal),
+      )
       case
         store.commit(store, id, entry.revision, record.encode(next), store.Keep)
       {
@@ -413,98 +438,43 @@ fn cancel_stored_loop(
   }
 }
 
-/// Records what actually happened for an uncertain effect. `content` is what
-/// the model will see as that call's result. When nothing else is pending
-/// the run continues with its next model turn. Reconciliation does not
-/// consume a turn.
+/// Records what actually happened for an uncertain effect of this run (for
+/// a sub-agent's, use its handle: `child`). `content` is what the model
+/// will see as that call's result. When nothing else is pending the run
+/// continues with its next model turn. Reconciliation does not consume a
+/// turn.
 pub fn reconcile(
   run: Run(context),
   action: ActionId,
   content: String,
 ) -> Result(Status, CommandError) {
-  command(run, run.setup.env, controller.Reconcile(action, content), retries)
-  |> result.map(controller.status)
+  runner.command(
+    run.setup,
+    run.id,
+    run.setup.env,
+    controller.Reconcile(action, content),
+    retries,
+  )
+  |> result.map(status_after(run, _))
+  |> result.map_error(command_error)
 }
 
-/// Sends `event` to the live runner, or applies it to the stored record
-/// and starts a runner if the transition produced work. A lost race reads
-/// the newer record and validates the command again.
-/// `env` is the environment the event is stepped with (an answer's
-/// recheck context); work the command starts runs with the run's own.
-fn command(
-  run: Run(context),
-  env: controller.Env(context),
-  event: Event,
-  tries: Int,
-) -> Result(State, CommandError) {
-  // Cancelling needs nothing from the agent, so it is not refused when
-  // the record no longer fits it.
-  let loaded = case event {
-    controller.Cancel -> load(run)
-    _ -> load_checked(run)
-  }
-  use #(entry, state) <- result.try(loaded |> result.map_error(Unreadable))
-  let retry = fn() {
-    case tries > 1 {
-      True -> command(run, env, event, tries - 1)
-      False -> Error(Contended)
-    }
-  }
-  case live_runner(entry, state) {
-    Some(mailbox) ->
-      case
-        send_live(mailbox, fn(state) { controller.step(env, state, event) })
-      {
-        Ok(live.Applied(state)) -> Ok(state)
-        Ok(live.Refused(rejection)) -> Error(refusal(rejection))
-        Ok(live.Superseded) | Error(Nil) -> retry()
-      }
-    None -> {
-      let orphaned = controller.needs_runner(state)
-      // Cancelling starts nothing, so it needs no runner: the work of a
-      // lost runner is abandoned first. Any other command is checked
-      // against the stored record first, so a refusal is reported as such
-      // whoever drives the run.
-      let transition = case orphaned, event {
-        True, controller.Cancel -> controller.cancel_abandoned(state)
-        _, _ -> controller.step(env, state, event)
-      }
-      use #(next, effects) <- result.try(
-        transition |> result.map_error(refusal),
-      )
-      use Nil <- result.try(case orphaned, event {
-        True, controller.Cancel | False, _ -> Ok(Nil)
-        True, _ -> Error(OwnerUnknown)
-      })
-      case runner.launch(run.setup, Some(entry.revision), next, effects) {
-        Ok(_) -> Ok(next)
-        Error(store.Conflict(_)) -> retry()
-        Error(error) -> Error(Unreadable(StoreFailed(error)))
-      }
-    }
+/// The family's status right after `state` of this run was committed, with
+/// its children read now.
+fn status_after(run: Run(context), state: State) -> Status {
+  case store.get(run.setup.store, run.id) {
+    Ok(entry) ->
+      family.view(family.with_children(run.setup.store, run.id, entry, state)).status
+    Error(_) -> controller.status(state)
   }
 }
 
-/// `Error(Nil)` when the runner exited before answering.
-fn send_live(
-  mailbox: process.Subject(live.Message),
-  step: fn(State) ->
-    Result(#(State, List(controller.Effect)), controller.Rejection),
-) -> Result(live.CommandReply, Nil) {
-  case process.subject_owner(mailbox) {
-    Error(Nil) -> Error(Nil)
-    Ok(pid) -> {
-      let reply = process.new_subject()
-      let monitor = process.monitor(pid)
-      process.send(mailbox, live.Command(step, reply))
-      let answer =
-        process.new_selector()
-        |> process.select_map(reply, Ok)
-        |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
-        |> process.selector_receive_forever
-      process.demonitor_process(monitor)
-      answer
-    }
+fn command_error(failure: runner.Failure) -> CommandError {
+  case failure {
+    runner.CommandRefused(rejection) -> refusal(rejection)
+    runner.OwnerUnknown -> OwnerUnknown
+    runner.Contended -> Contended
+    runner.Unreadable(problem) -> Unreadable(record_error(problem))
   }
 }
 
@@ -521,96 +491,14 @@ fn refusal(rejection: controller.Rejection) -> CommandError {
   }
 }
 
-// --- loading -------------------------------------------------------------------
-
-fn load(run: Run(context)) -> Result(#(store.Entry, State), RecordError) {
-  load_record(run.setup.store, run.id)
-}
-
-fn load_record(
-  store: Store,
-  id: String,
-) -> Result(#(store.Entry, State), RecordError) {
-  use Nil <- result.try(case issued_id(id) {
-    True -> Ok(Nil)
-    False -> Error(RunNotFound)
-  })
-  use entry <- result.try(
-    store.get(store, id)
-    |> result.map_error(fn(error) {
-      case error {
-        store.NotFound -> RunNotFound
-        other -> StoreFailed(other)
-      }
-    }),
-  )
-  use state <- result.map(
-    record.decode(entry.record)
-    |> result.map_error(fn(error) {
-      case error {
-        record.UnsupportedVersion(found) -> UnsupportedVersion(found)
-        record.Corrupt(detail) -> CorruptRecord(detail)
-      }
-    }),
-  )
-  #(entry, state)
-}
-
-/// `load`, and the record must be able to continue under this run's agent.
-fn load_checked(
-  run: Run(context),
-) -> Result(#(store.Entry, State), RecordError) {
-  use #(entry, state) <- result.try(load(run))
-  record.check(state, run.agent, run.setup.env.registry)
-  |> result.map(fn(state) { #(entry, state) })
-  |> result.map_error(IncompatibleAgent)
-}
-
-/// The runner registered for the record's current incarnation. A runner of
-/// an older incarnation lost the run to a recovery elsewhere; its commits
-/// will fail.
-fn live_runner(
-  entry: store.Entry,
-  state: State,
-) -> Option(process.Subject(live.Message)) {
-  case entry.live {
-    Some(store.Live(incarnation, mailbox)) if incarnation == state.incarnation ->
-      Some(mailbox)
-    _ -> None
+fn record_error(problem: runner.ReadError) -> RecordError {
+  case problem {
+    runner.NotFound -> RunNotFound
+    runner.StoreFailed(error) -> StoreFailed(error)
+    runner.UnsupportedVersion(found) -> UnsupportedVersion(found)
+    runner.Corrupt(detail) -> CorruptRecord(detail)
+    runner.Incompatible(problems) -> IncompatibleAgent(problems)
   }
-}
-
-/// A policy that crashes or gives no decision in time has failed: the run
-/// stops closed.
-fn contain_policy(
-  policy: policy.Policy(context),
-  timeout: Int,
-) -> policy.Policy(context) {
-  fn(context, action) {
-    case bounded.call(timeout, fn() { policy(context, action) }) {
-      Ok(decision) -> decision
-      Error(bounded.Crashed(crash)) -> Error("policy crashed: " <> crash)
-      Error(bounded.TimedOut) ->
-        Error(
-          "policy gave no decision within " <> int.to_string(timeout) <> " ms",
-        )
-    }
-  }
-}
-
-/// Whether `id` has the shape of the run ids Fabric issues: 1 to 128
-/// letters, digits, `-` and `_`. Anything else names no run.
-fn issued_id(id: String) -> Bool {
-  let length = string.length(id)
-  length >= 1
-  && length <= 128
-  && string.to_graphemes(id)
-  |> list.all(fn(grapheme) {
-    string.contains(
-      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_",
-      grapheme,
-    )
-  })
 }
 
 @external(erlang, "fabric_ffi", "random_id")

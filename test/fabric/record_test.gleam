@@ -23,7 +23,7 @@ fn call(id: String, name: String) -> model.ToolCall {
 }
 
 fn action(id: String, state: run.ActionState) -> run.ActionRecord {
-  run.ActionRecord(ActionId(1, id), call(id, "lookup_weather"), state, [])
+  run.ActionRecord(ActionId(1, id), call(id, "lookup_weather"), state, [], None)
 }
 
 /// Every action state, both answers, with and without a reviewer.
@@ -43,10 +43,28 @@ fn every_action() -> List(run.ActionRecord) {
     action("k", run.Reconciled("{\"receipt\":\"r\"}")),
     action("l", run.NotStarted),
     action("m", run.Faulted("cannot encode")),
-    run.ActionRecord(ActionId(2, "a"), call("a", "transfer_funds"), run.Queued, [
-      run.Approval(requirement, 1, run.Approve, Some("alice")),
-      run.Approval(requirement, 2, run.Reject("no \"quotes\" \u{1F600}"), None),
-    ]),
+    run.ActionRecord(..action("n", run.Delegated), child: Some("run-0123-1")),
+    run.ActionRecord(
+      ..action("o", run.Succeeded("{}")),
+      child: Some("run-0123-2"),
+    ),
+    action("p", run.LimitReached(run.ChildLimit(2))),
+    action("q", run.LimitReached(run.DepthLimit(1))),
+    run.ActionRecord(
+      ActionId(2, "a"),
+      call("a", "transfer_funds"),
+      run.Queued,
+      [
+        run.Approval(requirement, 1, run.Approve, Some("alice")),
+        run.Approval(
+          requirement,
+          2,
+          run.Reject("no \"quotes\" \u{1F600}"),
+          None,
+        ),
+      ],
+      None,
+    ),
   ]
 }
 
@@ -55,7 +73,14 @@ fn base() -> State {
     run: "run-0123",
     agent: run.Identity("desk", 3),
     incarnation: 4,
-    limits: controller.Limits(max_turns: 8, token_budget: Some(20_000)),
+    parent: Some(run.Parent("run-01", ActionId(3, "delegate"))),
+    depth: 1,
+    limits: controller.Limits(
+      max_turns: 8,
+      token_budget: Some(20_000),
+      max_children: 3,
+      max_depth: 2,
+    ),
     turns_used: 2,
     usage: run.TokenUsage(120, 40, 1),
     transcript: [
@@ -84,6 +109,7 @@ fn phases() -> List(controller.Phase) {
     run.OutputLimited("partial"),
     run.BudgetExhausted(run.TurnLimit(8)),
     run.BudgetExhausted(run.TokenLimit(100, 120)),
+    run.BudgetExhausted(run.ChildLimit(2)),
     run.BudgetUnverifiable(2),
     run.Cancelled,
     ..list.map(failures, run.Failed)
@@ -107,7 +133,14 @@ pub fn every_record_shape_survives_a_round_trip_test() {
     base,
     controller.State(
       ..base,
-      limits: controller.Limits(max_turns: 1, token_budget: None),
+      parent: None,
+      depth: 0,
+      limits: controller.Limits(
+        max_turns: 1,
+        token_budget: None,
+        max_children: 0,
+        max_depth: 0,
+      ),
     ),
     ..list.map(phases(), fn(phase) { controller.State(..base, phase:) })
   ]
@@ -118,15 +151,64 @@ pub fn every_record_shape_survives_a_round_trip_test() {
 
 pub fn the_record_is_versioned_json_test() {
   let encoded = record.encode(base())
-  string.starts_with(encoded, "{\"format\":\"fabric.run\",\"version\":1,")
+  string.starts_with(encoded, "{\"format\":\"fabric.run\",\"version\":2,")
   |> should.be_true
 }
 
 pub fn another_version_is_unsupported_test() {
   let encoded =
     record.encode(base())
-    |> string.replace("\"version\":1,", "\"version\":2,")
-  record.decode(encoded) |> should.equal(Error(record.UnsupportedVersion(2)))
+    |> string.replace("\"version\":2,", "\"version\":3,")
+  record.decode(encoded) |> should.equal(Error(record.UnsupportedVersion(3)))
+}
+
+/// A version 1 record (written before sub-agents) is read as a root run
+/// that may start no sub-agents and whose actions started none.
+pub fn a_version_1_record_is_read_as_a_root_run_without_sub_agents_test() {
+  let version_1 =
+    "{\"format\":\"fabric.run\",\"version\":1,\"run\":\"run-old\","
+    <> "\"agent\":{\"name\":\"desk\",\"version\":1},\"incarnation\":1,"
+    <> "\"limits\":{\"max_turns\":8,\"token_budget\":null},\"turns_used\":1,"
+    <> "\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"unreported_replies\":0},"
+    <> "\"transcript\":[{\"tag\":\"user\",\"text\":\"pay\"}],\"history\":[],"
+    <> "\"approvals_issued\":1,\"phase\":{\"tag\":\"acting\",\"turn\":1,\"actions\":["
+    <> "{\"id\":{\"turn\":1,\"call_id\":\"t\"},\"call\":{\"id\":\"t\","
+    <> "\"name\":\"transfer_funds\",\"arguments\":\"{}\",\"provider_id\":null,"
+    <> "\"provider_state\":null},\"state\":{\"tag\":\"awaiting_approval\","
+    <> "\"requirement\":{\"name\":\"transfer\",\"version\":1},\"revision\":1},"
+    <> "\"approvals\":[]}]}}"
+  let transfer = ToolCall("t", "transfer_funds", "{}", None, None)
+  let expected =
+    controller.State(
+      run: "run-old",
+      agent: run.Identity("desk", 1),
+      incarnation: 1,
+      parent: None,
+      depth: 0,
+      limits: controller.Limits(
+        max_turns: 8,
+        token_budget: None,
+        max_children: 0,
+        max_depth: 0,
+      ),
+      turns_used: 1,
+      usage: run.TokenUsage(0, 0, 0),
+      transcript: [model.UserMessage("pay")],
+      history: [],
+      approvals_issued: 1,
+      phase: controller.Acting(1, [
+        run.ActionRecord(
+          ActionId(1, "t"),
+          transfer,
+          run.AwaitingApproval(Requirement("transfer", 1), 1),
+          [],
+          None,
+        ),
+      ]),
+    )
+  record.decode(version_1) |> should.equal(Ok(expected))
+  // It is written back as version 2.
+  record.decode(record.encode(expected)) |> should.equal(Ok(expected))
 }
 
 pub fn unreadable_records_are_corrupt_test() {
@@ -166,12 +248,14 @@ pub fn a_record_continues_only_under_its_agent_and_tools_test() {
           ),
           run.AwaitingApproval(Requirement("transfer", 1), 1),
           [],
+          None,
         ),
         run.ActionRecord(
           ActionId(2, "old"),
           call("old", "retired_tool"),
           run.Succeeded("{}"),
           [],
+          None,
         ),
       ]),
     )

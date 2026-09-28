@@ -11,6 +11,7 @@
 
 import fabric/internal/invocation.{type Outcome}
 import fabric/model.{type ToolCall}
+import fabric/run
 import gleam/option.{None}
 import gleam/result
 import json/blueprint/codec.{type Codec}
@@ -41,6 +42,21 @@ pub opaque type Tool(context) {
     input_schema: Result(codec.Schema, codec.SchemaError),
     check: fn(String) -> Result(Nil, String),
     invoke: fn(context, String) -> Outcome,
+    kind: Kind,
+  )
+}
+
+/// Whether a tool runs a handler or starts a sub-agent run (see
+/// `agent.with_sub_agent`).
+@internal
+pub type Kind {
+  Handler
+  Delegation(
+    agent: run.Identity,
+    /// Decodes the arguments and builds the sub-agent's prompt.
+    prompt: fn(String) -> Result(String, String),
+    /// The sub-agent's outcome as this call's result.
+    settle: fn(run.Outcome) -> Outcome,
   )
 }
 
@@ -68,34 +84,81 @@ pub fn bind(
     name:,
     description:,
     input_schema: codec.schema(input),
-    check: fn(arguments) {
-      codec.decode_json(input, arguments)
-      |> result.replace(Nil)
-      |> result.map_error(invocation.describe_decode_error)
-    },
+    check: checker(input),
+    kind: Handler,
     invoke: fn(context, arguments) {
       case codec.decode_json(input, arguments) {
         Error(error) ->
           invocation.ArgumentsRejected(invocation.describe_decode_error(error))
         Ok(value) ->
           case handler(context, value) {
-            Ok(value) ->
-              case codec.encode_json(output, value) {
-                Ok(content) -> invocation.Returned(content)
-                Error(error) ->
-                  invocation.OutputUnencodable(invocation.describe_encode_error(
-                    error,
-                  ))
-              }
-            Error(error) ->
-              case classify(error) {
-                Explain(message) ->
-                  invocation.FailedVisibly(invocation.error_content(message))
-                Uncertain(evidence) -> invocation.EffectUncertain(evidence)
-              }
+            Ok(value) -> encode(output, value)
+            Error(error) -> failure(classify(error))
           }
       }
     },
+  )
+}
+
+fn checker(input: Codec(input)) -> fn(String) -> Result(Nil, String) {
+  fn(arguments) {
+    codec.decode_json(input, arguments)
+    |> result.replace(Nil)
+    |> result.map_error(invocation.describe_decode_error)
+  }
+}
+
+fn failure(failure: Failure) -> Outcome {
+  case failure {
+    Explain(message) ->
+      invocation.FailedVisibly(invocation.error_content(message))
+    Uncertain(evidence) -> invocation.EffectUncertain(evidence)
+  }
+}
+
+fn encode(output: Codec(output), value: output) -> Outcome {
+  case codec.encode_json(output, value) {
+    Ok(content) -> invocation.Returned(content)
+    Error(error) ->
+      invocation.OutputUnencodable(invocation.describe_encode_error(error))
+  }
+}
+
+/// A tool whose call starts a sub-agent run of `agent` (see
+/// `agent.with_sub_agent`): `prompt` builds the sub-agent's prompt from the
+/// decoded input, and `result` maps its outcome to this call's result.
+@internal
+pub fn delegation(
+  definition: Definition(input, output),
+  agent: run.Identity,
+  prompt: fn(input) -> String,
+  result: fn(run.Outcome) -> Result(output, Failure),
+) -> Tool(context) {
+  let Definition(name:, description:, input:, output:) = definition
+  Tool(
+    name:,
+    description:,
+    input_schema: codec.schema(input),
+    check: checker(input),
+    invoke: fn(_, _) {
+      invocation.ArgumentsRejected(
+        "a delegation starts a run; it is not invoked",
+      )
+    },
+    kind: Delegation(
+      agent:,
+      prompt: fn(arguments) {
+        codec.decode_json(input, arguments)
+        |> result.map(prompt)
+        |> result.map_error(invocation.describe_decode_error)
+      },
+      settle: fn(outcome) {
+        case result(outcome) {
+          Ok(value) -> encode(output, value)
+          Error(error) -> failure(error)
+        }
+      },
+    ),
   )
 }
 
@@ -136,6 +199,11 @@ pub fn input_schema(
 @internal
 pub fn check(tool: Tool(context), arguments: String) -> Result(Nil, String) {
   tool.check(arguments)
+}
+
+@internal
+pub fn kind(tool: Tool(context)) -> Kind {
+  tool.kind
 }
 
 @internal

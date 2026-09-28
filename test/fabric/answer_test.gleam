@@ -73,8 +73,15 @@ fn suspended() -> #(State, run.PendingApproval) {
       env,
       "run-1",
       run.Identity("desk", 1),
-      controller.Limits(max_turns: 5, token_budget: None),
+      controller.Limits(
+        max_turns: 5,
+        token_budget: None,
+        max_children: 0,
+        max_depth: 0,
+      ),
       "pay bob",
+      None,
+      0,
     )
   let #(state, _) =
     step(
@@ -134,11 +141,13 @@ pub fn an_approval_queues_the_action_and_records_the_reviewer_test() {
     )
   effects |> should.equal([Dispatch([#(ActionId(1, "t"), transfer())])])
   transfer_record(state)
-  |> should.equal(
-    run.ActionRecord(ActionId(1, "t"), transfer(), run.Queued, [
-      run.Approval(Requirement("transfer", 1), 1, run.Approve, Some("alice")),
-    ]),
-  )
+  |> should.equal(run.ActionRecord(
+    ActionId(1, "t"),
+    transfer(),
+    run.Queued,
+    [run.Approval(Requirement("transfer", 1), 1, run.Approve, Some("alice"))],
+    None,
+  ))
   controller.needs_runner(state) |> should.be_true
 }
 
@@ -289,8 +298,15 @@ fn batch(calls: List(model.ToolCall)) -> State {
       env,
       "run-1",
       run.Identity("desk", 1),
-      controller.Limits(max_turns: 3, token_budget: None),
+      controller.Limits(
+        max_turns: 3,
+        token_budget: None,
+        max_children: 0,
+        max_depth: 0,
+      ),
       "go",
+      None,
+      0,
     )
   let #(state, _) =
     step(
@@ -332,8 +348,15 @@ pub fn recovery_issues_a_lost_model_call_again_against_the_budget_test() {
       env,
       "run-1",
       run.Identity("desk", 1),
-      controller.Limits(max_turns: 2, token_budget: None),
+      controller.Limits(
+        max_turns: 2,
+        token_budget: None,
+        max_children: 0,
+        max_depth: 0,
+      ),
       "go",
+      None,
+      0,
     )
   let assert #(state, [CallModel(2, _)]) = controller.recover(env, state)
   controller.snapshot(state).turns_used |> should.equal(2)
