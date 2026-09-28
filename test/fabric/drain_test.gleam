@@ -552,3 +552,48 @@ fn wait_for_turns(run: fabric.Run(context), turns: Int) -> Nil {
     }
   }
 }
+
+/// A shutdown that reaches the runner behind a tool's report is taken
+/// first: the runner drains before it applies the report, so the tool
+/// queued behind the finished one never starts, stays queued, and runs
+/// after recovery.
+pub fn a_shutdown_queued_behind_a_report_is_taken_first_test() {
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let assert Ok(runs) = store.with_drain(directory_store(dir), 60_000)
+  let two =
+    agent.new(
+      "agent",
+      scripted.plan([scripted.slow("a", "a"), scripted.slow("b", "b")]),
+      [scripted.gated_tool(probe)],
+      policy.always_allow(),
+    )
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), max_concurrency: 1),
+    )
+    |> support.agent
+  let app = restart.application(runs)
+  let assert Ok(run) = fabric.start(runs, two, Nil, "go")
+  let running = probe.arrival(probe)
+  let assert Ok(runner) = restart.runner(runs, fabric.id(run))
+  restart.suspend(runner)
+  probe.release(running)
+  queued(runner, 1)
+  let before = restart.queued(runner)
+  restart.begin_stop(app)
+  queued(runner, before + 1)
+  restart.resume(runner)
+  restart.stopped_within(app, 5000) |> should.be_true
+  probe.count(probe, "start:b") |> should.equal(0)
+
+  let app = restart.application(runs)
+  let assert Ok(run) = fabric.open(runs, two, Nil, fabric.id(run))
+  states(run) |> should.equal([run.Succeeded("\"a\""), run.Queued])
+  let assert Ok(run) = fabric.recover(runs, two, Nil, fabric.id(run))
+  probe.release(probe.arrival(probe))
+  fabric.await(run, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"a\" | \"b\""))))
+  probe.count(probe, "start:b") |> should.equal(1)
+  restart.stop(app)
+  restart.remove_dir(dir)
+}

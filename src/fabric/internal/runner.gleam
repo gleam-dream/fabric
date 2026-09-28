@@ -525,7 +525,7 @@ fn write(
 /// is stopping, which waits for that caller in turn: the start is made by
 /// a helper process, and a shutdown the caller receives meanwhile gives it
 /// up (`Error`) and is put back for the caller's own receive loop, which
-/// then drains. Exactly one side decides (`claim`): a runner the helper
+/// takes it before any other message and drains. Exactly one side decides (`claim`): a runner the helper
 /// started after the caller gave up is abandoned before its first state.
 fn prepare(
   setup: Setup(context),
@@ -757,8 +757,24 @@ fn drain(runner: Runner(context)) -> Runner(context) {
   Runner(..runner, draining: True)
 }
 
-/// Waits for the next message and applies it.
+/// Waits for the next message and applies it. A shutdown from the factory
+/// is taken first, wherever it waits in the mailbox (behind a report, or
+/// put back behind the messages that arrived while a start was given up
+/// for it): the runner drains before it applies anything else, so it
+/// starts nothing that the shutdown would have withheld.
 fn receive(runner: Runner(context)) -> Nil {
+  case !runner.draining && take_shutdown(runner.factory) {
+    True -> serve(drain(runner))
+    False -> receive_next(runner)
+  }
+}
+
+/// Receives the exit signal `shutdown` from `factory` if one is queued,
+/// without waiting.
+@external(erlang, "fabric_ffi", "take_shutdown")
+fn take_shutdown(factory: Pid) -> Bool
+
+fn receive_next(runner: Runner(context)) -> Nil {
   let selector =
     process.new_selector()
     |> process.select(runner.self)
