@@ -1,0 +1,22 @@
+# Fabric's PostgreSQL store: a leased store backend over one table, for
+# several nodes that share one database. A separate package, so that Fabric
+# itself does not depend on pog.
+name = "fabric_postgres"
+version = "0.1.0"
+target = "erlang"
+gleam = ">= 1.18.0"
+licenses = ["Apache-2.0"]
+description = "A PostgreSQL leased store for Fabric runs."
+
+[dependencies]
+gleam_stdlib = ">= 0.70.0 and < 1.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_json = ">= 3.0.0 and < 4.0.0"
+fabric = { path = "../.." }
+pog = ">= 4.1.0 and < 4.2.0"
+pgo = ">= 0.20.0 and < 0.21.0"
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"
+json_blueprint = { path = "../../../json_blueprint" }
