@@ -184,6 +184,26 @@ pub fn a_store_that_is_not_running_is_unavailable_test() {
   |> should.equal(Error(store.Unavailable("the store is not running")))
 }
 
+/// A store started by a process that then exits normally stops with it,
+/// with its in-memory backend: its name is free for the next start.
+pub fn a_started_store_stops_when_its_starter_exits_normally_test() {
+  let runs = store.in_memory(process.new_name("started-by-a-script"))
+  let started = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let assert Ok(Nil) = store.start(runs)
+    let assert Ok(1) = store.insert(runs, "run-s", "one", store.Keep)
+    process.send(started, store.pid(runs))
+  })
+  let assert Ok(Ok(pid)) = process.receive(started, 1000)
+  let monitor = process.monitor(pid)
+  let assert Ok(Nil) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_) { Nil })
+    |> process.selector_receive(1000)
+  store.start(runs) |> should.equal(Ok(Nil))
+  store.get(runs, "run-s") |> should.equal(Error(store.NotFound))
+}
+
 /// A store's name is its process: a second start under a taken name, or a
 /// directory that cannot be created, fails to start.
 pub fn a_store_that_cannot_open_does_not_start_test() {

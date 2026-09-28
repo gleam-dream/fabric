@@ -28,8 +28,8 @@
 ////
 //// A `Store` value names a store process and starts nothing: it is plain
 //// data that any process may hold and use. Start its process once, under
-//// a supervisor (`supervised`) or linked to the caller (`start`, for
-//// scripts and tests). The process calls the backend one request at a time
+//// a supervisor (`supervised`) or owned by the caller (`start`, for
+//// scripts and tests: it stops when the caller exits). The process calls the backend one request at a time
 //// per run, tracks which runner currently drives each run in this VM, and
 //// wakes `fabric.await` on commits made through it. A run outlives the
 //// process that started it, which only uses the store.
@@ -147,15 +147,17 @@ pub fn directory(name: Name(Message), path: String) -> Store {
 /// runners (see the module documentation).
 pub fn supervised(store: Store) -> supervision.ChildSpecification(Nil) {
   supervision.worker(fn() {
-    run(store) |> result.map(fn(started) { actor.Started(started.pid, Nil) })
+    run(store, None)
+    |> result.map(fn(started) { actor.Started(started.pid, Nil) })
   })
 }
 
-/// Starts the store's process linked to the caller, for scripts and tests;
-/// it stops when the caller does. `Unavailable` when its backend could not
-/// be opened or its name is taken.
+/// Starts the store's process for scripts and tests: linked to the caller,
+/// and stopped when the caller exits for any reason, normally or not, so
+/// its name is free again. `Unavailable` when its backend could not be
+/// opened or its name is taken.
 pub fn start(store: Store) -> Result(Nil, StoreError) {
-  run(store)
+  run(store, Some(process.self()))
   |> result.replace(Nil)
   |> result.map_error(fn(error) {
     Unavailable(case error {
@@ -271,6 +273,9 @@ type Loop {
     /// requests waiting behind it, oldest first.
     busy: Dict(String, #(Message, List(Message))),
     timeout: Int,
+    /// The process that started this one with `start`: this one stops
+    /// when it exits.
+    starter: Option(Pid),
   )
 }
 
@@ -280,10 +285,15 @@ const default_backend_timeout = 5000
 
 /// Starts the store process, registered under the store's name and linked
 /// to the caller. It opens its backend itself, so a backend process is
-/// linked to the store process.
-fn run(store: Store) -> Result(actor.Started(Nil), actor.StartError) {
+/// linked to the store process. With a `starter`, it stops when that
+/// process exits.
+fn run(
+  store: Store,
+  starter: Option(Pid),
+) -> Result(actor.Started(Nil), actor.StartError) {
   actor.new_with_initialiser(default_backend_timeout, fn(named) {
     use backend <- result.map(store.open())
+    option.map(starter, process.monitor)
     let subject = process.new_subject()
     let selector =
       process.new_selector()
@@ -303,13 +313,17 @@ fn run(store: Store) -> Result(actor.Started(Nil), actor.StartError) {
       monitored: [],
       busy: dict.new(),
       timeout: default_backend_timeout,
+      starter:,
     )
     |> actor.initialised
     |> actor.selecting(selector)
   })
   |> actor.named(store.name)
   |> actor.on_message(fn(state, message) {
-    actor.continue(serve(state, message))
+    case message {
+      Down(pid) if state.starter == Some(pid) -> actor.stop()
+      _ -> actor.continue(serve(state, message))
+    }
   })
   |> actor.start
 }
@@ -573,13 +587,21 @@ type MemoryRequest {
   MemoryWrite(String, Option(Int), String, Subject(Result(Nil, StoreError)))
 }
 
-/// A backend process linked to the store process that builds it.
+/// A backend process linked to the store process that builds it, which
+/// stops when that process stops for any reason.
 fn memory_backend() -> Backend {
   let ready = process.new_subject()
+  let owner = process.self()
   process.spawn(fn() {
     let subject = process.new_subject()
+    let requests =
+      process.new_selector()
+      |> process.select_map(subject, Ok)
+      |> process.select_specific_monitor(process.monitor(owner), fn(_) {
+        Error(Nil)
+      })
     process.send(ready, subject)
-    memory_loop(subject, dict.new())
+    memory_loop(requests, dict.new())
   })
   let subject = process.receive_forever(ready)
   Backend(
@@ -594,18 +616,19 @@ fn memory_backend() -> Backend {
 }
 
 fn memory_loop(
-  subject: Subject(MemoryRequest),
+  requests: process.Selector(Result(MemoryRequest, Nil)),
   records: Dict(String, Stored),
 ) -> Nil {
-  case process.receive_forever(subject) {
-    MemoryGet(run, reply) -> {
+  case process.selector_receive_forever(requests) {
+    Error(Nil) -> Nil
+    Ok(MemoryGet(run, reply)) -> {
       process.send(
         reply,
         dict.get(records, run) |> result.replace_error(NotFound),
       )
-      memory_loop(subject, records)
+      memory_loop(requests, records)
     }
-    MemoryWrite(run, expected, record, reply) -> {
+    Ok(MemoryWrite(run, expected, record, reply)) -> {
       let outcome = case expected, dict.get(records, run) {
         None, Ok(_) -> Error(AlreadyExists)
         None, Error(Nil) -> Ok(Stored(1, record))
@@ -616,8 +639,8 @@ fn memory_loop(
       }
       process.send(reply, result.replace(outcome, Nil))
       case outcome {
-        Ok(stored) -> memory_loop(subject, dict.insert(records, run, stored))
-        Error(_) -> memory_loop(subject, records)
+        Ok(stored) -> memory_loop(requests, dict.insert(records, run, stored))
+        Error(_) -> memory_loop(requests, records)
       }
     }
   }
