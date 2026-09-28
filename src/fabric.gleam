@@ -2,11 +2,12 @@
 //// wait for a human, survive a restart, and be cancelled at any point.
 ////
 //// ```gleam
-//// let store = store.in_memory()            // or store.directory(path)
+//// let runs = store.in_memory(process.new_name("runs"))  // or store.directory
+//// let assert Ok(Nil) = store.start(runs)   // or store.supervised(runs)
 //// let assert Ok(agent) =
 ////   agent.new("desk", model, [weather_tool, transfer_tool], my_policy)
 ////   |> agent.build
-//// let assert Ok(handle) = fabric.start(store, agent, context, "Pay Bob")
+//// let assert Ok(handle) = fabric.start(runs, agent, context, "Pay Bob")
 //// case fabric.await(handle, 5000) {
 ////   Ok(run.Suspended([pending, ..], _)) ->
 ////     fabric.approve(handle, pending.reference,
@@ -15,8 +16,10 @@
 //// }
 //// ```
 ////
-//// A run's record lives in a store. A runner process exists only while a model
-//// call or a tool is in flight; a suspended or finished run has no process.
+//// A run's record lives in a store, and a run is named by its `run.RunId`:
+//// a string from outside becomes one only through `run.parse_id`. A runner
+//// process exists only while a model call or a tool is in flight; a
+//// suspended or finished run has no process.
 //// Commands (`approve`, `reject`, `cancel`, `reconcile`) go to the live
 //// runner, or are applied to the stored record when there is none, and a
 //// runner is started if the command produced work.
@@ -24,9 +27,9 @@
 //// A delegation (`agent.with_sub_agent`) starts a sub-agent run in the same
 //// store, behind the same policy gate as a tool. The family is read together:
 //// a child's pending approvals and uncertain effects are the parent's (their
-//// references name the child run), `approve` and `reject` route by the
-//// reference, `child` opens a child's handle, cancelling a parent cancels its
-//// children, and recovering a parent recovers its children.
+//// references name the child run), `approve`, `reject` and `reconcile` route
+//// by the reference, `child` opens a child's handle, cancelling a parent
+//// cancels its children, and recovering a parent recovers its children.
 ////
 //// A run's context is a live value, never stored: the one given to `start`
 //// or `recover`, held by the handle and its runner. An approved action is
@@ -226,12 +229,12 @@ pub fn child(
 /// application knows which. `recover` takes the run over, so call it only
 /// when the previous owner is known to be gone.
 ///
-/// It wakes on commits made through this run's store and when a runner
-/// exits. If a supervisor restarts the store's process meanwhile, it goes on
-/// through the new one, which knows no runner: work in flight then reads
-/// `Unattended`. With no store process running it is `StoreUnavailable`. A run whose sub-agents work is working; one waiting only on
-/// paused sub-agents is suspended on their approvals. `await(run, 0)` reads
-/// the status now.
+/// It wakes on commits made through this run's store and when a runner exits.
+/// If a supervisor restarts the store's process meanwhile, it goes on through
+/// the new one, which knows no runner: work in flight then reads `Unattended`.
+/// With no store process running it is `StoreUnavailable`. A run whose
+/// sub-agents work is working; one waiting only on paused sub-agents is
+/// suspended on their approvals. `await(run, 0)` reads the status now.
 pub fn await(run: Run(context), within: Int) -> Result(Status, RecordError) {
   attend(run, process.new_subject(), now() + within)
 }

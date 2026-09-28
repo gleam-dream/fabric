@@ -2,7 +2,7 @@
 
 A bounded, typed LLM agent runtime for Gleam: typed application tools, an explicit policy gate, a pure agent controller, and a thin OTP runner with cancellation. It consumes llm_wire for providers and json_blueprint for tool codecs; typed workflows (DAGs) belong to Saga.
 
-Status: slice 1 (bounded agent execution), slice 2a (durable pause, approval, resume, cancellation, and restart), and slice 2b (approval-gated sub-agents, Sinal observations, and Saga workflows as tools) implemented; see [docs/PLAN.md](docs/PLAN.md), [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [docs/ORACLE.md](docs/ORACLE.md). Design: see [fabric-design.md](https://github.com/gleam-dream/oversight/blob/master/fabric-design.md) in [gleam-dream/oversight](https://github.com/gleam-dream/oversight). Not yet published to Hex.
+Status: slice 1 (bounded agent execution), slice 2a (durable pause, approval, resume, cancellation, and restart), slice 2b (approval-gated sub-agents, Sinal observations, and Saga workflows as tools), and the public API ergonomics pass (a built agent, one policy gate, typed run ids, a named supervisable store) implemented; see [docs/PLAN.md](docs/PLAN.md), [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [docs/ORACLE.md](docs/ORACLE.md). Design: see [fabric-design.md](https://github.com/gleam-dream/oversight/blob/master/fabric-design.md) in [gleam-dream/oversight](https://github.com/gleam-dream/oversight). Not yet published to Hex.
 
 Behavioural oracle: BeamWeaver (partial migration of its agent loop).
 
@@ -18,44 +18,68 @@ import fabric/run
 import fabric/store
 import fabric/tool
 
-let weather =
+let weather_definition =
   tool.define("lookup_weather", "Look up a forecast.", city_codec, forecast_codec)
-  |> tool.bind(lookup_weather, fn(error) { tool.Explain(describe(error)) })
+let weather =
+  tool.bind(weather_definition, lookup_weather, fn(error) {
+    tool.Explain(describe(error))
+  })
 
-let agent =
-  agent.new(model, [weather], my_policy)   // fabric/llm.model(settings, model_id)
-  |> agent.with_max_turns(6)
-  |> agent.with_token_budget(20_000)
+// One policy gates every effect. `tool.input` matches an action on a
+// tool's definition and gives its typed input.
+let my_policy = fn(context, action: policy.Action) {
+  case tool.input(transfer_definition, action) {
+    Ok(transfer) if transfer.amount > 100 ->
+      Ok(policy.RequireApproval(run.Requirement("treasurer", 1)))
+    _ -> Ok(policy.Allow)
+  }
+}
 
-let assert Ok(runs) = store.directory("/var/lib/app/runs")   // or store.in_memory()
-let assert Ok(handle) = fabric.start(runs, agent, context, "What is the weather in Paris?")
+// An agent is described, then built once: `build` reports every problem.
+let assert Ok(desk) =
+  agent.new("desk", model, [weather, transfer], my_policy)  // fabric/llm.model(settings, model_id)
+  |> agent.with_limits(
+    agent.Limits(..agent.default_limits(), max_turns: 6, token_budget: Some(20_000)),
+  )
+  |> agent.build
+
+// A store is a named value; its process runs under the application's
+// supervisor (or `store.start(runs)` in a script or test).
+let runs = store.directory(process.new_name("runs"), "/var/lib/app/runs")
+let children = [store.supervised(runs)]   // static_supervisor.add(builder, ..)
+
+let assert Ok(handle) = fabric.start(runs, desk, context, "Pay Bob 120")
 case fabric.await(handle, 30_000) {
   Ok(run.Finished(run.Completed(answer))) -> answer
   Ok(run.Suspended([pending, ..], _)) ->
     // No process holds the run. The application authenticates the reviewer;
     // the policy is checked again with the context passed here.
-    fabric.answer(handle, pending.reference, run.Approve,
+    fabric.approve(handle, pending.reference,
       reviewer: Some("alice"), context: current_context)
+    // or: fabric.reject(handle, pending.reference, reason: "not today", reviewer: Some("alice"))
+  Ok(run.Suspended([], [uncertain, ..])) ->
+    // An effect of unknown status: record what actually happened.
+    fabric.reconcile(handle, uncertain.reference, "{\"receipt\":\"r-1\"}")
+  Ok(run.Working) -> ...     // the time ran out
+  Ok(run.Unattended) -> ...  // its runner was lost: `recover` takes it over
   ...
 }
 
-// After a restart: reopen the store and recover the run by its id.
-let assert Ok(handle) = fabric.recover(runs, agent, context, run_id)
+// After a restart: parse the run id from wherever it was kept, and recover.
+let assert Ok(id) = run.parse_id(stored_id)
+let assert Ok(handle) = fabric.recover(runs, desk, context, id)
 
 // A sub-agent: a typed delegation whose start the policy gates like a tool
 // (`action.target` is `policy.StartAgent(..)`). Its approvals surface in the
 // parent's `pending`, cancelling the parent cancels it, and recovering the
-// parent recovers it.
-let desk =
-  agent.new(model, [weather], my_policy)
+// parent recovers it. `output` parses a completed sub-agent's answer; any
+// other ending is a definite failure the model sees.
+let assert Ok(front_desk) =
+  agent.new("front-desk", model, [weather], my_policy)
   |> agent.with_sub_agent(research_definition, to: researcher,
        prompt: fn(topic) { topic.name },
-       result: fn(outcome) {
-         case outcome {
-           run.Completed(text) -> Ok(Summary(text))
-           _ -> Error(tool.Explain("research did not complete"))
-         }
-       })
+       output: fn(answer) { Ok(Summary(answer)) })
+  |> agent.build
 
 // A Saga workflow as one typed tool (package fabric_saga). A cancelled call
 // waits up to `rollback_within` ms for Saga's rollback: every completed step
@@ -66,10 +90,14 @@ let assert Ok(book_trip) =
 
 // A tool whose effect outlives its task settles its result late: the handler
 // gets a typed `tool.Settlement(output)`, and a stopped run waits up to
-// `within` ms for `tool.settle(settlement, result)`.
+// `within` ms for `tool.settle(settlement, result, summary:)`. The summary
+// is observed if the settlement is refused, so it must not carry secrets.
 let lookup =
   tool.bind_settling(weather_definition, handler, classify, within: 5000)
 ```
+
+`test/fabric/readme_test.gleam` runs this example (without the Saga tool,
+which `consumers/app` covers).
 
 Observations: attach Sinal handlers to the events of `fabric/observation`.
 They run in the committing process unless the application routes `[fabric]`
