@@ -92,8 +92,9 @@ pub fn in_memory() -> Store {
 /// written revision. A crash leaves at most an ignored temporary file. The
 /// directory entry itself is not flushed: after a power loss or an
 /// operating-system crash (not a process or VM crash) the most recent
-/// revisions may be missing. Network filesystems without atomic hard links
-/// are not supported.
+/// revisions may be missing, and since an older revision is emptied once
+/// two newer ones are published, the run may then read as `Unavailable`.
+/// Network filesystems without atomic hard links are not supported.
 pub fn directory(path: String) -> Result(Store, StoreError) {
   use Nil <- result.map(ensure_directory(path) |> result.map_error(Unavailable))
   open(fn() {

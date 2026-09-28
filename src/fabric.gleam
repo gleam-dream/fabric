@@ -67,7 +67,9 @@ pub opaque type Run(context) {
 
 pub type StartError {
   InvalidAgent(List(ConfigError))
-  /// The store refused the first record.
+  /// The store refused the first record. `Unavailable` means the outcome
+  /// is unknown: the backend may still store the record later, as a run
+  /// with work in flight and no runner (`await` then reports `NoRunner`).
   StartFailed(store.StoreError)
 }
 
@@ -119,6 +121,9 @@ pub type CommandError {
   /// be applied later. Try again, or route Fabric's events through a
   /// forwarder (see `fabric/observation`).
   RunnerBusy
+  /// The record could not be read or written. A write the store reports
+  /// `Unavailable` (as `Unreadable(StoreFailed(Unavailable(_)))`) has an
+  /// unknown outcome: the backend may still perform it later.
   Unreadable(RecordError)
 }
 
@@ -410,7 +415,10 @@ pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
 
 /// Cancels the stored run `id` with no agent: for a run that cannot be
 /// recovered because its agent changed (another identity, or a pending tool
-/// that no longer exists). A run whose runner is live in this store is
+/// that no longer exists). Cancelling a sub-agent run this way does not
+/// apply its end to its parent, which needs its agent to map it: `recover`
+/// the parent to apply it (`await` on the parent reports `NoRunner` until
+/// then). A run whose runner is live in this store is
 /// cancelled through that runner, as `cancel` would; otherwise the work of
 /// a lost runner is abandoned (running tools become uncertain effects) and
 /// the run ends `Cancelled` in one commit. Active sub-agent runs are
