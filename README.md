@@ -65,8 +65,14 @@ case fabric.await(handle, 30_000) {
   ...
 }
 
-// After a restart: parse the run id from wherever it was kept, and recover.
+// In a later request: parse the run id from wherever it was kept, and open
+// the run. Opening takes nothing over; commands through the handle are
+// checked against the stored record.
 let assert Ok(id) = run.parse_id(stored_id)
+let assert Ok(handle) = fabric.open(runs, desk, context, id)
+
+// At boot, when the previous owner is known to be gone: `recover` takes
+// over work whose runner was lost (running tools become uncertain effects).
 let assert Ok(handle) = fabric.recover(runs, desk, context, id)
 
 // A sub-agent: a typed delegation whose start the policy gates like a tool

@@ -208,7 +208,10 @@ pub type CommandError { RunEnded  WrongReference  StaleReference  AlreadyAnswere
                         RequirementChanged(PendingApproval)  NotReconcilable  RunUnattended
                         RunnerBusy  Contended  Unreadable(RecordError) }
 pub fn start(store: Store, agent: Agent(c), context: c, prompt: String) -> Result(Run(c), StartError)
+pub fn open(store: Store, agent: Agent(c), context: c, id: RunId) -> Result(Run(c), RecordError)
+  // reads and checks the record; never takes the run over or starts a runner
 pub fn recover(store: Store, agent: Agent(c), context: c, id: RunId) -> Result(Run(c), CommandError)
+  // takes over work whose runner is gone: at boot only
 pub fn id(run: Run(c)) -> RunId
 pub fn child(run: Run(c), id: RunId) -> Result(Run(c), RecordError)
 pub fn await(run: Run(c), within: Int) -> Result(Status, RecordError)   // Ok(Working) at the deadline
@@ -299,7 +302,7 @@ pub fn start(store: Store) -> Result(Nil, StoreError)   // linked to the caller:
 Errors by operation: `agent.build` returns every `ConfigError` at once;
 `start` only `StartUnconfirmed`, whose run may land later and can then be
 ended with `cancel_stored`; `await`, `snapshot` and `pending` the four
-read errors, `child` those and `IncompatibleAgent`; `recover` `Contended`
+read errors, `open` and `child` those and `IncompatibleAgent`; `recover` `Contended`
 or `Unreadable`; `approve` every `CommandError` but `NotReconcilable`;
 `reject` the same without `RequirementChanged`; `reconcile` `RunEnded`,
 `WrongReference`, `NotReconcilable`, `RunUnattended`, `RunnerBusy`,

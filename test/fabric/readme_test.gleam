@@ -80,11 +80,12 @@ pub fn the_readme_example_runs_test() {
     Ok(run.Finished(run.Completed("final: {\"receipt\":\"r-bob\"}"))),
   )
 
-  // Rejected, after a restart: the id is parsed from where it was kept.
+  // Rejected, in a later request: the id is parsed from where it was kept.
   let assert Ok(handle) = fabric.start(runs, desk(transfer("50")), Nil, "Pay")
   let stored_id = run.id_to_string(fabric.id(handle))
   let assert Ok(id) = run.parse_id(stored_id)
-  let assert Ok(handle) = fabric.recover(runs, desk(transfer("50")), Nil, id)
+  let assert Ok(handle) = fabric.open(runs, desk(transfer("50")), Nil, id)
+  let assert Ok(_) = fabric.recover(runs, desk(transfer("50")), Nil, id)
   let assert Ok(run.Suspended([pending, ..], _)) = fabric.await(handle, 5000)
   let assert Ok(_) =
     fabric.reject(
