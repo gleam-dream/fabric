@@ -40,6 +40,7 @@ import fabric/agent.{type Agent, type ConfigError}
 import fabric/internal/controller.{type State}
 import fabric/internal/family
 import fabric/internal/live
+import fabric/internal/observe
 import fabric/internal/record
 import fabric/internal/runner
 import fabric/policy.{type ActionId}
@@ -430,7 +431,10 @@ fn cancel_stored_loop(
       case
         store.commit(store, id, entry.revision, record.encode(next), store.Keep)
       {
-        Ok(_) -> Ok(controller.status(next))
+        Ok(_) -> {
+          observe.committed(Some(state), next)
+          Ok(controller.status(next))
+        }
         Error(store.Conflict(_)) -> retry()
         Error(error) -> Error(Unreadable(StoreFailed(error)))
       }

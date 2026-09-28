@@ -20,6 +20,7 @@ import fabric/internal/controller.{type Effect, type Event, type State}
 import fabric/internal/executor.{type Executor}
 import fabric/internal/invocation
 import fabric/internal/live.{type Message}
+import fabric/internal/observe
 import fabric/internal/record
 import fabric/internal/registry
 import fabric/model.{type Model}
@@ -190,13 +191,18 @@ type Go {
 /// hands it `effects`. Without work in flight nothing is performed:
 /// `effects` can then only ask to stop work that no longer exists. A run
 /// that ended is delivered to its parent.
+///
+/// `before` is the state the commit replaces (`None` for a new run), for
+/// the observations of the transition.
 pub fn launch(
   setup: Setup(context),
-  expected: Option(Int),
+  before: Option(#(Int, State)),
   state: State,
   effects: List(Effect),
 ) -> Result(Int, store.StoreError) {
   let encoded = record.encode(state)
+  let expected = option.map(before, fn(before) { before.0 })
+  let observed = option.map(before, fn(before) { before.1 })
   case controller.needs_runner(state) {
     False -> {
       use revision <- result.map(write(
@@ -206,6 +212,7 @@ pub fn launch(
         encoded,
         store.Keep,
       ))
+      observe.committed(observed, state)
       deliver(setup, state)
       revision
     }
@@ -214,6 +221,7 @@ pub fn launch(
       let claim = store.Claim(pid, store.Live(state.incarnation, mailbox))
       case write(setup.store, state.run, expected, encoded, claim) {
         Ok(revision) -> {
+          observe.committed(observed, state)
           process.send(go, Go(revision, state, effects))
           Ok(revision)
         }
@@ -420,6 +428,7 @@ fn commit(
   case persist(runner.setup.store, state, runner.revision, ownership, 0) {
     Error(_) -> Error(Superseded)
     Ok(revision) -> {
+      observe.committed(Some(runner.state), state)
       let runner = perform(Runner(..runner, state:, revision:), effects)
       deliver(runner.setup, state)
       Ok(runner)
@@ -725,7 +734,7 @@ pub fn command(
         True, controller.Cancel | False, _ -> Ok(Nil)
         True, _ -> Error(OwnerUnknown)
       })
-      case launch(setup, Some(entry.revision), next, effects) {
+      case launch(setup, Some(#(entry.revision, state)), next, effects) {
         Ok(_) -> Ok(next)
         Error(store.Conflict(_)) -> retry()
         Error(error) -> Error(Unreadable(StoreFailed(error)))
