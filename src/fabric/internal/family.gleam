@@ -319,13 +319,27 @@ fn reattach_child(
           runner.notify_parent(child_setup, controller.ChildMissing)
         Error(runner.NotFound) ->
           case
+            runner.ancestors_open(setup.store, parent.parent),
             registry.prompt(
               setup.env.registry,
               action.call.name,
               action.call.arguments_json,
             )
           {
-            Ok(prompt) -> {
+            // An ancestor stopped: as at a start, the run cancels itself,
+            // and its cancellation buries the child that was never stored.
+            False, _ -> {
+              let _ =
+                runner.command(
+                  setup,
+                  parent.run,
+                  setup.env,
+                  controller.Cancel,
+                  8,
+                )
+              Nil
+            }
+            True, Ok(prompt) -> {
               let #(state, effects) =
                 runner.child_state(
                   child_setup,
@@ -337,7 +351,7 @@ fn reattach_child(
               let _ = runner.launch(child_setup, None, state, effects)
               Nil
             }
-            Error(detail) ->
+            True, Error(detail) ->
               runner.notify_parent(child_setup, controller.ChildLost(detail))
           }
         Error(problem) ->
