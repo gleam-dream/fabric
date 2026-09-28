@@ -438,7 +438,9 @@ fn serve(runner: Runner(context)) -> Nil {
             True -> {
               process.send(reply, live.Accepted)
               let work = option.unwrap(work, runner.work)
-              commit_answering(runner, step(runner.state), work, Some(reply))
+              commit_answering(runner, step(runner.state), work, fn(answer) {
+                process.send(reply, answer)
+              })
             }
           }
         live.ModelDone(turn, result) -> {
@@ -453,11 +455,24 @@ fn serve(runner: Runner(context)) -> Nil {
             Error(error) -> controller.ModelFailed(turn, error)
           })
         }
-        live.Fence(id, reply) -> {
-          let outcome = apply(runner, controller.ToolStarting(id))
-          process.send(reply, result.is_ok(outcome))
-          outcome
-        }
+        // The body starts as soon as its start is stored: a handler of
+        // this commit does not hold it past a later cancellation.
+        live.Fence(id, reply) ->
+          commit_answering(
+            runner,
+            controller.step(
+              runner.setup.env,
+              runner.state,
+              controller.ToolStarting(id),
+            ),
+            runner.work,
+            fn(answer) {
+              process.send(reply, case answer {
+                live.Applied(_) -> True
+                _ -> False
+              })
+            },
+          )
         live.Executed(executor.Reported(id, outcome)) ->
           apply(runner, controller.ToolReported(id, outcome))
         live.Executed(executor.Lost(id, reason)) ->
@@ -559,24 +574,19 @@ fn commit(
   transition: Result(#(State, List(Effect)), controller.Rejection),
   work: Work,
 ) -> Result(Runner(context), ApplyError) {
-  commit_answering(runner, transition, work, None)
+  commit_answering(runner, transition, work, fn(_) { Nil })
 }
 
-/// `commit`, answering a command's `reply` as soon as the outcome is
-/// known: right after the commit is stored, before its observations and
-/// effects, so that neither a slow handler nor an effect holds the caller.
+/// `commit`, calling `answer` as soon as the outcome is known: right after
+/// the commit is stored, before its observations and effects, so that
+/// neither a slow handler nor an effect holds whoever waits for it (a
+/// command's caller, or a tool task at its fence).
 fn commit_answering(
   runner: Runner(context),
   transition: Result(#(State, List(Effect)), controller.Rejection),
   work: Work,
-  reply: Option(Subject(live.CommandReply)),
+  answer: fn(live.CommandReply) -> Nil,
 ) -> Result(Runner(context), ApplyError) {
-  let answer = fn(message) {
-    case reply {
-      Some(reply) -> process.send(reply, message)
-      None -> Nil
-    }
-  }
   use #(state, effects) <- result.try(
     transition
     |> result.map_error(fn(rejection) {
@@ -861,9 +871,11 @@ fn cancel_child(
 }
 
 /// Cancels `child` until its record reads stopping or ended; a child that
-/// does not exist is buried (`bury`). A failure that may be transient (the
-/// store failed, every retry lost a race, or the child appeared meanwhile)
-/// is tried again after a bounded backoff; `Error` describes the last one.
+/// does not exist is buried (`bury`). A child runner that is held is not
+/// waited for: the cancellation is committed to its record (`command`). A
+/// failure that may be transient (the store failed, every retry lost a
+/// race, or the child appeared meanwhile) is tried again after a bounded
+/// backoff; `Error` describes the last one.
 fn cancel_until_stopping(
   setup: Setup(context),
   parent: State,
@@ -961,36 +973,40 @@ pub fn cancel_unattended(
       False -> Error(Contended)
     }
   }
+  // Abandons the work of a lost or held runner, ends the children first,
+  // and ends the run in one commit.
+  let end_stored = fn() {
+    let ended =
+      list.map(controller.active_children(state), fn(active) {
+        let #(action, _, child) = active
+        #(action, end_child(store, state, action, child, within, tries))
+      })
+    use #(next, _) <- result.try(
+      controller.cancel_unattended(state, ended)
+      |> result.map_error(CommandRefused),
+    )
+    case
+      store.commit(store, id, entry.revision, record.encode(next), store.Keep)
+    {
+      Ok(_) -> {
+        observe.committed(Some(state), next)
+        Ok(next)
+      }
+      Error(store.Conflict(_)) -> retry()
+      Error(error) -> Error(Unreadable(StoreFailed(error)))
+    }
+  }
   case live_runner(entry, state) {
     Some(mailbox) ->
       case send_live(mailbox, controller.cancel, None, within) {
         Ok(state) -> Ok(state)
         Error(LiveRefused(rejection)) -> Error(CommandRefused(rejection))
-        Error(LiveBusy) -> Error(Busy)
+        // A held runner does not delay the cancellation: its next commit
+        // conflicts and it stops.
+        Error(LiveBusy) -> end_stored()
         Error(LiveGone) -> retry()
       }
-    None -> {
-      // Children first, so that the parent ends in one commit.
-      let ended =
-        list.map(controller.active_children(state), fn(active) {
-          let #(action, _, child) = active
-          #(action, end_child(store, state, action, child, within, tries))
-        })
-      use #(next, _) <- result.try(
-        controller.cancel_unattended(state, ended)
-        |> result.map_error(CommandRefused),
-      )
-      case
-        store.commit(store, id, entry.revision, record.encode(next), store.Keep)
-      {
-        Ok(_) -> {
-          observe.committed(Some(state), next)
-          Ok(next)
-        }
-        Error(store.Conflict(_)) -> retry()
-        Error(error) -> Error(Unreadable(StoreFailed(error)))
-      }
-    }
+    None -> end_stored()
   }
 }
 
@@ -1130,6 +1146,32 @@ pub fn command(
     }
   }
   let work = work(setup, env.context)
+  // Applies the event to the stored record. A run that needs a runner
+  // (`orphaned`: its runner was lost, or is held) accepts only a
+  // cancellation, which abandons that runner's work: its next commit then
+  // conflicts and it stops. Any other command is checked against the
+  // stored record first, so a refusal is reported as such whoever drives
+  // the run.
+  let apply_stored = fn(orphaned) {
+    let transition = case orphaned, event {
+      True, controller.Cancel -> controller.cancel_abandoned(state)
+      _, _ -> controller.step(env, state, event)
+    }
+    use #(next, effects) <- result.try(
+      transition |> result.map_error(CommandRefused),
+    )
+    use Nil <- result.try(case orphaned, event {
+      True, controller.Cancel | False, _ -> Ok(Nil)
+      True, _ -> Error(OwnerUnknown)
+    })
+    case
+      launch_with(setup, work, Some(#(entry.revision, state)), next, effects)
+    {
+      Ok(_) -> Ok(next)
+      Error(store.Conflict(_)) -> retry()
+      Error(error) -> Error(Unreadable(StoreFailed(error)))
+    }
+  }
   case live_runner(entry, state) {
     Some(mailbox) ->
       case
@@ -1142,34 +1184,16 @@ pub fn command(
       {
         Ok(state) -> Ok(state)
         Error(LiveRefused(rejection)) -> Error(CommandRefused(rejection))
-        Error(LiveBusy) -> Error(Busy)
+        // A held runner does not delay a cancellation: it is committed to
+        // the record, and the held runner stops at its next commit.
+        Error(LiveBusy) ->
+          case event {
+            controller.Cancel -> apply_stored(True)
+            _ -> Error(Busy)
+          }
         Error(LiveGone) -> retry()
       }
-    None -> {
-      let orphaned = controller.needs_runner(state)
-      // Cancelling starts nothing, so it needs no runner: the work of a
-      // lost runner is abandoned first. Any other command is checked
-      // against the stored record first, so a refusal is reported as such
-      // whoever drives the run.
-      let transition = case orphaned, event {
-        True, controller.Cancel -> controller.cancel_abandoned(state)
-        _, _ -> controller.step(env, state, event)
-      }
-      use #(next, effects) <- result.try(
-        transition |> result.map_error(CommandRefused),
-      )
-      use Nil <- result.try(case orphaned, event {
-        True, controller.Cancel | False, _ -> Ok(Nil)
-        True, _ -> Error(OwnerUnknown)
-      })
-      case
-        launch_with(setup, work, Some(#(entry.revision, state)), next, effects)
-      {
-        Ok(_) -> Ok(next)
-        Error(store.Conflict(_)) -> retry()
-        Error(error) -> Error(Unreadable(StoreFailed(error)))
-      }
-    }
+    None -> apply_stored(controller.needs_runner(state))
   }
 }
 
