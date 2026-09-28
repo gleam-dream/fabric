@@ -7,7 +7,10 @@
 //// and never by the pure controller. The lease events of a leased store
 //// (`lease_lost`, `renewal_failed`) describe no commit: a process its
 //// store's process starts emits each, after the kill or the failed
-//// renewal, so that no handler holds up the store. Every event is emitted
+//// renewal, so that no handler holds up the store. The `sweep` event is
+//// emitted after a scan in a separate process with a 1-second deadline;
+//// a blocked synchronous handler is stopped, so scans cannot accumulate
+//// blocked emitters. Every event is emitted
 //// with `sinal/forwarder.emit_routed`, so the application chooses where
 //// handlers run:
 ////
@@ -67,6 +70,8 @@
 //// (`Unrenewed`) |
 //// | `renewal_failed` | `[fabric, lease, renew, fail]` | a leased store's
 //// batch renewal failed |
+//// | `sweep` | `[fabric, sweep, stop]` | a bounded recovery scan finished;
+//// reports claimed runs, recovered candidates, unknown root identities and failures |
 //// | `model_turn` | `[fabric, model, stop]` | a model attempt's reply or
 //// failure was committed |
 //// | `approval_answered` | `[fabric, approval, answer]` | an answer was
@@ -697,4 +702,28 @@ fn outcome_name(outcome: OutcomeKind) -> String {
     Cancelled -> "cancelled"
     Failed -> "failed"
   }
+}
+
+/// One completed sweep: candidate rows claimed, candidates advanced to a
+/// new incarnation or acknowledged after completion, unmatched root agent
+/// identities, and failed candidates/roots (or one failed backend scan).
+pub type Sweep {
+  Sweep(claimed: Int, recovered: Int, unmatched: Int, failed: Int)
+}
+
+pub fn sweep() -> Event(Sweep, Nil) {
+  event(
+    ["sweep", "stop"],
+    both(
+      both(int("claimed"), int("recovered")),
+      both(int("unmatched"), int("failed")),
+    )
+      |> fields.imap(
+        fn(values) { Sweep(values.0.0, values.0.1, values.1.0, values.1.1) },
+        fn(sweep) {
+          #(#(sweep.claimed, sweep.recovered), #(sweep.unmatched, sweep.failed))
+        },
+      ),
+    fields.empty(),
+  )
 }

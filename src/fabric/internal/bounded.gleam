@@ -11,31 +11,51 @@ pub type Failure {
   Crashed(reason: String)
 }
 
-/// Runs `body` in a fresh unlinked process and waits at most `timeout`
-/// milliseconds for its result. On timeout the process is killed.
+/// Runs `body` behind a guardian unlinked from the caller. The guardian
+/// gives it `timeout` milliseconds and kills it directly on timeout or
+/// caller death, even when the body traps exit signals.
 pub fn call(timeout: Int, body: fn() -> a) -> Result(a, Failure) {
   let reply = process.new_subject()
+  let caller = process.self()
   let pid =
-    process.spawn_unlinked(fn() { process.send(reply, executor.rescue(body)) })
+    process.spawn_unlinked(fn() {
+      let parent = process.monitor(caller)
+      let done = process.new_subject()
+      let worker =
+        process.spawn(fn() { process.send(done, executor.rescue(body)) })
+      let outcome =
+        process.new_selector()
+        |> process.select_map(done, Ok)
+        |> process.select_specific_monitor(parent, fn(_) { Error(Nil) })
+        |> process.selector_receive(timeout)
+      case outcome {
+        Ok(Ok(result)) -> {
+          let result = case result {
+            Ok(value) -> Ok(value)
+            Error(crash) -> Error(Crashed(crash))
+          }
+          process.send(reply, result)
+        }
+        Ok(Error(Nil)) -> {
+          process.unlink(worker)
+          process.kill(worker)
+        }
+        Error(Nil) -> {
+          // Kill the body directly: it may trap linked exit signals.
+          process.unlink(worker)
+          process.kill(worker)
+          process.send(reply, Error(TimedOut))
+        }
+      }
+    })
   let monitor = process.monitor(pid)
   let outcome =
     process.new_selector()
-    |> process.select_map(reply, fn(result) {
-      case result {
-        Ok(value) -> Ok(value)
-        Error(crash) -> Error(Crashed(crash))
-      }
-    })
+    |> process.select(reply)
     |> process.select_specific_monitor(monitor, fn(down) {
       Error(Crashed(string.inspect(down.reason)))
     })
-    |> process.selector_receive(timeout)
+    |> process.selector_receive_forever
   process.demonitor_process(monitor)
-  case outcome {
-    Ok(result) -> result
-    Error(Nil) -> {
-      process.kill(pid)
-      Error(TimedOut)
-    }
-  }
+  outcome
 }

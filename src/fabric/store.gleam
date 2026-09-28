@@ -240,6 +240,7 @@ pub opaque type Message {
   )
   /// Kill the runners whose lease could have expired.
   Fence
+  ClaimExpired(limit: Int, reply: Subject(Result(List(String), StoreError)))
 }
 
 /// A store over application-supplied backend functions (for example a
@@ -278,8 +279,7 @@ pub fn in_memory(name: Name(Message)) -> Store {
 /// A store in the directory `path`, registered as `name`, for development,
 /// tests, and a single host: its records survive a process or VM crash,
 /// but not a power loss or an operating-system crash (see Atomicity). In
-/// production use a database backend through `new` (a Postgres adapter is
-/// planned) or another application backend. The directory is created
+/// production use `fabric_postgres` or an application database backend. The directory is created
 /// when the store starts, if missing. Each run is a directory
 /// holding one file per revision, `<revision>.json`. Every revision name is
 /// kept, but revisions older than the previous one are emptied, so disk use
@@ -1014,6 +1014,24 @@ fn serve(state: Loop, message: Message) -> Loop {
       state
     }
     Draining(pid) -> Loop(..state, draining: Some(pid))
+    ClaimExpired(limit, reply) -> {
+      case state.lessee, state.draining {
+        Some(lessee), None -> {
+          process.spawn(fn() {
+            process.send(
+              reply,
+              bounded_backend(state.timeout, fn() {
+                state.backend.claim_expired(lessee.owner, lessee.ttl, limit)
+              }),
+            )
+          })
+          Nil
+        }
+        _, _ ->
+          process.send(reply, Error(Unavailable("the store cannot sweep")))
+      }
+      state
+    }
     Renew(tick) -> renew(state, tick)
     Renewed(sent, runs, renewed) -> renewed_leases(state, sent, runs, renewed)
     Fence -> Loop(..state, fence_at: None) |> fence |> schedule_fence
@@ -1599,3 +1617,13 @@ fn directory_compare_and_set(
   expected: Int,
   record: String,
 ) -> Result(Nil, StoreError)
+
+/// Reserves at most `limit` expired runs for this store process. A sweeper
+/// uses a pinned store, so a delayed response never reaches a new owner.
+@internal
+pub fn claim_expired(
+  store: Store,
+  limit: Int,
+) -> Result(List(String), StoreError) {
+  call(store, ClaimExpired(limit, _)) |> result.flatten
+}

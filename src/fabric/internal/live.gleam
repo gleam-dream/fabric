@@ -42,6 +42,9 @@ pub type Message {
   /// An event the runner reports to itself after performing an effect (a
   /// child run was started).
   Apply(controller.Event)
+  /// A leased parent checks durable child results from other nodes.
+  PollChildren
+  ChildrenRead(List(#(ActionId, controller.ChildResult)))
   StoreDown
 }
 

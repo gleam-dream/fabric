@@ -321,6 +321,9 @@ type Runner(context) {
     model_task: Option(#(Pid, Int, claim.Claim)),
     /// Consecutive retryable model failures; the next call waits longer.
     model_failures: Int,
+    /// One linked reader of durable child outcomes; it never holds up
+    /// the runner's receive loop or drain.
+    child_reader: Option(Pid),
     /// The factory the runner was started under: its `shutdown` drains
     /// the runner.
     factory: Pid,
@@ -660,10 +663,12 @@ fn begin(
         executor: None,
         model_task: None,
         model_failures: 0,
+        child_reader: None,
         factory:,
         draining:,
       )
       |> perform(effects, first)
+      |> schedule_children
       |> serve
     }
   }
@@ -819,6 +824,20 @@ fn receive_next(runner: Runner(context)) -> Nil {
     })
   let next = case process.selector_receive_forever(selector) {
     live.StoreDown -> Error(Superseded)
+    live.PollChildren -> Ok(read_children(runner))
+    live.ChildrenRead(results) -> {
+      let runner = Runner(..runner, child_reader: None) |> schedule_children
+      case runner.draining {
+        True -> Ok(runner)
+        False ->
+          list.try_fold(results, runner, fn(runner, child) {
+            case apply(runner, controller.ChildEnded(child.0, child.1)) {
+              Error(Refused(_)) -> Ok(runner)
+              outcome -> outcome
+            }
+          })
+      }
+    }
     live.Command(step, work, command_claim, reply) ->
       case claim.accept(command_claim) {
         // The caller has withdrawn it: the command changes nothing.
@@ -920,6 +939,8 @@ fn exited(
   let shutdown = pid == runner.factory && is_shutdown(reason)
   case reason, runner.model_task, executor_pid {
     _, _, _ if shutdown -> Ok(drain(runner))
+    _, _, _ if runner.child_reader == Some(pid) ->
+      Ok(Runner(..runner, child_reader: None) |> schedule_children)
     process.Normal, _, _ -> Ok(runner)
     _, Some(#(task, turn, _)), _ if task == pid ->
       apply(
@@ -1902,7 +1923,7 @@ pub fn load(
       }
     }),
   )
-  use state <- result.map(
+  use state <- result.try(
     record.decode(entry.record)
     |> result.map_error(fn(error) {
       case error {
@@ -1911,7 +1932,10 @@ pub fn load(
       }
     }),
   )
-  #(entry, state)
+  case state.run == id {
+    True -> Ok(#(entry, state))
+    False -> Error(Corrupt("the record's run id differs from its storage key"))
+  }
 }
 
 /// `load`, and the record must be able to continue under `setup`'s agent.
@@ -1989,6 +2013,57 @@ fn abort_model(runner: Runner(context)) -> Runner(context) {
 /// Exiting normally does not take linked processes down, so the model task
 /// is killed explicitly; the executor sees the exit and kills its tasks.
 fn shutdown(runner: Runner(context)) -> Nil {
+  option.map(runner.child_reader, process.kill)
   let _ = abort_model(runner)
   Nil
+}
+
+/// Only leased parents need to receive results written on another node.
+/// Schedule after each completed read so slow storage cannot queue polls.
+fn schedule_children(runner: Runner(context)) -> Runner(context) {
+  case
+    store.poll_interval(runner.setup.store),
+    !runner.draining && dict.size(runner.setup.children) > 0
+  {
+    Some(interval), True -> {
+      process.send_after(runner.self, interval, live.PollChildren)
+      runner
+    }
+    _, _ -> runner
+  }
+}
+
+fn read_children(runner: Runner(context)) -> Runner(context) {
+  case
+    runner.draining,
+    runner.child_reader,
+    controller.active_children(runner.state)
+  {
+    True, _, _ | _, Some(_), _ -> runner
+    False, None, [] -> schedule_children(runner)
+    False, None, children -> {
+      let reader =
+        process.spawn(fn() {
+          let results =
+            list.filter_map(children, fn(child) {
+              let #(action, _, id) = child
+              use #(_, state) <- result.try(
+                load(runner.setup.store, id)
+                |> result.map_error(fn(_) { Nil }),
+              )
+              case
+                state.parent
+                == Some(run.ActionRef(run.issued(runner.state.run), action))
+              {
+                False -> Error(Nil)
+                True ->
+                  controller.child_result(state)
+                  |> result.map(fn(outcome) { #(action, outcome) })
+              }
+            })
+          process.send(runner.self, live.ChildrenRead(results))
+        })
+      Runner(..runner, child_reader: Some(reader))
+    }
+  }
 }

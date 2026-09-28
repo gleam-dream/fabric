@@ -2,7 +2,7 @@
 
 A bounded, typed LLM agent runtime for Gleam: typed application tools, an explicit policy gate, a pure agent controller, and a thin OTP runner with cancellation. It consumes llm_wire for providers and json_blueprint for tool codecs; typed workflows (DAGs) belong to Saga.
 
-Status: slice 1 (bounded agent execution), slice 2a (durable pause, approval, resume, cancellation, and restart), slice 2b (approval-gated sub-agents, Sinal observations, and Saga workflows as tools), the public API ergonomics pass (a built agent, one policy gate, typed run ids, a named supervisable store), and the first production-runtime slices (timer limits; runners supervised under the store's subtree, drained and handed off on shutdown; the leased store contract for several nodes sharing one database, with an in-memory test backend and the PostgreSQL adapter) implemented; see [docs/PLAN.md](docs/PLAN.md), [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [docs/ORACLE.md](docs/ORACLE.md). Design: see [fabric-design.md](https://github.com/gleam-dream/oversight/blob/master/fabric-design.md) in [gleam-dream/oversight](https://github.com/gleam-dream/oversight). Not yet published to Hex.
+Status: slice 1 (bounded agent execution), slice 2a (durable pause, approval, resume, cancellation, and restart), slice 2b (approval-gated sub-agents, Sinal observations, and Saga workflows as tools), the public API ergonomics pass (a built agent, one policy gate, typed run ids, a named supervisable store), and the first production-runtime slices (timer limits; runners supervised under the store's subtree, drained and handed off on shutdown; the leased store contract for several nodes sharing one database, with an in-memory test backend, the PostgreSQL adapter, and automatic recovery of expired leases) implemented; see [docs/PLAN.md](docs/PLAN.md), [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [docs/ORACLE.md](docs/ORACLE.md). Design: see [fabric-design.md](https://github.com/gleam-dream/oversight/blob/master/fabric-design.md) in [gleam-dream/oversight](https://github.com/gleam-dream/oversight). Not yet published to Hex.
 
 Behavioural oracle: BeamWeaver (partial migration of its agent loop).
 
@@ -286,6 +286,16 @@ lease, or this store's lease whose runner is gone (including a lease of an
 earlier store process), so it is safe to call at any time. Node ids must
 be unique across live VMs; generated process names are unique only within
 a VM. Coordination over Erlang distribution is not supported.
+
+Automatic recovery: register each root agent with
+`fabric.recovery(agent, context_for_run)` and add
+`fabric.sweeper(runs, recoveries, every: 1000)` after the store in a
+rest-for-one supervisor. It scans expired leases at boot and periodically,
+rebuilds context from the root run id, and recovers each eligible family
+member under its own lease. A live parent learns a child’s stored outcome
+even when another node recovered the child. Running tools become uncertain
+and are never replayed. See the [PostgreSQL setup](integrations/fabric_postgres/README.md#automatic-recovery)
+for shutdown order and recovery limits.
 
 A Saga workflow is one typed tool too, from the separate package
 `integrations/fabric_saga`: `fabric_saga.tool(definition, workflow,
