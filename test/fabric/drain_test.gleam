@@ -14,11 +14,14 @@ import fabric/support
 import fabric/support/probe.{type Probe}
 import fabric/support/restart
 import fabric/support/scripted
+import fabric/testing
+import fabric/tool
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
+import json/blueprint/codec
 
 fn one_slow(probe: Probe) -> Agent(Nil) {
   agent.new(
@@ -280,6 +283,73 @@ pub fn a_store_stops_after_its_draining_runners_test() {
   let app = restart.application(runs)
   let assert Ok(run) = fabric.open(runs, one_slow(probe), Nil, fabric.id(run))
   states(run) |> should.equal([run.Succeeded("\"a\"")])
+  restart.stop(app)
+  restart.remove_dir(dir)
+}
+
+/// A child run is drained by its own runner: its running tool finishes and
+/// the child is handed off, while its parent's delegation stays delegated.
+/// Recovering the parent recovers the child, which goes on without
+/// running its tool again.
+pub fn a_child_run_drains_on_its_own_and_is_recovered_with_its_parent_test() {
+  let dir = restart.temp_dir()
+  let probe = probe.new()
+  let runs = directory_store(dir)
+  let research =
+    tool.define(
+      "research",
+      "Delegate research on a topic.",
+      codec.field("topic", codec.string()),
+      codec.string(),
+    )
+  let researcher =
+    agent.new(
+      "researcher",
+      scripted.plan([scripted.slow("a", "a")]),
+      [scripted.gated_tool(probe)],
+      policy.always_allow(),
+    )
+    |> support.agent
+  let assert Ok(delegation) = testing.call(research, "r", "weather")
+  let parent =
+    agent.new(
+      "parent",
+      scripted.model(fn(messages) {
+        case scripted.results(messages) {
+          [] -> model.ToolRequest("", [delegation], None)
+          seen -> model.FinalAnswer("done: " <> string.join(seen, ","), None)
+        }
+      }),
+      [],
+      policy.always_allow(),
+    )
+    |> agent.with_sub_agent(
+      research,
+      to: researcher,
+      prompt: fn(topic) { topic },
+      output: fn(answer) { Ok(answer) },
+    )
+    |> support.agent
+  let app = restart.application(runs)
+  let assert Ok(run) = fabric.start(runs, parent, Nil, "go")
+  let running = probe.arrival(probe)
+  restart.begin_stop(app)
+  restart.draining(runs)
+  probe.release(running)
+  restart.stopped(app)
+
+  let app = restart.application(runs)
+  let assert Ok(run) = fabric.open(runs, parent, Nil, fabric.id(run))
+  states(run) |> should.equal([run.Delegated])
+  fabric.await(run, 0) |> should.equal(Ok(run.Unattended))
+  let assert Ok(child) = fabric.child(run, support.child_id(fabric.id(run), 1))
+  states(child) |> should.equal([run.Succeeded("\"a\"")])
+  turns_used(child) |> should.equal(1)
+
+  let assert Ok(run) = fabric.recover(runs, parent, Nil, fabric.id(run))
+  fabric.await(run, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("done: \"final: \\\"a\\\"\""))))
+  probe.count(probe, "start:a") |> should.equal(1)
   restart.stop(app)
   restart.remove_dir(dir)
 }
