@@ -114,8 +114,59 @@ an idle run is data in the store with no process holding it.
 - **A superseded answer is kept.** When the recheck asks for another
   requirement, the answer stays in the action's approvals (it authorizes
   nothing) and the new request is issued.
+- **A sub-agent is a delegation, gated like a tool.** `agent.with_sub_agent`
+  declares a typed definition whose call starts a child run; the policy sees
+  `policy.StartAgent(name, version)` as the action's target. The child shares
+  the parent's context type and store and has its own agent, budgets, and
+  policy. An allowed delegation is committed `Running` with its child run id
+  (`<parent id>-<n>`, deterministic) before the child is stored, then
+  `Delegated` once it is: the child record never exists before the start is
+  allowed, and a crash in between leaves a named, missing child that
+  recovery starts.
+- **No second owner of a child's state.** The child owns its approvals and
+  effects. Nothing is mirrored into the parent's record; `status`, `await`,
+  and `pending` read the family (the parent and its active children), so a
+  child's pause is the parent's pause (anti-oracle B1) and `answer` routes by
+  the reference's run. A delegated action needs no runner; the child delivers
+  its end to its parent's delegation, keeping its store registration until
+  it has, so a family is never seen ended, unreported, and ownerless. A child
+  that ended with an unreconciled uncertain effect, or cannot be read or
+  continued, makes the delegation an uncertain effect.
+- **A parent ends after its children.** Cancelling (or a host fault) moves a
+  run with active children to `Stopping` and cancels each child through the
+  store, from a separate process (the child's runner may be delivering to
+  the parent at that moment); the run ends once no tool runs and no child is
+  active. An end that arrives after that is refused.
+- **Observations are derived from committed transitions.** The runtime
+  compares the state before and after every successful commit and emits
+  Sinal events from the committing process; the controller emits nothing.
+- **Saga stays optional.** A Saga workflow becomes a tool through the
+  separate package `integrations/fabric_saga`, so Fabric does not depend on
+  Saga (oversight `fabric-design.md`, package ownership).
 
-## Public API (slice 2a)
+## Public API (slice 2b)
+
+Slice 2b adds, beside the slice 2a API below: `agent.with_sub_agent(agent,
+definition, to: child, prompt:, result:)`, `agent.with_max_children` (default
+4), `agent.with_max_depth` (default 1), the `ConfigError` variants
+`MaxChildrenNegative`, `MaxDepthNegative`, `InvalidChild(name, errors)`;
+`policy.Target { InvokeTool  StartAgent(name, version) }` and the field
+`Action.target`; `run.Parent(run, action)`, the field
+`ActionRecord.child: Option(String)`, the field `UncertainAction.run`, the
+field `Snapshot.parent`, the action states `Delegated` and
+`LimitReached(Budget)`, the budgets `ChildLimit(limit)` and
+`DepthLimit(limit)`; `fabric.child(run, id) -> Result(Run(c), RecordError)`
+and `fabric.cancel_stored(store, id) -> Result(Status, CommandError)`;
+`CommandError.OwnerUnknown` (replacing `RecoveryRequired`); the module
+`fabric/observation` (event descriptors and their typed metadata); and, in
+the separate package `fabric_saga`, `fabric_saga.tool(definition, workflow,
+config, explain:) -> Result(Tool(c), List(execution.ConfigError))`. Adding
+fields and variants is a breaking change for code that constructs or
+exhaustively matches these types.
+
+## Public API at slice 2a
+
+The slice 2b additions and changes are listed in the previous section.
 
 ```gleam
 // fabric/tool — typed application tools
@@ -353,18 +404,102 @@ Deferred, with reasons:
   a Store linked to its opener, an opaque run id) are recorded for an API
   review; none was changed here.
 
-## Slice 2b — sub-agents and observations
+## Slice 2b — sub-agents, observations, Saga workflows as tools
 
-- Sub-agent start as a gated action behind the same policy gate and
-  approval checkpoint; a child suspension escalates to the parent; child
-  cancellation through the parent (anti-oracle B1).
-- Sinal facts after accepted transitions (`fabric/observation`).
-- Optional Saga integration: a Saga workflow exposed as one typed tool.
+Implemented. Acceptance, each with its executed evidence
+(`test/fabric/delegation_test.gleam`, `delegation_controller_test.gleam`,
+`observation_test.gleam`, `integrations/fabric_saga/test`,
+`consumers/app`):
+
+1. **Approval before a sub-agent starts.** The parent's policy sees the start
+   as an action with its target and may require an approval; no child
+   record exists before it is approved, also across a restart; a rejected
+   start never creates the child and the model sees the rejection
+   (`a_sub_agent_starts_only_after_approval_even_across_a_restart_test`,
+   `a_rejected_sub_agent_never_starts_test`,
+   `an_allowed_delegation_names_its_child_before_the_child_exists_test`).
+2. **Child pauses surface (anti-oracle B1).** A child's pending approval is
+   the parent's, its reference names the child run, answering it through the
+   parent resumes the child, and the child's completion feeds the parent's
+   delegation (`a_child_pause_surfaces_to_the_parent_and_is_answered_through_it_test`).
+3. **Cancellation.** Cancelling the parent cancels paused and active
+   children through the store; a child cancelled while a tool ran makes the
+   delegation uncertain; a child's model reply after the cancel is
+   discarded; a child that ended while its parent was stopping is recorded
+   and the parent still ends cancelled; a later end is refused;
+   `cancel_stored` cancels children first with no agent
+   (`cancelling_the_parent_cancels_a_paused_child_test`,
+   `cancelling_the_parent_stops_an_active_child_test`,
+   `a_child_reply_after_the_parent_was_cancelled_is_discarded_test`,
+   `a_stopping_run_waits_for_its_children_and_ends_cancelled_test`,
+   `cancel_stored_cancels_the_children_first_test`).
+4. **Restart.** Recovering the parent recovers the child (its running tool
+   becomes the child's uncertain effect, reported through the parent and
+   reconciled on `fabric.child`'s handle); a child record that cannot be
+   read makes the delegation uncertain; a runner lost while starting a
+   child leaves it delegated, and recovery starts or reattaches the child
+   (`recovering_the_parent_recovers_its_child_test`,
+   `an_unreadable_child_is_an_uncertain_effect_of_the_parent_test`,
+   `recovery_keeps_delegations_waiting_on_their_children_test`).
+5. **Budgets.** `max_children` counts started children and those awaiting an
+   approval; `max_depth` counts levels below the root and a child is bounded
+   by what its parent has left; both refuse before the policy with a
+   model-visible `limit_reached`
+   (`delegations_beyond_the_child_limit_are_refused_test`,
+   `nested_delegation_is_bounded_by_the_root_depth_test`,
+   `the_child_limit_counts_started_and_awaiting_children_test`). A child is
+   validated with its parent (`a_delegation_is_validated_with_its_child_test`).
+6. **Record version 2** with a tested reading of version 1 records
+   (`a_version_1_record_is_read_as_a_root_run_without_sub_agents_test`).
+7. **Sinal observations** after each commit, from the committing process,
+   documented per event in `fabric/observation`; a failing or crashing
+   handler is detached without affecting the run
+   (`a_run_is_observed_after_each_commit_test`,
+   `a_failing_handler_does_not_affect_the_run_test`,
+   `sub_agents_cancellation_and_recovery_are_observed_test`).
+8. **A Saga workflow as a tool** (`fabric_saga`), tested with the `book_trip`
+   shape: completion, a hotel failure that releases the flight (typed,
+   definite), a release that fails (uncertain), Fabric cancellation that
+   cancels the Saga run and lets Saga undo the hotel and the flight
+   (uncertain in Fabric), and an invalid configuration refused up front.
+9. **Consumer**: a purchasing sub-agent gated by the committee whose own
+   order approval surfaces at the front desk, cancelling the desk with the
+   purchaser paused, an interlibrary loan as a Saga tool, and application
+   Sinal handlers (`consumers/app/test/app_test.gleam`).
+10. **Oracle**: the `task` gate (approve runs the child once, reject never
+    starts it) matches BeamWeaver fixtures; B1 is executed
+    ([ORACLE.md](ORACLE.md#slice-2b-results)).
+
+Backlog from this slice:
+
+- **Shared budgets.** Each child has its own turn and token budgets; there is
+  no budget shared across a family (a parent's token budget does not count
+  its children's tokens), and no elapsed-time budget.
+- **Child context.** A child shares its parent's context type and receives
+  the parent's run context; a delegation cannot derive a narrower context.
+- **Cooperative cancellation.** Cancelling kills tool tasks, so a Saga tool's
+  clean compensation is still recorded as an uncertain effect (see the Saga
+  friction below).
+- **Recovery of a child alone.** `recover` on a child id works, but the child
+  then has no parent link in that handle; its end reaches the parent only
+  when the parent is recovered or its runner delivers it.
+- **Answer routing cost.** Reading a family reads every active descendant's
+  record; deep or wide trees make `status` and `await` proportionally more
+  expensive.
 
 ## Slice 3 — streaming, structure, durable stores
 
+- Supervision: a supervision tree instead of starter-owned stores and
+  unsupervised runners, with the runner stopping on a supervisor's exit
+  signal (slice 2a review) as its starting point.
+- A lease or heartbeat for runs driven through several Stores, so that
+  recovery can wait for a live owner; a Grind-driven recovery that carries
+  only a run reference.
 - Streamed model progress through llm_wire `session.stream`, with
   cancellation closing the stream.
+- Cooperative cancellation (a grace period before tool tasks are killed),
+  so a Saga tool can report a definite compensation.
+- Budgets shared across a sub-agent family.
 - Structured final output via llm_wire's structured session.
 - Elapsed-time budget with a trusted clock and per-tool timeouts.
 - Database store adapter (the port and a directory store exist) and Grind
@@ -407,16 +542,45 @@ changed):
   its unreleased 2.0 branch; llm_wire, json_blueprint, and sinal resolve only
   as `../` path dependencies, so `.github/workflows/ci.yml` cannot build Fabric
   without checking the siblings out beside it.
-- **sinal** is not used yet (observations are slice 2b); no friction observed.
+- **sinal** is used directly since slice 2b; see the slice 2b friction.
+
+## Slice 2b friction
+
+No sibling was changed. Proposed, with evidence:
+
+- **llm_wire should replay arguments it reported invalid.** With
+  `ReportInvalidToolCalls`, llm_wire returns calls whose arguments are not
+  JSON and then refuses to prepare a request that replays them
+  (`canonical_json` in `internal/api.gleam`, for Anthropic and Google), so a
+  caller must rewrite them. Fabric replays `{"unparsed_arguments": text}`
+  (`unparseable_arguments_replay_to_anthropic_as_an_object_test`); llm_wire
+  could do the same for the calls it reported.
+- **Saga: learn an outcome after the owner is gone.** A Saga run is awaited
+  only by the process that started it (`execution.await`, `NotOwner`), and
+  it is cancelled when that owner exits. A Fabric tool runs the workflow in
+  its task, so cancelling the Fabric run kills the owner: Saga compensates
+  correctly (`cancelling_the_run_cancels_the_workflow_test` observes the
+  hotel and flight released) but nobody can learn that it did, and Fabric
+  must record an uncertain effect. A start option that reports the outcome
+  to a given `Subject` (or lets a named process await) would let a
+  supervising process record a definite compensation. A settle window
+  (`settle_timeout`, default 5000 ms) also delays that compensation.
+- **Sinal: a handler that blocks holds up the emitter.** `sinal.emit` runs
+  handlers synchronously; Fabric documents that a slow handler delays the
+  run and points to `sinal/forwarder`, whose supervised name and capacity
+  are application configuration. An emit option that routes through a
+  forwarder when one is configured would let a library emit safely without
+  owning that configuration.
 
 ## Tested sibling revisions
 
-Fabric resolves its siblings as `../` path dependencies. The gates of slice 2a
-passed against these revisions, each with a clean working tree:
+Fabric resolves its siblings as `../` path dependencies. The gates of slice 2b
+(and of 2a, at the same revisions) passed against these revisions, each with
+a clean working tree:
 
-| Package        | Revision  | Relationship                                                              |
-| -------------- | --------- | ------------------------------------------------------------------------- |
-| llm_wire       | `3b126fe` | Direct dependency (`fabric/llm`, `llm_wire/testing` in tests)             |
-| json_blueprint | `ecf5c60` | Direct dependency (tool codecs)                                           |
-| sinal          | `f4622b6` | Transitive, through llm_wire; Fabric does not import it yet               |
-| saga           | `f241395` | Not a dependency; the revision reviewed for the slice 2b integration plan |
+| Package        | Revision  | Relationship                                                                  |
+| -------------- | --------- | ----------------------------------------------------------------------------- |
+| llm_wire       | `3b126fe` | Direct dependency (`fabric/llm`, `llm_wire/testing` in tests)                 |
+| json_blueprint | `ecf5c60` | Direct dependency (tool codecs)                                               |
+| sinal          | `f4622b6` | Direct dependency since slice 2b (`fabric/observation`)                       |
+| saga           | `f241395` | Dependency of `integrations/fabric_saga` and the consumer only; not of Fabric |
