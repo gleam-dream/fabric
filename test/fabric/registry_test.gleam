@@ -8,6 +8,7 @@ import fabric/run
 import fabric/support
 import fabric/support/apps
 import fabric/support/scripted
+import fabric/testing
 import fabric/tool
 import gleam/option.{None, Some}
 import gleam/result
@@ -141,7 +142,7 @@ pub fn unencodable_output_is_a_host_failure_test() {
 /// A scripted model builds its calls from the same typed definitions the
 /// tools are bound from, so their arguments always decode.
 pub fn a_typed_call_encodes_its_input_with_the_definition_test() {
-  tool.call(apps.transfer_definition(), "t", apps.Transfer("bob", 10))
+  testing.call(apps.transfer_definition(), "t", apps.Transfer("bob", 10))
   |> should.equal(
     Ok(model.ToolCall(
       "t",

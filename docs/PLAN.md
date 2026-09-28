@@ -258,6 +258,8 @@ pub fn settle(settlement: Settlement(o), result: Result(o, Failure), summary sum
   -> Result(Nil, SettleError)   // the summary reaches observation: no secrets
 pub fn input(definition: Definition(i, o), action: policy.Action) -> Result(Option(i), String)
   // Ok(None): another tool; Error(detail): this tool's name, arguments this definition cannot read
+
+// fabric/testing — for scripted models and tests
 pub fn call(definition: Definition(i, o), id: String, input: i) -> Result(model.ToolCall, codec.EncodeError)
 
 // fabric/run — plain data
@@ -450,6 +452,8 @@ pub opaque type Tool(context)
 pub fn bind(definition: Definition(i, o), handler: fn(context, i) -> Result(o, e),
             classify: fn(e) -> Failure) -> Tool(context)
 pub type Failure { Explain(message: String)  Uncertain(evidence: String) }
+
+// fabric/testing — for scripted models and tests
 pub fn call(definition: Definition(i, o), id: String, input: i) -> Result(model.ToolCall, codec.EncodeError)
 pub fn name(tool: Tool(context)) -> String
 

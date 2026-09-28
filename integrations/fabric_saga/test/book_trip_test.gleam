@@ -17,6 +17,7 @@ import fabric/observation as o
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/testing
 import fabric/tool
 import fabric_saga
 import fabric_saga/support/watched
@@ -184,7 +185,7 @@ fn trip_tool(reports: Subject(Report), rollback_within: Int) -> tool.Tool(Nil) {
 
 /// Books `city` once, then answers with every tool result it saw.
 fn traveller(city: String) -> model.Model {
-  let assert Ok(call) = tool.call(trip_definition(), "c1", Trip(city))
+  let assert Ok(call) = testing.call(trip_definition(), "c1", Trip(city))
   model.new(fn(request: model.Request) {
     let results =
       list.filter_map(request.messages, fn(message) {

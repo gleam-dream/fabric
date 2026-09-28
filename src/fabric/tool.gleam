@@ -356,9 +356,9 @@ pub fn input(
   }
 }
 
-/// A call to `definition` with `input` encoded by its input codec, as a
-/// model would request it. For scripted models and tests: the arguments
-/// always decode under the tool bound from the same definition.
+/// A call to `definition` with `input` encoded by its input codec; the
+/// public form is `fabric/testing.call`.
+@internal
 pub fn call(
   definition: Definition(input, output),
   id: String,
