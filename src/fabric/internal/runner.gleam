@@ -356,8 +356,10 @@ fn launch_with(
       let claim = store.Claim(pid, store.Live(state.incarnation, mailbox))
       case write(setup.store, state.run, expected, encoded, claim) {
         Ok(revision) -> {
-          observe.committed(observed, state)
+          // The runner starts before this commit's events are emitted: a
+          // handler running here does not hold up the work.
           process.send(go, Go(revision, state, effects, work))
+          observe.committed(observed, state)
           Ok(revision)
         }
         Error(error) -> {
@@ -833,7 +835,8 @@ fn cancel_child(
     // now): the child is cancelled with no agent, and its end is applied
     // with nothing to map it.
     Error(Nil) -> {
-      let ended = end_child(setup.store, parent, action, child, 3)
+      let ended =
+        end_child(setup.store, parent, action, child, setup.command_timeout, 3)
       let _ =
         command(
           setup,
@@ -940,10 +943,12 @@ fn report_cancelled(child_setup: Setup(context), child: String) -> Nil {
 /// Cancels the stored run `id` with no agent (`fabric.cancel_stored`): through
 /// its live runner in this store, or else by abandoning a lost runner's
 /// work, ending its children first (`end_child`), and ending the run in one
-/// commit. Returns the state committed.
+/// commit. A live runner must take the cancellation within `within`
+/// milliseconds. Returns the state committed.
 pub fn cancel_unattended(
   store: Store,
   id: String,
+  within: Int,
   tries: Int,
 ) -> Result(State, Failure) {
   use #(entry, state) <- result.try(
@@ -951,20 +956,13 @@ pub fn cancel_unattended(
   )
   let retry = fn() {
     case tries > 1 {
-      True -> cancel_unattended(store, id, tries - 1)
+      True -> cancel_unattended(store, id, within, tries - 1)
       False -> Error(Contended)
     }
   }
   case live_runner(entry, state) {
     Some(mailbox) ->
-      case
-        send_live(
-          mailbox,
-          controller.cancel,
-          None,
-          agent.default_command_timeout,
-        )
-      {
+      case send_live(mailbox, controller.cancel, None, within) {
         Ok(state) -> Ok(state)
         Error(LiveRefused(rejection)) -> Error(CommandRefused(rejection))
         Error(LiveBusy) -> Error(Busy)
@@ -975,7 +973,7 @@ pub fn cancel_unattended(
       let ended =
         list.map(controller.active_children(state), fn(active) {
           let #(action, _, child) = active
-          #(action, end_child(store, state, action, child, tries))
+          #(action, end_child(store, state, action, child, within, tries))
         })
       use #(next, _) <- result.try(
         controller.cancel_unattended(state, ended)
@@ -1005,15 +1003,16 @@ pub fn end_child(
   parent: State,
   action: ActionId,
   child: String,
+  within: Int,
   tries: Int,
 ) -> controller.ChildResult {
-  let _ = cancel_unattended(store, child, tries)
+  let _ = cancel_unattended(store, child, within, tries)
   case load(store, child) {
     Error(NotFound) ->
       case bury(store, parent, action, child, run.Identity("", 0)) {
         Ok(Buried) -> controller.ChildMissing
         Ok(Exists) if tries > 1 ->
-          end_child(store, parent, action, child, tries - 1)
+          end_child(store, parent, action, child, within, tries - 1)
         Ok(Exists) -> controller.ChildLost("it was being stored")
         Error(error) -> controller.ChildLost(describe_read(StoreFailed(error)))
       }

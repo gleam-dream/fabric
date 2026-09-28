@@ -340,6 +340,8 @@ pub fn pending(
 /// Works with no process holding the run: the answer is committed to the
 /// stored record with compare-and-set, so of concurrent answers exactly one
 /// wins and the others get `AlreadyAnswered` (or `RunEnded` after a cancel).
+/// The caller then emits the commit's events before `answer` returns (see
+/// `fabric/observation`); the approved work has already started.
 ///
 /// An answer to a sub-agent run whose ancestor is stopping or has ended is
 /// refused with `RunEnded`, even if the sub-agent's own cancellation has
@@ -420,8 +422,10 @@ pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
 /// that no longer exists). Cancelling a sub-agent run this way does not
 /// apply its end to its parent, which needs its agent to map it: `recover`
 /// the parent to apply it (`await` on the parent reports `NoRunner` until
-/// then). A run whose runner is live in this store is
-/// cancelled through that runner, as `cancel` would; otherwise the work of
+/// then). A run whose runner is live in this store is cancelled through
+/// that runner, as `cancel` would, which must take it within
+/// `agent.default_command_timeout` (there is no agent to configure it);
+/// otherwise the work of
 /// a lost runner is abandoned (running tools become uncertain effects) and
 /// the run ends `Cancelled` in one commit. Active sub-agent runs are
 /// cancelled first, the same way; their delegations are recorded as
@@ -429,7 +433,7 @@ pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
 /// that was never stored is stored as cancelled before it started (naming
 /// no agent), and its delegation is recorded as not started.
 pub fn cancel_stored(store: Store, id: String) -> Result(Status, CommandError) {
-  runner.cancel_unattended(store, id, retries)
+  runner.cancel_unattended(store, id, agent.default_command_timeout, retries)
   |> result.map(controller.status)
   |> result.map_error(command_error)
 }
