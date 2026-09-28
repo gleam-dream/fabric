@@ -658,26 +658,69 @@ fn cancel_child(
   }
   case child_setup {
     Error(Nil) -> Nil
-    Ok(child_setup) -> {
-      let _ = command(child_setup, child, child_setup.env, controller.Cancel, 8)
-      // Whatever the cancel returned, report an ended, missing, or
-      // unreadable child: a delivery of its end may have been lost, and a
-      // duplicate is refused by the parent.
-      case load(child_setup.store, child) {
-        Error(NotFound) -> notify_parent(child_setup, controller.ChildMissing)
-        Error(problem) ->
+    Ok(child_setup) ->
+      case cancel_until_stopping(child_setup, child, 0) {
+        Error(detail) ->
           notify_parent(
             child_setup,
-            controller.ChildLost(describe_read(problem)),
+            controller.ChildLost("it could not be cancelled: " <> detail),
           )
-        Ok(#(_, state)) ->
-          case controller.child_result(state) {
-            Ok(result) -> notify_parent(child_setup, result)
-            // Still stopping: its runner delivers its end.
-            Error(Nil) -> Nil
-          }
+        Ok(Nil) -> report_cancelled(child_setup, child)
       }
+  }
+}
+
+/// Cancels `child` until its record reads stopping or ended. A failure
+/// that may be transient (the store failed, or every retry lost a race) is
+/// tried again after a bounded backoff; `Error` describes the last one.
+fn cancel_until_stopping(
+  setup: Setup(context),
+  child: String,
+  attempt: Int,
+) -> Result(Nil, String) {
+  case command(setup, child, setup.env, controller.Cancel, 8) {
+    // Committed, or already ended.
+    Ok(_) | Error(CommandRefused(_)) -> Ok(Nil)
+    Error(Unreadable(StoreFailed(_) as problem)) ->
+      retry_cancel(setup, child, attempt, describe_read(problem))
+    // Missing or unreadable: reported as such once read.
+    Error(Unreadable(_)) -> Ok(Nil)
+    Error(Contended) ->
+      retry_cancel(setup, child, attempt, "every commit lost a race")
+    Error(OwnerUnknown) ->
+      retry_cancel(setup, child, attempt, "no runner drives it")
+  }
+}
+
+fn retry_cancel(
+  setup: Setup(context),
+  child: String,
+  attempt: Int,
+  detail: String,
+) -> Result(Nil, String) {
+  case attempt < unavailable_retries {
+    True -> {
+      process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
+      cancel_until_stopping(setup, child, attempt + 1)
     }
+    False -> Error(detail)
+  }
+}
+
+/// Reports an ended, missing, or unreadable child once its cancellation was
+/// committed: a delivery of its end may have been lost, and a duplicate is
+/// refused by the parent. A child still stopping delivers its end itself.
+fn report_cancelled(child_setup: Setup(context), child: String) -> Nil {
+  case load(child_setup.store, child) {
+    Error(NotFound) -> notify_parent(child_setup, controller.ChildMissing)
+    Error(problem) ->
+      notify_parent(child_setup, controller.ChildLost(describe_read(problem)))
+    Ok(#(_, state)) ->
+      case controller.child_result(state) {
+        Ok(result) -> notify_parent(child_setup, result)
+        // Still stopping: its runner delivers its end.
+        Error(Nil) -> Nil
+      }
   }
 }
 

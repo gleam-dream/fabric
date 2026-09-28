@@ -211,6 +211,20 @@ pub fn recovery_keeps_delegations_waiting_on_their_children_test() {
   effects |> should.equal([CancelChildren([#(ActionId(1, "a"), "run-p-1")])])
 }
 
+/// Cancelling a run that is already stopping asks again to cancel the
+/// children it still waits on, in case an earlier request was lost.
+pub fn cancelling_a_stopping_run_cancels_its_children_again_test() {
+  let #(state, _) = acting([ask_call("a"), ask_call("b")], 4)
+  let #(state, _) = step(state, ChildStarted(ActionId(1, "a")))
+  let #(state, _) = step(state, ChildStarted(ActionId(1, "b")))
+  let #(stopping, _) = step(state, controller.Cancel)
+  let assert #(stopping, []) =
+    step(stopping, ChildEnded(ActionId(1, "b"), ChildMissing))
+  let #(again, effects) = step(stopping, controller.Cancel)
+  again |> should.equal(stopping)
+  effects |> should.equal([CancelChildren([#(ActionId(1, "a"), "run-p-1")])])
+}
+
 pub fn the_child_limit_counts_started_and_awaiting_children_test() {
   let #(state, effects) = acting([ask_call("a"), ask_call("b")], 1)
   action(state, "b").state

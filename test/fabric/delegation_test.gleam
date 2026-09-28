@@ -12,6 +12,7 @@ import fabric/policy.{ActionId, Requirement}
 import fabric/run
 import fabric/store.{type Store}
 import fabric/support/apps
+import fabric/support/flaky
 import fabric/support/probe.{type Probe}
 import fabric/support/restart
 import fabric/support/scripted
@@ -678,4 +679,70 @@ pub fn cancel_stored_cancels_the_children_first_test() {
     context: Nil,
   )
   |> should.equal(Error(fabric.RunEnded))
+}
+
+// --- cancellation under store faults ------------------------------------------
+
+/// The child's cancellation commit fails once: the parent's cancellation
+/// tries again, so the child still ends cancelled, the parent ends, and the
+/// child's approval can no longer be answered.
+pub fn a_transient_store_failure_does_not_leave_a_child_uncancelled_test() {
+  let probe = probe.new()
+  let backend = flaky.new()
+  let assert Ok(run) =
+    fabric.start(flaky.store(backend), paying_family(probe), Nil, "go")
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let child = child_of(run)
+  flaky.arm_run(backend, fabric.id(child), [flaky.FailBefore])
+
+  let assert Ok(_) = fabric.cancel(run)
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.status(child) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.pending(run) |> should.equal(Ok([]))
+  fabric.answer(
+    run,
+    pending.reference,
+    run.Approve,
+    reviewer: None,
+    context: Nil,
+  )
+  |> should.equal(Error(fabric.RunEnded))
+  probe.count(probe, "pay:bob") |> should.equal(0)
+}
+
+/// The child cannot be cancelled at all: the parent still ends, its
+/// delegation is an uncertain effect naming the failure, and the child's
+/// approval is refused through the parent and through the child's own
+/// handle, because cancelling an ancestor wins over answering a
+/// descendant.
+pub fn a_child_that_cannot_be_cancelled_can_no_longer_act_test() {
+  let probe = probe.new()
+  let backend = flaky.new()
+  let assert Ok(run) =
+    fabric.start(flaky.store(backend), paying_family(probe), Nil, "go")
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let child = child_of(run)
+  flaky.arm_run(backend, fabric.id(child), list.repeat(flaky.FailBefore, 64))
+
+  let assert Ok(_) = fabric.cancel(run)
+  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  let assert run.Uncertain(evidence) = only_action(run).state
+  string.contains(evidence, "could not be cancelled") |> should.be_true
+  fabric.answer(
+    run,
+    pending.reference,
+    run.Approve,
+    reviewer: None,
+    context: Nil,
+  )
+  |> should.equal(Error(fabric.RunEnded))
+  fabric.answer(
+    child,
+    pending.reference,
+    run.Approve,
+    reviewer: None,
+    context: Nil,
+  )
+  |> should.equal(Error(fabric.RunEnded))
+  probe.count(probe, "pay:bob") |> should.equal(0)
 }
