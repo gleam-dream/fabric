@@ -87,7 +87,10 @@ pub type RecordError {
 
 pub type CommandError {
   /// The run has finished (completed, failed, or cancelled); nothing more
-  /// can change it. A pending approval of a cancelled run is void.
+  /// can change it. A pending approval of a cancelled run is void. Also
+  /// returned for a sub-agent run one of whose ancestors is stopping or has
+  /// ended: cancelling an ancestor wins over answering or reconciling its
+  /// descendants.
   RunEnded
   /// No action with this identity exists in the current tool batch.
   UnknownAction(ActionId)
@@ -329,6 +332,10 @@ pub fn pending(
 /// stored record with compare-and-set, so of concurrent answers exactly one
 /// wins and the others get `AlreadyAnswered` (or `RunEnded` after a cancel).
 ///
+/// An answer to a sub-agent run whose ancestor is stopping or has ended is
+/// refused with `RunEnded`, even if the sub-agent's own cancellation has
+/// not been committed yet.
+///
 /// `reviewer` is recorded with the answer as given. Fabric does not
 /// authenticate it: the application must authenticate and authorize whoever
 /// answers before calling this.
@@ -348,6 +355,7 @@ pub fn answer(
         Error(problem) -> Error(Unreadable(record_error(problem)))
       }
   })
+  use Nil <- result.try(open_to_commands(run, reference.run))
   let recheck = controller.Env(..target.env, context:)
   use state <- result.try(
     runner.command(
@@ -372,7 +380,11 @@ pub fn answer(
 }
 
 /// Cancels a run that is active, suspended, or whose runner was lost, and
-/// its sub-agent runs through the store. Running tools are stopped and
+/// its sub-agent runs through the store. A sub-agent's cancellation that
+/// fails on a store error is tried again with a bounded backoff; one that
+/// still fails makes the delegation an uncertain effect, and the sub-agent
+/// then accepts no answer or reconciliation (see `RunEnded`). Cancelling a
+/// run that is still stopping asks its sub-agents to cancel again. Running tools are stopped and
 /// recorded as uncertain effects, never retried; queued actions and pending
 /// approvals are recorded as not started. Returns the status right after
 /// the cancellation was committed: `Working` while tools are being stopped
@@ -468,6 +480,7 @@ pub fn reconcile(
   action: ActionId,
   content: String,
 ) -> Result(Status, CommandError) {
+  use Nil <- result.try(open_to_commands(run, run.id))
   runner.command(
     run.setup,
     run.id,
@@ -477,6 +490,20 @@ pub fn reconcile(
   )
   |> result.map(status_after(run, _))
   |> result.map_error(command_error)
+}
+
+/// `RunEnded` when an ancestor of the run `id` is stopping or has ended:
+/// cancelling an ancestor wins over answers and reconciliations of its
+/// descendants.
+fn open_to_commands(
+  run: Run(context),
+  id: String,
+) -> Result(Nil, CommandError) {
+  case family.ancestors_open(run.setup.store, id) {
+    Ok(True) -> Ok(Nil)
+    Ok(False) -> Error(RunEnded)
+    Error(problem) -> Error(Unreadable(record_error(problem)))
+  }
 }
 
 /// The family's status right after `state` of this run was committed, with

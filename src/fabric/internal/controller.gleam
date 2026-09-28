@@ -303,13 +303,15 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
 }
 
 /// Cancels the run. It needs no environment: cancelling starts nothing.
+/// A run that is already stopping asks again to cancel the child runs it
+/// still waits on, in case an earlier request did not reach them.
 pub fn cancel(state: State) -> Transition {
   case state.phase {
     Ended(_) -> Error(RunEnded)
     AwaitingModel(_) ->
       Ok(#(State(..state, phase: Ended(run.Cancelled)), [AbortModel]))
     Acting(turn, actions) -> Ok(stop(state, turn, actions, CancelRequested))
-    Stopping(..) -> Ok(#(state, []))
+    Stopping(_, actions, _) -> Ok(#(state, cancel_children(actions)))
   }
 }
 
