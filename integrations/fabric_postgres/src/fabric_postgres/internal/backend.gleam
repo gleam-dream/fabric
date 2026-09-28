@@ -13,6 +13,11 @@
 //// did nothing, so it is read back the same way, and a renewal or a claim
 //// is retried. Any other failure, the connection's included, is
 //// `Unavailable`.
+////
+//// A renewal changes only the expiry of leases its owner holds live; a
+//// claim of expired leases changes only the owner and expiry, taking the
+//// rows with `FOR UPDATE SKIP LOCKED` so that concurrent claimers never
+//// take the same run. Neither changes a revision.
 
 import fabric/store.{
   type Current, type Holder, type Lease, type LeasedBackend, type StoreError,
@@ -250,7 +255,8 @@ fn renew(
         "UPDATE "
         <> table
         <> " SET lease_until = clock_timestamp() + $3::bigint * interval '1 millisecond'"
-        <> " WHERE lease_owner = $1 AND run_id = ANY($2) RETURNING run_id",
+        <> " WHERE lease_owner = $1 AND lease_until > clock_timestamp() AND run_id = ANY($2)"
+        <> " RETURNING run_id",
       )
       |> pog.parameter(pog.text(owner))
       |> pog.parameter(pog.array(pog.text, runs))
