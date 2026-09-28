@@ -634,10 +634,41 @@ fn commit_answering(
     Ok(revision) -> {
       answer(live.Applied(state))
       observe.committed(Some(runner.state), state)
-      let runner = perform(Runner(..runner, state:, revision:), effects, work)
-      deliver(runner.setup, state)
-      Ok(runner)
+      let runner = Runner(..runner, state:, revision:)
+      case current(runner, effects) {
+        // A handler of this commit, running in this process, cancelled the
+        // run through its record: the work is abandoned.
+        False -> Error(Superseded)
+        True -> {
+          let runner = perform(runner, effects, work)
+          deliver(runner.setup, state)
+          Ok(runner)
+        }
+      }
     }
+  }
+}
+
+/// Whether the runner may perform `effects`. A model call and a child
+/// start have no fence of their own (a tool body's start is committed
+/// first), so before them the record is read: one that moved past this
+/// runner's commit abandoned its work. A failed read does not stop the
+/// runner; its next commit decides.
+fn current(runner: Runner(context), effects: List(Effect)) -> Bool {
+  let unfenced =
+    list.any(effects, fn(effect) {
+      case effect {
+        controller.CallModel(..) | controller.StartChild(..) -> True
+        _ -> False
+      }
+    })
+  case unfenced {
+    False -> True
+    True ->
+      case store.get(runner.setup.store, runner.state.run) {
+        Ok(entry) -> entry.revision == runner.revision
+        Error(_) -> True
+      }
   }
 }
 
@@ -1271,11 +1302,15 @@ pub fn command(
   let work = work(setup, env.context)
   // Applies the event to the stored record. A run that needs a runner
   // (`orphaned`: its runner was lost, or is held) accepts only a
-  // cancellation, which abandons that runner's work: its next commit then
-  // conflicts and it stops. Any other command is checked against the
-  // stored record first, so a refusal is reported as such whoever drives
-  // the run.
-  let apply_stored = fn(orphaned) {
+  // cancellation, which abandons that runner's work: `held`, the runner
+  // that did not take the command, is killed once the cancellation is
+  // stored, and with it its model call and tool tasks. A runner that is
+  // the caller itself (a handler of its own commit) cannot be; its next
+  // commit conflicts, and it performs no unfenced effect of a record that
+  // moved on (`commit_answering`). Any other command is checked against
+  // the stored record first, so a refusal is reported as such whoever
+  // drives the run.
+  let apply_stored = fn(orphaned, held: Option(Pid)) {
     let transition = case orphaned, event {
       True, controller.Cancel -> controller.cancel_abandoned(state)
       _, _ -> controller.step(env, state, event)
@@ -1290,7 +1325,10 @@ pub fn command(
     case
       launch_with(setup, work, Some(#(entry.revision, state)), next, effects)
     {
-      Ok(_) -> Ok(next)
+      Ok(_) -> {
+        option.map(held, process.kill)
+        Ok(next)
+      }
       Error(store.Conflict(_)) -> retry()
       Error(error) -> Error(Unreadable(StoreFailed(error)))
     }
@@ -1308,15 +1346,21 @@ pub fn command(
         Ok(state) -> Ok(state)
         Error(LiveRefused(rejection)) -> Error(CommandRefused(rejection))
         // A held runner does not delay a cancellation: it is committed to
-        // the record, and the held runner stops at its next commit.
+        // the record, and the held runner is stopped.
         Error(LiveBusy) ->
           case event {
-            controller.Cancel -> apply_stored(True)
+            controller.Cancel -> {
+              let caller = process.self()
+              apply_stored(True, case process.subject_owner(mailbox) {
+                Ok(pid) if pid != caller -> Some(pid)
+                _ -> None
+              })
+            }
             _ -> Error(Busy)
           }
         Error(LiveGone) -> retry()
       }
-    None -> apply_stored(controller.needs_runner(state))
+    None -> apply_stored(controller.needs_runner(state), None)
   }
 }
 

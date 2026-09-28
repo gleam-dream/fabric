@@ -529,9 +529,13 @@ Limits and follow-ups:
   decided afterwards, so the verdict is uncertain only for the actions
   that actually crashed, timed out or were interrupted, and for effects
   left in place.
-- **A held runner's running bodies (X2).** A body that started before the
-  cancellation keeps running until the held runner is released (its
-  executor dies with it); the record already calls it uncertain.
+- **A held runner's running bodies (X2)** (resolved by the focused review
+  fixes below). A held runner is killed once the cancellation is committed
+  to its record, and its tool bodies with it.
+- **A model call in flight when a handler cancels its own run.** A runner
+  cannot be killed from its own process: it starts no model call or child
+  once its record moved on, but a model call it had already started runs
+  until it answers, and the runner then stops at the conflicting commit.
 - **The fence check is a read (X3).** A fence that read its ancestors open
   just before an ancestor's cancellation committed may still start its
   body; the child's own cancellation then records it uncertain.
@@ -539,6 +543,16 @@ Limits and follow-ups:
   insert that stored it reported a failure and emitted nothing.
 - **Other timeouts past 2^32 - 1 ms** (`with_command_timeout`,
   `with_policy_timeout`) are not yet refused.
+
+## Slice 2b focused review fixes
+
+A focused review of `1d71bec..3bf19a1` found no blockers and four minor
+findings; its probe of the held runner is ported as an asserting test.
+Fixed test-first, one commit each:
+
+| Finding                                                                                                                                                                                          | Status | Resolution and evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| X2: a held runner still called the model (or started a child) after its cancellation was committed to the record, and an in-flight model call of a run cancelled through its record kept running | Fixed  | A cancellation committed to the record of a runner held by another process kills that runner once it is stored, and with it its model call and tool bodies. A runner performs a model call or child start only while the record is at its own commit, so one whose own handler cancelled its run does neither (`a_held_runner_calls_no_model_after_its_cancellation_test`, `a_held_runners_running_body_dies_with_it_test`, `a_runner_whose_handler_cancelled_its_run_calls_no_model_test`). |
 
 ## Slice 2b — sub-agents, observations, Saga workflows as tools
 
