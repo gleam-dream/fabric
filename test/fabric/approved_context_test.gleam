@@ -91,8 +91,9 @@ fn two_turns(first: List(model.ToolCall)) -> model.Model {
   scripted.model(fn(messages) {
     let seen = scripted.results(messages)
     case seen, list.length(seen) == list.length(first) {
-      [], _ -> model.ToolRequest("", first, None)
-      _, True -> model.ToolRequest("", [note_call()], None)
+      [], _ -> model.ToolRequest(model.AssistantTurn("", first, None), None)
+      _, True ->
+        model.ToolRequest(model.AssistantTurn("", [note_call()], None), None)
       _, False -> model.FinalAnswer("done", None)
     }
   })

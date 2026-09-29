@@ -930,7 +930,7 @@ fn model_replied(
       State(
         ..state,
         transcript: list.append(state.transcript, [
-          model.AssistantMessage(text, []),
+          model.AssistantMessage(model.AssistantTurn(text, [], None)),
         ]),
         phase: Ended(run.Completed(text)),
       ),
@@ -944,8 +944,8 @@ fn model_replied(
       State(..state, phase: Ended(run.OutputLimited(partial))),
       [],
     )
-    model.ToolRequest(text, calls, usage) ->
-      tools_requested(env, state, turn, text, calls, usage)
+    model.ToolRequest(assistant, usage) ->
+      tools_requested(env, state, turn, assistant, usage)
   }
 }
 
@@ -953,10 +953,10 @@ fn tools_requested(
   env: Env(context),
   state: State,
   turn: Int,
-  text: String,
-  calls: List(ToolCall),
+  assistant: model.AssistantTurn,
   usage: Option(model.Usage),
 ) -> #(State, List(Effect)) {
+  let calls = assistant.calls
   case protocol_violation(calls) {
     Some(reason) -> #(
       State(
@@ -970,7 +970,7 @@ fn tools_requested(
         State(
           ..state,
           transcript: list.append(state.transcript, [
-            model.AssistantMessage(text, calls),
+            model.AssistantMessage(assistant),
           ]),
         )
       let withdrawn =

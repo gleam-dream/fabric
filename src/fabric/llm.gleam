@@ -1,17 +1,11 @@
 //// Adapts an llm_wire provider to the Fabric model port.
 ////
-//// Every turn re-prepares the whole request from Fabric's transcript with
-//// `session.prepare`; llm_wire's in-memory `Continuation` is not used. The
-//// same path therefore works within one process lifetime and after a
-//// restart. What this gives up:
-////
-//// - Google: raw non-call parts of a tool turn (text or thought parts) are
-////   not replayed; call ids and thought signatures are, through
-////   `provider_id` and `provider_state`.
-//// - Custom providers: a `provider.Replay` closure is not used; the
-////   adapter's plain encoder rebuilds the request.
-//// - llm_wire's exact result-coverage check at `prepare_continue`; Fabric's
-////   controller only continues when every call has exactly one result.
+//// Fabric owns the conversation. Every request is prepared from its stored
+//// transcript; each tool response retains provider-owned data alongside its
+//// original text and calls. The same path preserves signed Google parts and
+//// custom adapter data across pauses and restarts, without a live continuation.
+//// The adapter alone encodes and interprets its versioned metadata envelope.
+//// llm_wire validates provider data and exact result coverage before I/O.
 ////
 //// A call's arguments are replayed exactly as the model sent them, even
 //// when they were not a JSON object and were answered with
@@ -26,13 +20,16 @@
 //// and bounds still fail the turn in llm_wire.
 
 import fabric/model.{type Model, type ModelError, type Reply, type Request}
+import gleam/dynamic/decode
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import json/blueprint/runtime
 import llm_wire/config
+import llm_wire/retry
 import llm_wire/session
 import llm_wire/types
 
@@ -56,23 +53,19 @@ fn call(
     types.new_request(model_id, messages) |> types.with_tools(tools)
   use prepared <- result.try(
     session.prepare(settings, wire_request)
-    |> result.map_error(fn(error) { failure(error, None) }),
+    |> result.map_error(fn(error) { local_failure(error) }),
   )
   case session.run(prepared) {
     Ok(session.RunText(text, usage)) ->
       Ok(model.FinalAnswer(text, usage_of(usage)))
-    Ok(session.RunToolCalls(text, calls, _continuation, usage)) ->
-      Ok(model.ToolRequest(
-        text,
-        list.map(calls, from_wire_call),
-        usage_of(usage),
-      ))
+    Ok(session.RunToolCalls(turn, usage)) ->
+      Ok(model.ToolRequest(from_wire_turn(turn), usage_of(usage)))
     Ok(session.RunOutputLimited(partial, _partial_calls, usage)) ->
       Ok(model.Truncated(partial, usage_of(usage)))
     Ok(session.RunRefusal(reason, usage)) ->
       Ok(model.Refusal(reason, usage_of(usage)))
-    Error(session.RunFailure(error, retry)) ->
-      Error(failure(error, Some(retry)))
+    Error(session.RunFailure(error, evidence)) ->
+      Error(failure(session.prepared_provider(prepared), error, evidence))
   }
 }
 
@@ -109,17 +102,22 @@ fn wire_messages(request: Request) -> Result(List(types.Message), ModelError) {
 fn wire_message(message: model.Message) -> Result(types.Message, ModelError) {
   case message {
     model.UserMessage(text) -> Ok(types.UserMessage(text))
-    model.AssistantMessage(text, []) -> Ok(types.AssistantMessage(text))
-    model.AssistantMessage(text, calls) -> {
+    model.AssistantMessage(model.AssistantTurn(text, [], None)) ->
+      Ok(types.AssistantMessage(text))
+    model.AssistantMessage(model.AssistantTurn(text, calls, None)) -> {
       use calls <- result.map(list.try_map(calls, to_wire_call))
       case text {
         "" -> types.AssistantToolCalls(calls)
         _ -> types.AssistantToolCallsWithText(text, calls)
       }
     }
+    model.AssistantMessage(turn) -> {
+      use restored <- result.map(restore_turn(turn))
+      types.AssistantTurnMessage(restored)
+    }
     model.ToolResultMessage(call_id, content) -> {
       use id <- result.map(
-        types.call_id(call_id) |> result.map_error(failure(_, None)),
+        types.call_id(call_id) |> result.map_error(local_failure),
       )
       types.ToolResultMessage(id, content)
     }
@@ -128,7 +126,7 @@ fn wire_message(message: model.Message) -> Result(types.Message, ModelError) {
 
 fn to_wire_call(call: model.ToolCall) -> Result(types.ToolCall, ModelError) {
   use id <- result.try(
-    types.call_id(call.id) |> result.map_error(failure(_, None)),
+    types.call_id(call.id) |> result.map_error(local_failure),
   )
   use name <- result.map(
     types.tool_name(call.name) |> result.map_error(name_failure(call.name, _)),
@@ -161,30 +159,25 @@ fn usage_of(usage: Option(types.Usage)) -> Option(model.Usage) {
   })
 }
 
-/// Only failures that another attempt may cure are retryable: transport
-/// trouble, deadlines, rate limits, and server errors.
+/// The wire library classifies the cause; Fabric chooses its retry policy.
+/// Unknown prospects stop. Every accepted retry still spends a model turn.
 fn failure(
+  provider: types.Provider,
   error: types.WireError,
-  retry: Option(types.RetryEvidence),
+  evidence: types.RetryEvidence,
 ) -> ModelError {
-  let retryable = case error {
-    types.TransportError(_) | types.DeadlineExceeded(_) -> True
-    types.HttpStatusError(status_code: status, ..) ->
-      status == 408 || status == 429 || status >= 500
-    types.ConfigurationError(_)
-    | types.PreparationError(_)
-    | types.ProviderError(..)
-    | types.ProtocolError(_)
-    | types.ResourceLimitExceeded(..)
-    | types.CancelledLocally
-    | types.OutputValidationError(_) -> False
+  let retryable = case retry.assess(provider, error) {
+    retry.MayHelp -> True
+    retry.WillNotHelpUnchanged | retry.Unknown -> False
   }
-  let evidence = case retry {
-    Some(types.RetryEvidence(classification:, ..)) ->
-      " (" <> string.inspect(classification) <> ")"
-    None -> ""
-  }
-  model.ModelError(describe(error) <> evidence, retryable:)
+  model.ModelError(
+    describe(error) <> " (" <> string.inspect(evidence.classification) <> ")",
+    retryable:,
+  )
+}
+
+fn local_failure(error: types.WireError) -> ModelError {
+  model.ModelError(describe(error), retryable: False)
 }
 
 /// A tool name outside the providers' grammar cannot be sent; retrying does
@@ -201,5 +194,123 @@ fn describe(error: types.WireError) -> String {
     types.HttpStatusError(status_code:, ..) ->
       "HTTP status " <> int.to_string(status_code)
     other -> string.inspect(other)
+  }
+}
+
+// This is Fabric's storage envelope for wire response metadata. A future wire
+// representation change needs an explicit decoder here or a new format tag.
+const turn_format = "llm_wire.turn.v1"
+
+fn from_wire_turn(turn: types.AssistantTurn) -> model.AssistantTurn {
+  let data =
+    json.object([
+      #("provider", provider_json(turn.provider)),
+      #("response_id", json.nullable(turn.response_id, json.string)),
+      #("provider_data", json.nullable(turn.provider_data, json.string)),
+      #("issues", json.array(turn.issues, issue_json)),
+    ])
+    |> json.to_string
+  model.AssistantTurn(
+    turn.text,
+    list.map(turn.calls, from_wire_call),
+    Some(model.ProviderData(turn_format, data)),
+  )
+}
+
+fn provider_json(provider: types.Provider) -> json.Json {
+  let #(kind, name) = case provider {
+    types.OpenAI -> #("openai", None)
+    types.Anthropic -> #("anthropic", None)
+    types.Google -> #("google", None)
+    types.Custom(name) -> #("custom", Some(name))
+  }
+  json.object([
+    #("kind", json.string(kind)),
+    #("name", json.nullable(name, json.string)),
+  ])
+}
+
+fn issue_json(issue: types.ToolCallIssue) -> json.Json {
+  let #(id, reason) = case issue {
+    types.UnknownTool(id) -> #(id, None)
+    types.InvalidArguments(id, reason) -> #(id, Some(reason))
+  }
+  json.object([
+    #("call_id", json.string(types.call_id_to_string(id))),
+    #("reason", json.nullable(reason, json.string)),
+  ])
+}
+
+fn restore_turn(
+  turn: model.AssistantTurn,
+) -> Result(types.AssistantTurn, ModelError) {
+  use data <- result.try(case turn.data {
+    Some(model.ProviderData(format, value)) if format == turn_format -> Ok(value)
+    _ ->
+      Error(model.ModelError(
+        "Unsupported assistant provider data format",
+        False,
+      ))
+  })
+  let decoder = {
+    use provider <- decode.field("provider", provider_decoder())
+    use response_id <- decode.field(
+      "response_id",
+      decode.optional(decode.string),
+    )
+    use provider_data <- decode.field(
+      "provider_data",
+      decode.optional(decode.string),
+    )
+    use issues <- decode.field(
+      "issues",
+      decode.list({
+        use id <- decode.field("call_id", decode.string)
+        use reason <- decode.field("reason", decode.optional(decode.string))
+        decode.success(#(id, reason))
+      }),
+    )
+    decode.success(#(provider, response_id, provider_data, issues))
+  }
+  use #(provider, response_id, provider_data, stored_issues) <- result.try(
+    json.parse(data, decoder)
+    |> result.replace_error(model.ModelError(
+      "Corrupt assistant provider data",
+      False,
+    )),
+  )
+  use calls <- result.try(list.try_map(turn.calls, to_wire_call))
+  use issues <- result.map(
+    list.try_map(stored_issues, fn(issue) {
+      use id <- result.map(
+        types.call_id(issue.0) |> result.map_error(local_failure),
+      )
+      case issue.1 {
+        None -> types.UnknownTool(id)
+        Some(reason) -> types.InvalidArguments(id, reason)
+      }
+    }),
+  )
+  types.AssistantTurn(
+    provider,
+    turn.text,
+    calls,
+    response_id,
+    provider_data,
+    issues,
+  )
+}
+
+fn provider_decoder() -> decode.Decoder(types.Provider) {
+  use kind <- decode.field("kind", decode.string)
+  case kind {
+    "openai" -> decode.success(types.OpenAI)
+    "anthropic" -> decode.success(types.Anthropic)
+    "google" -> decode.success(types.Google)
+    "custom" ->
+      decode.field("name", decode.string, fn(name) {
+        decode.success(types.Custom(name))
+      })
+    _ -> decode.failure(types.OpenAI, "a known provider kind")
   }
 }

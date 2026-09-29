@@ -58,7 +58,7 @@ pub fn a_suspended_run_is_approved_after_a_store_restart_and_finishes_test() {
 /// finds its own record at the revision it wrote, and the run finishes
 /// as if nothing were lost.
 pub fn writes_whose_replies_are_lost_are_confirmed_by_reading_back_test() {
-  lost_replies(3)
+  lost_replies(4)
 }
 
 pub fn version_2_writes_keep_exact_bytes_when_replies_are_lost_test() {
@@ -113,7 +113,7 @@ fn stored_version(backend: store.LeasedBackend, id: run.RunId) -> Int {
 }
 
 /// Configuration composes with the public PostgreSQL adapter. Old records
-/// stay readable after the application switches its writer to version 3.
+/// stay readable after the application switches its writer to version 4.
 pub fn the_postgres_adapter_supports_the_write_version_window_test() {
   let settings = support.migrated(support.pool(4), "a", support.schema())
   let backend = fabric_postgres.backend(settings)
@@ -129,7 +129,7 @@ pub fn the_postgres_adapter_supports_the_write_version_window_test() {
 
   let assert Ok(new_writes) =
     fabric_postgres.store(process.new_name("new-writes"), settings)
-  let assert Ok(new_writes) = store.with_record_version(new_writes, 3)
+  let assert Ok(new_writes) = store.with_record_version(new_writes, 4)
   let assert Ok(Nil) = store.start(new_writes)
   let assert Ok(opened) =
     fabric.open(new_writes, agent, Nil, fabric.id(started))
@@ -143,6 +143,6 @@ pub fn the_postgres_adapter_supports_the_write_version_window_test() {
   agents.release(agents.arrival(gate))
   fabric.await(opened, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("done: {\"done\":500}"))))
-  stored_version(backend, fabric.id(started)) |> should.equal(3)
+  stored_version(backend, fabric.id(started)) |> should.equal(4)
   agents.another(gate, 100) |> should.be_false
 }

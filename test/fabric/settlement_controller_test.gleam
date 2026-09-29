@@ -60,11 +60,14 @@ fn cancelled() -> State {
   |> step(controller.ModelReplied(
     1,
     ToolRequest(
-      "",
-      [
-        ToolCall("a", "wa", city, None, None),
-        ToolCall("b", "wb", city, None, None),
-      ],
+      model.AssistantTurn(
+        "",
+        [
+          ToolCall("a", "wa", city, None, None),
+          ToolCall("b", "wb", city, None, None),
+        ],
+        None,
+      ),
       None,
     ),
   ))

@@ -52,7 +52,7 @@ fn model_once() -> model.Model {
         }
       })
     case results {
-      [] -> Ok(model.ToolRequest("", [call], None))
+      [] -> Ok(model.ToolRequest(model.AssistantTurn("", [call], None), None))
       seen -> Ok(model.FinalAnswer(string.join(seen, " | "), None))
     }
   })

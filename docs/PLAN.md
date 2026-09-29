@@ -49,15 +49,13 @@ an idle run is data in the store with no process holding it.
   timeout after a request was sent must not look like a clean failure.
 - **Crash after the fence is an uncertain effect**, never a retry and never a
   model-visible failure. Output that cannot be encoded is a host failure.
-- **Continuation by transcript rebuild.** llm_wire's `Continuation` is opaque,
-  holds an Erlang reference and closures, and cannot survive a restart. Fabric
-  keeps its own transcript (`model.Message`, with provider call metadata) and
-  the llm_wire adapter re-`prepare`s the full request each turn. This is the
-  one path, in memory and after restart. It loses Google raw non-call parts of
-  a tool turn and custom-provider `Replay` closures, and it gives up llm_wire's
-  exact-coverage check at `prepare_continue`; Fabric enforces coverage itself
-  (the next turn is requested only when every call of the batch has a
-  model-visible result, fed back in call order).
+- **Caller-owned conversation.** Fabric keeps each assistant turn as one
+  value: text, calls and optional opaque provider data. The adapter translates
+  llm_wire's response into this value; the controller stores it unchanged
+  before dispatching effects. Once each call has a result, the adapter submits
+  the full conversation through ordinary `session.prepare`. This is the same
+  path before and after restart. llm_wire validates result coverage and
+  provider data; Fabric owns persistence, effect identity and recovery.
 - **Budgets.** The model-turn limit counts every attempt, including failed and
   retried calls. Exhaustion retains outstanding state and dispatches no tool
   whose result could not be continued. A token budget counts observed `Usage`;
@@ -687,6 +685,9 @@ against the temporary cluster. The repository formatting gate also passed.
 
 ### S6: record write-version window
 
+This section records S6 as delivered. The later library adoption extends
+the format to version 4 and guards writes to earlier formats.
+
 `store.with_record_version(runs, version)` returns a configured `Store` or
 `UnwritableVersion(requested, oldest, newest)`. Writers support versions
 2 and 3, defaulting to 3; readers accept versions 1–3 independently of
@@ -733,6 +734,68 @@ used only its temporary cluster. The repository formatting gate passed.
 An independent review found no encoding bypass and verified the frozen
 decoder and domain declarations against their historical source.
 
+## Library adoption: caller-owned conversations
+
+Accepted on 2026-09-29 after review of llm_wire's
+`docs/caller-owned-conversation.md` and `docs/fabric-migration.md`. Fabric
+already owned its transcript; it never stored a wire continuation. This
+change preserves the provider data that the previous adapter discarded.
+
+- **One assistant value.** `model.AssistantTurn(text, calls, data)` is carried
+  by `ToolRequest(turn, usage)` and `AssistantMessage(turn)`. Plain models use
+  `None`; an adapter uses `ProviderData(format, value)`. The controller stores
+  the whole turn before dispatch and appends results only after each call
+  has a definite, model-visible outcome. Effect identities remain scoped by
+  Fabric run and round, so provider call ids may repeat across rounds.
+- **Adapter-owned meaning.** `fabric/llm` encodes the provider identity,
+  response id, raw provider data and reported call issues in its versioned
+  `llm_wire.turn.v1` envelope. Text and calls have one authoritative copy in
+  the assistant turn. Fabric's controller and store do not interpret the
+  envelope; the adapter checks its format and reconstructs a wire turn,
+  then llm_wire checks provider origin, result coverage and raw signed data.
+  Invalid or unsupported envelopes fail before provider I/O. Credentials,
+  configuration, output codecs and live handles are never stored.
+- **Record version 4.** Each assistant message gains a required nullable
+  `data` field. Readers accept versions 1–4; older transcripts have no data.
+  Writers default to 4 and retain versions 2 and 3 for representable states.
+  A transcript with provider data cannot be written as 2 or 3; even a record
+  retagged as an older version is rejected if it carries provider data. A
+  refused response commit dispatches no tool and leaves the run unattended,
+  recoverable through a version-4 writer. Deploy compatible readers before
+  enabling the new wire-backed tool turns. This expands S6's write window
+  without silently removing previously supported settings.
+- **Retry policy.** Preparation failures stop. For execution failures the
+  adapter calls `retry.assess` with the prepared request's provider. Only
+  `MayHelp` permits another attempt; `Unknown` and `WillNotHelpUnchanged`
+  stop. Every attempt still spends a turn, and cancellation and uncertain
+  tool effects retain their existing behavior. Reachability evidence remains
+  separate from the prospect that retrying could help.
+- **Blueprint and playback.** Schema descriptions reach provider requests
+  without changing validation. Fabric already uses Blueprint's public
+  decode-error renderer. Wire cassettes substitute transport in the same
+  `llm.model` flow; a cassette is a test fixture, never a run checkpoint.
+
+The public model constructors change directly; no compatibility wrappers
+retain their former signatures. Legacy stored records remain readable.
+Streaming and structured final answers remain separate backlog features.
+
+Acceptance: `record_test` covers opaque data round trips, malformed envelopes
+and downgrade refusal; `write_version_test` proves refusal before a tool
+starts and recovery through writer 4 with one effect. `llm_test` covers
+invalid call issues and refusal of unsupported or corrupt adapter data
+before I/O. `llm_recovery_test` covers signed Google text, image and call
+parts through an approval pause and a real directory-store restart;
+repeated provider ids across distinct rounds; HTTP 501 versus 503 and
+turn budgets; Blueprint descriptions; and a disk cassette through the
+public Fabric flow. The PostgreSQL tests cover upgrade from 2 to 4 and
+exact-byte lost-write confirmation with the current writer.
+
+Completed on 2026-09-29. Formatting, warnings-as-errors builds and all four
+package suites passed: Fabric **333**, consumer **15**, Saga **35** and
+PostgreSQL **28** tests (**411** total). PostgreSQL used a throwaway 16.15
+cluster. Provider tests used local transports and fixtures; no live provider
+credentials were needed. See the tested sibling snapshot below.
+
 ## Public API (slice 3: ergonomics pass)
 
 The current public surface. The sections after this one are the history
@@ -744,8 +807,8 @@ effect passes the one policy, every command names its run by a reference
 checked against the stored record, a value is validated where it is made
 (`agent.build`, `run.parse_id`), a result type lists only what can
 happen, safety decisions are required arguments, and an advanced
-capability is a distinct function, never a flag. Stored records are
-unchanged: the same tags, no version bump.
+capability is a distinct function, never a flag. The ergonomics pass itself did not change stored records. The later
+library adoption above adds version 4 and changes the model reply surface.
 
 ```gleam
 // fabric — runs and the commands on them
@@ -859,7 +922,12 @@ pub fn with_record_version(store: Store, version: Int) -> Result(Store, Unwritab
 
 // fabric/observation — as in slice 2b, with model_turn() -> Event(model.Usage, ModelTurn);
 //   S2 adds run_handed_off() -> Event(Nil, RunHandedOff) and RunHandedOff(run: String, incarnation: Int)
-// fabric/model, fabric/llm — unchanged
+// fabric/model — updated by the library adoption
+pub type ProviderData { ProviderData(format: String, value: String) }
+pub type AssistantTurn { AssistantTurn(text: String, calls: List(ToolCall), data: Option(ProviderData)) }
+// Message: AssistantMessage(turn: AssistantTurn)
+// Reply: ToolRequest(turn: AssistantTurn, usage: Option(Usage))
+// fabric/llm.model(settings, model_id) — signature unchanged
 ```
 
 Errors by operation: `agent.build` returns every `ConfigError` at once;
@@ -1522,26 +1590,20 @@ changed):
   the whole turn with `ProtocolError`. `llm.model` now selects
   `types.ReportInvalidToolCalls`, and Fabric's registry answers each such call
   (`invalid_calls_through_llm_wire_get_per_call_feedback_test`).
-- **llm_wire's `Continuation` is opaque and in-memory only**
-  (`session.gleam:19-21`). Rebuilding from public `Message` values works but
-  loses Google raw parts and custom `Replay` closures, and the exact-coverage
-  check of `prepare_continue` is unavailable on a rebuilt request. A persistable
-  continuation envelope, or a public replay-preparation function that keeps the
-  coverage check, would remove both losses.
-- **llm_wire has no retry classification for errors.** `RetryEvidence` says
-  whether a request may have reached the provider, not whether retrying can
-  help; Fabric derives `retryable` from `WireError` variants and HTTP status
-  (`src/fabric/llm.gleam` `failure`).
+- **llm_wire continuation and retry ownership** (resolved by the 2026-09-29
+  library adoption, above). The old continuation held live values and could
+  not be persisted. The replacement returns assistant turns as data; Fabric
+  stores their provider metadata and rebuilds requests. `retry.assess`
+  classifies failure causes without choosing Fabric's retry policy.
 - **llm_wire had no public test transport** (resolved in llm_wire
   `5cf5232`). Fabric's loopback SSE stub is replaced by `llm_wire/testing`.
 - **llm_wire accepted any non-empty tool name** (resolved: `types.tool_name`
   now enforces the providers' grammar). Fabric's registry uses it instead of
   its own copy of the grammar.
-- **json_blueprint schemas carry no descriptions** (`codec.gleam:94-112`), so
-  tool parameter descriptions cannot reach the model.
-- **json_blueprint has no public decode-error renderer**; Fabric renders
-  located errors for the model itself
-  (`src/fabric/internal/invocation.gleam` `describe_decode_error`).
+- **json_blueprint descriptions and decode-error rendering** (resolved in
+  `129c963`). `codec.describe` annotates schemas without changing validation;
+  llm_wire `cc79a69` preserves those annotations in provider schemas.
+  Fabric uses `codec.render_json_decode_error`, adopted in `dffdfda`.
 - **Unpublished path dependencies.** json_blueprint reports version 1.7.1 on
   its unreleased 2.0 branch; llm_wire, json_blueprint, and sinal resolve only
   as `../` path dependencies, so `.github/workflows/ci.yml` cannot build Fabric
@@ -1583,7 +1645,25 @@ adopted here:
 
 ## Tested sibling revisions
 
-Fabric resolves its siblings as `../` path dependencies. The completion
+Fabric resolves its siblings as `../` path dependencies. The library
+adoption gates on 2026-09-29 passed against this snapshot:
+
+| Package        | Revision  | Working tree                                                  |
+| -------------- | --------- | ------------------------------------------------------------- |
+| llm_wire       | `cc79a69` | Pending caller-owned conversation, retry and cassette changes |
+| json_blueprint | `129c963` | Clean                                                         |
+| sinal          | `858dfa3` | Clean                                                         |
+| saga           | `4a93b04` | Clean                                                         |
+
+The llm_wire commit alone does not contain the adopted API. Its tested
+working-tree SHA-256 was
+`250c885b15ba7d61371105e76cde10b5d8b8dec54ce609e144df70d92ff3f84d`:
+sorted tracked and non-ignored untracked files, each relative path followed
+by a NUL byte and its file contents. Those pending changes need their own
+commit and release before Fabric can replace its path dependency. Fabric
+did not modify any sibling source.
+
+Historically, the completion
 gates through production S6 passed against these revisions, each
 with a clean working tree (the slice 3 ergonomics pass used sinal
 `c886825`):

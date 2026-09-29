@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "endpoint": "https://api.openai.com/v1",
+        "path": "/v1/responses",
+        "body": "{\"model\":\"cassette-model\",\"input\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"stream\":true}"
+      },
+      "reply": {
+        "kind": "events",
+        "chunks": [
+          "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"text\",\"type\":\"message\"}}\n\n",
+          "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"text\",\"delta\":\"from disk cassette\"}\n\n",
+          "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"text\",\"type\":\"message\"}}\n\n",
+          "event: response.completed\ndata: {\"response\":{\"id\":\"final\",\"status\":\"completed\"}}\n\n"
+        ]
+      }
+    }
+  ]
+}

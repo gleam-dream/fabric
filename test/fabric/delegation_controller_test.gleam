@@ -77,7 +77,13 @@ fn acting(
       None,
       0,
     )
-  step(state, controller.ModelReplied(1, ToolRequest("", calls, None)))
+  step(
+    state,
+    controller.ModelReplied(
+      1,
+      ToolRequest(model.AssistantTurn("", calls, None), None),
+    ),
+  )
 }
 
 fn action(state: State, id: String) -> run.ActionRecord {

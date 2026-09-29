@@ -255,22 +255,31 @@ pub fn scripted_librarian(messages: List(Message)) -> Reply {
   case prompt(messages), results(messages) {
     "scan the inventory", [] ->
       ToolRequest(
-        "",
-        [call("s1", "scan_inventory", "{\"shelf\":\"A\"}")],
+        model.AssistantTurn(
+          "",
+          [call("s1", "scan_inventory", "{\"shelf\":\"A\"}")],
+          None,
+        ),
         usage,
       )
     "reserve " <> title, [] ->
       ToolRequest(
-        "",
-        [call("f1", "find_book", "{\"title\":\"" <> title <> "\"}")],
+        model.AssistantTurn(
+          "",
+          [call("f1", "find_book", "{\"title\":\"" <> title <> "\"}")],
+          None,
+        ),
         usage,
       )
     _, [found] ->
       case codec.decode_json(book_codec(), found) {
         Ok(book) ->
           ToolRequest(
-            "",
-            [call("r1", "reserve_book", "{\"isbn\":\"" <> book.isbn <> "\"}")],
+            model.AssistantTurn(
+              "",
+              [call("r1", "reserve_book", "{\"isbn\":\"" <> book.isbn <> "\"}")],
+              None,
+            ),
             usage,
           )
         Error(_) -> FinalAnswer("sorry: " <> found, usage)
@@ -381,8 +390,11 @@ pub fn purchaser() -> Agent(Member) {
         Ok(case prompt(request.messages), results(request.messages) {
           "buy " <> title, [] ->
             ToolRequest(
-              "",
-              [call("o1", "order_book", "{\"title\":\"" <> title <> "\"}")],
+              model.AssistantTurn(
+                "",
+                [call("o1", "order_book", "{\"title\":\"" <> title <> "\"}")],
+                None,
+              ),
               usage,
             )
           _, seen -> FinalAnswer("ordered " <> string.join(seen, ", "), usage)
@@ -474,20 +486,26 @@ pub fn front_desk() -> Agent(Member) {
         Ok(case prompt(request.messages), results(request.messages) {
           "acquire " <> title, [] ->
             ToolRequest(
-              "",
-              [call("a1", "acquire", "{\"title\":\"" <> title <> "\"}")],
+              model.AssistantTurn(
+                "",
+                [call("a1", "acquire", "{\"title\":\"" <> title <> "\"}")],
+                None,
+              ),
               usage,
             )
           "borrow " <> title, [] ->
             ToolRequest(
-              "",
-              [
-                call(
-                  "l1",
-                  "interlibrary_loan",
-                  "{\"title\":\"" <> title <> "\"}",
-                ),
-              ],
+              model.AssistantTurn(
+                "",
+                [
+                  call(
+                    "l1",
+                    "interlibrary_loan",
+                    "{\"title\":\"" <> title <> "\"}",
+                  ),
+                ],
+                None,
+              ),
               usage,
             )
           _, seen -> FinalAnswer("done: " <> string.join(seen, " | "), usage)

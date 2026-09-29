@@ -90,7 +90,10 @@ fn suspended() -> #(State, run.PendingApproval) {
       state,
       controller.ModelReplied(
         1,
-        ToolRequest("", [transfer(), weather()], Some(Usage(1, 1))),
+        ToolRequest(
+          model.AssistantTurn("", [transfer(), weather()], None),
+          Some(Usage(1, 1)),
+        ),
       ),
     )
   let #(state, _) = step(env, state, controller.ToolStarting(ActionId(1, "w")))
@@ -318,7 +321,10 @@ fn batch(calls: List(model.ToolCall)) -> State {
     step(
       env,
       state,
-      controller.ModelReplied(1, ToolRequest("", calls, Some(Usage(1, 1)))),
+      controller.ModelReplied(
+        1,
+        ToolRequest(model.AssistantTurn("", calls, None), Some(Usage(1, 1))),
+      ),
     )
   state
 }

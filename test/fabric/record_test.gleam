@@ -88,9 +88,17 @@ fn base() -> State {
     usage: run.TokenUsage(120, 40, 1),
     transcript: [
       model.UserMessage("pay bob\nplease"),
-      model.AssistantMessage("", [call("a", "lookup_weather")]),
+      model.AssistantMessage(model.AssistantTurn(
+        "",
+        [call("a", "lookup_weather")],
+        None,
+      )),
       model.ToolResultMessage("a", "{\"summary\":\"sunny\"}"),
-      model.AssistantMessage("thinking", [call("b", "transfer_funds")]),
+      model.AssistantMessage(model.AssistantTurn(
+        "thinking",
+        [call("b", "transfer_funds")],
+        None,
+      )),
     ],
     history: every_action(),
     approvals_issued: 3,
@@ -152,17 +160,59 @@ pub fn every_record_shape_survives_a_round_trip_test() {
   })
 }
 
+pub fn assistant_turn_data_survives_storage_and_cannot_be_downgraded_test() {
+  let turn =
+    model.AssistantTurn(
+      "thinking",
+      [call("a", "lookup_weather")],
+      Some(model.ProviderData("example.v1", "opaque signed data")),
+    )
+  let state =
+    controller.State(..base(), transcript: [model.AssistantMessage(turn)])
+  record.decode(record.encode(state)) |> should.equal(Ok(state))
+  list.each([record.V2, record.V3], fn(writer) {
+    record.encode_as(state, writer) |> should.be_error
+  })
+}
+
+pub fn legacy_records_cannot_hide_provider_data_and_malformed_data_is_corrupt_test() {
+  let state =
+    controller.State(..base(), transcript: [
+      model.AssistantMessage(model.AssistantTurn(
+        "",
+        [call("a", "lookup_weather")],
+        Some(model.ProviderData("example.v1", "opaque")),
+      )),
+    ])
+  let encoded = record.encode(state)
+  list.each(
+    [
+      string.replace(encoded, "\"version\":4", "\"version\":3"),
+      string.replace(encoded, "\"version\":4", "\"version\":2"),
+      string.replace(encoded, "\"format\":\"example.v1\"", "\"format\":7"),
+      string.replace(encoded, "\"value\":\"opaque\"", "\"value\":null"),
+    ],
+    fn(corrupt) {
+      let assert Error(record.Corrupt(_)) = record.decode(corrupt)
+    },
+  )
+  list.each([record.V2, record.V3], fn(writer) {
+    let assert Ok(legacy) = record.encode_as(base(), writer)
+    record.decode(legacy) |> should.equal(Ok(base()))
+  })
+}
+
 pub fn the_record_is_versioned_json_test() {
   let encoded = record.encode(base())
-  string.starts_with(encoded, "{\"format\":\"fabric.run\",\"version\":3,")
+  string.starts_with(encoded, "{\"format\":\"fabric.run\",\"version\":4,")
   |> should.be_true
 }
 
 pub fn another_version_is_unsupported_test() {
   let encoded =
     record.encode(base())
-    |> string.replace("\"version\":3,", "\"version\":4,")
-  record.decode(encoded) |> should.equal(Error(record.UnsupportedVersion(4)))
+    |> string.replace("\"version\":4,", "\"version\":5,")
+  record.decode(encoded) |> should.equal(Error(record.UnsupportedVersion(5)))
 }
 
 /// A version 1 record (written before sub-agents) is read as a root run
@@ -311,7 +361,7 @@ pub fn a_child_that_never_started_is_explicit_test() {
     )
   let version_2 =
     record.encode(tombstone)
-    |> string.replace("\"version\":3,", "\"version\":2,")
+    |> string.replace("\"version\":4,", "\"version\":2,")
   let assert Ok(read) = record.decode(version_2)
   read.phase |> should.equal(controller.NeverStarted)
   controller.child_result(read) |> should.equal(Ok(controller.ChildMissing))
@@ -379,7 +429,7 @@ pub fn a_version_2_tombstone_keeps_its_old_meaning_test() {
   string.contains(encoded, "never_started") |> should.be_false
   record.decode(encoded) |> should.equal(Ok(tombstone))
   old_record.decode(record.encode(tombstone))
-  |> should.equal(Error(old_record.UnsupportedVersion(3)))
+  |> should.equal(Error(old_record.UnsupportedVersion(4)))
 }
 
 pub fn a_version_2_write_never_discards_or_reinterprets_a_transcript_test() {

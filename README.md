@@ -297,12 +297,21 @@ even when another node recovered the child. Running tools become uncertain
 and are never replayed. See the [PostgreSQL setup](integrations/fabric_postgres/README.md#automatic-recovery)
 for shutdown order and recovery limits.
 
-Rolling upgrades: `store.with_record_version(runs, 2)` lets the current
-runtime write records that version-2 readers understand. It reads versions
-1–3 regardless of the writer setting. Configure the store before starting
-it and use the returned value for every handle and sweeper. After all
-readers support version 3, restart with the default writer (3). Existing
-values and runners keep their setting; this does not migrate stored rows.
+Conversations: Fabric stores each `model.AssistantTurn` (text, calls and
+optional provider data) before dispatching tools. The llm_wire adapter
+prepares the next request from that conversation, retaining signed Google
+parts and custom adapter data across pauses and restarts. Fabric owns the
+history and effects; llm_wire validates and interprets the provider data.
+Application models return `model.ToolRequest(turn, usage)` and use
+`model.AssistantTurn(text, calls, None)` when they have no provider data.
+
+Rolling upgrades: the default writer is version 4; readers accept versions
+1–4. `store.with_record_version(runs, 2)` or `3` remains available for
+states without assistant provider data. Current llm_wire tool turns require
+version 4, so deploy compatible readers before enabling them. An older
+writer refuses the turn before any tool runs. Configure the store before
+starting it and use the returned value for every handle and sweeper.
+Existing values and runners keep their setting; this does not migrate rows.
 See the [rollout procedure](integrations/fabric_postgres/README.md#record-versions)
 for compatibility and rollback limits.
 

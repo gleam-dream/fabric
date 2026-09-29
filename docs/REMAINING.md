@@ -1,6 +1,6 @@
 # Remaining work
 
-Current after production S6, 2026-09-28. This inventory consolidates the
+Current after library adoption, 2026-09-29. This inventory consolidates the
 accepted production plan, retained feature backlog, release gaps and
 deferred proposals in [PLAN](PLAN.md) and [CAPABILITIES](CAPABILITIES.md).
 Earlier slice notes remain historical; items completed in later slices
@@ -81,18 +81,20 @@ Their detailed acceptance rules still need to be designed before coding.
   They are checked locally; the current CI and root test suite do not
   exercise all four packages.
 
-## Sibling improvements retained for separate work
+## Library improvements adopted
 
-These improve Fabric's adapter code but do not block S7:
+The four earlier sibling gaps are resolved. llm_wire now returns assistant
+turns as data and validates caller-supplied conversations; Fabric stores the
+turns, including signed Google parts and custom provider data. Its public
+retry assessment supplies failure classification while Fabric retains retry
+policy and budgets. Blueprint descriptions reach provider schemas, and
+Fabric uses Blueprint's decode-error renderer.
 
-- **llm_wire:** a persistable continuation or replay-preparation API that
-  retains Google raw parts, custom replay behavior and exact-coverage
-  validation across restarts.
-- **llm_wire:** public retry classification, so Fabric need not infer it
-  from error variants and HTTP status.
-- **json_blueprint:** schema field descriptions that reach the model.
-- **json_blueprint:** a public decode-error renderer, replacing Fabric's
-  local rendering of located errors.
+The caller-owned conversation contract supersedes the proposed persistable
+continuation API. There is no remaining continuation-handle feature to build.
+See [PLAN](PLAN.md#library-adoption-caller-owned-conversations) for the new
+model port, record version 4 and acceptance evidence. Release work remains:
+the adopted llm_wire changes were still uncommitted when integrated.
 
 ## Optional proposals and known limitations
 

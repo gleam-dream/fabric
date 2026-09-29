@@ -51,7 +51,14 @@ pub fn a_child_is_recovered_beneath_a_live_foreign_parent_test() {
       scripted.model(fn(messages) {
         case scripted.results(messages) {
           [] ->
-            model.ToolRequest("", [scripted.slow("a", "a"), delegation], None)
+            model.ToolRequest(
+              model.AssistantTurn(
+                "",
+                [scripted.slow("a", "a"), delegation],
+                None,
+              ),
+              None,
+            )
           seen -> model.FinalAnswer(string.join(seen, ","), None)
         }
       }),
