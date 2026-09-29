@@ -36,48 +36,6 @@ pub fn error_detail_content(kind: String, detail: String) -> String {
   )
 }
 
-pub fn describe_decode_error(error: codec.JsonDecodeError) -> String {
-  case error {
-    codec.BlueprintParserFailure(codec.BlueprintJsonParseFailure(
-      location:,
-      reason:,
-    )) ->
-      "invalid JSON at line "
-      <> int.to_string(location.line)
-      <> ", column "
-      <> int.to_string(location.column)
-      <> ": "
-      <> string.inspect(reason)
-    codec.NativeJsonFailure(error) -> "invalid JSON: " <> string.inspect(error)
-    codec.TypedCodecFailure(error) -> describe_value_error(error, "$")
-  }
-}
-
-fn describe_value_error(error: codec.DecodeError, path: String) -> String {
-  case error {
-    codec.DecodeAtField(field, inner) ->
-      describe_value_error(inner, path <> "." <> field)
-    codec.DecodeAtIndex(index, inner) ->
-      describe_value_error(inner, path <> "[" <> int.to_string(index) <> "]")
-    codec.CannotDecode(reason) -> path <> ": " <> describe_reason(reason)
-  }
-}
-
-fn describe_reason(reason: codec.DecodeReason) -> String {
-  case reason {
-    codec.DecodeExpectedString -> "expected a string"
-    codec.DecodeExpectedInt -> "expected an integer"
-    codec.DecodeExpectedNumber -> "expected a number"
-    codec.DecodeExpectedBool -> "expected a boolean"
-    codec.DecodeExpectedArray -> "expected an array"
-    codec.DecodeExpectedObject -> "expected an object"
-    codec.DecodeMissingProperty(name) -> "missing property " <> name
-    codec.DecodeUnknownProperty(name) -> "unknown property " <> name
-    codec.DecodeDuplicateProperty(name) -> "duplicate property " <> name
-    other -> string.inspect(other)
-  }
-}
-
 pub fn describe_encode_error(error: codec.EncodeError) -> String {
   case error {
     codec.EncodeAtField(field, inner) ->
