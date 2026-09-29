@@ -70,8 +70,16 @@ fn two_payments_spec(
     "payer",
     scripted.model(fn(messages) {
       case scripted.results(messages) {
-        [] -> model.ToolRequest("", [payment("t1", "one")], None)
-        [_] -> model.ToolRequest("", [payment("t2", "two")], None)
+        [] ->
+          model.ToolRequest(
+            model.AssistantTurn("", [payment("t1", "one")], None),
+            None,
+          )
+        [_] ->
+          model.ToolRequest(
+            model.AssistantTurn("", [payment("t2", "two")], None),
+            None,
+          )
         _ -> model.FinalAnswer("paid", None)
       }
     }),
@@ -95,8 +103,11 @@ fn delegating(child: Agent(ctx)) -> Agent(ctx) {
       case scripted.results(messages) {
         [] ->
           model.ToolRequest(
-            "",
-            [scripted.call("r", "research", "{\"topic\":\"x\"}")],
+            model.AssistantTurn(
+              "",
+              [scripted.call("r", "research", "{\"topic\":\"x\"}")],
+              None,
+            ),
             None,
           )
         _ -> model.FinalAnswer("done", None)
@@ -264,7 +275,7 @@ fn counted_payer(probe: Probe, slow: Bool) -> Agent(Nil) {
     model.new(fn(request: model.Request) {
       probe.record(probe, "model")
       Ok(case scripted.results(request.messages) {
-        [] -> model.ToolRequest("", first, None)
+        [] -> model.ToolRequest(model.AssistantTurn("", first, None), None)
         _ -> model.FinalAnswer("paid", None)
       })
     }),
@@ -375,7 +386,10 @@ fn store_stopping_root(store: store.Store, id: String) -> Nil {
       limits: limits(4, 2),
       turns_used: 1,
       usage: run.TokenUsage(0, 0, 0),
-      transcript: [model.UserMessage("go"), model.AssistantMessage("", [call])],
+      transcript: [
+        model.UserMessage("go"),
+        model.AssistantMessage(model.AssistantTurn("", [call], None)),
+      ],
       history: [],
       approvals_issued: 0,
       phase: controller.Stopping(
@@ -440,7 +454,10 @@ pub fn a_tool_under_a_stopping_ancestor_never_starts_test() {
       store,
       "run-ancestor",
       run.Identity("payer", 1),
-      [model.UserMessage("x"), model.AssistantMessage("", [t1])],
+      [
+        model.UserMessage("x"),
+        model.AssistantMessage(model.AssistantTurn("", [t1], None)),
+      ],
       controller.Acting(1, [
         run.ActionRecord(ActionId(1, "t1"), t1, run.Queued, [], None),
       ]),
@@ -599,7 +616,10 @@ pub fn a_reattached_sub_agent_under_a_stopping_ancestor_never_starts_test() {
       store,
       "run-elders",
       run.Identity("agent", 1),
-      [model.UserMessage("x"), model.AssistantMessage("", [r])],
+      [
+        model.UserMessage("x"),
+        model.AssistantMessage(model.AssistantTurn("", [r], None)),
+      ],
       controller.Acting(1, [
         run.ActionRecord(
           ActionId(1, "r"),

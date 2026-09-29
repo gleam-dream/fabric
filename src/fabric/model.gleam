@@ -23,10 +23,24 @@ pub type ToolCall {
   )
 }
 
+/// Adapter-owned response metadata. `format` identifies its encoding and
+/// version; only the adapter interprets `value`. Fabric stores it unchanged.
+/// It must contain data only, never credentials or live process state.
+pub type ProviderData {
+  ProviderData(format: String, value: String)
+}
+
+/// One assistant response and the provider data that belongs to that response.
+/// Plain application models use `None`; adapters retain everything needed to
+/// send the turn back after a restart.
+pub type AssistantTurn {
+  AssistantTurn(text: String, calls: List(ToolCall), data: Option(ProviderData))
+}
+
 pub type Message {
   UserMessage(text: String)
-  /// `calls` is empty for a plain answer.
-  AssistantMessage(text: String, calls: List(ToolCall))
+  /// `turn.calls` is empty for a plain answer.
+  AssistantMessage(turn: AssistantTurn)
   ToolResultMessage(call_id: String, content: String)
 }
 
@@ -52,7 +66,7 @@ pub type Usage {
 /// a missing report as zero.
 pub type Reply {
   FinalAnswer(text: String, usage: Option(Usage))
-  ToolRequest(text: String, calls: List(ToolCall), usage: Option(Usage))
+  ToolRequest(turn: AssistantTurn, usage: Option(Usage))
   Refusal(reason: String, usage: Option(Usage))
   /// The provider stopped at its output limit. Partial tool calls are dropped.
   Truncated(partial_text: String, usage: Option(Usage))

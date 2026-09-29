@@ -19,9 +19,9 @@ import gleeunit/should
 
 pub fn unsupported_write_versions_are_refused_before_startup_test() {
   let runs = store.in_memory(process.new_name("version-window"))
-  list.each([-1, 0, 1, 4], fn(version) {
+  list.each([-1, 0, 1, 5], fn(version) {
     store.with_record_version(runs, version)
-    |> should.equal(Error(store.UnwritableVersion(version, 2, 3)))
+    |> should.equal(Error(store.UnwritableVersion(version, 2, 4)))
   })
 }
 
@@ -83,7 +83,7 @@ pub fn configured_writes_remain_readable_by_the_version_2_decoder_test() {
 }
 
 pub fn the_write_target_does_not_restrict_what_can_be_read_test() {
-  list.each([#(3, 2), #(2, 3)], fn(versions) {
+  list.each([#(4, 2), #(2, 4), #(4, 3), #(3, 4)], fn(versions) {
     let memory = testing.leased_memory()
     let body = probe.new()
     let agent = reviewed(body)
@@ -250,4 +250,53 @@ pub fn cancelling_without_an_agent_keeps_the_selected_write_version_test() {
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   writes(memory.backend, fabric.id(started), 2)
   probe.count(body, "start:work") |> should.equal(0)
+}
+
+pub fn an_old_writer_stops_before_effects_and_recovery_with_the_new_writer_runs_once_test() {
+  list.each([2, 3], fn(version) {
+    let memory = testing.leased_memory()
+    let old = node(memory.backend, version)
+    let assert Ok(current) = store.with_record_version(old, 4)
+    let body = probe.new()
+    let agent =
+      agent.new(
+        "metadata",
+        scripted.model(fn(request) {
+          case scripted.results(request) {
+            [] ->
+              model.ToolRequest(
+                model.AssistantTurn(
+                  "",
+                  [scripted.slow("w", "work")],
+                  option.Some(model.ProviderData("example.v1", "opaque")),
+                ),
+                None,
+              )
+            _ -> model.FinalAnswer("done", None)
+          }
+        }),
+        [scripted.gated_tool(body)],
+        policy.always_allow(),
+      )
+      |> support.agent
+    let assert Ok(started) = fabric.start(old, agent, Nil, "go")
+    fabric.await(started, 5000) |> should.equal(Ok(run.Unattended))
+    probe.count(body, "start:work") |> should.equal(0)
+    writes(memory.backend, fabric.id(started), version)
+    let assert Ok(recovered) =
+      fabric.recover(current, agent, Nil, fabric.id(started))
+    let running = probe.arrival(body)
+    probe.release(running)
+    fabric.await(recovered, 5000)
+    |> should.equal(Ok(run.Finished(run.Completed("done"))))
+    probe.count(body, "start:work") |> should.equal(1)
+    writes(memory.backend, fabric.id(recovered), 4)
+    let assert Ok(snapshot) = fabric.snapshot(recovered)
+    let assert [
+      _,
+      model.AssistantMessage(model.AssistantTurn(data: option.Some(data), ..)),
+      ..
+    ] = snapshot.transcript
+    data |> should.equal(model.ProviderData("example.v1", "opaque"))
+  })
 }

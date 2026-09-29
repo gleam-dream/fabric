@@ -115,7 +115,10 @@ fn tools_requested(
   step(
     env,
     state,
-    controller.ModelReplied(1, ToolRequest("", calls, usage(10))),
+    controller.ModelReplied(
+      1,
+      ToolRequest(model.AssistantTurn("", calls, None), usage(10)),
+    ),
   )
 }
 
@@ -186,7 +189,7 @@ pub fn two_calls_are_correlated_and_fed_back_in_call_order_test() {
   request.messages
   |> should.equal([
     UserMessage("hello"),
-    AssistantMessage("", calls),
+    AssistantMessage(model.AssistantTurn("", calls, None)),
     ToolResultMessage("c1", "{\"summary\":\"sunny\"}"),
     ToolResultMessage("c2", "{\"receipt\":\"r-bob\"}"),
   ])
@@ -351,7 +354,7 @@ pub fn turn_limit_prevents_effects_that_cannot_be_continued_test() {
   |> should.equal(run.Finished(run.BudgetExhausted(run.TurnLimit(1))))
   states(state) |> should.equal([run.NotStarted])
   // The outstanding call is retained in the transcript.
-  let assert [_, AssistantMessage(_, [_])] =
+  let assert [_, AssistantMessage(model.AssistantTurn(_, [_], None))] =
     controller.snapshot(state).transcript
 }
 
@@ -406,7 +409,10 @@ pub fn token_budget_uses_observed_usage_test() {
       state,
       controller.ModelReplied(
         1,
-        ToolRequest("", [weather("w", "Paris")], usage(12)),
+        ToolRequest(
+          model.AssistantTurn("", [weather("w", "Paris")], None),
+          usage(12),
+        ),
       ),
     )
   effects |> should.equal([])
@@ -430,7 +436,13 @@ pub fn missing_usage_under_a_token_budget_is_reported_test() {
     step(
       env,
       state,
-      controller.ModelReplied(1, ToolRequest("", [weather("w", "Paris")], None)),
+      controller.ModelReplied(
+        1,
+        ToolRequest(
+          model.AssistantTurn("", [weather("w", "Paris")], None),
+          None,
+        ),
+      ),
     )
   controller.status(state)
   |> should.equal(run.Finished(run.BudgetUnverifiable(1)))
@@ -451,7 +463,14 @@ pub fn malformed_tool_batches_are_protocol_violations_test() {
   let env = env()
   let empty = begin(env, limits())
   let assert #(empty, []) =
-    step(env, empty, controller.ModelReplied(1, ToolRequest("", [], usage(1))))
+    step(
+      env,
+      empty,
+      controller.ModelReplied(
+        1,
+        ToolRequest(model.AssistantTurn("", [], None), usage(1)),
+      ),
+    )
   let assert run.Finished(run.Failed(run.ModelProtocolViolation(_))) =
     controller.status(empty)
   let dup = begin(env, limits())

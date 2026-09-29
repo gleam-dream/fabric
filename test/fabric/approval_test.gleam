@@ -320,7 +320,11 @@ pub fn an_answer_racing_a_cancel_has_a_defined_outcome_test() {
     let model =
       scripted.model(fn(messages) {
         case scripted.results(messages) {
-          [] -> model.ToolRequest("", [transfer_call()], None)
+          [] ->
+            model.ToolRequest(
+              model.AssistantTurn("", [transfer_call()], None),
+              None,
+            )
           _ -> {
             process.sleep_forever()
             model.FinalAnswer("never", None)
@@ -406,14 +410,17 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
         case scripted.results(request.messages) {
           [] ->
             Ok(model.ToolRequest(
-              "",
-              [
-                scripted.call(
-                  "t",
-                  "transfer_funds",
-                  "{\"to\":\"bob\",\"amount\":10}",
-                ),
-              ],
+              model.AssistantTurn(
+                "",
+                [
+                  scripted.call(
+                    "t",
+                    "transfer_funds",
+                    "{\"to\":\"bob\",\"amount\":10}",
+                  ),
+                ],
+                None,
+              ),
               None,
             ))
           _ -> {

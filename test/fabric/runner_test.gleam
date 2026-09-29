@@ -16,7 +16,7 @@ import fabric/support/scripted
 import fabric/tool
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleeunit/should
@@ -59,10 +59,10 @@ pub fn run_completes_with_two_typed_tools_test() {
   snapshot.transcript
   |> should.equal([
     UserMessage("weather, then pay bob"),
-    AssistantMessage("", calls),
+    AssistantMessage(model.AssistantTurn("", calls, None)),
     ToolResultMessage("c1", "{\"summary\":\"sunny\"}"),
     ToolResultMessage("c2", "{\"receipt\":\"r-bob\"}"),
-    AssistantMessage(answer, []),
+    AssistantMessage(model.AssistantTurn(answer, [], None)),
   ])
   snapshot.turns_used |> should.equal(2)
   snapshot.usage |> should.equal(run.TokenUsage(30, 10, 0))

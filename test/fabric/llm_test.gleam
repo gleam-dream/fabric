@@ -11,11 +11,12 @@ import fabric/policy
 import fabric/run
 import fabric/support
 import fabric/support/apps
+import fabric/support/scripted
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
 import llm_wire/config
@@ -190,8 +191,11 @@ pub fn two_tool_calls_round_trip_through_llm_wire_test() {
 
   let assert Ok(snapshot) = fabric.snapshot(run)
   snapshot.usage |> should.equal(run.TokenUsage(41, 16, 0))
-  let assert [_, model.AssistantMessage("", [first, second]), ..] =
-    snapshot.transcript
+  let assert [
+    _,
+    model.AssistantMessage(model.AssistantTurn("", [first, second], _)),
+    ..
+  ] = snapshot.transcript
   #(first.id, first.name, first.provider_id)
   |> should.equal(#("call_a", "lookup_weather", Some("call_a")))
   #(second.id, second.name) |> should.equal(#("call_b", "transfer_funds"))
@@ -213,6 +217,59 @@ pub fn two_tool_calls_round_trip_through_llm_wire_test() {
   |> should.equal("{\"summary\":\"sunny\"}")
   function_output(second_request, "call_b")
   |> should.equal("{\"receipt\":\"r-bob\"}")
+}
+
+pub fn unsupported_or_corrupt_stored_adapter_data_stops_before_provider_io_test() {
+  list.each(
+    [
+      model.ProviderData("future.format", "{}"),
+      model.ProviderData("llm_wire.turn.v1", "{"),
+      model.ProviderData(
+        "llm_wire.turn.v1",
+        "{\"provider\":{\"kind\":\"unknown\"},\"response_id\":null,\"provider_data\":null,\"issues\":[]}",
+      ),
+    ],
+    fn(data) {
+      let policy = fn(_: Nil, _: policy.Action) {
+        Ok(policy.RequireApproval(run.Requirement("review", 1)))
+      }
+      let calls = [scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}")]
+      let original =
+        agent.new(
+          "metadata",
+          scripted.model(fn(_) {
+            model.ToolRequest(model.AssistantTurn("", calls, Some(data)), None)
+          }),
+          [apps.weather_tool()],
+          policy,
+        )
+        |> support.agent
+      let runs = support.store()
+      let assert Ok(started) = fabric.start(runs, original, Nil, "weather")
+      let assert Ok(run.Suspended([pending], [])) = fabric.await(started, 5000)
+      let script =
+        testing.start([
+          testing.Events([text("answer", "unused") <> completed("r", 1, 1)]),
+        ])
+      let resumed_agent =
+        agent.new(
+          "metadata",
+          llm.model(openai_settings(script), model_id()),
+          [apps.weather_tool()],
+          policy,
+        )
+        |> support.agent
+      let assert Ok(opened) =
+        fabric.open(runs, resumed_agent, Nil, fabric.id(started))
+      let assert Ok(_) =
+        fabric.approve(opened, pending.reference, reviewer: None, context: Nil)
+      let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =
+        fabric.await(opened, 5000)
+      error.retryable |> should.be_false
+      testing.requests(script) |> should.equal([])
+      testing.remaining(script) |> should.equal(1)
+    },
+  )
 }
 
 /// llm_wire reports invalid calls instead of failing the turn, so Fabric's
@@ -248,6 +305,13 @@ pub fn invalid_calls_through_llm_wire_get_per_call_feedback_test() {
   invalid
   |> string.starts_with("{\"error\":\"invalid_arguments\"")
   |> should.be_true
+  let assert [_, continued] = testing.requests(script)
+  let assert [_, types.AssistantTurnMessage(turn), ..] =
+    continued.request.messages
+  let assert [types.InvalidArguments(bad, _), types.UnknownTool(unknown)] =
+    turn.issues
+  types.call_id_to_string(bad) |> should.equal("call_a")
+  types.call_id_to_string(unknown) |> should.equal("call_b")
 }
 
 pub fn refusal_and_truncation_through_llm_wire_end_the_run_test() {

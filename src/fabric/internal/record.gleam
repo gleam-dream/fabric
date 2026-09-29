@@ -32,6 +32,10 @@
 //// transcript, which is read as `never_started`; any other version 1 or 2
 //// record reads as it did.
 ////
+//// Version 4 keeps each assistant turn's optional adapter data alongside its
+//// text and calls. Earlier formats cannot retain it and are refused when it
+//// is present. Legacy transcripts decode with no adapter data.
+////
 //// An outcome's budget is written under its own tag (`turn_limit`,
 //// `token_limit`). The tag `budget_exhausted`, which wraps a budget, is
 //// still read; it was written only for a sub-agent limit ending a run,
@@ -60,18 +64,20 @@ import gleam/string
 
 pub const format = "fabric.run"
 
-pub const version = 3
+pub const version = 4
 
 /// The writer window is narrower than the reader's accepted versions.
 pub type WriteVersion {
   V2
   V3
+  V4
 }
 
 pub fn writer(version: Int) -> Result(WriteVersion, Nil) {
   case version {
     2 -> Ok(V2)
     3 -> Ok(V3)
+    4 -> Ok(V4)
     _ -> Error(Nil)
   }
 }
@@ -86,8 +92,23 @@ pub fn encode_as(
   state: State,
   target: WriteVersion,
 ) -> Result(String, EncodeError) {
+  let has_data =
+    list.any(state.transcript, fn(message) {
+      case message {
+        model.AssistantMessage(model.AssistantTurn(data: Some(_), ..)) -> True
+        _ -> False
+      }
+    })
+  use Nil <- result.try(case target, has_data {
+    V2, True ->
+      Error(Unrepresentable(2, "assistant provider data requires version 4"))
+    V3, True ->
+      Error(Unrepresentable(3, "assistant provider data requires version 4"))
+    _, _ -> Ok(Nil)
+  })
   case target, state.phase, state.transcript {
-    V3, _, _ -> Ok(encode(state))
+    V4, _, _ -> Ok(encode(state))
+    V3, _, _ -> Ok(encode_version(state, 3, state.phase))
     V2, controller.NeverStarted, [] ->
       Ok(encode_version(state, 2, controller.Ended(run.Cancelled)))
     V2, controller.NeverStarted, [_, ..] ->
@@ -151,7 +172,10 @@ fn encode_version(state: State, version: Int, phase: Phase) -> String {
         #("unreported_replies", json.int(state.usage.unreported_replies)),
       ]),
     ),
-    #("transcript", json.array(state.transcript, message)),
+    #(
+      "transcript",
+      json.array(state.transcript, fn(item) { message(item, version) }),
+    ),
     #("history", json.array(state.history, action)),
     #("approvals_issued", json.int(state.approvals_issued)),
     #("phase", phase_json(phase)),
@@ -173,13 +197,27 @@ fn identity(identity: Identity) -> Json {
   ])
 }
 
-fn message(message: Message) -> Json {
+fn message(message: Message, version: Int) -> Json {
   case message {
     model.UserMessage(text) -> tag("user", [#("text", json.string(text))])
-    model.AssistantMessage(text, calls) ->
+    model.AssistantMessage(model.AssistantTurn(text, calls, data)) ->
       tag("assistant", [
         #("text", json.string(text)),
         #("calls", json.array(calls, tool_call)),
+        ..case version >= 4 {
+          True -> [
+            #(
+              "data",
+              json.nullable(data, fn(data) {
+                json.object([
+                  #("format", json.string(data.format)),
+                  #("value", json.string(data.value)),
+                ])
+              }),
+            ),
+          ]
+          False -> []
+        }
       ])
     model.ToolResultMessage(call_id, content) ->
       tag("tool_result", [
@@ -503,7 +541,10 @@ fn state_decoder(found: Int) -> Decoder(State) {
     use unreported <- decode.field("unreported_replies", decode.int)
     decode.success(run.TokenUsage(input, output, unreported))
   })
-  use transcript <- decode.field("transcript", decode.list(message_decoder()))
+  use transcript <- decode.field(
+    "transcript",
+    decode.list(message_decoder(found)),
+  )
   use history <- decode.field("history", decode.list(action_decoder(found)))
   use approvals_issued <- decode.field("approvals_issued", decode.int)
   use phase <- decode.field("phase", phase_decoder(found))
@@ -541,7 +582,7 @@ fn identity_decoder() -> Decoder(Identity) {
   decode.success(Identity(name, version))
 }
 
-fn message_decoder() -> Decoder(Message) {
+fn message_decoder(version: Int) -> Decoder(Message) {
   use found <- tagged(model.UserMessage(""))
   case found {
     "user" -> Ok(string_field("text", model.UserMessage))
@@ -549,7 +590,33 @@ fn message_decoder() -> Decoder(Message) {
       Ok({
         use text <- decode.field("text", decode.string)
         use calls <- decode.field("calls", decode.list(tool_call_decoder()))
-        decode.success(model.AssistantMessage(text, calls))
+        let data_decoder = case version >= 4 {
+          True ->
+            decode.field(
+              "data",
+              decode.optional(provider_data_decoder()),
+              decode.success,
+            )
+          False ->
+            decode.optional_field(
+              "data",
+              None,
+              decode.optional(provider_data_decoder()),
+              decode.success,
+            )
+        }
+        use data <- decode.then(data_decoder)
+        case version < 4, data {
+          True, Some(_) ->
+            decode.failure(
+              model.UserMessage(""),
+              "provider data requires record version 4",
+            )
+          _, _ ->
+            decode.success(
+              model.AssistantMessage(model.AssistantTurn(text, calls, data)),
+            )
+        }
       })
     "tool_result" ->
       Ok({
@@ -559,6 +626,12 @@ fn message_decoder() -> Decoder(Message) {
       })
     _ -> Error(Nil)
   }
+}
+
+fn provider_data_decoder() -> Decoder(model.ProviderData) {
+  use format <- decode.field("format", decode.string)
+  use value <- decode.field("value", decode.string)
+  decode.success(model.ProviderData(format, value))
 }
 
 fn tool_call_decoder() -> Decoder(ToolCall) {

@@ -175,8 +175,7 @@ pub fn a_stop_waits_for_the_model_reply_in_flight_test() {
         [] -> {
           probe.gate(probe, "model")
           Ok(model.ToolRequest(
-            "",
-            [scripted.slow("a", "a")],
+            model.AssistantTurn("", [scripted.slow("a", "a")], None),
             Some(model.Usage(10, 5)),
           ))
         }
@@ -312,7 +311,8 @@ pub fn a_child_run_drains_on_its_own_and_is_recovered_with_its_parent_test() {
       "parent",
       scripted.model(fn(messages) {
         case scripted.results(messages) {
-          [] -> model.ToolRequest("", [delegation], None)
+          [] ->
+            model.ToolRequest(model.AssistantTurn("", [delegation], None), None)
           seen -> model.FinalAnswer("done: " <> string.join(seen, ","), None)
         }
       }),
@@ -379,7 +379,7 @@ fn delegating(
     "parent",
     scripted.model(fn(messages) {
       case scripted.results(messages) {
-        [] -> model.ToolRequest("", calls, None)
+        [] -> model.ToolRequest(model.AssistantTurn("", calls, None), None)
         seen -> model.FinalAnswer("done: " <> string.join(seen, ","), None)
       }
     }),

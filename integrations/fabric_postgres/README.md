@@ -80,25 +80,31 @@ committed outcome.
 
 ## Record versions
 
-The current runtime reads versions 1–3 and writes version 3 by default.
-Choose version 2 while readers that cannot read version 3 remain:
+The current runtime reads versions 1–4 and writes version 4 by default.
+Versions 2 and 3 remain writable when the state has no assistant provider
+data. For a deployment that must still write version 3:
 
 ```gleam
 let assert Ok(runs) =
   fabric_postgres.store(process.new_name("runs"), settings)
-let assert Ok(runs) = store.with_record_version(runs, 2)
+let assert Ok(runs) = store.with_record_version(runs, 3)
 ```
 
 Configure before starting the store, and use this returned value for all
-run handles and the sweeper. Versions outside 2–3 return
-`UnwritableVersion(requested, oldest, newest)`. Reads still accept 1–3.
+run handles and the sweeper. Versions outside 2–4 return
+`UnwritableVersion(requested, oldest, newest)`. Reads still accept 1–4.
 
-Deploy in two stages: first deploy every new node with writer 2; after all
-readers support version 3, restart them with writer 3 (or the default).
+Deploy version-4 readers everywhere before enabling the new llm_wire tool
+turns, then restart with writer 4 (or the default). Those turns preserve
+provider data that versions 2 and 3 cannot retain. An older writer refuses
+the response commit before dispatching tools, leaving the run unattended;
+recover with writer 4 to continue. A mixed-version deployment must keep
+these new tool turns disabled until the reader upgrade is complete.
+
 Existing values and runners retain their setting. The setting affects
 future writes only: it neither rewrites rows nor makes an existing
-version-3 row readable by an old reader. Rolling back to an old reader
-after version-3 writes therefore needs a separate migration plan.
+version-4 row readable by an old reader. Rolling back to an old reader
+after version-4 writes therefore needs a separate migration plan.
 
 The compatibility tests use the actual historical version-2 decoder.
 They establish record-format compatibility; every participating runtime

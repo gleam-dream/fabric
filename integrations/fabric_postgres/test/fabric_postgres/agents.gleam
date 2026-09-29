@@ -79,16 +79,19 @@ pub fn agent(gate: Gate, amount: Int) -> Agent(Nil) {
       case results {
         [] ->
           Ok(ToolRequest(
-            "",
-            [
-              model.ToolCall(
-                "c1",
-                "work",
-                "{\"amount\":" <> int.to_string(amount) <> "}",
-                None,
-                None,
-              ),
-            ],
+            model.AssistantTurn(
+              "",
+              [
+                model.ToolCall(
+                  "c1",
+                  "work",
+                  "{\"amount\":" <> int.to_string(amount) <> "}",
+                  None,
+                  None,
+                ),
+              ],
+              None,
+            ),
             Some(Usage(10, 5)),
           ))
         [result, ..] -> Ok(FinalAnswer("done: " <> result, Some(Usage(20, 5))))

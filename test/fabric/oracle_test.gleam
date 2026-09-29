@@ -162,8 +162,10 @@ fn observe(run: fabric.Run(context), probe: Probe) -> Observed {
     list.flat_map(snapshot.transcript, fn(message) {
       case message {
         model.UserMessage(text) -> [User(text)]
-        model.AssistantMessage(text, []) -> [Assistant(text)]
-        model.AssistantMessage(_, calls) -> [
+        model.AssistantMessage(model.AssistantTurn(text, [], _)) -> [
+          Assistant(text),
+        ]
+        model.AssistantMessage(model.AssistantTurn(_, calls, _)) -> [
           Calls(list.map(calls, fn(call) { #(call.name, call.id) })),
         ]
         model.ToolResultMessage(id, content) -> {
@@ -265,11 +267,14 @@ pub fn two_tool_calls_match_beamweaver_test() {
     case seen {
       [] ->
         model.ToolRequest(
-          "",
-          [
-            scripted.call("call_a", "lookup", "{\"city\":\"Paris\"}"),
-            scripted.call("call_b", "pay", "{\"to\":\"bob\"}"),
-          ],
+          model.AssistantTurn(
+            "",
+            [
+              scripted.call("call_a", "lookup", "{\"city\":\"Paris\"}"),
+              scripted.call("call_b", "pay", "{\"to\":\"bob\"}"),
+            ],
+            None,
+          ),
           None,
         )
       _ -> final(seen)
@@ -287,12 +292,15 @@ pub fn tool_errors_are_model_visible_like_beamweaver_test() {
     case seen {
       [] ->
         model.ToolRequest(
-          "",
-          [
-            scripted.call("call_a", "lookup", "{\"city\":\"Paris\"}"),
-            scripted.call("call_b", "lookup", "{\"city\":\"Oslo\"}"),
-            scripted.call("call_c", "ghost", "{}"),
-          ],
+          model.AssistantTurn(
+            "",
+            [
+              scripted.call("call_a", "lookup", "{\"city\":\"Paris\"}"),
+              scripted.call("call_b", "lookup", "{\"city\":\"Oslo\"}"),
+              scripted.call("call_c", "ghost", "{}"),
+            ],
+            None,
+          ),
           None,
         )
       _ -> final(seen)
@@ -330,14 +338,17 @@ pub fn model_call_limit_diverges_from_beamweaver_by_design_test() {
   let rules = fn(seen: List(String)) {
     let n = list.length(seen) + 1
     model.ToolRequest(
-      "",
-      [
-        scripted.call(
-          "call_" <> int.to_string(n),
-          "step",
-          "{\"n\":" <> int.to_string(n) <> "}",
-        ),
-      ],
+      model.AssistantTurn(
+        "",
+        [
+          scripted.call(
+            "call_" <> int.to_string(n),
+            "step",
+            "{\"n\":" <> int.to_string(n) <> "}",
+          ),
+        ],
+        None,
+      ),
       None,
     )
   }
@@ -382,8 +393,11 @@ fn hitl_agent(probe: Probe) -> agent.Agent(Nil) {
     case seen {
       [] ->
         model.ToolRequest(
-          "",
-          [scripted.call("call_t", "pay", "{\"to\":\"bob\"}")],
+          model.AssistantTurn(
+            "",
+            [scripted.call("call_t", "pay", "{\"to\":\"bob\"}")],
+            None,
+          ),
           None,
         )
       _ -> final(seen)
@@ -493,20 +507,26 @@ fn delegation_model(probe: Probe) -> model.Model {
     Ok(case who, seen {
       "go", [] ->
         model.ToolRequest(
-          "",
-          [
-            scripted.call(
-              "call_task",
-              "task",
-              "{\"subagent_type\":\"researcher\",\"description\":\"Paris\"}",
-            ),
-          ],
+          model.AssistantTurn(
+            "",
+            [
+              scripted.call(
+                "call_task",
+                "task",
+                "{\"subagent_type\":\"researcher\",\"description\":\"Paris\"}",
+              ),
+            ],
+            None,
+          ),
           None,
         )
       "Paris", [] ->
         model.ToolRequest(
-          "",
-          [scripted.call("call_c", "lookup", "{\"city\":\"Paris\"}")],
+          model.AssistantTurn(
+            "",
+            [scripted.call("call_c", "lookup", "{\"city\":\"Paris\"}")],
+            None,
+          ),
           None,
         )
       _, seen -> final(seen)

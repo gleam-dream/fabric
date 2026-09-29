@@ -100,7 +100,7 @@ fn working_researcher(
     "researcher",
     recorded(probe, "child", fn(messages) {
       case scripted.results(messages) {
-        [] -> model.ToolRequest("", calls, None)
+        [] -> model.ToolRequest(model.AssistantTurn("", calls, None), None)
         seen -> model.FinalAnswer("found " <> string.join(seen, ","), None)
       }
     }),
@@ -130,7 +130,7 @@ fn named_delegating_spec(
     name,
     recorded(probe, "parent", fn(messages) {
       case scripted.results(messages) {
-        [] -> model.ToolRequest("", calls, None)
+        [] -> model.ToolRequest(model.AssistantTurn("", calls, None), None)
         seen -> model.FinalAnswer("final: " <> string.join(seen, " | "), None)
       }
     }),
