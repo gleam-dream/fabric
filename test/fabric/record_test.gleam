@@ -210,7 +210,7 @@ pub fn a_version_1_record_is_read_as_a_root_run_without_sub_agents_test() {
       ]),
     )
   record.decode(version_1) |> should.equal(Ok(expected))
-  // It is written back as version 2.
+  // It is written back in the current version.
   record.decode(record.encode(expected)) |> should.equal(Ok(expected))
 }
 
@@ -340,4 +340,59 @@ pub fn a_wrapped_budget_is_still_read_test() {
     )
   wrapped |> string.contains("budget_exhausted") |> should.be_true
   record.decode(wrapped) |> should.equal(Ok(ended))
+}
+
+/// An actual pre-v3 decoder, not the current reader with a changed cap,
+/// accepts every v2 write shape. Its frozen types retain the old API.
+pub fn the_previous_decoder_reads_every_representable_shape_test() {
+  let base = base()
+  list.each(phases(), fn(phase) {
+    let state = case phase {
+      controller.NeverStarted ->
+        controller.State(..base, phase:, transcript: [])
+      _ -> controller.State(..base, phase:)
+    }
+    let assert Ok(encoded) = record.encode_as(state, record.V2)
+    let assert Ok(legacy) = old_record.decode(encoded)
+    legacy.run |> should.equal(state.run)
+    legacy.incarnation |> should.equal(state.incarnation)
+    record.decode(encoded) |> should.equal(Ok(state))
+  })
+}
+
+import fabric/support/v2/controller as old_controller
+import fabric/support/v2/record as old_record
+import fabric/support/v2/run as old_run
+
+pub fn a_version_2_tombstone_keeps_its_old_meaning_test() {
+  let tombstone =
+    controller.State(
+      ..base(),
+      phase: controller.NeverStarted,
+      transcript: [],
+      history: [],
+    )
+  let assert Ok(encoded) = record.encode_as(tombstone, record.V2)
+  let assert Ok(old) = old_record.decode(encoded)
+  old.phase |> should.equal(old_controller.Ended(old_run.Cancelled))
+  old.transcript |> should.equal([])
+  string.contains(encoded, "never_started") |> should.be_false
+  record.decode(encoded) |> should.equal(Ok(tombstone))
+  old_record.decode(record.encode(tombstone))
+  |> should.equal(Error(old_record.UnsupportedVersion(3)))
+}
+
+pub fn a_version_2_write_never_discards_or_reinterprets_a_transcript_test() {
+  let cancelled =
+    controller.State(
+      ..base(),
+      phase: controller.Ended(run.Cancelled),
+      transcript: [],
+    )
+  let inconsistent = controller.State(..base(), phase: controller.NeverStarted)
+  list.each([cancelled, inconsistent], fn(state) {
+    let assert Error(record.Unrepresentable(2, _)) =
+      record.encode_as(state, record.V2)
+    record.encode_as(state, record.V3) |> should.be_ok
+  })
 }

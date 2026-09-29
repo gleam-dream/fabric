@@ -24,7 +24,8 @@
 //// `max_children` and `max_depth`, each action's `child`, and the action
 //// states `delegated` and `limit_reached`. A version 1 record is read as a
 //// root run (no parent, depth 0) that may start no sub-agents (both limits
-//// 0) and whose actions started none; it is written back in the current version.
+//// 0) and whose actions started none. Writes use the store's chosen version,
+//// defaulting to the current version.
 ////
 //// Version 3 records a child run cancelled before it started as the phase
 //// `never_started`. Version 2 stored it as an ended, cancelled run with no
@@ -61,6 +62,45 @@ pub const format = "fabric.run"
 
 pub const version = 3
 
+/// The writer window is narrower than the reader's accepted versions.
+pub type WriteVersion {
+  V2
+  V3
+}
+
+pub fn writer(version: Int) -> Result(WriteVersion, Nil) {
+  case version {
+    2 -> Ok(V2)
+    3 -> Ok(V3)
+    _ -> Error(Nil)
+  }
+}
+
+pub type EncodeError {
+  Unrepresentable(version: Int, detail: String)
+}
+
+/// Encodes without changing the record's meaning for the chosen reader.
+/// Version 2 used an empty cancelled transcript for a child never started.
+pub fn encode_as(
+  state: State,
+  target: WriteVersion,
+) -> Result(String, EncodeError) {
+  case target, state.phase, state.transcript {
+    V3, _, _ -> Ok(encode(state))
+    V2, controller.NeverStarted, [] ->
+      Ok(encode_version(state, 2, controller.Ended(run.Cancelled)))
+    V2, controller.NeverStarted, [_, ..] ->
+      Error(Unrepresentable(2, "a never-started run has a transcript"))
+    V2, controller.Ended(run.Cancelled), [] ->
+      Error(Unrepresentable(
+        2,
+        "an empty cancelled run would mean never started",
+      ))
+    V2, _, _ -> Ok(encode_version(state, 2, state.phase))
+  }
+}
+
 pub type DecodeError {
   UnsupportedVersion(found: Int)
   Corrupt(detail: String)
@@ -72,6 +112,10 @@ pub type DecodeError {
 /// same text. Encode once per write, and retry that write with the same
 /// text.
 pub fn encode(state: State) -> String {
+  encode_version(state, version, state.phase)
+}
+
+fn encode_version(state: State, version: Int, phase: Phase) -> String {
   json.object([
     #("format", json.string(format)),
     #("version", json.int(version)),
@@ -110,7 +154,7 @@ pub fn encode(state: State) -> String {
     #("transcript", json.array(state.transcript, message)),
     #("history", json.array(state.history, action)),
     #("approvals_issued", json.int(state.approvals_issued)),
-    #("phase", phase(state.phase)),
+    #("phase", phase_json(phase)),
   ])
   |> json.to_string
 }
@@ -232,7 +276,7 @@ fn delegation_limit(limit: run.DelegationLimit) -> Json {
   }
 }
 
-fn phase(phase: Phase) -> Json {
+fn phase_json(phase: Phase) -> Json {
   case phase {
     controller.AwaitingModel(turn) ->
       tag("awaiting_model", [#("turn", json.int(turn))])
