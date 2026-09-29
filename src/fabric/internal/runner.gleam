@@ -376,15 +376,8 @@ fn launch_with(
   effects: List(Effect),
   seize: Bool,
 ) -> Result(Int, store.StoreError) {
-  launch_encoded(
-    setup,
-    work,
-    before,
-    state,
-    record.encode(state),
-    effects,
-    seize,
-  )
+  use encoded <- result.try(store.encode(setup.store, state))
+  launch_encoded(setup, work, before, state, encoded, effects, seize)
 }
 
 /// Stores and starts the new root run `state`. A backend that reports the
@@ -398,30 +391,32 @@ pub fn launch_new(
   effects: List(Effect),
 ) -> Result(Int, store.StoreError) {
   let work = work(setup, setup.env.context)
-  let encoded = record.encode(state)
+  use encoded <- result.try(store.encode(setup.store, state))
   case launch_encoded(setup, work, None, state, encoded, effects, False) {
     Error(store.AlreadyExists) ->
       case store.get(setup.store, state.run) {
         Ok(store.Entry(revision: 1, record: stored, live: None, ..))
           if stored == encoded
-        ->
+        -> {
+          use encoded <- result.try(store.encode(setup.store, state))
           launch_over(
             setup,
             work,
             Some(1),
             None,
             state,
-            record.encode(state),
+            encoded,
             effects,
             False,
           )
+        }
         _ -> Error(store.AlreadyExists)
       }
     other -> other
   }
 }
 
-/// `launch_with`, writing `state` as `encoded` (`record.encode(state)`),
+/// `launch_with`, writing `state` as `encoded` (`store.encode`),
 /// so that every attempt of one write carries one write token.
 fn launch_encoded(
   setup: Setup(context),
@@ -769,16 +764,18 @@ fn withhold_model_call(runner: Runner(context)) -> Runner(context) {
 /// events).
 fn hand_off(runner: Runner(context)) -> Nil {
   let state = controller.hand_off(runner.state)
-  case
+  let written = {
+    use encoded <- result.try(store.encode(runner.setup.store, state))
     persist(
       runner.setup.store,
       state.run,
-      record.encode(state),
+      encoded,
       runner.revision,
       store.HandOff(process.self()),
       0,
     )
-  {
+  }
+  case written {
     Ok(_) -> {
       observe.committed(Some(runner.state), state)
       observe.handed_off(state)
@@ -1047,8 +1044,8 @@ fn commit_answering(
     True -> store.Keep
     False -> store.Leave(process.self())
   }
-  let encoded = record.encode(state)
-  case
+  let written = {
+    use encoded <- result.try(store.encode(runner.setup.store, state))
     persist(
       runner.setup.store,
       state.run,
@@ -1057,7 +1054,8 @@ fn commit_answering(
       ownership,
       0,
     )
-  {
+  }
+  case written {
     Error(_) -> {
       answer(live.Superseded)
       Error(Superseded)
@@ -1295,12 +1293,16 @@ fn store_started_child(
             )
           let #(state, effects) =
             child_state(child_setup, child, prompt, parent, id)
-          let encoded = record.encode(state)
-          case store_child(child_setup, state, encoded, effects, 0) {
-            Ok(Nil) -> controller.ChildStarted(id)
-            Error(store.AlreadyExists) ->
+          let stored = {
+            use encoded <- result.try(store.encode(child_setup.store, state))
+            // Keep these exact bytes for adopting a confirmed late insert.
+            Ok(#(encoded, store_child(child_setup, state, encoded, effects, 0)))
+          }
+          case stored {
+            Ok(#(_, Ok(Nil))) -> controller.ChildStarted(id)
+            Ok(#(encoded, Error(store.AlreadyExists))) ->
               adopt_child(child_setup, id, #(state, encoded, effects), 3)
-            Error(error) ->
+            Error(error) | Ok(#(_, Error(error))) ->
               controller.ChildEnded(
                 id,
                 controller.ChildLost(
@@ -1489,11 +1491,12 @@ pub fn bury(
   agent: run.Identity,
 ) -> Result(Burial, store.StoreError) {
   let state = controller.never_started(parent, action, child, agent)
+  use encoded <- result.try(store.encode(store, state))
   case
     store.insert(
       store,
       child,
-      record.encode(state),
+      encoded,
       store.Detached(in_flight: False, seize: False),
     )
   {
@@ -1554,9 +1557,11 @@ pub fn cancel_unattended(
     )
     let detached =
       store.Detached(in_flight: controller.needs_runner(next), seize: True)
-    case
-      store.commit(store, id, entry.revision, record.encode(next), detached)
-    {
+    use encoded <- result.try(
+      store.encode(store, next)
+      |> result.map_error(fn(error) { Unreadable(StoreFailed(error)) }),
+    )
+    case store.commit(store, id, entry.revision, encoded, detached) {
       Ok(_) -> {
         observe.committed(Some(state), next)
         Ok(next)

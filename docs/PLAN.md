@@ -189,8 +189,9 @@ an idle run is data in the store with no process holding it.
 
 The accepted production-runtime design (2026-09-28, at `7901edb`; user
 decisions D1 to D5) is built in slices. This section records the slices
-built so far (S1 to S5); the write-version window and operations follow
-the design's remaining slices.
+built so far (S1 to S6). Operations remain in S7; the optional Grind
+integration follows in S8. [Remaining work](REMAINING.md) consolidates the
+current backlog; the earlier slice sections retain their historical findings.
 
 ### S1: limits
 
@@ -684,6 +685,54 @@ Completion gates: core **313**, external consumer **15**, Saga integration
 format checking and warnings-as-errors compilation; PostgreSQL ran only
 against the temporary cluster. The repository formatting gate also passed.
 
+### S6: record write-version window
+
+`store.with_record_version(runs, version)` returns a configured `Store` or
+`UnwritableVersion(requested, oldest, newest)`. Writers support versions
+2 and 3, defaulting to 3; readers accept versions 1–3 independently of
+that setting. Version 1 is outside the write window because it cannot
+represent sub-agents.
+
+Every runtime write uses the selected version: root and child starts,
+answers, tool results, cancellation, missing-child tombstones, shutdown
+handoffs, recovery and the sweeper's terminal-child acknowledgement. Each
+logical write is encoded once, so retries and lost-reply confirmation
+retain the exact text and write token.
+
+Version 2 represents `NeverStarted` as `Ended(Cancelled)` with an empty
+transcript. The current reader restores `NeverStarted`, while the frozen
+old reader reads its original cancelled representation. Two states cannot
+be written in version 2 without changing meaning: an ordinary cancelled
+run with an empty transcript, and a never-started run with a nonempty
+transcript. The encoder refuses them through the existing store-error
+path before writing. The runtime does not produce either state.
+
+Refinement from D5: configuration belongs to the `Store` value, like the
+drain setting. Configure before startup and use the returned value for
+all handles and the sweeper. It does not reconfigure existing runners,
+change other values, or migrate rows. A rollout deploys writers set to 2,
+then restarts with writer 3 after all readers understand it. Previously
+written version-3 rows still prevent rollback to a version-2 reader.
+Record compatibility does not establish compatibility between different
+backend or lease protocols.
+
+Acceptance evidence: `write_version_test` covers unsupported versions,
+approval and tool execution, reads and writes across both writer settings,
+missing-child cancellation, drain and restart, sweeper recovery without
+tool replay, and `cancel_stored`. `record_test` checks every representable
+phase and action state against the frozen version-2 decoder from
+`570502e928496b0203909f164a5e8fd021b8ddc8`, with its original domain types
+in `test/fabric/support/v2`. PostgreSQL tests exercise public configuration,
+an upgrade from version 2 to 3, and exact-byte lost-reply confirmation with
+each writer.
+
+Completion gates: core **323**, external consumer **15**, Saga integration
+**35**, PostgreSQL integration **28**, all passing. All four packages
+passed format checking and warnings-as-errors compilation; PostgreSQL
+used only its temporary cluster. The repository formatting gate passed.
+An independent review found no encoding bypass and verified the frozen
+decoder and domain declarations against their historical source.
+
 ## Public API (slice 3: ergonomics pass)
 
 The current public surface. The sections after this one are the history
@@ -805,6 +854,8 @@ pub fn supervised(store: Store) -> supervision.ChildSpecification(Nil)   // S2: 
 pub fn start(store: Store) -> Result(Nil, StoreError)   // linked to the caller: scripts and tests
 pub type DrainError { DrainNotPositive(Int)  DrainTooLarge(value: Int, limit: Int) }   // added in S2
 pub fn with_drain(store: Store, milliseconds: Int) -> Result(Store, DrainError)       // added in S2
+pub type UnwritableVersion { UnwritableVersion(requested: Int, oldest: Int, newest: Int) }   // S6
+pub fn with_record_version(store: Store, version: Int) -> Result(Store, UnwritableVersion)  // S6
 
 // fabric/observation — as in slice 2b, with model_turn() -> Event(model.Usage, ModelTurn);
 //   S2 adds run_handed_off() -> Event(Nil, RunHandedOff) and RunHandedOff(run: String, incarnation: Int)
@@ -1533,7 +1584,7 @@ adopted here:
 ## Tested sibling revisions
 
 Fabric resolves its siblings as `../` path dependencies. The completion
-gates through production S5 passed against these revisions, each
+gates through production S6 passed against these revisions, each
 with a clean working tree (the slice 3 ergonomics pass used sinal
 `c886825`):
 

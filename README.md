@@ -297,6 +297,15 @@ even when another node recovered the child. Running tools become uncertain
 and are never replayed. See the [PostgreSQL setup](integrations/fabric_postgres/README.md#automatic-recovery)
 for shutdown order and recovery limits.
 
+Rolling upgrades: `store.with_record_version(runs, 2)` lets the current
+runtime write records that version-2 readers understand. It reads versions
+1–3 regardless of the writer setting. Configure the store before starting
+it and use the returned value for every handle and sweeper. After all
+readers support version 3, restart with the default writer (3). Existing
+values and runners keep their setting; this does not migrate stored rows.
+See the [rollout procedure](integrations/fabric_postgres/README.md#record-versions)
+for compatibility and rollback limits.
+
 A Saga workflow is one typed tool too, from the separate package
 `integrations/fabric_saga`: `fabric_saga.tool(definition, workflow,
 execution.config(), explain:, rollback_within:)`. A cancelled call waits up
@@ -335,3 +344,7 @@ integrations/fabric_postgres/scripts/test-postgres.sh
 The root suite and CI do not run PostgreSQL tests. `nix flake check` checks
 formatting across the repository and starts no database. The packages use
 sibling path dependencies; see the tested revisions in [PLAN](docs/PLAN.md#tested-sibling-revisions).
+
+Production slices S1–S6 are complete. [Remaining work](docs/REMAINING.md)
+lists S7 operations, the later Grind integration, retained features and
+release work, with optional improvements kept separate.

@@ -1,0 +1,253 @@
+//// A rolling upgrade reads every supported format while writing the
+//// previous format until all old readers have been replaced.
+
+import fabric
+import fabric/agent
+import fabric/policy
+import fabric/run
+import fabric/store
+import fabric/support
+import fabric/support/probe
+import fabric/support/scripted
+import fabric/support/v2/record as old_record
+import fabric/testing
+import gleam/erlang/process
+import gleam/list
+import gleam/option.{None}
+import gleam/string
+import gleeunit/should
+
+pub fn unsupported_write_versions_are_refused_before_startup_test() {
+  let runs = store.in_memory(process.new_name("version-window"))
+  list.each([-1, 0, 1, 4], fn(version) {
+    store.with_record_version(runs, version)
+    |> should.equal(Error(store.UnwritableVersion(version, 2, 3)))
+  })
+}
+
+fn writes(backend: store.LeasedBackend, id: run.RunId, version: Int) {
+  let assert Ok(row) = backend.get(run.id_to_string(id))
+  string.contains(row.record, "\"version\":" <> int.to_string(version) <> ",")
+  |> should.be_true
+  case version {
+    2 -> {
+      let assert Ok(decoded) = old_record.decode(row.record)
+      decoded.run |> should.equal(run.id_to_string(id))
+    }
+    _ ->
+      old_record.decode(row.record)
+      |> should.equal(Error(old_record.UnsupportedVersion(version)))
+  }
+}
+
+import gleam/int
+
+fn node(backend, version) {
+  let assert Ok(runs) =
+    store.leased(
+      process.new_name("version-window"),
+      node: "test",
+      lease: 60_000,
+      backend:,
+    )
+  let assert Ok(runs) = store.with_record_version(runs, version)
+  support.started(runs)
+}
+
+fn reviewed(body) {
+  agent.new(
+    "worker",
+    scripted.plan([scripted.slow("w", "work")]),
+    [scripted.gated_tool(body)],
+    fn(_: Nil, _) { Ok(policy.RequireApproval(run.Requirement("review", 1))) },
+  )
+  |> support.agent
+}
+
+pub fn configured_writes_remain_readable_by_the_version_2_decoder_test() {
+  let memory = testing.leased_memory()
+  let runs = node(memory.backend, 2)
+  let body = probe.new()
+  let agent = reviewed(body)
+  let assert Ok(started) = fabric.start(runs, agent, Nil, "go")
+  let assert Ok(run.Suspended([pending], [])) = fabric.await(started, 5000)
+  writes(memory.backend, fabric.id(started), 2)
+  let assert Ok(_) =
+    fabric.approve(started, pending.reference, reviewer: None, context: Nil)
+  let running = probe.arrival(body)
+  writes(memory.backend, fabric.id(started), 2)
+  probe.release(running)
+  fabric.await(started, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"work\""))))
+  writes(memory.backend, fabric.id(started), 2)
+}
+
+pub fn the_write_target_does_not_restrict_what_can_be_read_test() {
+  list.each([#(3, 2), #(2, 3)], fn(versions) {
+    let memory = testing.leased_memory()
+    let body = probe.new()
+    let agent = reviewed(body)
+    let first = node(memory.backend, versions.0)
+    let second = node(memory.backend, versions.1)
+    let assert Ok(started) = fabric.start(first, agent, Nil, "go")
+    let assert Ok(run.Suspended([pending], [])) = fabric.await(started, 5000)
+    writes(memory.backend, fabric.id(started), versions.0)
+    let assert Ok(opened) = fabric.open(second, agent, Nil, fabric.id(started))
+    let assert Ok(_) =
+      fabric.approve(opened, pending.reference, reviewer: None, context: Nil)
+    let running = probe.arrival(body)
+    probe.release(running)
+    fabric.await(opened, 5000)
+    |> should.equal(Ok(run.Finished(run.Completed("final: \"work\""))))
+    writes(memory.backend, fabric.id(opened), versions.1)
+  })
+}
+
+import fabric/model
+import fabric/support/restart
+import fabric/support/v2/controller as old_controller
+import fabric/support/v2/run as old_run
+import fabric/tool
+import json/blueprint/codec
+
+pub fn a_child_cancelled_before_storage_is_a_version_2_tombstone_test() {
+  let memory = testing.leased_memory()
+  let runs = node(memory.backend, 2)
+  let prompt = probe.new()
+  let child_calls = probe.new()
+  let child =
+    agent.new(
+      "child",
+      scripted.model(fn(_) {
+        probe.record(child_calls, "model")
+        model.FinalAnswer("done", None)
+      }),
+      [],
+      policy.always_allow(),
+    )
+    |> support.agent
+  let research =
+    tool.define("research", "Research", codec.string(), codec.string())
+  let assert Ok(call) = testing.call(research, "r", "topic")
+  let parent =
+    agent.new("parent", scripted.plan([call]), [], policy.always_allow())
+    |> agent.with_sub_agent(
+      research,
+      to: child,
+      prompt: fn(topic) {
+        probe.gate(prompt, "prompt")
+        topic
+      },
+      output: Ok,
+    )
+    |> support.agent
+  let assert Ok(root) = fabric.start(runs, parent, Nil, "go")
+  let held = probe.arrival(prompt)
+  let assert Ok(_) = fabric.cancel(root)
+  fabric.await(root, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  let child_id = support.child_id(fabric.id(root), 1)
+  writes(memory.backend, child_id, 2)
+  let assert Ok(row) = memory.backend.get(run.id_to_string(child_id))
+  let assert Ok(decoded) = old_record.decode(row.record)
+  decoded.phase |> should.equal(old_controller.Ended(old_run.Cancelled))
+  decoded.transcript |> should.equal([])
+  writes(memory.backend, fabric.id(root), 2)
+  probe.release(held)
+  probe.count(child_calls, "model") |> should.equal(0)
+}
+
+pub fn a_drained_run_keeps_version_2_through_handoff_and_recovery_test() {
+  let memory = testing.leased_memory()
+  let assert Ok(runs) =
+    store.leased(
+      process.new_name("version-drain"),
+      node: "a",
+      lease: 60_000,
+      backend: memory.backend,
+    )
+  let assert Ok(runs) = store.with_record_version(runs, 2)
+  let body = probe.new()
+  let agent =
+    agent.new(
+      "worker",
+      scripted.plan([scripted.slow("w", "work")]),
+      [scripted.gated_tool(body)],
+      policy.always_allow(),
+    )
+    |> support.agent
+  let app = restart.application(runs)
+  let assert Ok(started) = fabric.start(runs, agent, Nil, "go")
+  let running = probe.arrival(body)
+  restart.begin_stop(app)
+  restart.draining(runs)
+  probe.release(running)
+  restart.stopped(app)
+  writes(memory.backend, fabric.id(started), 2)
+  let app = restart.application(runs)
+  let assert Ok(recovered) =
+    fabric.recover(runs, agent, Nil, fabric.id(started))
+  fabric.await(recovered, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"work\""))))
+  writes(memory.backend, fabric.id(recovered), 2)
+  probe.count(body, "start:work") |> should.equal(1)
+  restart.stop(app)
+}
+
+pub fn automatic_crash_recovery_and_reconciliation_keep_version_2_test() {
+  let memory = testing.leased_memory()
+  let a = node(memory.backend, 2)
+  let b = node(memory.backend, 2)
+  let body = probe.new()
+  let agent =
+    agent.new(
+      "worker",
+      scripted.plan([scripted.slow("w", "work")]),
+      [scripted.gated_tool(body)],
+      policy.always_allow(),
+    )
+    |> support.agent
+  let assert Ok(started) = fabric.start(a, agent, Nil, "go")
+  let _ = probe.arrival(body)
+  let assert Ok(runner) = restart.runner(a, fabric.id(started))
+  restart.kill(runner)
+  let assert Ok(row) = memory.backend.get(run.id_to_string(fabric.id(started)))
+  let assert store.Held(owner, True) = row.holder
+  let assert Ok(_) =
+    memory.backend.renew(owner, [run.id_to_string(fabric.id(started))], 0)
+  let assert Ok(spec) =
+    fabric.sweeper(b, [fabric.recovery(agent, fn(_) { Nil })], every: 10)
+  let assert Ok(sweeper) = spec.start()
+  let assert Ok(opened) = fabric.open(b, agent, Nil, fabric.id(started))
+  let uncertain = await_uncertain(opened, 200)
+  writes(memory.backend, fabric.id(opened), 2)
+  let assert Ok(_) = fabric.reconcile(opened, uncertain.reference, "\"work\"")
+  fabric.await(opened, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("final: \"work\""))))
+  writes(memory.backend, fabric.id(opened), 2)
+  probe.count(body, "start:work") |> should.equal(1)
+  process.unlink(sweeper.pid)
+  restart.kill(sweeper.pid)
+}
+
+fn await_uncertain(run, tries) {
+  case fabric.await(run, 0) {
+    Ok(run.Suspended([], [effect])) -> effect
+    _ if tries > 0 -> {
+      process.sleep(10)
+      await_uncertain(run, tries - 1)
+    }
+    _ -> panic as "automatic recovery did not finish"
+  }
+}
+
+pub fn cancelling_without_an_agent_keeps_the_selected_write_version_test() {
+  let memory = testing.leased_memory()
+  let runs = node(memory.backend, 2)
+  let body = probe.new()
+  let assert Ok(started) = fabric.start(runs, reviewed(body), Nil, "go")
+  let assert Ok(run.Suspended(_, _)) = fabric.await(started, 5000)
+  fabric.cancel_stored(runs, fabric.id(started))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
+  writes(memory.backend, fabric.id(started), 2)
+  probe.count(body, "start:work") |> should.equal(0)
+}

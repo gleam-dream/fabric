@@ -78,6 +78,35 @@ outcomes before the run continues. Family members have independent leases:
 a live parent keeps its context and reads a remotely recovered child's
 committed outcome.
 
+## Record versions
+
+The current runtime reads versions 1–3 and writes version 3 by default.
+Choose version 2 while readers that cannot read version 3 remain:
+
+```gleam
+let assert Ok(runs) =
+  fabric_postgres.store(process.new_name("runs"), settings)
+let assert Ok(runs) = store.with_record_version(runs, 2)
+```
+
+Configure before starting the store, and use this returned value for all
+run handles and the sweeper. Versions outside 2–3 return
+`UnwritableVersion(requested, oldest, newest)`. Reads still accept 1–3.
+
+Deploy in two stages: first deploy every new node with writer 2; after all
+readers support version 3, restart them with writer 3 (or the default).
+Existing values and runners retain their setting. The setting affects
+future writes only: it neither rewrites rows nor makes an existing
+version-3 row readable by an old reader. Rolling back to an old reader
+after version-3 writes therefore needs a separate migration plan.
+
+The compatibility tests use the actual historical version-2 decoder.
+They establish record-format compatibility; every participating runtime
+must also support the same backend and lease protocol. Lease columns are
+unchanged. A child cancelled before it starts uses version 2's empty,
+cancelled record; the current reader restores its `never_started` meaning.
+A state that cannot retain its meaning in version 2 fails before writing.
+
 ## Settings
 
 - **`settings(connection, node:)`**: the node id names this VM among every VM

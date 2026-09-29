@@ -5,7 +5,6 @@ import fabric/agent.{type Agent}
 import fabric/internal/bounded
 import fabric/internal/controller
 import fabric/internal/family
-import fabric/internal/record
 import fabric/internal/runner
 import fabric/observation as o
 import fabric/run.{type Identity, type RunId}
@@ -252,13 +251,16 @@ fn release_acknowledged(store: Store, state: controller.State) -> Bool {
     True ->
       case runner.load(store, state.run) {
         Ok(#(entry, current)) if current == state ->
-          store.commit(
-            store,
-            state.run,
-            entry.revision,
-            record.encode(state),
-            store.Detached(in_flight: False, seize: False),
-          )
+          store.encode(store, state)
+          |> result.try(fn(encoded) {
+            store.commit(
+              store,
+              state.run,
+              entry.revision,
+              encoded,
+              store.Detached(in_flight: False, seize: False),
+            )
+          })
           |> result.is_ok
         _ -> False
       }

@@ -87,9 +87,11 @@
 //// drives.
 
 import fabric/internal/bounded
+import fabric/internal/controller
 import fabric/internal/executor
 import fabric/internal/live
 import fabric/internal/observe
+import fabric/internal/record
 import fabric/observation as o
 import gleam/dict.{type Dict}
 import gleam/dynamic
@@ -178,6 +180,9 @@ pub opaque type Store {
     drain: Int,
     /// A leased store's node id and lease duration (`leased`).
     leasing: Option(Leasing),
+    /// Writes through this value use this version; reads accept all
+    /// supported versions. Configure before constructing run handles.
+    write_version: record.WriteVersion,
   )
 }
 
@@ -202,6 +207,42 @@ pub type DrainError {
   /// Longer than the longest timer the runtime can set (`limit`, 2^32 - 1
   /// ms).
   DrainTooLarge(value: Int, limit: Int)
+}
+
+/// The supported write window is the previous and current record version.
+pub type UnwritableVersion {
+  UnwritableVersion(requested: Int, oldest: Int, newest: Int)
+}
+
+/// Chooses the record format for writes through this Store value. The
+/// default is 3; versions 2 and 3 can be written, and 1 through 3 read.
+/// Configure before starting the store and use the returned value for
+/// every handle and sweeper. Existing values and runners are unchanged.
+///
+/// During a rolling upgrade, every new node writes 2 while old readers
+/// remain. After all readers understand 3, restart with writers set to 3.
+/// Records are changed only by ordinary writes, never by this setting.
+pub fn with_record_version(
+  store: Store,
+  version: Int,
+) -> Result(Store, UnwritableVersion) {
+  record.writer(version)
+  |> result.map(fn(writer) { Store(..store, write_version: writer) })
+  |> result.replace_error(UnwritableVersion(version, 2, record.version))
+}
+
+/// Encode once per logical write, before effects, and reuse the bytes on
+/// retries so the write token still confirms exactly that attempt.
+@internal
+pub fn encode(
+  store: Store,
+  state: controller.State,
+) -> Result(String, StoreError) {
+  record.encode_as(state, store.write_version)
+  |> result.map_error(fn(problem) {
+    let record.Unrepresentable(version, detail) = problem
+    Unavailable("record version " <> int.to_string(version) <> ": " <> detail)
+  })
 }
 
 /// What the store process receives.
@@ -260,6 +301,7 @@ pub fn new(
     None,
     default_drain,
     None,
+    record.V3,
   )
 }
 
@@ -273,6 +315,7 @@ pub fn in_memory(name: Name(Message)) -> Store {
     None,
     default_drain,
     None,
+    record.V3,
   )
 }
 
@@ -319,6 +362,7 @@ pub fn directory(name: Name(Message), path: String) -> Store {
     None,
     default_drain,
     None,
+    record.V3,
   )
 }
 
@@ -373,6 +417,7 @@ pub fn leased(
         None,
         default_drain,
         Some(Leasing(node, ms)),
+        record.V3,
       ))
   }
 }
