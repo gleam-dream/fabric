@@ -30,7 +30,7 @@ pub type TransferError {
 }
 
 pub fn city_codec() -> Codec(City) {
-  codec.field("city", codec.string())
+  codec.field("city", codec.describe(codec.string(), "City to look up"))
   |> codec.imap(City, fn(city) { city.name })
 }
 
@@ -42,8 +42,8 @@ pub fn forecast_codec() -> Codec(Forecast) {
 pub fn transfer_codec() -> Codec(Transfer) {
   let assert Ok(transfer) =
     codec.record2(
-      codec.required("to", codec.string()),
-      codec.required("amount", codec.int()),
+      codec.required("to", codec.describe(codec.string(), "Recipient account")),
+      codec.required("amount", codec.describe(codec.int(), "Amount in cents")),
       Transfer,
       fn(t) { t.to },
       fn(t) { t.amount },

@@ -44,6 +44,11 @@ pub fn declarations_derive_from_the_input_codec_test() {
     registry.new([apps.weather_tool(), apps.transfer_tool()])
   let assert Ok(city_schema) = codec.schema(apps.city_codec())
   let assert Ok(transfer_schema) = codec.schema(apps.transfer_codec())
+  city_schema
+  |> should.equal(codec.FieldSchema(
+    "city",
+    codec.DescribedSchema("City to look up", codec.StringSchema),
+  ))
   registry.declarations(tools)
   |> should.equal([
     model.ToolSpec(
@@ -69,7 +74,11 @@ pub fn admission_distinguishes_unknown_tools_and_malformed_arguments_test() {
     registry.admit(tools, "lookup_weather", "{\"city\":")
   let assert Error(registry.MalformedArguments(detail)) =
     registry.admit(tools, "lookup_weather", "{\"town\":\"Paris\"}")
-  detail |> should.not_equal("")
+  detail |> should.equal("$: unknown property")
+  registry.admit(tools, "lookup_weather", "{\"city\":42}")
+  |> should.equal(
+    Error(registry.MalformedArguments("$[\"city\"]: expected a string")),
+  )
 }
 
 pub fn invocation_distinguishes_success_failure_and_uncertainty_test() {
