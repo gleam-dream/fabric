@@ -138,6 +138,26 @@ pub type StoreError {
   Unavailable(reason: String)
 }
 
+/// An instantaneous operational report, not permission to execute work.
+pub type Readiness {
+  Readiness(status: ReadinessStatus, runners: Int, lease: LeaseHealth)
+}
+
+pub type ReadinessStatus {
+  Accepting
+  StoreDraining
+  RunnerFactoryUnavailable
+  /// A local runner no longer has a confirmed safe lease window.
+  LeaseUnconfirmed
+}
+
+pub type LeaseHealth {
+  Unleased
+  /// Milliseconds from the start of the last successful renewal request.
+  /// `None` before any successful renewal in this store process.
+  Leased(duration_ms: Int, last_success_age_ms: Option(Int))
+}
+
 pub type Stored {
   Stored(revision: Int, record: String)
 }
@@ -319,6 +339,11 @@ pub opaque type Message {
   ClaimExpired(limit: Int, reply: Subject(Result(List(String), StoreError)))
   ClaimReady(limit: Int, reply: Subject(Result(List(String), StoreError)))
   ReadClock(reply: Subject(Result(Int, StoreError)))
+  ReadReadiness(reply: Subject(Result(Readiness, StoreError)))
+  ReadinessChecked(
+    reply: Subject(Result(Readiness, StoreError)),
+    result: Result(Nil, StoreError),
+  )
   ReserveJobObservation(run: String, caller: Pid, reply: Subject(Bool))
   ReleaseJobObservation(run: String, caller: Pid)
 }
@@ -984,6 +1009,7 @@ type Loop {
     /// which its lease is surely held (see `valid_until`).
     valid: Dict(String, Int),
     renewal: Renewal,
+    last_renewal: Option(Int),
     /// When the next `Fence` is due, if one is set.
     fence_at: Option(Int),
     /// The name of the factory its runners are started under.
@@ -1069,6 +1095,7 @@ fn run(
       live: dict.new(),
       valid: dict.new(),
       renewal: Idle,
+      last_renewal: None,
       fence_at: None,
       factory: factory_name(store.name),
       draining: None,
@@ -1192,6 +1219,26 @@ fn serve(state: Loop, message: Message) -> Loop {
       state
     }
     Draining(pid) -> Loop(..state, draining: Some(pid))
+    ReadReadiness(reply) -> {
+      process.spawn(fn() {
+        let checked =
+          bounded_backend(state.timeout, fn() {
+            case state.backend.get("fabric-readiness-" <> random_id()) {
+              Ok(_) | Error(NotFound) -> Ok(Nil)
+              Error(error) -> Error(error)
+            }
+          })
+        process.send(state.subject, ReadinessChecked(reply, checked))
+      })
+      state
+    }
+    ReadinessChecked(reply, checked) -> {
+      process.send(
+        reply,
+        result.map(checked, fn(_) { report_readiness(state) }),
+      )
+      state
+    }
     ReadClock(reply) -> {
       process.spawn(fn() {
         process.send(reply, bounded_backend(state.timeout, state.backend.now))
@@ -1549,6 +1596,41 @@ fn valid_until(lessee: Lessee, sent: Int) -> Int {
   sent + lessee.ttl - lessee.ttl / 5
 }
 
+fn report_readiness(state: Loop) -> Readiness {
+  let now = now_ms()
+  let lease = case state.lessee {
+    None -> Unleased
+    Some(lessee) ->
+      Leased(
+        lessee.ttl,
+        option.map(state.last_renewal, fn(at) { int.max(now - at, 0) }),
+      )
+  }
+  let status = case state.draining, process.named(state.factory) {
+    Some(_), _ -> StoreDraining
+    None, Error(_) -> RunnerFactoryUnavailable
+    None, Ok(_) ->
+      case state.lessee {
+        None -> Accepting
+        Some(_) -> {
+          let confirmed =
+            dict.fold(state.live, True, fn(ok, run, _) {
+              ok
+              && case dict.get(state.valid, run) {
+                Ok(until) -> until > now
+                Error(_) -> False
+              }
+            })
+          case confirmed {
+            True -> Accepting
+            False -> LeaseUnconfirmed
+          }
+        }
+      }
+  }
+  Readiness(status, dict.size(state.live), lease)
+}
+
 /// Sends one renewal of the leases of every live runner, unless one is in
 /// flight; on the timer's tick, also sets the next one and kills the
 /// runners whose lease could have expired. A tick that finds a renewal in
@@ -1614,7 +1696,7 @@ fn renewed_leases(
       state
     }
     Some(lessee), Ok(held) ->
-      list.fold(runs, state, fn(state, entry) {
+      list.fold(runs, Loop(..state, last_renewal: Some(sent)), fn(state, entry) {
         let #(run, pid) = entry
         case dict.get(state.live, run), list.contains(held, run) {
           Ok(#(current, _)), True if current == pid ->
@@ -1890,4 +1972,15 @@ pub fn claim_ready(
 /// reads, the callback is bounded by `with_backend_timeout`.
 pub fn now(store: Store) -> Result(Int, StoreError) {
   call(store, ReadClock) |> result.flatten
+}
+
+/// Checks storage with a bounded read, then samples current local readiness.
+/// Missing probe keys are healthy; backend errors, crashes and timeouts are
+/// errors. This never writes, claims or renews a record. Idle stores need no
+/// renewal; a new runner's committed claim supplies its initial lease evidence.
+/// During work, all runners must remain inside their confirmed safe lease
+/// windows. The existing lease safety margin applies. A draining store never
+/// reports `Accepting`, even when shutdown began during the backend probe.
+pub fn readiness(store: Store) -> Result(Readiness, StoreError) {
+  call(store, ReadReadiness) |> result.flatten
 }
