@@ -26,6 +26,7 @@ pub type Progress {
     uncertain: List(run.UncertainAction),
   )
   Signal(run.Identity)
+  Job(run.Identity)
   Uncertain(String)
   FinishedUncertain(String)
   InvalidOutput(output: String, reason: String)

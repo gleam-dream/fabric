@@ -1,0 +1,84 @@
+//// Read-only observation of an independently owned external job. A receipt
+//// comes from an earlier submission; this binding never submits or cancels it.
+
+import fabric/run
+import gleam/result
+import json/blueprint/codec.{type Codec}
+
+pub type Progress(output) {
+  Pending
+  Completed(output)
+  Failed(reason: String)
+}
+
+pub type Reference {
+  Reference(
+    run: run.RunId,
+    activation: Int,
+    attempt: Int,
+    operation: run.Identity,
+  )
+}
+
+pub opaque type Observer(context, receipt, output) {
+  Observer(
+    identity: run.Identity,
+    receipt: Codec(receipt),
+    output: Codec(output),
+    read: fn(context, receipt) -> Result(Progress(output), String),
+  )
+}
+
+/// The callback must be a repeatable read. An error means no authoritative
+/// observation; `Failed` means the remote job has a definite failure outcome.
+/// Canceling this observation leaves the remote job independently owned.
+pub fn observe(
+  identity: run.Identity,
+  receipt: Codec(receipt),
+  output: Codec(output),
+  read: fn(context, receipt) -> Result(Progress(output), String),
+) -> Observer(context, receipt, output) {
+  Observer(identity, receipt, output, read)
+}
+
+@internal
+pub fn identity(observer: Observer(context, receipt, output)) -> run.Identity {
+  observer.identity
+}
+
+@internal
+pub fn receipt_codec(
+  observer: Observer(context, receipt, output),
+) -> Codec(receipt) {
+  observer.receipt
+}
+
+@internal
+pub fn output_codec(
+  observer: Observer(context, receipt, output),
+) -> Codec(output) {
+  observer.output
+}
+
+@internal
+pub fn reader(
+  observer: Observer(context, receipt, output),
+) -> fn(context, String) -> Result(Progress(String), String) {
+  fn(context, encoded) {
+    use receipt <- result.try(
+      codec.decode_json(observer.receipt, encoded)
+      |> result.map_error(codec.render_json_decode_error),
+    )
+    use progress <- result.try(observer.read(context, receipt))
+    case progress {
+      Pending -> Ok(Pending)
+      Failed(reason) -> Ok(Failed(reason))
+      Completed(output) ->
+        codec.encode_json(observer.output, output)
+        |> result.map(Completed)
+        |> result.map_error(fn(_) {
+          "job result cannot be encoded by its output codec"
+        })
+    }
+  }
+}

@@ -21,7 +21,7 @@ import gleam/result
 
 /// Change this version whenever a new record format or state changes the
 /// projection, so storage integrations can refresh their retained indexes.
-pub const version = 3
+pub const version = 4
 
 /// The run at the other end of a link and an opaque attachment key. A child's
 /// parent key must equal the key its parent retained for that child. The key
@@ -170,7 +170,7 @@ fn graph_child(state: graph.State, activation: graph.Activation) -> List(Link) {
         key(run.GraphParent(run.issued(state.run), activation.id)),
       ),
     ]
-    operation.Activity | operation.Signal -> []
+    operation.Activity | operation.Signal | operation.Job -> []
   }
 }
 
@@ -190,6 +190,7 @@ fn graph_metadata(state: graph.State) -> Metadata {
     | graph.Running(_)
     | graph.AwaitingApproval(..)
     | graph.WaitingSignal(_)
+    | graph.WaitingJob(_)
     | graph.Stopping(_)
     | graph.Ended(graph.Completed(_))
     | graph.Ended(graph.Exhausted(_))
@@ -197,6 +198,7 @@ fn graph_metadata(state: graph.State) -> Metadata {
     | graph.Ended(graph.Failed(_, graph.PolicyFailed(_)))
     | graph.Ended(graph.Failed(_, graph.FamilyBudget(_)))
     | graph.Ended(graph.Cancelled(_, graph.BeforeStart))
+    | graph.Ended(graph.Cancelled(_, graph.JobDetached))
     | graph.Ended(graph.Cancelled(_, graph.AfterResult))
     | graph.Ended(graph.Cancelled(_, graph.AfterFailure(_))) -> []
   }
@@ -211,6 +213,7 @@ fn graph_metadata(state: graph.State) -> Metadata {
     | graph.Ended(graph.Failed(..))
     | graph.Ended(graph.Exhausted(_))
     | graph.Ended(graph.Cancelled(_, graph.BeforeStart))
+    | graph.Ended(graph.Cancelled(_, graph.JobDetached))
     | graph.Ended(graph.Cancelled(_, graph.AfterResult))
     | graph.Ended(graph.Cancelled(_, graph.AfterFailure(_)))
     | graph.Ended(graph.Cancelled(_, graph.AfterChild(_))) -> True
@@ -219,6 +222,7 @@ fn graph_metadata(state: graph.State) -> Metadata {
     | graph.Running(_)
     | graph.AwaitingApproval(..)
     | graph.WaitingSignal(_)
+    | graph.WaitingJob(_)
     | graph.Joining(..)
     | graph.WaitingChild(..)
     | graph.ChildBlocked(..)

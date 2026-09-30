@@ -7,6 +7,7 @@
 //// structural manifest detects topology and declared contract changes, not
 //// arbitrary changes to callback implementations.
 
+import fabric/graph/job
 import fabric/graph/operation.{type Invocation, type Operation}
 import fabric/internal/graph/child_driver
 import fabric/internal/graph/controller as control
@@ -41,6 +42,7 @@ pub opaque type Node(context, state, answer) {
     check_input: fn(String) -> Result(Nil, Error),
     check_output: fn(String) -> Result(Nil, Error),
     child: Result(child_driver.Driver, Error),
+    job: fn(context, String) -> Result(job.Progress(String), String),
   )
 }
 
@@ -156,6 +158,7 @@ pub fn node(
     check_input: fn(text) { decode_input(text) |> result.replace(Nil) },
     check_output: fn(text) { decode_output(text) |> result.replace(Nil) },
     child: operation.child_driver(op) |> result.map_error(OperationRejected),
+    job: operation.job_reader(op),
   )
 }
 
@@ -238,6 +241,7 @@ fn manifest(spec: Spec(context, state, answer)) -> String {
             json.string(case node.kind {
               operation.Activity -> "activity"
               operation.Signal -> "signal"
+              operation.Job -> "job"
               operation.Subgraph -> "subgraph"
               operation.Agent -> "agent"
             }),
@@ -367,6 +371,19 @@ pub fn invoke(
 }
 
 @internal
+pub fn observe_job(
+  definition: Definition(context, state, answer),
+  context: context,
+  prepared: control.Prepared,
+) -> Result(job.Progress(String), Error) {
+  use node <- result.try(check_prepared(definition, prepared))
+  node.job(context, prepared.input)
+  |> result.map_error(fn(reason) {
+    OperationRejected(operation.ObservationFailed(reason))
+  })
+}
+
+@internal
 pub fn accept(
   definition: Definition(context, state, answer),
   state: String,
@@ -439,6 +456,7 @@ pub fn validate(
     | control.Running(a)
     | control.AwaitingApproval(a, _)
     | control.WaitingSignal(a)
+    | control.WaitingJob(a)
     | control.Joining(a, _)
     | control.WaitingChild(a, _)
     | control.ChildBlocked(a, _, _)

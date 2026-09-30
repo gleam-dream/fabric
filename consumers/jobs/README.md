@@ -1,10 +1,18 @@
-# External job submission
+# External job submission and observation
 
 This consumer submits an artifact job through a normal fenced Fabric graph
 operation. Its graph answer is a typed **acceptance receipt**. A separate
 service owns the queued work, produces an uppercase text artifact and retains
 its SHA-256 digest. Business completion is observed separately from graph
 completion.
+
+`fabric_jobs_demo.waiting_runtime` adds a second node that retains the receipt
+and waits for business completion. It binds `job.observe` through
+`operation.await_job`; `graph.poll_job(handle, reference)` checks the service
+once using the reference from `graph.AwaitingJob`. Pending observations leave
+the record unchanged. A completed digest and the graph's route commit together.
+The wait holds neither a runner nor a lease. Canceling this read-only binding
+records `graph.JobDetached` and leaves the independently owned job running.
 
 Run from the repository root:
 
@@ -50,6 +58,8 @@ The scenarios prove:
 - unsafe replay stays blocked until explicit receipt reconciliation;
 - concurrent duplicate submissions produce one job and one receipt;
 - queued jobs and completed artifacts survive the job service's own restart.
+- a retained job wait reconnects after Fabric restart without resubmission;
+- detaching observation leaves the real remote job to complete independently.
 
 Fabric's directory store proves store-process recovery, not power-loss safety.
 The service writes and syncs its deterministic artifact before committing the
@@ -57,8 +67,6 @@ completion in SQLite. If that completion commit is lost, it may safely write
 that same artifact again. This guarantee belongs to this example service; it
 is not a general exactly-once effect guarantee.
 
-Managed job attachment remains open: retaining a receipt as an active graph
-wait, automatically observing completion, cancellation ownership and durable
-deadlines still need runtime support. This consumer establishes the real
-submission boundary that those features will use. Saga and Grind remain
-optional consumer integrations.
+Automatic completion observation, owned remote cancellation and durable deadlines
+remain open. The retained wait currently needs explicit polling. Saga and Grind
+remain optional consumer integrations.

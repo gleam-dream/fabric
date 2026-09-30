@@ -30,9 +30,10 @@ encoded payload exactly, including JSON whitespace; acknowledgement uses the
 saved bytes rather than rerunning codecs to normalize historical results.
 
 Record version 2 introduced execution modes and the waiting phase. The current
-version 6 also retains subgraph and agent attachments, initial input, idle child
-waits and optional root budget declarations. Version 5 remains readable without
-a budget declaration; versions 1–4 are rejected. The mode participates in definition
+version 7 also retains subgraph and agent attachments, initial input, idle child
+waits, optional root budget declarations and read-only job observations. Versions
+5–6 remain readable for states they can represent; versions 1–4 are rejected.
+Job observations require version 7. The mode participates in definition
 compatibility, preventing a stored wait from becoming an executable activity.
 
 Consumption commits the output receipt, new state, route and next activation
@@ -105,8 +106,7 @@ Canceling an attachment retains intent until child cancellation is recorded;
 an absent child gets a terminal record before a competing start can win.
 No parent continuation follows an uncertain child. Each graph's activation
 bound limits the children it can reserve, and ancestry checks cap nesting.
-Family-wide budgeting remains separate work in this wave rather than being
-inferred from a passing child scenario. Retention is now verified separately.
+Family-wide budgeting and retention are verified separately below.
 
 The first subgraph checkpoint proves creation, lost acknowledgements,
 recovery, child approval, child reconciliation and cancellation races through
@@ -114,7 +114,8 @@ public APIs, including a PostgreSQL restart. It does not complete managed
 composition. Subsequent checkpoints implement idle child waits, local wakeups,
 nested approval/signal propagation and cancellation settlement, including nested
 cancellation across restart. Managed agent nodes are described below. Family
-retention is described below; shared budgets, jobs and deadlines remain unaccepted.
+retention and shared budgets are described below. Job observation is implemented;
+owned remote cancellation, automatic observation and deadlines remain open.
 
 ### Managed ordinary agents
 
@@ -483,8 +484,46 @@ Python's standard library, already provided by the development environment.
 These are example-service implementation choices, not Fabric dependencies.
 Acceptance requires real HTTP submission, stored receipts, actual artifact
 creation, concurrent duplicate submission and Fabric process loss across the
-acceptance/receipt boundary. Managed attachment, cancellation ownership,
-automatic completion observation and Fabric due-time discovery remain open.
+acceptance/receipt boundary. The next section adds a retained observation wait;
+owned remote cancellation, automatic observation and Fabric due-time discovery
+remain open.
+
+### Retained job observation
+
+Submission and attachment are separate activations. `job.observe` binds a typed
+receipt and business-output codec to a bounded, repeatable, read-only observation.
+`operation.await_job` makes that binding a managed wait. Its first lifetime
+contract is explicitly observation-only: canceling it detaches local observation
+and grants no authority to cancel the external job. An owned-cancellation binding
+and automatic due-time observation remain subsequent parts of the same wave.
+
+- **J6 — admission and retention:** policy and shared work budget admit the job
+  wait before any observation. The committed activation input is the accepted
+  receipt. Waiting owns neither an executor nor a lease; observation never submits
+  work or changes the remote job. An incompatible definition/receipt is refused
+  before calling the observer.
+- **J7 — correlated observation:** `graph.poll_job` targets a run, activation,
+  attempt and versioned operation. A stale reference never observes another visit.
+  Pending progress or an observer/transport/decode failure consumes no result and
+  releases no route. Repeating a completed reference reuses its committed receipt.
+- **J8 — checked completion:** completed output, native state, route and successor
+  activation commit together through the ordinary conditional write. A definite
+  remote failure ends the node without calling its success route. Invalid output
+  or a refused route leaves the job wait available for correction and observation.
+- **J9 — detached cancellation:** cancellation records that observation ended;
+  it does not imply the remote job stopped. Completion and cancellation contend
+  on the same graph revision. A completion that loses that race releases no
+  successor. A retained canceled wait cannot be polled into live work again.
+- **J10 — restart and composition:** a job wait survives store-process loss and
+  keeps the original reference and receipt. Its containing managed subgraphs park
+  too. Explicit polling works after restart without resubmitting the job; a saved
+  completion survives further recovery without observing the service again.
+
+The first vertical path uses explicit polling of retained job waits against the
+real service in `consumers/jobs`. Polling is a bounded command, not an opaque
+blocking operation or a permanent runner. Automatic due-time discovery, external
+cancellation requests/confirmation and deadline outcomes remain unbuilt, so this
+checkpoint cannot close managed external-job acceptance or wave 3.
 
 An optional due time is durable data. Timers are wakeup hints only; a due-wait
 scan or index plus an explicit wakeup owner must recover overdue waits after

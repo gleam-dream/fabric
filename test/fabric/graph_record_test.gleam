@@ -414,3 +414,57 @@ pub fn cancelled_receipts_cannot_rewrite_the_previous_application_state_test() {
     ])
   record.encode(forged) |> result.is_error |> should.be_true
 }
+
+pub fn job_records_require_version_seven_and_cannot_claim_owned_effect_states_test() {
+  let initial = initial()
+  let assert graph.Ready(a) = initial.phase
+  let a =
+    graph.Activation(
+      ..a,
+      prepared: graph.Prepared(..a.prepared, kind: operation.Job),
+    )
+  let ready = graph.State(..initial, phase: graph.Ready(a))
+  let waiting =
+    next(ready, graph.Inspected(graph.reference(ready, a), Ok(policy.Allow)))
+  waiting.phase |> should.equal(graph.WaitingJob(a))
+  let assert Ok(encoded) = record.encode(waiting)
+  record.decode(encoded) |> should.equal(Ok(waiting))
+  record.decode(string.replace(encoded, "\"version\":7", "\"version\":6"))
+  |> should.be_error
+  let cancelled = next(waiting, graph.Cancel)
+  cancelled.phase
+  |> should.equal(graph.Ended(graph.Cancelled(a, graph.JobDetached)))
+  let assert Ok(encoded) = record.encode(cancelled)
+  record.decode(encoded) |> should.equal(Ok(cancelled))
+  list.each(
+    [
+      graph.State(..waiting, phase: graph.Running(a)),
+      graph.State(
+        ..waiting,
+        phase: graph.WaitingJob(
+          graph.Activation(..a, prepared: prepared("generate")),
+        ),
+      ),
+      graph.State(
+        ..waiting,
+        phase: graph.Ended(graph.Cancelled(
+          a,
+          graph.UnresolvedCancellation(graph.Uncertain("not an owned effect")),
+        )),
+      ),
+      graph.State(
+        ..waiting,
+        phase: graph.Ended(graph.Cancelled(
+          graph.Activation(..a, prepared: prepared("generate")),
+          graph.JobDetached,
+        )),
+      ),
+    ],
+    fn(state) { record.encode(state) |> should.be_error },
+  )
+  let assert Ok(encoded) = record.encode(initial)
+  record.decode(string.replace(encoded, "\"version\":7", "\"version\":6"))
+  |> should.equal(Ok(initial))
+  record.decode(string.replace(encoded, "\"version\":7", "\"version\":5"))
+  |> should.equal(Ok(initial))
+}

@@ -7,6 +7,7 @@ import fabric/graph
 import fabric/graph/agent as agent_node
 import fabric/graph/child
 import fabric/graph/definition
+import fabric/graph/job
 import fabric/graph/operation
 import fabric/graph/signal
 import fabric/policy
@@ -144,6 +145,75 @@ pub fn a_signal_wait_releases_its_lease_and_another_store_consumes_it_once_test(
   done.status |> should.equal(graph.Completed(True))
   let assert Ok(duplicate) = graph.deliver(handle, reference, response, True)
   duplicate.revision |> should.equal(done.revision)
+}
+
+pub fn a_job_wait_survives_store_loss_without_holding_a_lease_test() {
+  let observer =
+    job.observe(
+      run.Identity("postgres-job", 1),
+      codec.string(),
+      codec.int(),
+      fn(_, receipt) {
+        receipt |> should.equal("accepted-job")
+        Ok(job.Completed(42))
+      },
+    )
+  let assert Ok(node_id) = definition.node_id("observe")
+  let node =
+    definition.node(
+      node_id,
+      operation.await_job(observer),
+      fn(receipt) { Ok(receipt) },
+      fn(receipt, output) { Ok(definition.Finish(receipt, output)) },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(definition.Spec(
+      run.Identity("postgres-job-flow", 1),
+      node_id,
+      [node],
+      codec.string(),
+      codec.int(),
+      1,
+    ))
+  let settings =
+    support.migrated(support.pool(4), "graph-job", support.schema())
+  let assert Ok(id) = run.parse_id("postgres-job-run")
+  let #(owner, reference) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("job-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let runtime =
+        graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+      let assert Ok(handle) = graph.start(runtime, id, "accepted-job")
+      let assert Ok(waiting) = graph.await(handle, 5000)
+      let assert graph.AwaitingJob(reference) = waiting.status
+      reference
+    })
+  let backend = fabric_postgres.backend(settings)
+  let assert Ok(row) = backend.get(run.id_to_string(id))
+  row.holder |> should.equal(store.Free)
+  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  |> should.equal(Ok(0))
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("job-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let handle =
+    graph.attach(
+      graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) }),
+      id,
+    )
+  let assert Ok(waiting) = graph.recover(handle)
+  waiting.status |> should.equal(graph.AwaitingJob(reference))
+  let assert Ok(done) = graph.poll_job(handle, reference)
+  done.status |> should.equal(graph.Completed(42))
+  graph.poll_job(handle, reference) |> should.equal(Ok(done))
+  let assert Ok(row) = backend.get(run.id_to_string(id))
+  row.holder |> should.equal(store.Free)
+  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  |> should.equal(Ok(1))
 }
 
 pub fn managed_pair(

@@ -83,6 +83,7 @@ pub type Outcome {
 
 pub type Cancellation {
   BeforeStart
+  JobDetached
   AfterResult
   AfterFailure(Fault)
   AfterChild(child: String)
@@ -95,6 +96,7 @@ pub type Phase {
   Running(Activation)
   AwaitingApproval(Activation, Approval)
   WaitingSignal(Activation)
+  WaitingJob(Activation)
   Joining(Activation, child: String)
   WaitingChild(Activation, child: String)
   ChildBlocked(Activation, child: String, reason: String)
@@ -132,6 +134,8 @@ pub type Event {
   Approved(Approval, Result(policy.Decision, String))
   Rejected(Approval, reason: String)
   Reconciled(activation: Int, attempt: Int, output: String, decision: Decision)
+  JobCompleted(Reference, output: String, decision: Decision)
+  JobFailed(Reference, reason: String)
   Signaled(activation: Int, attempt: Int, output: String, decision: Decision)
   ChildReturned(Reference, child: String, output: String, decision: Decision)
   ChildFailed(Reference, child: String, reason: String)
@@ -260,6 +264,14 @@ pub fn step(
         }),
       ))
     }
+    JobCompleted(ref, output, decision), WaitingJob(activation) -> {
+      use _ <- result.try(matches(state, activation, ref))
+      complete(state, activation, output, decision)
+    }
+    JobFailed(ref, reason), WaitingJob(activation) -> {
+      use _ <- result.try(matches(state, activation, ref))
+      Ok(ended(state, Failed(activation, OperationFailed(reason))))
+    }
     Signaled(id, attempt, output, decision), WaitingSignal(activation) -> {
       use _ <- result.try(matches_activation(activation, id, attempt))
       complete(state, activation, output, decision)
@@ -334,6 +346,7 @@ pub fn step(
       use _ <- result.try(matches_activation(activation, id, attempt))
       Ok(cancelled_result(state, activation, output))
     }
+    Cancel, WaitingJob(a) -> Ok(ended(state, Cancelled(a, JobDetached)))
     Cancel, Ended(_) -> Error(AlreadyEnded)
     Cancel, Joining(a, id)
     | Cancel, WaitingChild(a, id)
@@ -406,6 +419,7 @@ fn queue(state: State, activation: Activation) -> #(State, List(Effect)) {
       Dispatch(activation),
     ])
     operation.Signal -> #(State(..state, phase: WaitingSignal(activation)), [])
+    operation.Job -> #(State(..state, phase: WaitingJob(activation)), [])
     operation.Subgraph | operation.Agent -> {
       let id = child.reserved_id(state.run, activation.id)
       #(State(..state, phase: Joining(activation, id)), [
@@ -510,7 +524,7 @@ pub fn recover(state: State) -> Result(#(State, List(Effect)), Rejection) {
             ),
           )
       }
-    AwaitingApproval(_, _) | WaitingSignal(_) | Blocked(_, _) ->
+    AwaitingApproval(_, _) | WaitingSignal(_) | WaitingJob(_) | Blocked(_, _) ->
       Ok(#(recovered, []))
     Stopping(activation) ->
       Ok(ended(
@@ -603,6 +617,7 @@ pub fn needs_runner(state: State) -> Bool {
     | StoppingChild(_, _) -> True
     AwaitingApproval(_, _)
     | WaitingSignal(_)
+    | WaitingJob(_)
     | WaitingChild(_, _)
     | Blocked(_, _)
     | ChildBlocked(_, _, _)

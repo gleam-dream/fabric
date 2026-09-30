@@ -5,6 +5,7 @@
 import fabric/budget
 import fabric/graph/child
 import fabric/graph/definition
+import fabric/graph/job
 import fabric/graph/operation
 import fabric/internal/ancestry
 import fabric/internal/bounded
@@ -19,6 +20,7 @@ import fabric/internal/graph/live
 import fabric/internal/graph/record
 import fabric/internal/runner_host as host
 import fabric/policy
+import fabric/run
 import fabric/store
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
@@ -108,7 +110,7 @@ pub fn admit(
       use _ <- result.try(case activation.prepared.kind {
         operation.Subgraph | operation.Agent ->
           checked_child(runs, work, activation) |> result.replace(Nil)
-        operation.Activity | operation.Signal -> Ok(Nil)
+        operation.Activity | operation.Signal | operation.Job -> Ok(Nil)
       })
       work.admit(state.run, activation)
     })
@@ -627,6 +629,7 @@ fn poll_child(runner: Runner) -> Result(Runner, Error) {
     Ok(child.Approval(_)), False
     | Ok(child.AgentInput(..)), False
     | Ok(child.Signal(_)), False
+    | Ok(child.Job(_)), False
     -> apply(runner, g.ChildWaiting(ref, id))
     Error(reason), False
     | Ok(child.Uncertain(reason)), False
@@ -870,6 +873,7 @@ fn resting_child(phase: g.Phase, progress: child.Progress) -> Option(g.Phase) {
     g.WaitingChild(..), child.Approval(_)
     | g.WaitingChild(..), child.AgentInput(..)
     | g.WaitingChild(..), child.Signal(_)
+    | g.WaitingChild(..), child.Job(_)
     -> Some(phase)
     g.ChildBlocked(a, id, _), child.Uncertain(reason)
     | g.ChildBlocked(a, id, _), child.FinishedUncertain(reason)
@@ -878,6 +882,96 @@ fn resting_child(phase: g.Phase, progress: child.Progress) -> Option(g.Phase) {
       Some(g.ChildBlocked(a, id, "child cancellation retains uncertain effects"))
     _, _ -> None
   }
+}
+
+/// A job poll observes only an already admitted receipt. Read-only callbacks
+/// may repeat; only one conditional completion can release successor work.
+pub fn observe_job(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  ref: job.Reference,
+  tries: Int,
+) -> Result(g.State, Error) {
+  use #(entry, state) <- result.try(load(
+    runs,
+    work,
+    options,
+    run.id_to_string(ref.run),
+  ))
+  case
+    list.find(state.receipts, fn(receipt) {
+      job_matches(ref, receipt.activation)
+    })
+  {
+    Ok(_) -> Ok(state)
+    Error(_) -> {
+      use a <- result.try(case state.phase {
+        g.WaitingJob(a) ->
+          case job_matches(ref, a) {
+            True -> Ok(a)
+            False -> Error(Refused(g.StaleInvocation))
+          }
+        _ -> Error(Refused(g.WrongPhase))
+      })
+      use _ <- result.try(check_ancestry(runs, state))
+      use progress <- result.try(
+        bounded.call(options.callback_timeout, fn() { work.observe_job(a) })
+        |> result.map_error(string.inspect)
+        |> result.try(fn(reply) { reply |> result.map_error(string.inspect) })
+        |> result.map_error(CallbackFailed),
+      )
+      case progress {
+        job.Pending -> Ok(state)
+        _ -> {
+          use event <- result.try(case progress {
+            job.Completed(output) -> {
+              use decision <- result.map(
+                bounded.call(options.callback_timeout, fn() {
+                  work.accept(state, a, output)
+                })
+                |> result.map_error(string.inspect)
+                |> result.try(fn(reply) {
+                  reply |> result.map_error(string.inspect)
+                })
+                |> result.map_error(CallbackFailed),
+              )
+              g.JobCompleted(g.reference(state, a), output, decision)
+            }
+            job.Failed(reason) -> Ok(g.JobFailed(g.reference(state, a), reason))
+            job.Pending -> Error(Refused(g.WrongPhase))
+          })
+          use #(next, effects) <- result.try(
+            g.step(state, event) |> result.map_error(Refused),
+          )
+          case
+            launch(
+              runs,
+              work,
+              options,
+              Some(entry.revision),
+              next,
+              effects,
+              None,
+              False,
+            )
+          {
+            Ok(_) -> Ok(next)
+            Error(StoreFailed(store.Conflict(_))) if tries > 1 ->
+              observe_job(runs, work, options, ref, tries - 1)
+            Error(error) -> Error(error)
+          }
+        }
+      }
+    }
+  }
+}
+
+fn job_matches(ref: job.Reference, a: g.Activation) -> Bool {
+  ref.activation == a.id
+  && ref.attempt == a.attempt
+  && ref.operation == a.prepared.operation
+  && a.prepared.kind == operation.Job
 }
 
 pub fn recover(
@@ -1033,8 +1127,10 @@ fn wake_parent(
         |> result.map_error(CallbackFailed),
       )
       case progress {
-        child.Approval(_) | child.AgentInput(..) | child.Signal(_) ->
-          Ok(store.KeepWatching)
+        child.Approval(_)
+        | child.AgentInput(..)
+        | child.Signal(_)
+        | child.Job(_) -> Ok(store.KeepWatching)
         _ ->
           recover_work(runs, work, options, entry, state, 3)
           |> result.replace(store.KeepWatching)
@@ -1087,6 +1183,7 @@ fn recover_cancelled_child(
     | child.Approval(_)
     | child.AgentInput(..)
     | child.Signal(_)
+    | child.Job(_)
     | child.Uncertain(_)
     | child.FinishedUncertain(_)
     | child.Cancelled(True) -> Ok(state)
