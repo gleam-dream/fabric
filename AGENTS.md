@@ -2,9 +2,9 @@
 
 ## About this repo
 
-`fabric` — A bounded, typed LLM agent runtime for Gleam: typed application tools, an explicit policy gate, a pure agent controller, and a thin OTP runner with cancellation. It consumes llm_wire for providers and json_blueprint for tool codecs; typed workflows (DAGs) belong to Saga.
+`fabric` — A bounded, typed LLM agent and agentic graph runtime for Gleam: typed application operations, an explicit policy gate, pure controllers, and supervised OTP runners with cancellation. It consumes llm_wire for providers and json_blueprint for codecs. Fabric owns conditional agentic graphs; Saga remains an optional integration for independent workflows with compensation. Neither Saga nor Grind is a core dependency.
 
-Behavioural oracle: BeamWeaver (partial migration of its agent loop; see docs/ORACLE.md). Plan: docs/PLAN.md. Design: [gleam-dream/oversight](https://github.com/gleam-dream/oversight)/fabric-design.md.
+Behavioural oracle: BeamWeaver (partial migration of its agent loop; see docs/ORACLE.md). Plan: docs/PLAN.md. Agent design: [gleam-dream/oversight](https://github.com/gleam-dream/oversight)/fabric-design.md. Graph design and selected implementation program: docs/GRAPH-FLOW.md and docs/implementation/graph-flow/wave-tracker.md.
 
 ## Tooling
 

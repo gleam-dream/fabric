@@ -19,7 +19,7 @@ work. The graph runner now handles conditional routes, bounded cycles, approval,
 recovery, reconciliation, cancellation, shutdown handoff and typed durable
 signals. Initial managed subgraphs now cover restart, approvals, lost
 acknowledgements and cancellation races. Steps 3–6 remain: idle and nested child
-waits, canceled-child settlement, managed agents, family budgets/retention,
+waits, managed agents, family budgets/retention,
 deadlines and jobs, typed parallel composition, real adapters and
 agent-recipe evaluation. S7 remains part of the production backlog.
 

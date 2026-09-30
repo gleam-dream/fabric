@@ -8,6 +8,7 @@ import fabric/graph/operation
 import fabric/internal/bounded
 import fabric/internal/claim
 import fabric/internal/executor
+import fabric/internal/graph/child_driver
 import fabric/internal/graph/controller as g
 import fabric/internal/graph/live
 import fabric/internal/graph/record
@@ -76,6 +77,19 @@ pub fn admit(
     check_ancestry(runs, state) |> result.map_error(string.inspect),
   )
   bounded.call(options.callback_timeout, fn() {
+    use _ <- result.try(case activation.prepared.kind {
+      operation.Subgraph -> {
+        use driver <- result.try(
+          work.child(activation) |> result.map_error(string.inspect),
+        )
+        case driver.store(), store.pid(runs) {
+          Ok(child_store), Ok(parent_store) if child_store == parent_store ->
+            Ok(Nil)
+          _, _ -> Error("managed child must use its parent's store")
+        }
+      }
+      operation.Activity | operation.Signal -> Ok(Nil)
+    })
     work.admit(state.run, activation)
   })
   |> result.map_error(string.inspect)
@@ -519,10 +533,12 @@ fn poll_child(runner: Runner) -> Result(Runner, Error) {
           Ok(Nil)
         _, _ -> Error("managed child must use its parent's store")
       })
-      use _ <- result.try(case stopping {
-        True -> driver.cancel(parent, id, a.prepared.input)
-        False -> driver.start(parent, id, a.prepared.input)
-      })
+      use _ <- result.try(
+        driver.reserve(parent, id, a.prepared.input, case stopping {
+          True -> child_driver.Cancel
+          False -> child_driver.Start
+        }),
+      )
       driver.read(parent, id)
     })
     |> result.map_error(string.inspect)
@@ -676,6 +692,69 @@ pub fn recover(
   tries: Int,
 ) -> Result(g.State, Error) {
   use #(entry, state) <- result.try(load(runs, work, options, id))
+  case state.phase {
+    g.Ended(g.Cancelled(a, g.UnresolvedCancellation(_)))
+      if a.prepared.kind == operation.Subgraph
+    -> recover_cancelled_child(runs, work, options, entry, state, a, tries)
+    _ -> recover_work(runs, work, options, entry, state, tries)
+  }
+}
+
+/// Settlement observes retained child evidence only. It never restarts a child
+/// or calls the parent's routing callback after cancellation.
+fn recover_cancelled_child(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  entry: store.Entry,
+  state: g.State,
+  activation: g.Activation,
+  tries: Int,
+) -> Result(g.State, Error) {
+  let id = child.reserved_id(state.run, activation.id)
+  use progress <- result.try(
+    bounded.call(options.callback_timeout, fn() {
+      use driver <- result.try(
+        work.child(activation) |> result.map_error(string.inspect),
+      )
+      use _ <- result.try(case driver.store(), store.pid(runs) {
+        Ok(child_store), Ok(parent_store) if child_store == parent_store ->
+          Ok(Nil)
+        _, _ -> Error("managed child must use its parent's store")
+      })
+      driver.read(child.Parent(state.run, activation.id), id)
+    })
+    |> result.map_error(string.inspect)
+    |> result.flatten
+    |> result.map_error(CallbackFailed),
+  )
+  case progress {
+    child.Succeeded(_) | child.Failed(_) | child.Cancelled(False) -> {
+      use #(next, effects) <- result.try(
+        g.step(
+          state,
+          g.ChildCancellationSettled(g.reference(state, activation), id),
+        )
+        |> result.map_error(Refused),
+      )
+      commit_recovery(runs, work, options, entry, next, effects, tries)
+    }
+    child.Working
+    | child.Approval(_)
+    | child.Signal(_)
+    | child.Uncertain(_)
+    | child.Cancelled(True) -> Ok(state)
+  }
+}
+
+fn recover_work(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  entry: store.Entry,
+  state: g.State,
+  tries: Int,
+) -> Result(g.State, Error) {
   let recoverable = case state.phase {
     g.ChildBlocked(_, _, _) -> True
     _ -> g.needs_runner(state)
@@ -686,25 +765,37 @@ pub fn recover(
       use #(next, effects) <- result.try(
         g.recover(state) |> result.map_error(Refused),
       )
-      case
-        launch(
-          runs,
-          work,
-          options,
-          Some(entry.revision),
-          next,
-          effects,
-          None,
-          False,
-        )
-      {
-        Ok(_) -> Ok(next)
-        Error(StoreFailed(store.Conflict(_))) if tries > 1 ->
-          recover(runs, work, options, id, tries - 1)
-        Error(StoreFailed(store.LeaseRefused(_))) -> Error(OwnerUnknown)
-        Error(error) -> Error(error)
-      }
+      commit_recovery(runs, work, options, entry, next, effects, tries)
     }
+  }
+}
+
+fn commit_recovery(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  entry: store.Entry,
+  next: g.State,
+  effects: List(g.Effect),
+  tries: Int,
+) -> Result(g.State, Error) {
+  case
+    launch(
+      runs,
+      work,
+      options,
+      Some(entry.revision),
+      next,
+      effects,
+      None,
+      False,
+    )
+  {
+    Ok(_) -> Ok(next)
+    Error(StoreFailed(store.Conflict(_))) if tries > 1 ->
+      recover(runs, work, options, next.run, tries - 1)
+    Error(StoreFailed(store.LeaseRefused(_))) -> Error(OwnerUnknown)
+    Error(error) -> Error(error)
   }
 }
 

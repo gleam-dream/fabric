@@ -23,7 +23,7 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: the first subgraph checkpoint passes 416 root tests, 31 PostgreSQL tests,
+- Gate status: the cancellation-settlement checkpoint passes 422 root tests, 32 PostgreSQL tests,
   three graph consumer tests and 15 existing app consumer tests. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -31,13 +31,13 @@
   start/read/await/recover/approval/reconciliation/cancellation APIs. Directory
   and PostgreSQL scenarios retain work over store-process loss. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: finish canceled-child settlement and idle and nested child waits
+- Next action: finish idle and nested child waits
   under the [managed composition contract](managed-composition.md), then managed
   agents, family budgeting/retention, jobs and deadlines. These remain runtime
   states rather than blocking operation wrappers.
 - Resume note: the user requested a checkpoint commit and resumed implementation
-  on 2026-09-29. The app goal still reports paused; its tool cannot unpause it.
-  Repository work is authorized to continue. Initial subgraphs do not establish
+  on 2026-09-29. The app goal is confirmed active. The initial runtime checkpoint
+  is committed as `04ae481`. Initial subgraphs do not establish
   complete managed composition, parallel joins or real adapter support.
 
 ## Authorization and acceptance
@@ -464,3 +464,38 @@ six-step goal remains active, with wave 3 next.
   make idle child waits durable without retaining a parent runner, with explicit
   recovery for lost wakeups, and finish nested propagation before extending
   composition to ordinary agents.
+
+### Wave 3 — canceled-child settlement and nested execution
+
+- Status: the cancellation-settlement portion of G7 is implemented; wave 3
+  remains open. `CancellingChild` exposes pending parent cancellation, and
+  `ChildUnresolved` points to the child that owns uncertain effects. Ordinary
+  parent reconciliation refuses to manufacture a child result.
+- Behavior: reconcile a canceled leaf, then recover its canceled parent.
+  Recovery reads the retained child outcome and commits `ChildSettled` only
+  when uncertainty is resolved. It invokes no operation, policy or route and
+  preserves parent state/receipts. Repeated recovery acknowledges the same
+  record. Nested cancellation settles outward after store-process restart.
+- Finding: the first nested test timed out while starting only two levels.
+  Node callbacks captured full child runtimes repeatedly, definitions kept
+  duplicate node collections, and child start/cancel closures each captured
+  the runtime. Deployed callbacks now separate parent codecs/routes from child
+  drivers, retain one node collection and one child reservation callback. An
+  eight-level public scenario completes under the default callback bound.
+- Evidence: six additional public tests cover settlement, directory restart of
+  nested cancellation, failed/lost acknowledgements, competing CAS writes,
+  cross-store refusal and eight-level composition. PostgreSQL adds a public
+  canceled-child reconciliation/recovery case with both leases released and
+  one observed external effect. The faster callbacks exposed an existing
+  observation race; `await` now waits through committed child cancellation
+  rather than returning the child's prior approval or uncertainty.
+- Gate: 422 root tests, 32 PostgreSQL tests, three graph consumer tests and 15
+  existing app consumer tests pass, with warning-free builds. `nix fmt`, explicit
+  Gleam formatting, `nix flake check` and `git diff --check` pass on this host.
+  The record stays at graph
+  version 3; no new persistent variant or backend interface is required.
+- Conformance: G1–G6 remain green. This extends G7 without claiming idle child
+  wakeups, nested approval/signal propagation, managed agents, family-wide
+  limits/retention or external jobs. G8–G11 and the full goal remain open.
+- Next: durable idle child waits with recoverable wakeups, followed by nested
+  wait propagation and the remaining managed-composition contracts.

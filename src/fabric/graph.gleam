@@ -95,6 +95,8 @@ pub type Cancellation {
   AfterResult
   AfterFailure(Failure)
   ChildSettled(child.Reference)
+  /// Reconcile the child's operation, then recover this canceled parent.
+  ChildUnresolved(child.Reference, problem: Problem)
   Unresolved(reference: Reconciliation, problem: Problem)
 }
 
@@ -105,6 +107,8 @@ pub type Status(answer) {
   AwaitingApproval(Approval)
   AwaitingSignal(SignalReference)
   Child(child.Reference, child.Progress)
+  /// Cancellation is committed; the owned child has not settled yet.
+  CancellingChild(child.Reference)
   Blocked(Reconciliation, problem: Problem)
   Completed(answer)
   Failed(Failure)
@@ -164,6 +168,9 @@ pub fn new(
   context: fn() -> context,
   policy: Policy(context),
 ) -> Runtime(context, state, answer) {
+  // Keep child runtimes in one deployed callback. The ordinary callbacks
+  // capture the parent's codecs and routes, without copying descendant trees.
+  let #(definition, child) = definition.detach_children(definition)
   let work =
     live.Work(
       admit: fn(id, activation) {
@@ -174,20 +181,6 @@ pub fn new(
             activation.attempt,
           )
         let prepared = activation.prepared
-        use _ <- result.try(case prepared.kind {
-          operation.Subgraph -> {
-            use driver <- result.try(
-              definition.child(definition, prepared)
-              |> result.map_error(string.inspect),
-            )
-            case driver.store(), store.pid(store) {
-              Ok(child_store), Ok(parent_store) if child_store == parent_store ->
-                Ok(Nil)
-              _, _ -> Error("managed child must use its parent's store")
-            }
-          }
-          _ -> Ok(Nil)
-        })
         let context = context()
         use decision <- result.try(policy(
           context,
@@ -213,9 +206,7 @@ pub fn new(
         definition.check_output(definition, activation.prepared, output)
       },
       validate: fn(state) { definition.validate(definition, state) },
-      child: fn(activation) {
-        definition.child(definition, activation.prepared)
-      },
+      child: fn(activation) { child(activation.prepared) },
     )
   Runtime(definition, store, work, runner.Options(1000, 60_000, 1000))
 }
@@ -256,22 +247,26 @@ pub fn id(handle: Handle(context, state, answer)) -> run.RunId {
 pub fn as_subgraph(
   runtime: Runtime(child_context, child_state, child_answer),
 ) -> operation.Operation(parent_context, child_state, child_answer) {
+  let runs = runtime.store
   operation.subgraph(
     definition.identity(runtime.definition).identity,
     definition.state_codec(runtime.definition),
     definition.answer_codec(runtime.definition),
     child_driver.Driver(
-      store: fn() { store.pid(runtime.store) },
-      start: fn(parent, id, input) {
-        reserved_child(runtime, parent, id, input, False, 3)
+      store: fn() { store.pid(runs) },
+      reserve: fn(parent, id, input, reservation) {
+        reserved_child(
+          runtime,
+          parent,
+          id,
+          input,
+          reservation == child_driver.Cancel,
+          3,
+        )
         |> result.map_error(string.inspect)
       },
       read: fn(parent, id) {
-        child_progress(runtime, parent, id) |> result.map_error(string.inspect)
-      },
-      cancel: fn(parent, id, input) {
-        reserved_child(runtime, parent, id, input, True, 3)
-        |> result.map_error(string.inspect)
+        child_progress(runs, parent, id) |> result.map_error(string.inspect)
       },
     ),
   )
@@ -391,11 +386,11 @@ fn reserved_child(
 }
 
 fn child_progress(
-  runtime: Runtime(context, state, answer),
+  runs: store.Store,
   parent: child.Parent,
   id: String,
 ) -> Result(child.Progress, Error) {
-  case runner.load_raw(runtime.store, id) {
+  case runner.load_raw(runs, id) {
     Error(runner.StoreFailed(store.NotFound)) -> Ok(child.Working)
     Error(error) -> Error(from_runner(error))
     Ok(#(_, state)) -> {
@@ -518,6 +513,7 @@ fn attend(
   let left = deadline - now()
   case snapshot.status, left > 0 {
     Working, True
+    | CancellingChild(_), True
     | Child(_, child.Working), True
     | Child(_, child.Succeeded(_)), True
     | Child(_, child.Failed(_)), True
@@ -536,6 +532,8 @@ fn now() -> Int
 /// A leased store leaves a live foreign owner alone. On an unleased store,
 /// callers must know the previous owner is gone before recovering through
 /// another store process. Started effects obey their declared replay contract.
+/// For a canceled subgraph, recovery only records a now-settled child outcome;
+/// it never restarts the child or resumes the parent's routes.
 pub fn recover(
   handle: Handle(context, state, answer),
 ) -> Result(Snapshot(state, answer), Error) {
@@ -821,6 +819,15 @@ fn reconcile_with(
       Ok(#(a, True))
     _ -> Error(CommandRefused("no unresolved result"))
   })
+  use _ <- result.try(
+    case cancelled && activation.prepared.kind == operation.Subgraph {
+      True ->
+        Error(CommandRefused(
+          "reconcile the child, then recover its canceled parent",
+        ))
+      False -> Ok(Nil)
+    },
+  )
   use _ <- result.try(case cancelled {
     True -> Ok(Nil)
     False ->
@@ -900,7 +907,17 @@ fn snapshot(
         child.Reference(run.issued(state.run), a.id, run.issued(id)),
         child.Uncertain(reason),
       ))
-    control.Joining(a, id) | control.StoppingChild(a, id) ->
+    control.StoppingChild(a, id) ->
+      Ok(case runner.driven(entry, state) {
+        False -> Unattended
+        True ->
+          CancellingChild(child.Reference(
+            run.issued(state.run),
+            a.id,
+            run.issued(id),
+          ))
+      })
+    control.Joining(a, id) ->
       Ok(case runner.driven(entry, state) {
         False -> Unattended
         True -> {
@@ -968,6 +985,17 @@ fn snapshot(
               a.id,
               run.issued(id),
             ))
+          control.UnresolvedCancellation(problem)
+            if a.prepared.kind == operation.Subgraph
+          ->
+            ChildUnresolved(
+              child.Reference(
+                run.issued(state.run),
+                a.id,
+                run.issued(child.reserved_id(state.run, a.id)),
+              ),
+              public_problem(problem),
+            )
           control.UnresolvedCancellation(problem) ->
             Unresolved(
               Reconciliation(run.issued(state.run), a.id, a.attempt),

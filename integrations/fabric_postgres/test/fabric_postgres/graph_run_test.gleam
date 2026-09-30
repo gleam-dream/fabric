@@ -145,13 +145,23 @@ pub fn a_signal_wait_releases_its_lease_and_another_store_consumes_it_once_test(
 fn managed_pair(
   runs: store.Store,
 ) -> #(graph.Runtime(Nil, Int, Int), graph.Runtime(Nil, Int, Int)) {
+  managed_pair_with(runs, fn(_, _, n) { Ok(n + 1) }, fn(_, _) {
+    Ok(policy.RequireApproval(run.Requirement("child-increment", 1)))
+  })
+}
+
+fn managed_pair_with(
+  runs: store.Store,
+  perform: fn(Nil, operation.Invocation, Int) -> Result(Int, Nil),
+  policy: graph.Policy(Nil),
+) -> #(graph.Runtime(Nil, Int, Int), graph.Runtime(Nil, Int, Int)) {
   let assert Ok(node_id) = definition.node_id("increment")
   let op =
     operation.new(
       run.Identity("increment", 1),
       codec.int(),
       codec.int(),
-      fn(_, _, n) { Ok(n + 1) },
+      perform,
       fn(_error: Nil) { operation.DefiniteFailure("cannot fail") },
     )
   let node =
@@ -171,10 +181,7 @@ fn managed_pair(
       codec.int(),
       1,
     ))
-  let child =
-    graph.new(spec, runs, fn() { Nil }, fn(_, _) {
-      Ok(policy.RequireApproval(run.Requirement("child-increment", 1)))
-    })
+  let child = graph.new(spec, runs, fn() { Nil }, policy)
   let node =
     definition.node(
       node_id,
@@ -235,6 +242,60 @@ pub fn a_managed_subgraph_adopts_its_approved_child_after_postgres_restart_test(
     fabric_postgres.backend(settings).get(run.id_to_string(reference.child))
   parent_row.holder |> should.equal(store.Free)
   child_row.holder |> should.equal(store.Free)
+}
+
+pub fn child_cancellation_settlement_survives_postgres_restart_test() {
+  let settings =
+    support.migrated(support.pool(4), "cancel-settle", support.schema())
+  let effects = process.new_subject()
+  let perform = fn(_, _, _) {
+    process.send(effects, Nil)
+    panic as "external effect has no saved result"
+  }
+  let #(owner, runs) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("cancel-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      runs
+    })
+  let #(parent, child) =
+    managed_pair_with(runs, perform, fn(_, _) { Ok(policy.Allow) })
+  let assert Ok(id) = run.parse_id("postgres-cancel-settlement")
+  let assert Ok(handle) = graph.start(parent, id, 41)
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.Child(reference, child.Uncertain(_)) = waiting.status
+  graph.cancel(handle) |> should.equal(Ok(Nil))
+  let assert Ok(cancelled) = graph.await(handle, 5000)
+  let assert graph.Cancelled(graph.ChildUnresolved(_, _)) = cancelled.status
+  let assert Ok(child_handle) = graph.child(handle, reference.activation, child)
+  let assert Ok(child_cancelled) = graph.read(child_handle)
+  let assert graph.Cancelled(graph.Unresolved(reconciliation, _)) =
+    child_cancelled.status
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("cancel-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let #(parent, child) =
+    managed_pair_with(runs, perform, fn(_, _) {
+      panic as "settlement must not admit work"
+    })
+  let handle = graph.attach(parent, id)
+  let assert Ok(child_handle) = graph.child(handle, reference.activation, child)
+  let assert Ok(_) = graph.reconcile(child_handle, reconciliation, "42")
+  let assert Ok(settled) = graph.recover(handle)
+  settled.status |> should.equal(graph.Cancelled(graph.ChildSettled(reference)))
+  settled.value |> should.equal(41)
+  settled.receipts |> should.equal([])
+  graph.recover(handle) |> should.equal(Ok(settled))
+  let assert Ok(parent_row) =
+    fabric_postgres.backend(settings).get(run.id_to_string(id))
+  let assert Ok(child_row) =
+    fabric_postgres.backend(settings).get(run.id_to_string(reference.child))
+  parent_row.holder |> should.equal(store.Free)
+  child_row.holder |> should.equal(store.Free)
+  process.receive(effects, 1000) |> should.equal(Ok(Nil))
+  process.receive(effects, 0) |> should.equal(Error(Nil))
 }
 
 fn expired(

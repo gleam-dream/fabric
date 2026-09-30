@@ -40,7 +40,7 @@ pub opaque type Node(context, state, answer) {
     accept: fn(state, String) -> Result(Command(state, answer), Error),
     check_input: fn(String) -> Result(Nil, Error),
     check_output: fn(String) -> Result(Nil, Error),
-    child: fn() -> Result(child_driver.Driver, Error),
+    child: Result(child_driver.Driver, Error),
   )
 }
 
@@ -57,7 +57,9 @@ pub type Spec(context, state, answer) {
 
 pub opaque type Definition(context, state, answer) {
   Definition(
-    spec: Spec(context, state, answer),
+    entry: NodeId,
+    state: Codec(state),
+    answer: Codec(answer),
     nodes: Dict(NodeId, Node(context, state, answer)),
     identity: control.Definition,
   )
@@ -109,6 +111,25 @@ pub fn node(
   accept accept: fn(state, output) -> Result(Command(state, answer), String),
   destinations destinations: List(NodeId),
 ) -> Node(context, state, answer) {
+  let input = operation.input_codec(op)
+  let output = operation.output_codec(op)
+  let invoke = operation.invoker(op)
+  let decode_input = fn(text) {
+    codec.decode_json(input, text)
+    |> result.map_error(fn(error) {
+      OperationRejected(
+        operation.InputDecodingFailed(codec.render_json_decode_error(error)),
+      )
+    })
+  }
+  let decode_output = fn(text) {
+    codec.decode_json(output, text)
+    |> result.map_error(fn(error) {
+      OperationRejected(
+        operation.OutputDecodingFailed(codec.render_json_decode_error(error)),
+      )
+    })
+  }
   Node(
     id:,
     operation: operation.identity(op),
@@ -116,32 +137,25 @@ pub fn node(
     recovery: operation.recovery(op),
     destinations:,
     prepare: fn(state) {
-      use input <- result.try(
+      use value <- result.try(
         select(state) |> result.map_error(InputSelectionFailed),
       )
-      operation.encode_input(op, input) |> result.map_error(OperationRejected)
+      codec.encode_json(input, value)
+      |> result.map_error(fn(error) {
+        OperationRejected(operation.InputEncodingFailed(error))
+      })
     },
     invoke: fn(context, invocation, text) {
-      operation.invoke(op, context, invocation, text)
+      invoke(context, invocation, text)
       |> result.map_error(OperationRejected)
     },
     accept: fn(state, text) {
-      use output <- result.try(
-        operation.decode_output(op, text) |> result.map_error(OperationRejected),
-      )
+      use output <- result.try(decode_output(text))
       accept(state, output) |> result.map_error(TransitionFailed)
     },
-    check_input: fn(text) {
-      operation.check_input(op, text) |> result.map_error(OperationRejected)
-    },
-    check_output: fn(text) {
-      operation.decode_output(op, text)
-      |> result.replace(Nil)
-      |> result.map_error(OperationRejected)
-    },
-    child: fn() {
-      operation.child_driver(op) |> result.map_error(OperationRejected)
-    },
+    check_input: fn(text) { decode_input(text) |> result.replace(Nil) },
+    check_output: fn(text) { decode_output(text) |> result.replace(Nil) },
+    child: operation.child_driver(op) |> result.map_error(OperationRejected),
   )
 }
 
@@ -169,7 +183,9 @@ pub fn build(
     }),
   )
   Ok(Definition(
-    spec,
+    spec.entry,
+    spec.state,
+    spec.answer,
     nodes,
     control.Definition(spec.identity, manifest(spec), spec.max_activations),
   ))
@@ -278,7 +294,7 @@ fn encode_state(
   state: state,
 ) -> Result(String, Error) {
   use encoded <- result.try(
-    codec.encode_json(definition.spec.state, state)
+    codec.encode_json(definition.state, state)
     |> result.map_error(StateEncodingFailed),
   )
   use _ <- result.try(decode_state(definition, encoded))
@@ -290,7 +306,7 @@ pub fn decode_state(
   definition: Definition(context, state, answer),
   text: String,
 ) -> Result(state, Error) {
-  codec.decode_json(definition.spec.state, text)
+  codec.decode_json(definition.state, text)
   |> result.map_error(fn(error) {
     StateDecodingFailed(codec.render_json_decode_error(error))
   })
@@ -301,7 +317,7 @@ pub fn decode_answer(
   definition: Definition(context, state, answer),
   text: String,
 ) -> Result(answer, Error) {
-  codec.decode_json(definition.spec.answer, text)
+  codec.decode_json(definition.answer, text)
   |> result.map_error(fn(error) {
     AnswerDecodingFailed(codec.render_json_decode_error(error))
   })
@@ -313,11 +329,7 @@ pub fn prepare(
   initial: state,
 ) -> Result(#(String, control.Prepared), Error) {
   use encoded <- result.try(encode_state(definition, initial))
-  use prepared <- result.try(prepare_node(
-    definition,
-    definition.spec.entry,
-    initial,
-  ))
+  use prepared <- result.try(prepare_node(definition, definition.entry, initial))
   Ok(#(encoded, prepared))
 }
 
@@ -373,7 +385,7 @@ pub fn accept(
     Finish(state, answer) -> {
       use encoded <- result.try(encode_state(definition, state))
       use answer <- result.try(
-        codec.encode_json(definition.spec.answer, answer)
+        codec.encode_json(definition.answer, answer)
         |> result.map_error(AnswerEncodingFailed),
       )
       use _ <- result.try(decode_answer(definition, answer))
@@ -445,7 +457,7 @@ pub fn validate(
     [receipt, ..] -> [receipt.activation.prepared]
     [] -> pending
   }
-  let entry = node_name(definition.spec.entry)
+  let entry = node_name(definition.entry)
   use _ <- result.try(case first {
     [prepared, ..] if prepared.node == entry -> Ok(Nil)
     _ -> Error(EntryChanged)
@@ -472,21 +484,34 @@ pub fn check_output(
 pub fn state_codec(
   definition: Definition(context, state, answer),
 ) -> Codec(state) {
-  definition.spec.state
+  definition.state
 }
 
 @internal
 pub fn answer_codec(
   definition: Definition(context, state, answer),
 ) -> Codec(answer) {
-  definition.spec.answer
+  definition.answer
 }
 
 @internal
-pub fn child(
+pub fn detach_children(
   definition: Definition(context, state, answer),
-  prepared: control.Prepared,
-) -> Result(child_driver.Driver, Error) {
-  use node <- result.try(check_prepared(definition, prepared))
-  node.child()
+) -> #(
+  Definition(context, state, answer),
+  fn(control.Prepared) -> Result(child_driver.Driver, Error),
+) {
+  let children = dict.map_values(definition.nodes, fn(_, node) { node.child })
+  let definition =
+    Definition(
+      ..definition,
+      nodes: dict.map_values(definition.nodes, fn(_, node) {
+        Node(..node, child: Error(OperationRejected(operation.NotExecutable)))
+      }),
+    )
+  #(definition, fn(prepared) {
+    use node <- result.try(check_prepared(definition, prepared))
+    dict.get(children, node.id)
+    |> result.unwrap(Error(NodeMissing(node.id)))
+  })
 }
