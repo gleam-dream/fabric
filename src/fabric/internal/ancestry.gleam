@@ -1,6 +1,8 @@
 //// Checked ownership above either runtime. A parent must still retain the
 //// exact child reservation; an open but unrelated run cannot admit work.
 
+import fabric/budget as quota
+
 import fabric/internal/budget/config
 import fabric/internal/budget/model as budget
 import fabric/internal/controller as agent
@@ -22,7 +24,7 @@ pub type Error {
 /// Resolved from saved reciprocal attachments, never from a child's local
 /// depth counter. The declaration is read only from the root of the chain.
 pub type Family {
-  Family(root: String, depth: Int, limits: Option(budget.Limits))
+  Family(root: String, depth: Int, limits: Option(quota.Limits))
 }
 
 pub fn read(
@@ -41,7 +43,7 @@ pub fn family(
   runs: store.Store,
   descendant: String,
   parent: Option(run.Parent),
-  limits: Option(budget.Limits),
+  limits: Option(budget.Declaration),
   left: Int,
 ) -> Result(Option(Family), Error) {
   walk(runs, descendant, parent, limits, left, 0)
@@ -51,7 +53,7 @@ fn walk(
   runs: store.Store,
   descendant: String,
   parent: Option(run.Parent),
-  limits: Option(budget.Limits),
+  limits: Option(budget.Declaration),
   left: Int,
   depth: Int,
 ) -> Result(Option(Family), Error) {
@@ -59,7 +61,14 @@ fn walk(
     config.validate(parent == None, limits) |> result.map_error(Corrupt),
   )
   case parent {
-    None -> Ok(Some(Family(descendant, depth, limits)))
+    None ->
+      case limits {
+        Some(budget.Declaration(_, False)) ->
+          Error(Corrupt("the family budget is not initialized"))
+        Some(budget.Declaration(limits, True)) ->
+          Ok(Some(Family(descendant, depth, Some(limits))))
+        None -> Ok(Some(Family(descendant, depth, None)))
+      }
     Some(_) if left <= 0 ->
       Error(Corrupt("the chain of parent runs is too long"))
     Some(link) -> {

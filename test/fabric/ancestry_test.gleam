@@ -2,6 +2,8 @@
 //// fixtures install committed states directly; agent execution and commands
 //// then use their ordinary runner and public handles.
 
+import fabric/budget as quota
+
 import fabric
 import fabric/agent
 import fabric/graph/child
@@ -120,15 +122,23 @@ pub fn ancestry_follows_mixed_parents_and_checks_both_sides_of_each_link_test() 
   |> should.equal(Ok(Some(ancestry.Family(parent.run, 2, None))))
   // This agent's local depth is zero. Family depth still includes its graph
   // attachment, and only the root supplies a declaration.
-  let limits = budget.Limits(8, 3, 2)
-  let parent = graph.State(..parent, family_budget: Some(limits))
+  let limits = quota.Limits(8, 3, 2)
+  let parent =
+    graph.State(..parent, family_budget: Some(budget.Declaration(limits, True)))
   let assert Ok(encoded) = graph_record.encode(parent)
   let assert Ok(entry) = store.get(runs, parent.run)
   let assert Ok(_) =
     store.commit(runs, parent.run, entry.revision, encoded, store.Keep)
   ancestry.family(runs, descendant, link, None, 64)
   |> should.equal(Ok(Some(ancestry.Family(parent.run, 2, Some(limits)))))
-  ancestry.family(runs, descendant, link, Some(limits), 64) |> should.be_error
+  ancestry.family(
+    runs,
+    descendant,
+    link,
+    Some(budget.Declaration(limits, True)),
+    64,
+  )
+  |> should.be_error
   ancestry.read(runs, id <> "-2", link, 64) |> should.equal(Ok(False))
   ancestry.read(
     runs,

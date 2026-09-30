@@ -2,13 +2,19 @@
 //// after checking the saved family attachment; a grant alone authorizes no
 //// effect. Unused or uncertain reservations are never implicitly refunded.
 
+import fabric/budget.{
+  type Denial, type Limits, type Usage, ChildLimit, DepthLimit, Usage, WorkLimit,
+}
 import gleam/json
 import gleam/list
 import gleam/result
 import gleam/string
 
-pub type Limits {
-  Limits(work: Int, children: Int, depth: Int)
+/// Root-owned declaration. No work may start before the ledger exists and
+/// `initialized` has been committed. Once initialized, a missing ledger is
+/// data loss, never permission to create fresh capacity.
+pub type Declaration {
+  Declaration(limits: Limits, initialized: Bool)
 }
 
 pub type Claim {
@@ -18,21 +24,11 @@ pub type Claim {
   Child(run: String, depth: Int)
 }
 
-pub type Denial {
-  WorkLimit(Int)
-  ChildLimit(Int)
-  DepthLimit(maximum: Int, requested: Int)
-}
-
 pub type Error {
   InvalidLimits
   InvalidClaim
   ConflictingClaim
   Denied(Denial)
-}
-
-pub type Usage {
-  Usage(work: Int, children: Int)
 }
 
 pub opaque type State {

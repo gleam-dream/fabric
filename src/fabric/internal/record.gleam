@@ -120,6 +120,14 @@ pub fn encode_as(
         "family budgets require version 7",
       ))
   })
+  use Nil <- result.try(case target == V7 || !has_family_refusal(state) {
+    True -> Ok(Nil)
+    False ->
+      Error(Unrepresentable(
+        writer_number(target),
+        "family budget refusals require version 7",
+      ))
+  })
   use Nil <- result.try(case target, state.parent {
     V5, _ | V6, _ | V7, _ -> Ok(Nil)
     _, Some(run.GraphParent(..)) ->
@@ -269,7 +277,7 @@ fn encode_version(state: State, version: Int, phase: Phase) -> String {
       list.append(fields, [
         #(
           "family_budget",
-          json.nullable(state.family_budget, budget_config.encode),
+          json.nullable(state.family_budget, budget_config.encode_declaration),
         ),
       ])
     False -> fields
@@ -429,6 +437,10 @@ fn phase_json(phase: Phase) -> Json {
           controller.CancelRequested -> tag("cancel_requested", [])
           controller.HostFault(failure) ->
             tag("host_fault", [#("failure", host_failure(failure))])
+          controller.FamilyBudget(reason) ->
+            tag("family_budget", [
+              #("denial", budget_config.encode_denial(reason)),
+            ])
         }),
       ])
     controller.Ended(outcome) ->
@@ -450,6 +462,8 @@ fn outcome_json(outcome: Outcome) -> Json {
         #("limit", json.int(limit)),
         #("used", json.int(used)),
       ])
+    run.BudgetExhausted(run.FamilyLimit(reason)) ->
+      tag("family_budget", [#("denial", budget_config.encode_denial(reason))])
     run.BudgetUnverifiable(turn) ->
       tag("budget_unverifiable", [#("turn", json.int(turn))])
     run.Cancelled -> tag("cancelled", [])
@@ -502,6 +516,12 @@ pub fn decode(text: String) -> Result(State, DecodeError) {
       json.parse(text, state_decoder(found))
       |> result.map_error(fn(error) { Corrupt(describe(error)) })
       |> result.map(never_started_before_3(_, found))
+      |> result.try(fn(state) {
+        case found < 7 && has_family_refusal(state) {
+          True -> Error(Corrupt("family budget refusals require version 7"))
+          False -> Ok(state)
+        }
+      })
       |> result.try(linked)
   }
 }
@@ -571,6 +591,28 @@ fn linked(state: State) -> Result(State, DecodeError) {
       Error(Corrupt(
         "a child of the run " <> state.run <> " does not extend its id",
       ))
+  }
+}
+
+fn has_family_refusal(state: State) -> Bool {
+  let phase = case state.phase {
+    controller.Stopping(reason: controller.FamilyBudget(_), ..) -> True
+    controller.Ended(outcome) -> family_outcome(outcome)
+    _ -> False
+  }
+  phase
+  || list.any(state_actions(state), fn(action) {
+    case action.state {
+      run.ChildSettled(outcome) -> family_outcome(outcome)
+      _ -> False
+    }
+  })
+}
+
+fn family_outcome(outcome: Outcome) -> Bool {
+  case outcome {
+    run.BudgetExhausted(run.FamilyLimit(_)) -> True
+    _ -> False
   }
 }
 
@@ -898,6 +940,12 @@ fn budget_decoder() -> Decoder(run.Budget) {
         use used <- decode.field("used", decode.int)
         decode.success(run.TokenLimit(limit, used))
       })
+    "family_budget" ->
+      Ok(
+        decode.field("denial", budget_config.denial_decoder(), fn(denial) {
+          decode.success(run.FamilyLimit(denial))
+        }),
+      )
     _ -> Error(Nil)
   }
 }
@@ -943,6 +991,14 @@ fn phase_decoder(version: Int) -> Decoder(Phase) {
           use found <- tagged(controller.CancelRequested)
           case found {
             "cancel_requested" -> Ok(decode.success(controller.CancelRequested))
+            "family_budget" if version >= 7 ->
+              Ok(
+                decode.field(
+                  "denial",
+                  budget_config.denial_decoder(),
+                  fn(denial) { decode.success(controller.FamilyBudget(denial)) },
+                ),
+              )
             "host_fault" ->
               Ok(
                 decode.field("failure", host_failure_decoder(), fn(failure) {
@@ -994,6 +1050,12 @@ fn outcome_decoder() -> Decoder(Outcome) {
       Ok(
         decode.field("budget", budget_decoder(), fn(budget) {
           decode.success(run.BudgetExhausted(budget))
+        }),
+      )
+    "family_budget" ->
+      Ok(
+        decode.field("denial", budget_config.denial_decoder(), fn(denial) {
+          decode.success(run.BudgetExhausted(run.FamilyLimit(denial)))
         }),
       )
     "budget_unverifiable" ->

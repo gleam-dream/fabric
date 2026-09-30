@@ -313,13 +313,25 @@ by exact write-token readback; a later retry adopts an already persisted claim.
 CAS conflicts retry at most five times, then report contention without granting
 capacity. Missing or unreadable ledgers never become unlimited admission.
 
-The internal ledger and its storage tests implement this reservation contract.
-Root records retain limits and the retention projection attaches their ledger.
-Runtime enforcement remains pending: creation/recovery must establish the
-ledger before work, both runners must
-reserve at their admission boundaries, and typed refusals must preserve started
-effects and child tombstones. No public budget API or
-runner currently calls the ledger. G7 remains open for those integration proofs.
+Public `fabric.start_with_budget` and `graph.start_with_budget` declare
+`fabric/budget.Limits` on a root. Existing starts have no shared limit. Both
+runtimes require agent writer 7 before accepting budgeted starts, including
+pure graphs that could later start an agent.
+
+Graph admission reserves work before evaluating policy; waiting for approval
+and its fresh recheck share the same attempt claim. A managed graph/agent node
+also reserves its child's identity and depth before committing the attachment.
+Ordinary agent models reserve before calling their provider; local tool actions
+reserve at their committed-start fence. Agent delegations reserve the action
+and child before creation, including recovery of a missing child.
+
+A refused reservation becomes `graph.FamilyBudget` or
+`run.BudgetExhausted(run.FamilyLimit(...))`, with typed work/child/depth reasons.
+Stopping an agent withdraws unstarted calls, preserves started tools as uncertain
+and settles delegated children, including tombstones for children never created.
+Infrastructure failures grant no capacity and leave recoverable work; they do
+not masquerade as a model error or a quota outcome. A restart retains an
+interrupted model's charge and spends a new unit for a new model attempt.
 
 The record boundary stores an optional `family_budget` only on the
 family's root execution. Descendants inherit through verified saved attachments
@@ -331,8 +343,21 @@ retain reciprocal bookkeeping links under the retention projection; a missing
 or unexpected ledger therefore prevents pruning, as do mismatched limits.
 The ancestry reader resolves actual family depth and limits across graph and
 agent attachments; a child's local depth counter cannot reset either one.
-These record changes alone
-do not authorize starting budgeted runs until admission enforcement is wired.
+
+Initialization is a retained root transition. A declaration starts with
+`initialized: false`. After the root execution is stored, bootstrap creates or
+adopts its ledger, then commits `initialized: true` on the root before handing
+work to a runner. A crash before either acknowledgment can repeat those steps;
+an existing ledger is adopted with all claims intact. Once the marker is true,
+a missing ledger is data loss and recovery refuses to dispatch. It must never
+create a replacement ledger with fresh capacity. Failure to confirm the marker
+also releases no work. Descendants refuse an uninitialized root. The marker is
+required on non-null declarations; preliminary internal budget records that
+lacked it are refused. Ordinary pre-budget records remain readable. If
+cancellation commits before initialization can finish, recovery seals the
+bookkeeping without restarting the canceled execution. Retention projection 3
+validates the marker and typed quota outcomes; existing projections require
+refresh before pruning. The PostgreSQL schema remains version 2.
 
 ## External jobs and deadlines
 

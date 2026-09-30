@@ -1,5 +1,6 @@
 import fabric
 import fabric/agent
+import fabric/budget
 import fabric/graph
 import fabric/graph/agent as node
 import fabric/graph/child
@@ -74,6 +75,83 @@ fn fixed(text, calls) {
     policy.always_allow(),
   )
   |> support.agent
+}
+
+pub fn graph_and_managed_agent_share_one_work_and_child_budget_test() {
+  let runs = support.store()
+  let calls = probe.new()
+  let runtime = runtime(runs, fixed("42", calls))
+  let assert Ok(handle) =
+    graph.start_with_budget(
+      parent(runs, runtime),
+      support.id("shared-budget"),
+      41,
+      budget.Limits(2, 1, 1),
+    )
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status |> should.equal(graph.Completed(42))
+  probe.entries(calls) |> should.equal(["model"])
+  let assert Ok(blocked) =
+    graph.start_with_budget(
+      parent(runs, runtime),
+      support.id("shared-exhausted"),
+      41,
+      budget.Limits(1, 1, 1),
+    )
+  let assert Ok(_) = graph.await(blocked, 5000)
+  let assert Ok(agent) = node.child(blocked, 1, runtime)
+  let assert Ok(snapshot) = fabric.snapshot(agent)
+  snapshot.status
+  |> should.equal(
+    run.Finished(run.BudgetExhausted(run.FamilyLimit(budget.WorkLimit(1)))),
+  )
+  probe.entries(calls) |> should.equal(["model"])
+}
+
+pub fn a_zero_child_budget_refuses_a_managed_agent_before_creating_it_test() {
+  let runs = support.store()
+  let calls = probe.new()
+  let runtime = runtime(runs, fixed("42", calls))
+  let assert Ok(handle) =
+    graph.start_with_budget(
+      parent(runs, runtime),
+      support.id("no-children"),
+      41,
+      budget.Limits(10, 0, 3),
+    )
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status
+  |> should.equal(graph.Failed(graph.FamilyBudget(budget.ChildLimit(0))))
+  store.get(runs, child.reserved_id("no-children", 1))
+  |> should.equal(Error(store.NotFound))
+  probe.entries(calls) |> should.equal([])
+}
+
+pub fn a_graph_owned_agents_delegation_cannot_reset_family_depth_test() {
+  let runs = support.store()
+  let calls = probe.new()
+  let worker = delegating(fixed("42", calls), 3, 3)
+  let runtime = runtime(runs, worker)
+  let assert Ok(handle) =
+    graph.start_with_budget(
+      parent(runs, runtime),
+      support.id("shared-depth"),
+      41,
+      budget.Limits(10, 3, 1),
+    )
+  let assert Ok(_) = graph.await(handle, 5000)
+  let assert Ok(agent) = node.child(handle, 1, runtime)
+  let assert Ok(snapshot) = fabric.snapshot(agent)
+  snapshot.status
+  |> should.equal(
+    run.Finished(run.BudgetExhausted(run.FamilyLimit(budget.DepthLimit(1, 2)))),
+  )
+  let assert [action] = snapshot.actions
+  action.state |> should.equal(run.NotStarted)
+  let assert Some(child_id) = action.child
+  // Cancellation records definite never-started evidence for the refused child.
+  store.get(runs, run.id_to_string(child_id)) |> should.be_ok
+  probe.entries(calls) |> should.equal([])
 }
 
 fn reviewed(body) {

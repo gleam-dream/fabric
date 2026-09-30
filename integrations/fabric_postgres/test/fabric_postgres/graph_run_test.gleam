@@ -2,6 +2,7 @@
 //// backend. Approval survives store loss and completion releases its lease.
 
 import fabric
+import fabric/budget
 import fabric/graph
 import fabric/graph/agent as agent_node
 import fabric/graph/child
@@ -368,7 +369,8 @@ pub fn a_managed_agent_keeps_its_approval_and_identity_after_postgres_restart_te
         fabric_postgres.store(process.new_name("agent-original"), settings)
       let assert Ok(Nil) = store.start(runs)
       let #(parent, _) = managed_agent(runs, gate)
-      let assert Ok(handle) = graph.start(parent, id, 41)
+      let assert Ok(handle) =
+        graph.start_with_budget(parent, id, 41, budget.Limits(4, 1, 1))
       let assert Ok(waiting) = graph.await(handle, 5000)
       let assert graph.Child(reference, child.AgentInput([approval], [])) =
         waiting.status
@@ -394,6 +396,55 @@ pub fn a_managed_agent_keeps_its_approval_and_identity_after_postgres_restart_te
   agents.another(gate, 0) |> should.be_false
   released(settings, id, 200) |> should.be_true
   released(settings, reference.child, 200) |> should.be_true
+  // Root, agent and shared budget ledger form one settled retention family.
+  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(3))
+  fabric_postgres.backend(settings).get(run.id_to_string(reference.child))
+  |> should.equal(Error(store.NotFound))
+}
+
+pub fn a_restarted_managed_agent_cannot_reset_its_family_work_budget_test() {
+  let settings =
+    support.migrated(support.pool(4), "agent-budget", support.schema())
+    |> fabric_postgres.with_lease(600)
+  let gate = agents.gate()
+  let assert Ok(id) = run.parse_id("postgres-agent-budget")
+  let #(owner, #(reference, approval)) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("budget-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let #(parent, _) = managed_agent(runs, gate)
+      // The graph activation and initial model attempt consume both units.
+      let assert Ok(handle) =
+        graph.start_with_budget(parent, id, 41, budget.Limits(2, 1, 1))
+      let assert Ok(waiting) = graph.await(handle, 5000)
+      let assert graph.Child(reference, child.AgentInput([approval], [])) =
+        waiting.status
+      released(settings, id, 200) |> should.be_true
+      released(settings, reference.child, 200) |> should.be_true
+      #(reference, approval)
+    })
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("budget-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let #(parent, worker) = managed_agent(runs, gate)
+  let handle = graph.attach(parent, id)
+  graph.recover(handle) |> should.be_ok
+  let assert Ok(worker) = agent_node.child(handle, reference.activation, worker)
+  fabric.approve(worker, approval.reference, None, Nil) |> should.be_ok
+  fabric.await(worker, 5000)
+  |> should.equal(
+    Ok(run.Finished(run.BudgetExhausted(run.FamilyLimit(budget.WorkLimit(2))))),
+  )
+  let assert Ok(snapshot) = fabric.snapshot(worker)
+  let assert [action] = snapshot.actions
+  action.state |> should.equal(run.NotStarted)
+  graph.await(handle, 5000) |> should.be_ok
+  agents.another(gate, 0) |> should.be_false
+  released(settings, id, 200) |> should.be_true
+  released(settings, reference.child, 200) |> should.be_true
+  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(3))
 }
 
 pub fn canceled_agent_evidence_settles_after_postgres_restart_test() {

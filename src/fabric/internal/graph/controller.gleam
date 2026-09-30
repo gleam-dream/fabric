@@ -3,6 +3,7 @@
 //// Native codecs and allowed destinations belong to the bound definition;
 //// this module consumes its validated encoded input and completion decisions.
 
+import fabric/budget as quota
 import fabric/graph/child
 import fabric/graph/operation.{
   type Recovery, ReplayInterrupted, RequireReconciliation,
@@ -70,6 +71,7 @@ pub type Fault {
   Denied(reason: String)
   PolicyFailed(reason: String)
   OperationFailed(reason: String)
+  FamilyBudget(quota.Denial)
 }
 
 pub type Outcome {
@@ -114,12 +116,13 @@ pub type State {
     phase: Phase,
     initial: String,
     parent: Option(run.Parent),
-    family_budget: Option(budget.Limits),
+    family_budget: Option(budget.Declaration),
   )
 }
 
 pub type Event {
   Inspected(Reference, Result(policy.Decision, String))
+  BudgetRefused(Reference, quota.Denial)
   BodyStarted(Reference)
   Returned(Reference, output: String, decision: Decision)
   /// A validated output after cancellation never calls the routing callback.
@@ -272,6 +275,12 @@ pub fn step(
     Inspected(ref, decision), Ready(activation) -> {
       use _ <- result.try(matches(state, activation, ref))
       inspect(state, activation, decision)
+    }
+    BudgetRefused(ref, reason), Ready(activation)
+    | BudgetRefused(ref, reason), AwaitingApproval(activation, _)
+    -> {
+      use _ <- result.try(matches(state, activation, ref))
+      Ok(ended(state, Failed(activation, FamilyBudget(reason))))
     }
     BodyStarted(ref), Queued(activation) -> {
       use _ <- result.try(matches(state, activation, ref))

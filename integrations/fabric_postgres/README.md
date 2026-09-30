@@ -116,10 +116,12 @@ that evidence before changing the parent record. Direct terminal tool
 reconciliation retains the existing `reconciled` representation.
 
 Deploy version-7 readers before selecting writer 7. Version 7 retains optional
-family-budget declarations on roots; children cannot override them. This
-record support prepares admission enforcement, which has no public start API
-yet. Retention projection version 2 attaches a budget ledger to its root with
-matching limits. Run `refresh_retention` for existing rows before they can be
+family-budget declarations on roots and typed quota outcomes; children cannot
+override the root limits. Public agent and graph `start_with_budget` calls
+enforce work, child and depth reservations across restarts. Initialization
+creates/adopts the ledger and commits a root marker before any dispatch; an
+initialized root with a missing ledger refuses recovery. Retention projection
+version 3 validates that marker and attaches the ledger with matching limits. Run `refresh_retention` for existing rows before they can be
 pruned by the current projection. The PostgreSQL schema remains version 2.
 
 Existing values and runners retain their setting. The setting affects

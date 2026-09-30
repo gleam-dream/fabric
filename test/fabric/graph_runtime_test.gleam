@@ -1,3 +1,4 @@
+import fabric/budget
 import fabric/graph
 import fabric/graph/definition
 import fabric/graph/operation
@@ -95,6 +96,85 @@ pub fn public_runtime_executes_a_typed_bounded_generation_review_loop_test() {
   |> should.equal([1, 2, 3, 4, 5, 6])
   list.map(done.receipts, fn(receipt) { receipt.output_json })
   |> should.equal(["1", "false", "2", "false", "3", "true"])
+}
+
+pub fn a_shared_work_budget_bounds_graph_cycles_before_the_next_body_test() {
+  let calls = probe.new()
+  let runtime =
+    graph.new(
+      loop(fn(_, _, n) {
+        probe.record(calls, "generate")
+        Ok(n + 1)
+      }),
+      support.store(),
+      fn() { Nil },
+      fn(_, _) { Ok(policy.Allow) },
+    )
+  let assert Ok(handle) =
+    graph.start_with_budget(
+      runtime,
+      run_id("bounded-loop"),
+      0,
+      budget.Limits(3, 0, 0),
+    )
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status
+  |> should.equal(graph.Failed(graph.FamilyBudget(budget.WorkLimit(3))))
+  done.value |> should.equal(2)
+  list.length(done.receipts) |> should.equal(3)
+  probe.entries(calls) |> should.equal(["generate", "generate"])
+  let assert Ok(zero) =
+    graph.start_with_budget(
+      runtime,
+      run_id("zero-work"),
+      0,
+      budget.Limits(0, 0, 0),
+    )
+  let assert Ok(stopped) = graph.await(zero, 5000)
+  stopped.status
+  |> should.equal(graph.Failed(graph.FamilyBudget(budget.WorkLimit(0))))
+  probe.entries(calls) |> should.equal(["generate", "generate"])
+}
+
+pub fn graph_approval_after_restart_reuses_its_reserved_work_unit_test() {
+  let dir = restart.temp_dir()
+  let calls = probe.new()
+  let spec =
+    loop(fn(_, _, n) {
+      probe.record(calls, "generate")
+      Ok(n + 1)
+    })
+  let #(owner, #(runs, handle)) =
+    restart.owned(fn() {
+      let runs = support.directory(dir)
+      let runtime =
+        graph.new(spec, runs, fn() { Nil }, fn(_, _) {
+          Ok(policy.RequireApproval(run.Requirement("review", 1)))
+        })
+      let assert Ok(handle) =
+        graph.start_with_budget(
+          runtime,
+          run_id("budget-approval"),
+          0,
+          budget.Limits(1, 0, 0),
+        )
+      #(runs, handle)
+    })
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.AwaitingApproval(approval) = waiting.status
+  restart.crash(owner, runs)
+  let runtime =
+    graph.new(spec, support.directory(dir), fn() { Nil }, fn(_, _) {
+      Ok(policy.Allow)
+    })
+  let handle = graph.attach(runtime, run_id("budget-approval"))
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(_) = graph.approve(handle, approval)
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status
+  |> should.equal(graph.Failed(graph.FamilyBudget(budget.WorkLimit(1))))
+  probe.entries(calls) |> should.equal(["generate"])
+  restart.remove_dir(dir)
 }
 
 pub fn a_saved_decision_survives_process_loss_without_repeating_its_body_test() {

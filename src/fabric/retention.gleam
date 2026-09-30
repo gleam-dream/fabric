@@ -3,6 +3,8 @@
 //// must also verify reciprocal links, complete membership, age and leases
 //// atomically before deleting anything; `settled` alone is not permission.
 
+import fabric/budget as quota
+
 import fabric/graph/child
 import fabric/graph/operation
 import fabric/internal/budget/model as budget
@@ -19,7 +21,7 @@ import gleam/result
 
 /// Change this version whenever a new record format or state changes the
 /// projection, so storage integrations can refresh their retained indexes.
-pub const version = 2
+pub const version = 3
 
 /// The run at the other end of a link and an opaque attachment key. A child's
 /// parent key must equal the key its parent retained for that child. The key
@@ -64,7 +66,7 @@ pub fn inspect(encoded: String) -> Result(Metadata, Nil) {
   }
 }
 
-fn budget_key(limits: budget.Limits) -> String {
+fn budget_key(limits: quota.Limits) -> String {
   json.array(
     [
       json.string("budget"),
@@ -77,11 +79,11 @@ fn budget_key(limits: budget.Limits) -> String {
   |> json.to_string
 }
 
-fn budget_link(root: String, limits: Option(budget.Limits)) -> List(Link) {
+fn budget_link(root: String, limits: Option(budget.Declaration)) -> List(Link) {
   case limits {
     None -> []
     Some(limits) -> [
-      Link(run.issued(budget_record.id(root)), budget_key(limits)),
+      Link(run.issued(budget_record.id(root)), budget_key(limits.limits)),
     ]
   }
 }
@@ -193,6 +195,7 @@ fn graph_metadata(state: graph.State) -> Metadata {
     | graph.Ended(graph.Exhausted(_))
     | graph.Ended(graph.Failed(_, graph.Denied(_)))
     | graph.Ended(graph.Failed(_, graph.PolicyFailed(_)))
+    | graph.Ended(graph.Failed(_, graph.FamilyBudget(_)))
     | graph.Ended(graph.Cancelled(_, graph.BeforeStart))
     | graph.Ended(graph.Cancelled(_, graph.AfterResult))
     | graph.Ended(graph.Cancelled(_, graph.AfterFailure(_))) -> []

@@ -310,6 +310,8 @@ fn delegated(
       explain(
         "the sub-agent used its budget of " <> int.to_string(limit) <> " tokens",
       )
+    run.BudgetExhausted(run.FamilyLimit(_)) ->
+      explain("the sub-agent reached its shared family budget")
     run.BudgetUnverifiable(_) ->
       explain("the sub-agent's token budget could not be enforced")
     run.Cancelled -> explain("the sub-agent was cancelled")

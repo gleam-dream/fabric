@@ -74,7 +74,7 @@ pub fn encode(state: g.State) -> Result(String, EncodeError) {
       #("phase", phase_json(state.phase)),
       #(
         "family_budget",
-        json.nullable(state.family_budget, budget_config.encode),
+        json.nullable(state.family_budget, budget_config.encode_declaration),
       ),
     ])
     |> json.to_string,
@@ -161,12 +161,15 @@ fn problem_json(problem: g.Problem) -> Json {
 }
 
 fn fault_json(fault: g.Fault) -> Json {
-  let #(name, reason) = case fault {
-    g.Denied(reason) -> #("denied", reason)
-    g.PolicyFailed(reason) -> #("policy_failed", reason)
-    g.OperationFailed(reason) -> #("operation_failed", reason)
+  case fault {
+    g.FamilyBudget(reason) ->
+      tag("family_budget", [#("denial", budget_config.encode_denial(reason))])
+    g.Denied(reason) -> tag("denied", [#("reason", json.string(reason))])
+    g.PolicyFailed(reason) ->
+      tag("policy_failed", [#("reason", json.string(reason))])
+    g.OperationFailed(reason) ->
+      tag("operation_failed", [#("reason", json.string(reason))])
   }
-  tag(name, [#("reason", json.string(reason))])
 }
 
 fn cancellation_json(cancellation: g.Cancellation) -> Json {
@@ -259,6 +262,12 @@ pub fn decode(text: String) -> Result(g.State, DecodeError) {
         |> result.map_error(fn(error) { Corrupt(string.inspect(error)) }),
       )
       use _ <- result.try(validate(state) |> result.map_error(Corrupt))
+      use Nil <- result.try(case found < 6, state.phase {
+        True, g.Ended(g.Failed(_, g.FamilyBudget(_)))
+        | True, g.Ended(g.Cancelled(_, g.AfterFailure(g.FamilyBudget(_))))
+        -> Error(Corrupt("family budget refusals require graph version 6"))
+        _, _ -> Ok(Nil)
+      })
       Ok(state)
     }
   }
@@ -363,17 +372,33 @@ fn problem_decoder() -> Decoder(g.Problem) {
 
 fn fault_decoder() -> Decoder(g.Fault) {
   use name <- tagged(g.OperationFailed(""))
-  let constructor = case name {
-    "denied" -> Ok(g.Denied)
-    "policy_failed" -> Ok(g.PolicyFailed)
-    "operation_failed" -> Ok(g.OperationFailed)
+  case name {
+    "denied" ->
+      Ok(
+        decode.field("reason", decode.string, fn(reason) {
+          decode.success(g.Denied(reason))
+        }),
+      )
+    "policy_failed" ->
+      Ok(
+        decode.field("reason", decode.string, fn(reason) {
+          decode.success(g.PolicyFailed(reason))
+        }),
+      )
+    "operation_failed" ->
+      Ok(
+        decode.field("reason", decode.string, fn(reason) {
+          decode.success(g.OperationFailed(reason))
+        }),
+      )
+    "family_budget" ->
+      Ok(
+        decode.field("denial", budget_config.denial_decoder(), fn(reason) {
+          decode.success(g.FamilyBudget(reason))
+        }),
+      )
     _ -> Error(Nil)
   }
-  use constructor <- result.try(constructor)
-  Ok({
-    use reason <- decode.field("reason", decode.string)
-    decode.success(constructor(reason))
-  })
 }
 
 fn cancellation_decoder() -> Decoder(g.Cancellation) {

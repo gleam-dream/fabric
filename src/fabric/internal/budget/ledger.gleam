@@ -1,6 +1,8 @@
-//// Durable reservation mechanism, not an admission API. The integration must
-//// first persist the root's immutable limits and verify membership/ownership.
-//// The graph/agent runners are not wired to this mechanism yet.
+//// Durable reservation mechanism. Bootstrap seals the root's immutable limits;
+//// admission verifies saved family membership before reserving here. A grant
+//// remains subject to each runner's ownership, policy and effect fences.
+
+import fabric/budget as quota
 
 import fabric/internal/budget/model as budget
 import fabric/internal/budget/record
@@ -20,7 +22,7 @@ pub type Error {
 pub fn ensure(
   runs: store.Store,
   root: String,
-  limits: budget.Limits,
+  limits: quota.Limits,
 ) -> Result(budget.State, Error) {
   use _ <- result.try(run.parse_id(root) |> result.replace_error(InvalidRoot))
   use initial <- result.try(budget.new(limits) |> result.map_error(Reservation))
@@ -74,7 +76,7 @@ pub fn read(
 pub fn reserve(
   runs: store.Store,
   root: String,
-  limits: budget.Limits,
+  limits: quota.Limits,
   claim: budget.Claim,
 ) -> Result(budget.State, Error) {
   reserve_attempt(runs, root, limits, claim, 5)
