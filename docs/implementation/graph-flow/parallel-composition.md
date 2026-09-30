@@ -170,7 +170,13 @@ members, ordered completion through registered sweeping, and family pruning.
 The schema upgrade preserves execution bytes, revisions, ages and scheduled
 observation times. Older projections require a bounded metadata refresh.
 
-Wave 4 remains active. Fork deadlines, repeated visits and sibling scopes,
-and shared-budget scenarios still require runtime evidence. The persistent
-claim test covers a flat map; nested cleanup has been exercised through the
-shared leased backend rather than PostgreSQL.
+Five family scenarios prove repeated visits with distinct branch identities,
+stale-signal refusal after a directory restart, sibling joins with equal
+definitions and inputs, and shared work/child/depth limits. Exact-capacity runs
+survive recovery without reserving the same grant twice. Child admission refusal
+leaves the denied member distinct from already admitted siblings and withdrawn
+inputs. Nested scopes cannot reset ancestry depth or the parent's work limit.
+
+Wave 4 remains active. Fork deadlines still require runtime evidence. The
+persistent claim test covers a flat map; nested cleanup has been exercised
+through the shared leased backend rather than PostgreSQL.
