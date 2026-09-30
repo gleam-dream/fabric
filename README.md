@@ -1,10 +1,18 @@
 # fabric
 
-A bounded, typed LLM agent runtime for Gleam: typed application tools, an explicit policy gate, a pure agent controller, and a thin OTP runner with cancellation. It consumes llm_wire for providers and json_blueprint for tool codecs; typed workflows (DAGs) belong to Saga.
+A bounded, typed LLM agent and agentic graph runtime for Gleam: typed application operations, an explicit policy gate, pure controllers, and supervised runners with cancellation. It consumes llm_wire for providers and json_blueprint for codecs. Saga workflows remain an optional integration.
 
 Status: slice 1 (bounded agent execution), slice 2a (durable pause, approval, resume, cancellation, and restart), slice 2b (approval-gated sub-agents, Sinal observations, and Saga workflows as tools), the public API ergonomics pass (a built agent, one policy gate, typed run ids, a named supervisable store), and the first production-runtime slices (timer limits; runners supervised under the store's subtree, drained and handed off on shutdown; the leased store contract for several nodes sharing one database, with an in-memory test backend, the PostgreSQL adapter, and automatic recovery of expired leases) implemented; see [docs/PLAN.md](docs/PLAN.md), [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [docs/ORACLE.md](docs/ORACLE.md). Design: see [fabric-design.md](https://github.com/gleam-dream/oversight/blob/master/fabric-design.md) in [gleam-dream/oversight](https://github.com/gleam-dream/oversight). Not yet published to Hex.
 
 Behavioural oracle: BeamWeaver (partial migration of its agent loop).
+
+Serial agentic graphs are available through `fabric/graph`: typed operations,
+conditional routing, bounded cycles, durable records, approval, recovery,
+reconciliation, typed durable signals and an initial managed-subgraph API.
+See the [runnable public graph consumer](consumers/graph/README.md)
+and [graph implementation tracker](docs/implementation/graph-flow/wave-tracker.md).
+Nested and idle child waits, managed agent nodes, durable deadlines, external-job attachment, parallel
+composition and real decision adapters remain in that implementation program.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
 

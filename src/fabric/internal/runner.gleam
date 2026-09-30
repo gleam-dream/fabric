@@ -39,13 +39,13 @@ import fabric/internal/live.{type Message, type Work}
 import fabric/internal/observe
 import fabric/internal/record
 import fabric/internal/registry
+import fabric/internal/runner_host
 import fabric/model.{type Model}
 import fabric/policy
 import fabric/run.{type ActionId}
 import fabric/store.{type Store}
 import fabric/tool
 import gleam/dict.{type Dict}
-import gleam/erlang/atom
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
@@ -314,7 +314,7 @@ type Runner(context) {
     reports: Subject(Event),
     state: State,
     revision: Int,
-    executor: Option(Executor),
+    executor: Option(Executor(ActionId, invocation.Outcome)),
     /// The model task, the turn it answers, and its claim: the task takes
     /// it just before it calls the model, so a draining runner that takes
     /// it first knows the call was never issued (`serve`).
@@ -528,101 +528,12 @@ fn write(
 fn prepare(
   setup: Setup(context),
 ) -> Result(#(Pid, Subject(Message), Subject(Go)), Nil) {
-  use #(pinned, factory, factory_pid) <- result.try(store.runners(setup.store))
-  use store_pid <- result.try(store.pid(pinned))
-  let caller = process.self()
-  let answer = process.new_subject()
-  let wanted = claim.new()
-  process.spawn_unlinked(fn() {
-    let ready = process.new_subject()
-    let started = case
-      store.start_runner(factory, fn(parent) {
-        process.spawn(fn() {
-          begin(setup, pinned, #(store_pid, parent, caller), ready)
-        })
-      })
-    {
-      Error(Nil) -> Error(Nil)
-      Ok(pid) -> {
-        let monitor = process.monitor(pid)
-        let started =
-          process.new_selector()
-          |> process.select_map(ready, fn(ready) {
-            let #(mailbox, go) = ready
-            Ok(#(pid, mailbox, go))
-          })
-          |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
-          |> process.selector_receive_forever
-        process.demonitor_process(monitor)
-        started
-      }
-    }
-    case claim.accept(wanted), started {
-      True, _ -> process.send(answer, started)
-      False, Ok(#(_, _, go)) -> process.send(go, Abandon)
-      False, Error(Nil) -> Nil
-    }
-  })
-  await_start(answer, wanted, pinned, factory_pid)
+  runner_host.prepare(
+    setup.store,
+    fn(pinned, owners, ready) { begin(setup, pinned, owners, ready) },
+    Abandon,
+  )
 }
-
-/// Waits for the helper's `answer`. The start is given up (`Error`) when
-/// the caller, a runner of the factory, receives the factory's shutdown,
-/// which is put back for the caller's receive loop; or when the store's
-/// process reports that its runners drain (checked every 100 ms), since a
-/// start that reached the factory after it began stopping waits for the
-/// factory, which may wait for the caller: a tool body of one of its
-/// runners, say.
-fn await_start(
-  answer: Subject(Result(a, Nil)),
-  wanted: claim.Claim,
-  pinned: Store,
-  factory_pid: Pid,
-) -> Result(a, Nil) {
-  let give_up = fn() {
-    case claim.withdraw(wanted) {
-      True -> {
-        store.draining(pinned, factory_pid)
-        Error(Nil)
-      }
-      // The helper answered first: its answer is on the way.
-      False -> process.receive_forever(answer)
-    }
-  }
-  case await_or_shutdown(answer, factory_pid, 100) {
-    Answered(started) -> started
-    ShutDown -> {
-      requeue_shutdown(factory_pid)
-      give_up()
-    }
-    StillWaiting ->
-      case store.runners(pinned) {
-        Ok(_) -> await_start(answer, wanted, pinned, factory_pid)
-        Error(Nil) -> give_up()
-      }
-  }
-}
-
-type Awaited(a) {
-  Answered(a)
-  ShutDown
-  StillWaiting
-}
-
-/// Receives from `answer`, or the caller's own trapped exit signal
-/// `shutdown` from `factory`, whichever comes first within `timeout` ms;
-/// any other message stays queued.
-@external(erlang, "fabric_ffi", "await_or_shutdown")
-fn await_or_shutdown(
-  answer: Subject(a),
-  factory: Pid,
-  timeout: Int,
-) -> Awaited(a)
-
-/// Queues the exit signal `shutdown` from `factory` to the caller again, as
-/// the message its receive loop takes.
-@external(erlang, "fabric_ffi", "requeue_shutdown")
-fn requeue_shutdown(factory: Pid) -> Nil
 
 /// The runner's life, in the process its factory linked to it. `owners`
 /// are the store process it belongs to, its factory, and the caller that
@@ -642,7 +553,7 @@ fn begin(
   process.send(ready, #(self, go))
   let _ = process.monitor(store_pid)
   let caller_monitor = process.monitor(caller)
-  case first_state(go, pinned, factory, False) {
+  case runner_host.first_state(go, pinned, factory, False) {
     Error(Nil) | Ok(#(Abandon, _)) -> Nil
     Ok(#(Go(revision, state, effects, first), draining)) -> {
       process.demonitor_process(caller_monitor)
@@ -666,50 +577,6 @@ fn begin(
       |> schedule_children
       |> serve
     }
-  }
-}
-
-/// What a runner waiting for its first state receives.
-type Before {
-  First(Go)
-  OwnerGone
-  ExitSignal(process.ExitMessage)
-}
-
-/// Waits for the first state, and whether a shutdown arrived meanwhile.
-/// `Error` when the store or the caller goes first, or the factory stops
-/// otherwise than by a shutdown.
-fn first_state(
-  go: Subject(Go),
-  pinned: Store,
-  factory: Pid,
-  draining: Bool,
-) -> Result(#(Go, Bool), Nil) {
-  let received =
-    process.new_selector()
-    |> process.select_map(go, First)
-    |> process.select_monitors(fn(_) { OwnerGone })
-    |> process.select_trapped_exits(ExitSignal)
-    |> process.selector_receive_forever
-  case received {
-    First(first) -> Ok(#(first, draining))
-    OwnerGone -> Error(Nil)
-    ExitSignal(exit) ->
-      case exit.pid == factory && is_shutdown(exit.reason) {
-        True -> {
-          store.draining(pinned, factory)
-          first_state(go, pinned, factory, True)
-        }
-        False -> Error(Nil)
-      }
-  }
-}
-
-fn is_shutdown(reason: process.ExitReason) -> Bool {
-  case reason {
-    process.Abnormal(reason) ->
-      reason == atom.to_dynamic(atom.create("shutdown"))
-    process.Normal | process.Killed -> False
   }
 }
 
@@ -910,6 +777,14 @@ fn receive_next(runner: Runner(context)) -> Nil {
       }
     live.Executed(executor.Reported(id, outcome)) ->
       apply(runner, controller.ToolReported(id, outcome))
+    live.Executed(executor.Crashed(id, reason)) ->
+      apply(
+        runner,
+        controller.ToolReported(
+          id,
+          invocation.EffectUncertain("tool crashed: " <> reason),
+        ),
+      )
     live.Executed(executor.Lost(id, reason)) ->
       apply(runner, controller.ToolLost(id, reason))
     live.Executed(executor.Stopped) ->
@@ -933,7 +808,7 @@ fn exited(
   reason: process.ExitReason,
 ) -> Result(Runner(context), ApplyError) {
   let executor_pid = option.map(runner.executor, executor.pid)
-  let shutdown = pid == runner.factory && is_shutdown(reason)
+  let shutdown = pid == runner.factory && runner_host.is_shutdown(reason)
   case reason, runner.model_task, executor_pid {
     _, _, _ if shutdown -> Ok(drain(runner))
     _, _, _ if runner.child_reader == Some(pid) ->
@@ -1993,7 +1868,9 @@ fn retry_delay(initial: Int, failures: Int) -> Int {
   }
 }
 
-fn start_executor(runner: Runner(context)) -> Executor {
+fn start_executor(
+  runner: Runner(context),
+) -> Executor(ActionId, invocation.Outcome) {
   let self = runner.self
   executor.start(
     executor.Hooks(

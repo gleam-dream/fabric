@@ -89,6 +89,7 @@
 import fabric/internal/bounded
 import fabric/internal/controller
 import fabric/internal/executor
+import fabric/internal/graph/live as graph_live
 import fabric/internal/live
 import fabric/internal/observe
 import fabric/internal/record
@@ -688,6 +689,7 @@ fn describe_start(error: actor.StartError) -> String {
 @internal
 pub type Live {
   Live(incarnation: Int, mailbox: Subject(live.Message))
+  GraphLive(incarnation: Int, mailbox: Subject(graph_live.Message))
 }
 
 @internal

@@ -1,0 +1,492 @@
+//// Typed graph authoring. Binding a native operation to a node retains its
+//// input and output codecs inside the node, so different node types compose
+//// without a universal application value or provider-shaped chat messages.
+////
+//// Definitions contain deployed code; execution records contain data. Bump
+//// the graph or operation version when changing its meaning or codecs. The
+//// structural manifest detects topology and declared contract changes, not
+//// arbitrary changes to callback implementations.
+
+import fabric/graph/operation.{type Invocation, type Operation}
+import fabric/internal/graph/child_driver
+import fabric/internal/graph/controller as control
+import fabric/internal/graph/record
+import fabric/run
+import gleam/dict.{type Dict}
+import gleam/json
+import gleam/list
+import gleam/result
+import gleam/string
+import json/blueprint/codec.{type Codec}
+
+pub opaque type NodeId {
+  NodeId(String)
+}
+
+pub type Command(state, answer) {
+  Continue(state, NodeId)
+  Finish(state, answer)
+}
+
+pub opaque type Node(context, state, answer) {
+  Node(
+    id: NodeId,
+    operation: run.Identity,
+    kind: operation.Kind,
+    recovery: operation.Recovery,
+    destinations: List(NodeId),
+    prepare: fn(state) -> Result(String, Error),
+    invoke: fn(context, Invocation, String) -> Result(String, Error),
+    accept: fn(state, String) -> Result(Command(state, answer), Error),
+    check_input: fn(String) -> Result(Nil, Error),
+    check_output: fn(String) -> Result(Nil, Error),
+    child: fn() -> Result(child_driver.Driver, Error),
+  )
+}
+
+pub type Spec(context, state, answer) {
+  Spec(
+    identity: run.Identity,
+    entry: NodeId,
+    nodes: List(Node(context, state, answer)),
+    state: Codec(state),
+    answer: Codec(answer),
+    max_activations: Int,
+  )
+}
+
+pub opaque type Definition(context, state, answer) {
+  Definition(
+    spec: Spec(context, state, answer),
+    nodes: Dict(NodeId, Node(context, state, answer)),
+    identity: control.Definition,
+  )
+}
+
+pub type BuildError {
+  InvalidNodeId
+  InvalidIdentity(run.Identity)
+  InvalidActivationLimit(Int)
+  DuplicateNode(NodeId)
+  MissingEntry(NodeId)
+  UnknownDestination(source: NodeId, destination: NodeId)
+}
+
+pub type Error {
+  InputSelectionFailed(String)
+  OperationRejected(operation.Error)
+  TransitionFailed(String)
+  DestinationNotAllowed(NodeId)
+  StateEncodingFailed(codec.EncodeError)
+  StateDecodingFailed(String)
+  AnswerEncodingFailed(codec.EncodeError)
+  AnswerDecodingFailed(String)
+  NodeMissing(NodeId)
+  DefinitionChanged
+  OperationChanged(NodeId)
+  EntryChanged
+  InvalidRecord(String)
+}
+
+pub fn node_id(name: String) -> Result(NodeId, BuildError) {
+  case string.trim(name) {
+    "" -> Error(InvalidNodeId)
+    _ -> Ok(NodeId(name))
+  }
+}
+
+pub fn node_name(id: NodeId) -> String {
+  let NodeId(name) = id
+  name
+}
+
+/// Selection and acceptance are pure callbacks. External effects belong to
+/// the operation body, where the runner applies policy and the start fence.
+pub fn node(
+  id: NodeId,
+  op: Operation(context, input, output),
+  select select: fn(state) -> Result(input, String),
+  accept accept: fn(state, output) -> Result(Command(state, answer), String),
+  destinations destinations: List(NodeId),
+) -> Node(context, state, answer) {
+  Node(
+    id:,
+    operation: operation.identity(op),
+    kind: operation.kind(op),
+    recovery: operation.recovery(op),
+    destinations:,
+    prepare: fn(state) {
+      use input <- result.try(
+        select(state) |> result.map_error(InputSelectionFailed),
+      )
+      operation.encode_input(op, input) |> result.map_error(OperationRejected)
+    },
+    invoke: fn(context, invocation, text) {
+      operation.invoke(op, context, invocation, text)
+      |> result.map_error(OperationRejected)
+    },
+    accept: fn(state, text) {
+      use output <- result.try(
+        operation.decode_output(op, text) |> result.map_error(OperationRejected),
+      )
+      accept(state, output) |> result.map_error(TransitionFailed)
+    },
+    check_input: fn(text) {
+      operation.check_input(op, text) |> result.map_error(OperationRejected)
+    },
+    check_output: fn(text) {
+      operation.decode_output(op, text)
+      |> result.replace(Nil)
+      |> result.map_error(OperationRejected)
+    },
+    child: fn() {
+      operation.child_driver(op) |> result.map_error(OperationRejected)
+    },
+  )
+}
+
+pub fn build(
+  spec: Spec(context, state, answer),
+) -> Result(Definition(context, state, answer), BuildError) {
+  use _ <- result.try(check_identity(spec.identity))
+  use _ <- result.try(case spec.max_activations >= 1 {
+    True -> Ok(Nil)
+    False -> Error(InvalidActivationLimit(spec.max_activations))
+  })
+  use nodes <- result.try(index_nodes(spec.nodes, dict.new()))
+  use _ <- result.try(case dict.has_key(nodes, spec.entry) {
+    True -> Ok(Nil)
+    False -> Error(MissingEntry(spec.entry))
+  })
+  use _ <- result.try(
+    list.try_each(spec.nodes, fn(node) {
+      list.try_each(node.destinations, fn(destination) {
+        case dict.has_key(nodes, destination) {
+          True -> Ok(Nil)
+          False -> Error(UnknownDestination(node.id, destination))
+        }
+      })
+    }),
+  )
+  Ok(Definition(
+    spec,
+    nodes,
+    control.Definition(spec.identity, manifest(spec), spec.max_activations),
+  ))
+}
+
+fn check_identity(identity: run.Identity) -> Result(Nil, BuildError) {
+  case string.trim(identity.name) != "" && identity.version >= 1 {
+    True -> Ok(Nil)
+    False -> Error(InvalidIdentity(identity))
+  }
+}
+
+fn index_nodes(
+  nodes: List(Node(context, state, answer)),
+  index: Dict(NodeId, Node(context, state, answer)),
+) -> Result(Dict(NodeId, Node(context, state, answer)), BuildError) {
+  case nodes {
+    [] -> Ok(index)
+    [node, ..rest] -> {
+      use _ <- result.try(check_identity(node.operation))
+      case dict.has_key(index, node.id) {
+        True -> Error(DuplicateNode(node.id))
+        False -> index_nodes(rest, dict.insert(index, node.id, node))
+      }
+    }
+  }
+}
+
+fn manifest(spec: Spec(context, state, answer)) -> String {
+  let nodes =
+    list.sort(spec.nodes, fn(a, b) {
+      string.compare(node_name(a.id), node_name(b.id))
+    })
+  json.object([
+    #("entry", json.string(node_name(spec.entry))),
+    #(
+      "nodes",
+      json.array(nodes, fn(node) {
+        let destinations =
+          node.destinations
+          |> list.map(node_name)
+          |> list.unique
+          |> list.sort(string.compare)
+        json.object([
+          #("node", json.string(node_name(node.id))),
+          #("operation", json.string(node.operation.name)),
+          #("version", json.int(node.operation.version)),
+          #(
+            "kind",
+            json.string(case node.kind {
+              operation.Activity -> "activity"
+              operation.Signal -> "signal"
+              operation.Subgraph -> "subgraph"
+            }),
+          ),
+          #("recovery", case node.recovery {
+            operation.RequireReconciliation ->
+              json.object([#("tag", json.string("reconcile"))])
+            operation.ReplayInterrupted(max) ->
+              json.object([
+                #("tag", json.string("replay")),
+                #("max_attempts", json.int(max)),
+              ])
+          }),
+          #("destinations", json.array(destinations, json.string)),
+        ])
+      }),
+    ),
+  ])
+  |> json.to_string
+}
+
+@internal
+pub fn identity(
+  definition: Definition(context, state, answer),
+) -> control.Definition {
+  definition.identity
+}
+
+fn lookup(
+  definition: Definition(context, state, answer),
+  id: NodeId,
+) -> Result(Node(context, state, answer), Error) {
+  dict.get(definition.nodes, id) |> result.replace_error(NodeMissing(id))
+}
+
+fn prepare_node(
+  definition: Definition(context, state, answer),
+  id: NodeId,
+  state: state,
+) -> Result(control.Prepared, Error) {
+  use node <- result.try(lookup(definition, id))
+  use input <- result.try(node.prepare(state))
+  use _ <- result.try(node.check_input(input))
+  Ok(control.Prepared(
+    node_name(id),
+    node.operation,
+    input,
+    node.recovery,
+    node.kind,
+  ))
+}
+
+fn encode_state(
+  definition: Definition(context, state, answer),
+  state: state,
+) -> Result(String, Error) {
+  use encoded <- result.try(
+    codec.encode_json(definition.spec.state, state)
+    |> result.map_error(StateEncodingFailed),
+  )
+  use _ <- result.try(decode_state(definition, encoded))
+  Ok(encoded)
+}
+
+@internal
+pub fn decode_state(
+  definition: Definition(context, state, answer),
+  text: String,
+) -> Result(state, Error) {
+  codec.decode_json(definition.spec.state, text)
+  |> result.map_error(fn(error) {
+    StateDecodingFailed(codec.render_json_decode_error(error))
+  })
+}
+
+@internal
+pub fn decode_answer(
+  definition: Definition(context, state, answer),
+  text: String,
+) -> Result(answer, Error) {
+  codec.decode_json(definition.spec.answer, text)
+  |> result.map_error(fn(error) {
+    AnswerDecodingFailed(codec.render_json_decode_error(error))
+  })
+}
+
+@internal
+pub fn prepare(
+  definition: Definition(context, state, answer),
+  initial: state,
+) -> Result(#(String, control.Prepared), Error) {
+  use encoded <- result.try(encode_state(definition, initial))
+  use prepared <- result.try(prepare_node(
+    definition,
+    definition.spec.entry,
+    initial,
+  ))
+  Ok(#(encoded, prepared))
+}
+
+fn check_prepared(
+  definition: Definition(context, state, answer),
+  prepared: control.Prepared,
+) -> Result(Node(context, state, answer), Error) {
+  let id = NodeId(prepared.node)
+  use node <- result.try(lookup(definition, id))
+  use _ <- result.try(
+    case
+      prepared.operation == node.operation
+      && prepared.recovery == node.recovery
+      && prepared.kind == node.kind
+    {
+      True -> Ok(Nil)
+      False -> Error(OperationChanged(id))
+    },
+  )
+  use _ <- result.try(node.check_input(prepared.input))
+  Ok(node)
+}
+
+/// Only the fenced runner calls this, after persisting the admitted start.
+@internal
+pub fn invoke(
+  definition: Definition(context, state, answer),
+  context: context,
+  invocation: Invocation,
+  prepared: control.Prepared,
+) -> Result(String, Error) {
+  use node <- result.try(check_prepared(definition, prepared))
+  node.invoke(context, invocation, prepared.input)
+}
+
+@internal
+pub fn accept(
+  definition: Definition(context, state, answer),
+  state: String,
+  prepared: control.Prepared,
+  output: String,
+) -> Result(control.Decision, Error) {
+  use node <- result.try(check_prepared(definition, prepared))
+  use state <- result.try(decode_state(definition, state))
+  use command <- result.try(node.accept(state, output))
+  case command {
+    Continue(state, destination) -> {
+      use _ <- result.try(allowed(node, destination))
+      use encoded <- result.try(encode_state(definition, state))
+      use next <- result.try(prepare_node(definition, destination, state))
+      Ok(control.Continue(encoded, next))
+    }
+    Finish(state, answer) -> {
+      use encoded <- result.try(encode_state(definition, state))
+      use answer <- result.try(
+        codec.encode_json(definition.spec.answer, answer)
+        |> result.map_error(AnswerEncodingFailed),
+      )
+      use _ <- result.try(decode_answer(definition, answer))
+      Ok(control.Complete(encoded, answer))
+    }
+  }
+}
+
+fn allowed(
+  node: Node(context, state, answer),
+  destination: NodeId,
+) -> Result(Nil, Error) {
+  case list.contains(node.destinations, destination) {
+    True -> Ok(Nil)
+    False -> Error(DestinationNotAllowed(destination))
+  }
+}
+
+/// Read-only compatibility check. Never reruns selection, body or acceptance
+/// callbacks to reconstruct results or decisions already saved in a record.
+@internal
+pub fn validate(
+  definition: Definition(context, state, answer),
+  saved: control.State,
+) -> Result(Nil, Error) {
+  use _ <- result.try(case saved.definition == definition.identity {
+    True -> Ok(Nil)
+    False -> Error(DefinitionChanged)
+  })
+  use _ <- result.try(record.validate(saved) |> result.map_error(InvalidRecord))
+  use _ <- result.try(decode_state(definition, saved.value))
+  use _ <- result.try(decode_state(definition, saved.initial))
+  use _ <- result.try(
+    list.try_each(saved.receipts, fn(receipt) {
+      use node <- result.try(check_prepared(
+        definition,
+        receipt.activation.prepared,
+      ))
+      use _ <- result.try(node.check_output(receipt.output))
+      use _ <- result.try(decode_state(definition, receipt.state))
+      case receipt.route {
+        control.Next(destination) -> allowed(node, NodeId(destination))
+        control.Finished | control.Canceled -> Ok(Nil)
+      }
+    }),
+  )
+  let pending = case saved.phase {
+    control.Ready(a)
+    | control.Queued(a)
+    | control.Running(a)
+    | control.AwaitingApproval(a, _)
+    | control.WaitingSignal(a)
+    | control.Joining(a, _)
+    | control.ChildBlocked(a, _, _)
+    | control.StoppingChild(a, _)
+    | control.Blocked(a, _)
+    | control.Stopping(a)
+    | control.Ended(control.Failed(a, _))
+    | control.Ended(control.Cancelled(a, _)) -> [a.prepared]
+    control.Ended(control.Exhausted(next)) -> [next]
+    control.Ended(control.Completed(_)) -> []
+  }
+  use _ <- result.try(
+    list.try_each(pending, fn(prepared) {
+      check_prepared(definition, prepared) |> result.replace(Nil)
+    }),
+  )
+  let first = case saved.receipts {
+    [receipt, ..] -> [receipt.activation.prepared]
+    [] -> pending
+  }
+  let entry = node_name(definition.spec.entry)
+  use _ <- result.try(case first {
+    [prepared, ..] if prepared.node == entry -> Ok(Nil)
+    _ -> Error(EntryChanged)
+  })
+  case saved.phase {
+    control.Ended(control.Completed(answer)) ->
+      decode_answer(definition, answer) |> result.replace(Nil)
+    _ -> Ok(Nil)
+  }
+}
+
+/// Validate a reconciliation or cancelled result without running its route.
+@internal
+pub fn check_output(
+  definition: Definition(context, state, answer),
+  prepared: control.Prepared,
+  output: String,
+) -> Result(Nil, Error) {
+  use node <- result.try(check_prepared(definition, prepared))
+  node.check_output(output)
+}
+
+@internal
+pub fn state_codec(
+  definition: Definition(context, state, answer),
+) -> Codec(state) {
+  definition.spec.state
+}
+
+@internal
+pub fn answer_codec(
+  definition: Definition(context, state, answer),
+) -> Codec(answer) {
+  definition.spec.answer
+}
+
+@internal
+pub fn child(
+  definition: Definition(context, state, answer),
+  prepared: control.Prepared,
+) -> Result(child_driver.Driver, Error) {
+  use node <- result.try(check_prepared(definition, prepared))
+  node.child()
+}

@@ -3,8 +3,23 @@
 Fabric is a bounded, typed LLM agent runtime. It owns the agent loop, tool
 execution policy, budgets, the run record, and cancellation. It consumes
 llm_wire for providers and json_blueprint for tool codecs. Typed workflows
-belong to Saga, durable delivery to Grind, observations to Sinal; Fabric is not
-a DAG compiler or a workflow engine.
+with compensation belong to Saga, durable delivery to Grind, observations to
+Sinal. Chat-agent and serial graph controllers share execution mechanisms.
+
+**Graph direction, 2026-09-29:** Fabric provides its own composable agentic
+graph layer, including conditional decisions and cycles. This supersedes the
+earlier blanket exclusion of graph control. Saga remains independent, with
+branching deferred there; Saga/Grind integrations stay optional. The
+[graph-flow exploration](GRAPH-FLOW.md) records the requested boundary and a
+design. The user has now selected its six-step implementation program; the
+[wave tracker](implementation/graph-flow/wave-tracker.md) records progress and
+evidence. Step 1 proved typed authoring in a separate experiment. Step 2 now
+provides public serial execution on the persistent store: typed definitions,
+conditional routes, cycles, recovery, approval, reconciliation and cancellation.
+Step 3 now supports typed durable manual signals and an initial managed-subgraph
+API with restart and cancellation coverage. Idle and nested child waits, managed
+agents, deadlines and jobs, parallel composition, real adapters and the
+agent-recipe evaluation remain in steps 3–6.
 
 The architecture follows variant A of
 [experiments/workflow_composition/FINDINGS.md](../experiments/workflow_composition/FINDINGS.md):

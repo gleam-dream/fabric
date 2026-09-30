@@ -38,6 +38,8 @@
             gleam
             beam28Packages.erlang
             rebar3
+            # Reproducible external-consumer and compiler-negative graph checks.
+            python3
             # integrations/fabric_postgres/scripts/test-postgres.sh starts a
             # throwaway cluster with these binaries.
             postgresql_16

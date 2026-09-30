@@ -36,7 +36,7 @@ pub type Message {
   ModelDone(turn: Int, result: Result(Reply, ModelError))
   /// The fence: a tool task asks to start an action's body.
   Fence(ActionId, reply: Subject(Bool))
-  Executed(executor.Report)
+  Executed(executor.Report(ActionId, invocation.Outcome))
   /// A linked process (the model task or the executor) exited.
   Exited(pid: Pid, reason: process.ExitReason)
   /// An event the runner reports to itself after performing an effect (a

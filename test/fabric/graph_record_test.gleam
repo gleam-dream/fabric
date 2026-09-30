@@ -1,0 +1,385 @@
+import fabric/graph/operation
+import fabric/internal/graph/controller as graph
+import fabric/internal/graph/record
+import fabric/policy
+import fabric/run
+import fabric/store
+import fabric/support
+import fabric/support/flaky
+import fabric/support/restart
+import gleam/list
+import gleam/result
+import gleam/string
+import gleeunit/should
+
+fn prepared(node: String) -> graph.Prepared {
+  graph.Prepared(
+    node,
+    run.Identity("operation-" <> node, 2),
+    "{\"input\":1}",
+    operation.RequireReconciliation,
+    operation.Activity,
+  )
+}
+
+fn initial() -> graph.State {
+  let assert Ok(#(state, _)) =
+    graph.start(
+      "graph-record",
+      graph.Definition(run.Identity("review", 2), "sig-v2", 2),
+      "0",
+      prepared("generate"),
+    )
+  state
+}
+
+fn next(state: graph.State, event: graph.Event) -> graph.State {
+  let assert Ok(#(state, _)) = graph.step(state, event)
+  state
+}
+
+fn queued(state: graph.State) -> graph.State {
+  let assert graph.Ready(activation) = state.phase
+  next(
+    state,
+    graph.Inspected(graph.reference(state, activation), Ok(policy.Allow)),
+  )
+}
+
+fn running(state: graph.State) -> graph.State {
+  let state = queued(state)
+  let assert graph.Queued(activation) = state.phase
+  next(state, graph.BodyStarted(graph.reference(state, activation)))
+}
+
+fn encoded(state: graph.State) -> String {
+  let assert Ok(text) = record.encode(state)
+  text
+}
+
+pub fn saved_phases_and_all_terminal_dispositions_roundtrip_test() {
+  let ready = initial()
+  let queued = queued(ready)
+  let running = running(ready)
+  let assert graph.Running(activation) = running.phase
+  let ref = graph.reference(running, activation)
+  let waiting =
+    next(
+      ready,
+      graph.Inspected(
+        ref,
+        Ok(policy.RequireApproval(run.Requirement("publish", 2))),
+      ),
+    )
+  let blocked =
+    next(
+      running,
+      graph.Unresolved(ref, graph.InvalidResult("not JSON", "output rejected")),
+    )
+  let stopping = next(running, graph.Cancel)
+  let states = [
+    ready,
+    queued,
+    running,
+    waiting,
+    blocked,
+    stopping,
+    next(running, graph.Unresolved(ref, graph.Uncertain("connection lost"))),
+    next(
+      running,
+      graph.Returned(ref, "{\"result\":1}", graph.Complete("1", "true")),
+    ),
+    next(running, graph.FailedBody(ref, graph.OperationFailed("no result"))),
+    next(ready, graph.Inspected(ref, Ok(policy.Deny("no access")))),
+    next(ready, graph.Inspected(ref, Error("policy offline"))),
+    next(ready, graph.Cancel),
+    next(stopping, graph.Returned(ref, "1", graph.Complete("2", "2"))),
+    next(stopping, graph.FailedBody(ref, graph.OperationFailed("failed"))),
+    next(stopping, graph.Stopped),
+    next(blocked, graph.Cancel),
+  ]
+  list.each(states, fn(state) {
+    record.decode(encoded(state)) |> should.equal(Ok(state))
+  })
+}
+
+pub fn stored_routing_and_budget_are_not_recomputed_after_decode_test() {
+  let first = running(initial())
+  let assert graph.Running(a1) = first.phase
+  let second =
+    next(
+      first,
+      graph.Returned(
+        graph.reference(first, a1),
+        "1",
+        graph.Continue("1", prepared("review")),
+      ),
+    )
+  let assert Ok(restored) = record.decode(encoded(second))
+  let assert Ok(#(recovered, [graph.Inspect(a2)])) = graph.recover(restored)
+  a2.id |> should.equal(2)
+  a2.prepared |> should.equal(prepared("review"))
+  recovered.receipts |> should.equal(second.receipts)
+  let second = running(recovered)
+  let finished =
+    next(
+      second,
+      graph.Returned(
+        graph.reference(second, a2),
+        "false",
+        graph.Continue("2", prepared("generate")),
+      ),
+    )
+  let assert Ok(saved) = record.decode(encoded(finished))
+  saved.phase
+  |> should.equal(graph.Ended(graph.Exhausted(prepared("generate"))))
+  saved.allocated |> should.equal(2)
+  graph.recover(saved) |> should.equal(Error(graph.AlreadyEnded))
+}
+
+pub fn each_encoding_identifies_its_own_write_test() {
+  let state = initial()
+  let first = encoded(state)
+  let second = encoded(state)
+  { first == second } |> should.be_false
+  record.decode(first) |> should.equal(record.decode(second))
+}
+
+pub fn recovery_contract_and_attempt_bound_survive_encoding_test() {
+  let state = initial()
+  let assert graph.Ready(a) = state.phase
+  let prepared =
+    graph.Prepared(..a.prepared, recovery: operation.ReplayInterrupted(2))
+  let first =
+    running(
+      graph.State(..state, phase: graph.Ready(graph.Activation(..a, prepared:))),
+    )
+  let assert Ok(first) = record.decode(encoded(first))
+  let assert Ok(#(retry, _)) = graph.recover(first)
+  let assert Ok(retry) = record.decode(encoded(retry))
+  let assert graph.Ready(a) = retry.phase
+  a.attempt |> should.equal(2)
+  a.prepared.recovery |> should.equal(operation.ReplayInterrupted(2))
+  let assert Ok(#(blocked, [])) = graph.recover(running(retry))
+  record.decode(encoded(blocked)) |> should.equal(Ok(blocked))
+}
+
+pub fn foreign_formats_and_future_versions_are_refused_before_state_decode_test() {
+  record.decode("{\"format\":\"fabric.graph\",\"version\":1}")
+  |> should.equal(Error(record.UnsupportedVersion(1)))
+  let assert Error(record.Corrupt(_)) =
+    record.decode("{\"format\":\"fabric.run\",\"version\":1}")
+  let assert Error(record.Corrupt(_)) = record.decode("not JSON")
+}
+
+pub fn malformed_control_records_cannot_be_encoded_or_restored_test() {
+  let state = initial()
+  let assert graph.Ready(a) = state.phase
+  let invalid = [
+    graph.State(..state, run: "../escape"),
+    graph.State(..state, incarnation: 0),
+    graph.State(..state, approvals_issued: -1),
+    graph.State(..state, allocated: 0),
+    graph.State(..state, allocated: 2),
+    graph.State(..state, value: "bad JSON"),
+    graph.State(..state, phase: graph.Ready(graph.Activation(..a, attempt: 2))),
+    graph.State(
+      ..state,
+      phase: graph.AwaitingApproval(
+        a,
+        graph.Approval(1, 1, 1, run.Requirement("publish", 1)),
+      ),
+    ),
+    graph.State(..state, phase: graph.Ended(graph.Completed("0"))),
+    graph.State(
+      ..state,
+      phase: graph.Ended(graph.Cancelled(a, graph.AfterResult)),
+    ),
+  ]
+  list.each(invalid, fn(state) {
+    record.encode(state) |> result.is_error |> should.be_true
+  })
+  let text = encoded(state)
+  list.each(
+    [
+      string.replace(text, "\"allocated\":1", "\"allocated\":2"),
+      string.replace(text, "\"attempt\":1", "\"attempt\":0"),
+      string.replace(text, "\"tag\":\"ready\"", "\"tag\":\"unknown\""),
+    ],
+    fn(text) {
+      let assert Error(record.Corrupt(_)) = record.decode(text)
+      Nil
+    },
+  )
+}
+
+pub fn signal_records_cannot_be_restored_as_executable_bodies_test() {
+  let initial = initial()
+  let assert graph.Ready(a) = initial.phase
+  let signal =
+    graph.Activation(
+      ..a,
+      prepared: graph.Prepared(..a.prepared, kind: operation.Signal),
+    )
+  let state = graph.State(..initial, phase: graph.Ready(signal))
+  let waiting =
+    next(
+      state,
+      graph.Inspected(graph.reference(state, signal), Ok(policy.Allow)),
+    )
+  waiting.phase |> should.equal(graph.WaitingSignal(signal))
+  graph.needs_runner(waiting) |> should.be_false
+  record.decode(encoded(waiting)) |> should.equal(Ok(waiting))
+  let bad = [
+    graph.State(..waiting, phase: graph.Queued(signal)),
+    graph.State(..waiting, phase: graph.Running(signal)),
+    graph.State(
+      ..waiting,
+      phase: graph.Blocked(signal, graph.Uncertain("not a body")),
+    ),
+    graph.State(..waiting, phase: graph.WaitingSignal(a)),
+    graph.State(
+      ..waiting,
+      phase: graph.Ended(graph.Cancelled(
+        signal,
+        graph.UnresolvedCancellation(graph.Uncertain("not started")),
+      )),
+    ),
+  ]
+  list.each(bad, fn(state) {
+    record.encode(state) |> result.is_error |> should.be_true
+  })
+  let malformed =
+    string.replace(
+      encoded(waiting),
+      "\"tag\":\"waiting_signal\"",
+      "\"tag\":\"running\"",
+    )
+  let assert Error(record.Corrupt(_)) = record.decode(malformed)
+}
+
+pub fn receipts_must_form_one_ordered_route_to_the_current_activation_test() {
+  let state = running(initial())
+  let assert graph.Running(a) = state.phase
+  let second =
+    next(
+      state,
+      graph.Returned(
+        graph.reference(state, a),
+        "1",
+        graph.Continue("1", prepared("review")),
+      ),
+    )
+  let assert [receipt] = second.receipts
+  list.each(
+    [
+      graph.State(..second, receipts: [receipt, receipt]),
+      graph.State(..second, receipts: [
+        graph.Receipt(..receipt, route: graph.Finished),
+      ]),
+      graph.State(..second, receipts: [
+        graph.Receipt(..receipt, route: graph.Next("other")),
+      ]),
+      graph.State(..second, receipts: [
+        graph.Receipt(..receipt, activation: graph.Activation(..a, id: 2)),
+      ]),
+      graph.State(..second, receipts: [
+        graph.Receipt(..receipt, output: "not JSON"),
+      ]),
+      graph.State(..second, value: "2"),
+    ],
+    fn(state) { record.encode(state) |> result.is_error |> should.be_true },
+  )
+  let corrupt =
+    encoded(second)
+    |> string.replace(
+      "\"route\":{\"tag\":\"next\",\"node\":\"review\"}",
+      "\"route\":{\"tag\":\"next\",\"node\":\"wrong\"}",
+    )
+  let assert Error(record.Corrupt(_)) = record.decode(corrupt)
+  Nil
+}
+
+pub fn a_graph_record_survives_store_process_loss_and_cas_refuses_a_stale_route_test() {
+  let dir = restart.temp_dir()
+  let started = running(initial())
+  let assert graph.Running(a) = started.phase
+  let advanced =
+    next(
+      started,
+      graph.Returned(
+        graph.reference(started, a),
+        "1",
+        graph.Continue("1", prepared("review")),
+      ),
+    )
+  let #(owner, runs) =
+    restart.owned(fn() {
+      let runs = support.directory(dir)
+      store.insert(runs, started.run, encoded(started), store.Keep)
+      |> should.equal(Ok(1))
+      store.commit(runs, started.run, 1, encoded(advanced), store.Keep)
+      |> should.equal(Ok(2))
+      runs
+    })
+  restart.crash(owner, runs)
+  let reopened = support.directory(dir)
+  let assert Ok(entry) = store.get(reopened, started.run)
+  let assert Ok(restored) = record.decode(entry.record)
+  restored |> should.equal(advanced)
+  store.commit(reopened, started.run, 1, encoded(started), store.Keep)
+  |> should.equal(Error(store.Conflict(2)))
+  let assert Ok(#(recovered, [graph.Inspect(pending)])) =
+    graph.recover(restored)
+  pending.prepared.node |> should.equal("review")
+  recovered.receipts |> should.equal(advanced.receipts)
+  restart.remove_dir(dir)
+}
+
+pub fn graph_writes_use_the_store_lost_acknowledgement_confirmation_test() {
+  let backend = flaky.new()
+  let runs = flaky.store(backend)
+  let state = initial()
+  flaky.arm(backend, [flaky.FailAfter, flaky.FailAfter])
+  store.insert(runs, state.run, encoded(state), store.Keep)
+  |> should.equal(Ok(1))
+  let queued = queued(state)
+  store.commit(runs, state.run, 1, encoded(queued), store.Keep)
+  |> should.equal(Ok(2))
+  let assert Ok(entry) = store.get(runs, state.run)
+  record.decode(entry.record) |> should.equal(Ok(queued))
+}
+
+pub fn cancelled_receipts_cannot_rewrite_the_previous_application_state_test() {
+  let first = running(initial())
+  let assert graph.Running(a) = first.phase
+  let second =
+    next(
+      first,
+      graph.Returned(
+        graph.reference(first, a),
+        "1",
+        graph.Continue("1", prepared("review")),
+      ),
+    )
+  let second = running(second)
+  let assert graph.Running(a) = second.phase
+  let stopping = next(second, graph.Cancel)
+  let cancelled =
+    next(
+      stopping,
+      graph.Returned(
+        graph.reference(second, a),
+        "true",
+        graph.Complete("2", "2"),
+      ),
+    )
+  record.decode(encoded(cancelled)) |> should.equal(Ok(cancelled))
+  let assert [first, last] = cancelled.receipts
+  let forged =
+    graph.State(..cancelled, value: "2", receipts: [
+      first,
+      graph.Receipt(..last, state: "2"),
+    ])
+  record.encode(forged) |> result.is_error |> should.be_true
+}
