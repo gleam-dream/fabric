@@ -1432,30 +1432,18 @@ fn discover_job(
         operation.Job(job.Every(_)), store.HeldHere
         | operation.OwnedJob(job.Every(_)), store.HeldHere
         -> {
-          use observed <- result.try(observe_job(
-            runs,
-            work,
-            options,
-            job.Reference(
-              run.issued(state.run),
-              a.id,
-              a.attempt,
-              a.prepared.operation,
-            ),
-            1,
-          ))
-          case observed == state {
-            True ->
-              commit_recovery(
-                runs,
-                work,
-                options,
-                entry,
-                g.State(..observed, incarnation: observed.incarnation + 1),
-                [],
-                1,
-              )
-            False -> Ok(observed)
+          use reserved <- result.try(
+            store.reserve_job_observation(runs, state.run)
+            |> result.map_error(StoreFailed),
+          )
+          case reserved {
+            False -> Ok(state)
+            True -> {
+              let outcome =
+                observe_claimed_job(runs, work, options, entry, state, a)
+              store.release_job_observation(runs, state.run)
+              outcome
+            }
           }
         }
         _, store.HeldHere ->
@@ -1470,6 +1458,41 @@ fn discover_job(
           )
         _, _ -> Ok(state)
       }
+  }
+}
+
+/// A pending read and release of its claim share one local reservation. A
+/// concurrent parent discovery must neither repeat the read nor release that
+/// claim while its observer is still running. Failed reads retain the claim's
+/// expiry path; process loss releases the local reservation through monitoring.
+fn observe_claimed_job(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  entry: store.Entry,
+  state: g.State,
+  a: g.Activation,
+) -> Result(g.State, Error) {
+  use observed <- result.try(observe_job_with(
+    runs,
+    work,
+    options,
+    job.Reference(run.issued(state.run), a.id, a.attempt, a.prepared.operation),
+    1,
+    ScheduledObservation,
+  ))
+  case observed == state {
+    True ->
+      commit_recovery(
+        runs,
+        work,
+        options,
+        entry,
+        g.State(..observed, incarnation: observed.incarnation + 1),
+        [],
+        1,
+      )
+    False -> Ok(observed)
   }
 }
 
@@ -1501,6 +1524,22 @@ pub fn observe_job(
   ref: job.Reference,
   tries: Int,
 ) -> Result(g.State, Error) {
+  observe_job_with(runs, work, options, ref, tries, ManualObservation)
+}
+
+type Observation {
+  ManualObservation
+  ScheduledObservation
+}
+
+fn observe_job_with(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  ref: job.Reference,
+  tries: Int,
+  observation: Observation,
+) -> Result(g.State, Error) {
   use #(entry, state) <- result.try(load(
     runs,
     work,
@@ -1513,8 +1552,17 @@ pub fn observe_job(
     })
   {
     Ok(_) -> Ok(state)
-    Error(_) ->
-      observe_current_job(runs, work, options, ref, tries, entry, state)
+    Error(_) -> {
+      // Another discovery can release the claim between discover_job's read
+      // and this reload. That old ownership does not authorize a new poll.
+      case observation, entry.holding {
+        ScheduledObservation, store.Unheld
+        | ScheduledObservation, store.HeldElsewhere(..)
+        -> Ok(state)
+        ScheduledObservation, store.HeldHere | ManualObservation, _ ->
+          observe_current_job(runs, work, options, ref, tries, entry, state)
+      }
+    }
   }
 }
 

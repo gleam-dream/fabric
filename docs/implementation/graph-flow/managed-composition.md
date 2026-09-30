@@ -553,7 +553,10 @@ No in-memory timer is authoritative and no new scheduling service is required.
   scan with changed child dependencies. Concurrent scanners claim disjoint work.
   Recovery validates the registered root and saved contracts, and observes a job
   only when this store holds its claim. Reaching an unclaimed or foreign-owned
-  relative never polls it early. Process loss or callback failure retains a
+  relative never polls it early. Within one store, a local reservation covers
+  the scheduled read and claim release; ownership is rechecked after reserving.
+  Losing the observer releases the reservation, never the durable claim.
+  Process loss or callback failure retains a
   lease-expiry retry path. Sweep progress includes a committed observation route,
   even when it does not restart the run. Backend metadata refresh cannot authorize
   an effect.

@@ -319,6 +319,8 @@ pub opaque type Message {
   ClaimExpired(limit: Int, reply: Subject(Result(List(String), StoreError)))
   ClaimReady(limit: Int, reply: Subject(Result(List(String), StoreError)))
   ReadClock(reply: Subject(Result(Int, StoreError)))
+  ReserveJobObservation(run: String, caller: Pid, reply: Subject(Bool))
+  ReleaseJobObservation(run: String, caller: Pid)
 }
 
 /// A store over application-supplied backend functions (for example a
@@ -892,6 +894,22 @@ pub fn commit(
   |> result.flatten
 }
 
+/// Serializes scheduled reads within this store's lease owner. A reservation
+/// is local only: the caller must re-read and check the durable claim before
+/// observing. Caller loss releases this reservation, never the durable claim.
+@internal
+pub fn reserve_job_observation(
+  store: Store,
+  run: String,
+) -> Result(Bool, StoreError) {
+  call(store, ReserveJobObservation(run, process.self(), _))
+}
+
+@internal
+pub fn release_job_observation(store: Store, run: String) -> Nil {
+  process.send(target(store), ReleaseJobObservation(run, process.self()))
+}
+
 /// Sends `Nil` to `watcher` after every commit of `run` through this store
 /// and whenever its runner exits, until `unwatch` or the watcher's owner
 /// exits.
@@ -974,6 +992,7 @@ type Loop {
     draining: Option(Pid),
     watchers: Dict(String, List(#(Pid, Subject(Nil)))),
     wakeups: Dict(String, Wakeup),
+    job_observations: Dict(String, Pid),
     monitored: List(Pid),
     /// Per run: the request whose backend call is in flight, and the
     /// requests waiting behind it, oldest first.
@@ -1055,6 +1074,7 @@ fn run(
       draining: None,
       watchers: dict.new(),
       wakeups: dict.new(),
+      job_observations: dict.new(),
       monitored: [],
       busy: dict.new(),
       timeout: default_backend_timeout,
@@ -1115,6 +1135,28 @@ fn call(
 /// the backend timeout, so a slow or hung call holds up only its own run.
 fn serve(state: Loop, message: Message) -> Loop {
   case message {
+    ReserveJobObservation(run, caller, reply) -> {
+      let available =
+        state.draining == None && !dict.has_key(state.job_observations, run)
+      process.send(reply, available)
+      case available {
+        False -> state
+        True ->
+          Loop(
+            ..monitor(state, caller),
+            job_observations: dict.insert(state.job_observations, run, caller),
+          )
+      }
+    }
+    ReleaseJobObservation(run, caller) ->
+      case dict.get(state.job_observations, run) {
+        Ok(owner) if owner == caller ->
+          Loop(
+            ..state,
+            job_observations: dict.delete(state.job_observations, run),
+          )
+        _ -> state
+      }
     Wake(run, token) -> wake(state, run, token)
     Awoke(run, token, disposition) -> {
       case dict.get(state.wakeups, run) {
@@ -1225,6 +1267,9 @@ fn serve(state: Loop, message: Message) -> Loop {
           live:,
           valid: dict.drop(state.valid, released),
           watchers:,
+          job_observations: dict.filter(state.job_observations, fn(_, owner) {
+            owner != pid
+          }),
           monitored: list.filter(state.monitored, fn(p) { p != pid }),
         )
       list.each(released, notify(state, _))
