@@ -31,6 +31,17 @@ pub fn pool(size: Int) -> pog.Connection {
   pool_with(size, fn(config) { config })
 }
 
+/// A pool scoped to one scenario, including failed assertions. EUnit can reuse
+/// its calling process across scenarios, so links alone do not bound pools.
+pub fn using_pool(size: Int, work: fn(pog.Connection) -> a) -> a {
+  let assert Ok(config) = pog.url_config(process.new_name("scoped_pool"), url())
+  let assert Ok(started) = config |> pog.pool_size(size) |> pog.start
+  with_process(started.pid, fn() { work(started.data) })
+}
+
+@external(erlang, "fabric_postgres_test_ffi", "with_process")
+fn with_process(pid: process.Pid, work: fn() -> a) -> a
+
 /// A new pool of `size` connections, its configuration changed by
 /// `configure`, linked to the caller.
 pub fn pool_with(

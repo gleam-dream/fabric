@@ -1,5 +1,5 @@
 -module(fabric_postgres_test_ffi).
--export([getenv/1, read_file/1, unique/0]).
+-export([getenv/1, read_file/1, unique/0, with_process/2]).
 
 getenv(Name) ->
     case os:getenv(binary_to_list(Name)) of
@@ -15,3 +15,17 @@ read_file(Path) ->
 
 unique() ->
     erlang:unique_integer([positive]).
+
+with_process(Pid, Work) ->
+    try Work()
+    after
+        unlink(Pid),
+        Ref = monitor(process, Pid),
+        exit(Pid, shutdown),
+        receive
+            {'DOWN', Ref, process, Pid, _} -> ok
+        after 5000 ->
+            exit(Pid, kill),
+            receive {'DOWN', Ref, process, Pid, _} -> ok end
+        end
+    end.

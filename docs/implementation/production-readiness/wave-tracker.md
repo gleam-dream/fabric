@@ -6,7 +6,7 @@
 - Approved outcome: the user's three-part goal below, in full. This follows the
   accepted graph program, not a reopening or reduction of that program.
 - Active wave: operations contracts and S7.
-- Next: store readiness, PostgreSQL gauges and shutdown accounting, then the
+- Next: shutdown accounting and the operations runbook, then the
   realistic application comparison.
 - Evidence: the working tree began clean at `000edd9`. Existing CI checks out
   only Fabric and runs only its root suite. Four clean sibling revisions supply
@@ -23,13 +23,20 @@
   passed all 41 checks, including 625 core and 57 real PostgreSQL tests.
 - Checkpoints: `39e28a8` repairs scheduled observation; `4e491af` prepares the
   local gate and reconciles the backlog.
-- Next action: implement database statistics. The first S7 slice, store
+- Next action: shutdown accounting. The first S7 slice, store
   readiness, passed the complete local gate. Its
   [operations contract](operations.md) defines bounded storage probes, live
   acceptance, safe lease evidence and renewal age. Seven focused core scenarios
   pass, including a delayed probe, renewal failure, restart and an expired
   lease window. PostgreSQL proves migration is required and probes leave
   records untouched. Hosted CI and publication remain explicitly deferred.
+- Statistics progress: O6–O11 have an implementation with SQL schema 7 and
+  diagnostic projection 1. Six pure projection scenarios and all 64 PostgreSQL
+  tests pass, including real lifecycle counts, ages, uncertainty, unknowns,
+  budget exclusion and concurrent refresh/write. Expanded tests exposed the
+  harness's 300-connection limit; server logs confirmed it. The new scenarios
+  now close their pools on success or failure. The complete gate passed all
+  41 checks, including 638 core and 64 PostgreSQL tests; statistics are accepted.
 
 ## Original objective and authorization
 
@@ -209,3 +216,36 @@ This accepts the readiness slice, not wave 2. O6–O11 record the next statistic
 contract. Database gauges, sweep backlog, shutdown summaries and the runbook
 remain required before S7 is complete. No new runtime dependency or persisted
 execution format was introduced.
+
+### Wave 2 progress — statistics slice accepted 2026-09-30
+
+O6–O11 are implemented by the pure `fabric/statistics` projection and
+`fabric_postgres.stats` / `refresh_statistics`. Schema 7 stores diagnostic
+metadata with the source revision atomically. One read-only SQL statement uses
+one snapshot and clock sample for run buckets, intervention counts, record ages,
+budget exclusion, explicit unknowns, per-node live leases and expired-lease lag.
+Refresh preserves original bytes, revisions, leases and ages; it does not make
+unsupported records healthy. No execution record format changed.
+
+The first missing-API scenarios failed before implementation. Six core scenarios
+cover agent and graph classifications, overlapping requests, unresolved terminal
+effects, valid expiry, waits, unsupported formats, identity mismatch and budget
+records. Six real PostgreSQL scenarios cover empty groups, actual agent and
+graph lifecycles, exact counts, age meanings, lease groups, read-only reporting,
+stale metadata, bounded refresh and a concurrent write/refresh.
+
+Expanded tests initially exceeded the temporary server's 300-client limit;
+`/tmp/fabric-postgres-statistics-diagnostic.log` retains PostgreSQL's explicit
+"too many clients" evidence. The new scenarios now scope connection pools with
+cleanup on success and failure. The test script retains server-side errors
+before discarding its temporary cluster. The corrected PostgreSQL suite passed
+all 64 tests without increasing the connection limit.
+
+`nix develop -c python3 scripts/check.py full --logs
+/tmp/fabric-statistics-full-gate` passed all 41 checks, including 638 core and
+64 PostgreSQL tests, all consumers/integrations and the compiler-negative proof.
+The package README records migration, refresh and gauge semantics. Acceptance
+is limited to these diagnostic contracts; observations still grant no effect
+authority. No dependency, hosted CI activation, publication or deployment was
+added. S7 still requires shutdown summaries and the complete runbook; wave 3
+still requires the real application and live comparison.

@@ -50,4 +50,12 @@ fi
 createdb -h 127.0.0.1 -p "$port" -U fabric fabric_test
 export FABRIC_TEST_DATABASE_URL="postgres://fabric@127.0.0.1:$port/fabric_test"
 echo "throwaway cluster on 127.0.0.1:$port ($(postgres --version))"
-gleam test "$@"
+if gleam test "$@"; then
+  exit 0
+else
+  status=$?
+  # The cluster is removed on exit; keep server-side failure evidence in the
+  # gate log so connection limits and SQL errors remain diagnosable.
+  tail -80 "$root/postgres.log" >&2
+  exit "$status"
+fi
