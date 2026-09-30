@@ -65,8 +65,8 @@ unsettled child work. Cancellation intent, pre-start tombstones, ancestral
 admission checks, depth and child-count bounds must cover both runtime kinds.
 The shared parent reference is `run.Parent`: `AgentParent(run, ActionId)` or
 `GraphParent(run, activation)`. Graph activations never become chat action IDs.
-Family retention and shared budgets still need a contract against PostgreSQL's
-existing agent-family metadata.
+Family retention uses the saved attachment contract described below. Shared
+budgets still need a contract across both runtime kinds.
 
 Both controllers retain this parent sum. Agent record version 5 writes tagged
 parent variants; older agent records decode to `AgentParent`. Writers 2–4 keep
@@ -105,8 +105,8 @@ Canceling an attachment retains intent until child cancellation is recorded;
 an absent child gets a terminal record before a competing start can win.
 No parent continuation follows an uncertain child. Each graph's activation
 bound limits the children it can reserve, and ancestry checks cap nesting.
-Family-wide budgeting/retention remains separate work in this wave rather
-than being inferred from a passing child scenario.
+Family-wide budgeting remains separate work in this wave rather than being
+inferred from a passing child scenario. Retention is now verified separately.
 
 The first subgraph checkpoint proves creation, lost acknowledgements,
 recovery, child approval, child reconciliation and cancellation races through
@@ -114,7 +114,7 @@ public APIs, including a PostgreSQL restart. It does not complete managed
 composition. Subsequent checkpoints implement idle child waits, local wakeups,
 nested approval/signal propagation and cancellation settlement, including nested
 cancellation across restart. Managed agent nodes are described below. Family
-retention, shared budgets, jobs and deadlines remain unaccepted.
+retention is described below; shared budgets, jobs and deadlines remain unaccepted.
 
 ### Managed ordinary agents
 
@@ -249,6 +249,39 @@ as a working child. A stale notification or competing recovery cannot reopen
 it. Store shutdown starts no wakeup work after draining begins; any lost wakeup
 remains repairable from the retained wait. Graph record version 4 introduces
 the waiting-child phase and rejects earlier unreleased graph formats.
+
+### Family retention
+
+`fabric/retention` derives metadata through the current agent and graph record
+decoders. It retains all immediate child reservations, including historical
+graph receipts and agent actions, with an opaque attachment key that a child
+must repeat. A record is settled only when it is terminal with no unresolved
+effects. Declared run IDs and stored IDs must match. Unsupported or corrupt
+records produce no usable metadata, and no application code participates.
+
+PostgreSQL schema version 2 stores that projection and its source revision in
+the same insert/CAS as the record. An indexed parent reference replaces the
+old `run-…` prefix assumption, so arbitrary graph root IDs and hashed children
+belong to the same family. Pruning checks both directions of every attachment,
+all named children, all terminal evidence, every member's age and every lease.
+Missing, unexpected, mismatched, unreadable, stale or unresolved members retain
+the entire family. A completed child cannot be removed independently.
+
+The prune transaction uses serializable isolation and bounded retries. Parent
+foreign keys prevent delayed child insertion after parent deletion; concurrent
+pruners lock distinct roots, and a member change or renewed lease must be
+revalidated. A terminal evidence update resets that member's retention age.
+Pruning ends the family's replay window; run IDs must not be reused for new
+executions that may receive messages from the pruned family.
+
+After migration, existing records remain retained until bounded
+`fabric_postgres.refresh_retention` batches project them. Refresh does not
+change bytes, revisions, leases or record timestamps. Old backend writes leave
+a source-revision mismatch. Unreadable records and missing-parent orphans are
+indexed as unknown and remain retained. Normal record writes or a projection
+version change refresh metadata again. This establishes PostgreSQL retention,
+not a pruning API for the development directory backend or shared execution
+budgets.
 
 ## External jobs and deadlines
 

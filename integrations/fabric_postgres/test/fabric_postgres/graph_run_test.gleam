@@ -301,6 +301,7 @@ pub fn child_cancellation_settlement_survives_postgres_restart_test() {
   child_row.holder |> should.equal(store.Free)
   process.receive(effects, 1000) |> should.equal(Ok(Nil))
   process.receive(effects, 0) |> should.equal(Error(Nil))
+  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(2))
 }
 
 fn released(
@@ -428,6 +429,7 @@ pub fn canceled_agent_evidence_settles_after_postgres_restart_test() {
   let assert Ok(runs) =
     fabric_postgres.store(process.new_name("cancel-restored"), settings)
   let assert Ok(Nil) = store.start(runs)
+  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(0))
   let assert Ok(settled) =
     fabric.reconcile_stored(runs, effect, "effect confirmed")
   settled.status |> should.equal(run.Finished(run.Cancelled))
@@ -446,4 +448,7 @@ pub fn canceled_agent_evidence_settles_after_postgres_restart_test() {
   agents.another(gate, 0) |> should.be_false
   released(settings, id, 200) |> should.be_true
   released(settings, reference.child, 200) |> should.be_true
+  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(2))
+  fabric_postgres.backend(settings).get(run.id_to_string(reference.child))
+  |> should.equal(Error(store.NotFound))
 }
