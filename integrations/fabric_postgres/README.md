@@ -180,6 +180,12 @@ A state that cannot retain its meaning in version 2 fails before writing.
 - **`with_schema(settings, schema)`**: keeps the tables in `schema` (default
   `public`), a plain lowercase identifier; `migrate` creates it if missing.
 
+`store.now(runs)` reads UTC Unix milliseconds from PostgreSQL's
+`clock_timestamp()`, using the same clock as leases and scheduled discovery.
+This read changes no execution records, leases or scheduling metadata. Errors
+propagate without using the caller's clock. No migration is needed for this
+clock API; durable graph wait expiration remains under development.
+
 ## Migrations
 
 `migrate(settings)` creates the schema if missing, then applies each

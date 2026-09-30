@@ -643,6 +643,36 @@ Acceptance covers public API restart, fences, refusals, cancellation/completion
 races, managed ancestry, scheduled discovery, family retention and the real HTTP
 service. Deadlines remain the next contract.
 
+### Durable deadline clock
+
+Deadlines need one durable time domain before wait expiration can be recorded.
+The backend that judges leases and due-work eligibility owns that clock. This
+boundary is a prerequisite for deadline-bearing waits; adding it alone does not
+implement expiration or close wave 3.
+
+- **D1 — authoritative time:** `LeasedBackend.now` returns UTC Unix milliseconds
+  from the same clock used for leases and scheduled discovery. `store.now` reads
+  that backend through the currently selected store process. A restarted store
+  or another node using that backend observes the same time domain. Persisted
+  deadlines must never use a VM's monotonic epoch. Wall-clock corrections can
+  delay or advance eligibility; the API does not promise monotonic samples.
+- **D2 — failure and isolation:** unavailable, crashed or timed-out clock calls
+  return `Unavailable`. They never fall back to the caller's clock. Calls are
+  bounded and do not hold the store actor or block unrelated run access. Reading
+  time changes no records, revisions, leases, discovery times or retention ages.
+- **D3 — backend implementations:** PostgreSQL reads `clock_timestamp()` and
+  returns milliseconds as an integer. Unleased memory/directory stores use the
+  host's UTC system clock. The leased test backend uses UTC time plus its explicit
+  test offset for both clock reads and lease/discovery decisions. Offset survives
+  store-process restart while that test backend remains alive; it is not a
+  persistent database substitute.
+
+The next deadline slice must retain each wait's due time, scope expiration to its
+activation, arbitrate late delivery/completion through the record revision, and
+schedule overdue idle waits after downtime. Owned-job expiration must preserve
+stop-request progress and terminal evidence. Clock support cannot stand in for
+those lifecycle and recovery scenarios.
+
 ## Required evidence
 
 Signal scenarios cover store-process loss, correct native decoding, changed

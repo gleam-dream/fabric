@@ -310,6 +310,13 @@ earlier store process), so it is safe to call at any time. Node ids must
 be unique across live VMs; generated process names are unique only within
 a VM. Coordination over Erlang distribution is not supported.
 
+`store.now(runs)` reads UTC Unix milliseconds from the backend's lease and
+discovery clock. Custom `LeasedBackend` implementations must provide `now`;
+PostgreSQL uses database time, and unleased memory/directory stores use host
+system time. Clock failures propagate without a local-time fallback. This is
+the clock foundation for persisted deadlines; graph wait expiration remains
+under development.
+
 Automatic recovery: register agent roots with
 `fabric.recovery(agent, context_for_run)` and graph roots with `graph.recovery`
 (described below), then add

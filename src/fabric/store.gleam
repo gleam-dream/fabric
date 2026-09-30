@@ -63,6 +63,10 @@
 ////   Claims are disjoint and bounded, change no execution bytes/revisions or
 ////   retention ages, and refuse stale source revisions/projection versions.
 ////   Use `fabric/discovery` to derive metadata from supported records.
+//// - `now()` returns UTC Unix milliseconds from the same backend clock used
+////   for leases and discovery. Reading it changes no stored data. Clock errors
+////   propagate; leased stores never substitute a node's local time. Clock
+////   corrections may move time backward, so samples need not be monotonic.
 ////
 //// `fabric/testing.leased_backend_checks` checks a backend against this
 //// contract; `fabric/testing.leased_memory` is one kept in memory, for
@@ -165,6 +169,8 @@ pub type Lease {
 /// The functions of a leased backend over encoded records (see Leases).
 pub type LeasedBackend {
   LeasedBackend(
+    /// UTC Unix milliseconds from the backend's lease/discovery clock.
+    now: fn() -> Result(Int, StoreError),
     get: fn(String) -> Result(Current, StoreError),
     /// `insert(run, record, lease)`.
     insert: fn(String, String, Lease) -> Result(Nil, StoreError),
@@ -307,6 +313,7 @@ pub opaque type Message {
   Fence
   ClaimExpired(limit: Int, reply: Subject(Result(List(String), StoreError)))
   ClaimReady(limit: Int, reply: Subject(Result(List(String), StoreError)))
+  ReadClock(reply: Subject(Result(Int, StoreError)))
 }
 
 /// A store over application-supplied backend functions (for example a
@@ -911,6 +918,7 @@ type Backend {
 /// writes ignore the lease, and nothing is renewed or claimed.
 fn unleased(backend: Backend) -> LeasedBackend {
   LeasedBackend(
+    now: fn() { Ok(system_time_ms()) },
     get: fn(run) {
       backend.get(run)
       |> result.map(fn(stored) { Current(stored.revision, stored.record, Free) })
@@ -1137,6 +1145,12 @@ fn serve(state: Loop, message: Message) -> Loop {
       state
     }
     Draining(pid) -> Loop(..state, draining: Some(pid))
+    ReadClock(reply) -> {
+      process.spawn(fn() {
+        process.send(reply, bounded_backend(state.timeout, state.backend.now))
+      })
+      state
+    }
     ClaimExpired(limit, reply) as request
     | ClaimReady(limit, reply) as request -> {
       case state.lessee, state.draining {
@@ -1769,6 +1783,9 @@ fn memory_loop(
 @external(erlang, "fabric_ffi", "now_ms")
 fn now_ms() -> Int
 
+@external(erlang, "fabric_ffi", "system_time_ms")
+fn system_time_ms() -> Int
+
 @external(erlang, "fabric_ffi", "random_id")
 fn random_id() -> String
 
@@ -1815,4 +1832,12 @@ pub fn claim_ready(
   limit: Int,
 ) -> Result(List(String), StoreError) {
   call(store, ClaimReady(limit, _)) |> result.flatten
+}
+
+/// Read UTC Unix milliseconds from the store's backend clock. Use this time
+/// domain for persisted deadlines, never the calling VM's monotonic epoch.
+/// A failure is returned without falling back to local time. Like other store
+/// reads, the callback is bounded by `with_backend_timeout`.
+pub fn now(store: Store) -> Result(Int, StoreError) {
+  call(store, ReadClock) |> result.flatten
 }

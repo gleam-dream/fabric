@@ -57,6 +57,9 @@ pub type Check {
 /// in a test and fail it on `Error`.
 pub fn leased_backend_checks(new: fn() -> LeasedBackend) -> List(Check) {
   [
+    Check("backend time reads preserve records and lease ownership", fn() {
+      clock_reads(new())
+    }),
     Check(
       "scheduled claims are disjoint, keep revisions and retain their interval",
       fn() { scheduled_claims(new()) },
@@ -99,6 +102,22 @@ pub fn leased_backend_checks(new: fn() -> LeasedBackend) -> List(Check) {
 }
 
 const long = 60_000
+
+fn clock_reads(backend: LeasedBackend) -> Result(Nil, String) {
+  let id = fresh()
+  use _ <- result.try(expect(
+    "insert for clock read",
+    backend.insert(id, "clock", store.Claim("owner", long)),
+    Ok(Nil),
+  ))
+  use before <- result.try(backend.get(id) |> result.map_error(string.inspect))
+  use _ <- result.try(backend.now() |> result.map_error(string.inspect))
+  expect(
+    "clock read leaves revision, record and lease unchanged",
+    backend.get(id),
+    Ok(before),
+  )
+}
 
 fn fresh() -> String {
   "run-" <> random_id()
@@ -870,6 +889,7 @@ type Row {
 }
 
 type LeasedRequest {
+  LeasedClock(Subject(Int))
   LeasedGet(String, Subject(Result(Current, StoreError)))
   LeasedWrite(
     String,
@@ -888,7 +908,7 @@ type LeasedRequest {
 /// stands for a database that several nodes share, each node a leased
 /// store of its own node id over `backend`; not for runs that must outlive
 /// the VM. Its process stops when the process that called this exits. Its
-/// clock is the VM's monotonic clock, moved forward by `advance`.
+/// clock is UTC system time, moved forward by `advance`.
 pub fn leased_memory() -> LeasedMemory {
   let ready = process.new_subject()
   let owner = process.self()
@@ -906,6 +926,7 @@ pub fn leased_memory() -> LeasedMemory {
   let subject = process.receive_forever(ready)
   LeasedMemory(
     backend: LeasedBackend(
+      now: fn() { Ok(process.call_forever(subject, LeasedClock)) },
       get: fn(run) { process.call_forever(subject, LeasedGet(run, _)) },
       insert: fn(run, record, lease) {
         process.call_forever(subject, LeasedWrite(run, None, record, lease, _))
@@ -948,7 +969,7 @@ fn leased_loop(
     Error(Nil) -> Nil
     Ok(request) -> {
       let #(rows, offset) =
-        leased_serve(request, rows, now_ms() + offset, offset)
+        leased_serve(request, rows, system_time_ms() + offset, offset)
       leased_loop(requests, rows, offset)
     }
   }
@@ -968,6 +989,10 @@ fn leased_serve(
     }
   }
   case request {
+    LeasedClock(reply) -> {
+      process.send(reply, now)
+      #(rows, offset)
+    }
     Advance(milliseconds, reply) -> {
       process.send(reply, Nil)
       #(rows, offset + milliseconds)
@@ -1112,8 +1137,8 @@ fn leased_serve(
   }
 }
 
-@external(erlang, "fabric_ffi", "now_ms")
-fn now_ms() -> Int
+@external(erlang, "fabric_ffi", "system_time_ms")
+fn system_time_ms() -> Int
 
 @external(erlang, "fabric_ffi", "random_id")
 fn random_id() -> String

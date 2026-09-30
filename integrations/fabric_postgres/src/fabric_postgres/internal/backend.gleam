@@ -42,6 +42,7 @@ const retries = 5
 /// The backend over `table`, a schema-qualified `fabric_runs`.
 pub fn new(connection: pog.Connection, table: String) -> LeasedBackend {
   LeasedBackend(
+    now: fn() { now(connection) },
     get: fn(run) { get(connection, table, run) },
     insert: fn(run, record, lease) {
       insert(connection, table, run, record, lease, retries)
@@ -59,6 +60,21 @@ pub fn new(connection: pog.Connection, table: String) -> LeasedBackend {
       claim_ready(connection, table, owner, ttl, limit, retries)
     },
   )
+}
+
+fn now(connection: pog.Connection) -> Result(Int, StoreError) {
+  pog.query(
+    "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint",
+  )
+  |> pog.returning(decode.field(0, decode.int, decode.success))
+  |> pog.execute(connection)
+  |> result.map_error(unavailable)
+  |> result.try(fn(returned) {
+    case returned.rows {
+      [milliseconds] -> Ok(milliseconds)
+      _ -> Error(Unavailable("database clock returned no single timestamp"))
+    }
+  })
 }
 
 fn get(
