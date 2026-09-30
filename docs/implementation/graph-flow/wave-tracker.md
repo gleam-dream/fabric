@@ -14,8 +14,9 @@
 - Last closed wave: 2, public durable serial graph runtime.
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's external-job and deadline contracts are being
-  refined. Idle dependency discovery is implemented. Public shared work/child/depth budgets, mixed-family admission,
+- Open decisions: wave 3's managed job attachment, cancellation ownership and
+  deadline contracts are being refined. The submission/receipt boundary is proven
+  against an independently retained service. Idle dependency discovery is implemented. Public shared work/child/depth budgets, mixed-family admission,
   root initialization and ledger retention are implemented. Registered graph
   sweeping recovers expired work and changed idle dependencies through mixed attachments. Shared parent
   identities and manual signal contracts are implemented.
@@ -26,9 +27,10 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: automatic idle discovery passes 510 root tests and 46 PostgreSQL
-  tests, including migration and concurrent index refresh. The current gate includes
-  four graph consumer tests and 15 existing app consumer tests. Builds use
+- Gate status: 510 root tests, four graph consumer tests, 15 app consumer tests,
+  five external-job consumer scenarios and two independent service tests pass.
+  The unchanged PostgreSQL adapter retains its previous 46-test acceptance,
+  including migration and concurrent index refresh. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
 - Current evidence: typed native operations and commands run through public
@@ -38,9 +40,10 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: define the retained external-job submission/receipt contract and
-  prove attachment to an independently running local job, then durable deadlines
-  under the [managed composition contract](managed-composition.md).
+- Next action: add managed job receipt/wait states, explicit cancellation
+  ownership and durable completion discovery using the real service in
+  `consumers/jobs`, followed by due-time handling under the
+  [managed composition contract](managed-composition.md).
   These remain runtime states rather than blocking operation wrappers.
 - Resume note: the user requested another checkpoint commit and continued
   implementation on 2026-09-30. The app goal is confirmed active with all six
@@ -910,3 +913,40 @@ six-step goal remains active, with wave 3 next.
 - Next: retain distinct submission intent, accepted job receipt and completion;
   prove lost-acknowledgement recovery against an independently running local job.
   Saga/Grind remain consumer-owned optional integrations outside the core.
+
+### Wave 3 — real external-job submission and receipt recovery
+
+- Status: the retained `consumers/jobs` example executes a typed submit-and-return
+  graph against a separate loopback HTTP service. The service persists acceptance
+  in SQLite, processes an uppercase artifact independently, and exposes its result
+  and SHA-256 digest. This proves the first external composition contract under
+  G8/J1–J5; it does not yet implement managed attachment.
+- Identity: the consumer's logical key contains graph run ID and activation,
+  excluding the retry attempt. The service atomically binds the key to its input
+  and receipt. Concurrent duplicates return one receipt; changed input is refused;
+  a new activation creates a distinct job. The existing bounded interrupted-replay
+  contract is selected only because this service guarantees deduplication.
+- Recovery: killing Fabric after remote acceptance and before its result commit
+  returns the same receipt on attempt two. An unreplayable submission remains
+  uncertain until explicit receipt reconciliation. A committed receipt is reused
+  without any new submit. Detached work continues independently after Fabric loss;
+  a receipt never claims business completion.
+- Independent service: a separate OS process owns its queue and filesystem effects.
+  Acceptance, queued work and completed artifacts survive that service's restart.
+  Deterministic artifact replacement is the service's own recovery contract,
+  not an exactly-once claim for arbitrary external effects. Test storage is
+  temporary; no new Fabric dependency or external account is required.
+- Gate: `nix develop -c consumers/jobs/test-service.sh` passes five Gleam scenarios
+  and two service boundary tests. Core build/tests pass (510); graph and app
+  consumer builds/tests pass (four and 15). Gleam builds use warnings as errors.
+  `nix fmt`, `nix flake check` and `git diff --check` pass. No Python static-type
+  checker is configured; its real protocol/restart tests are the executable gate.
+  PostgreSQL source is unchanged; its prior 46-test result remains current evidence.
+- Conformance: this checkpoint needs no new core submission abstraction because
+  the fenced activity and stable invocation already supply this contract. Its
+  explicit separate receipt and status models will be reused for managed waits.
+  Automatic job observation, cancellation rights and durable deadlines remain
+  wave 3 work; waves 4–6 and the full six-stage objective remain active.
+- Next: retain an accepted receipt inside a managed graph wait, release idle
+  execution ownership, and recover completion or cancellation by stable receipt
+  after process loss. Reuse this real service to test the new runtime path.

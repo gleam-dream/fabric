@@ -13,6 +13,9 @@ agents with idle/nested waits. `fabric/graph/agent` binds a native input,
 prompt and typed reply conversion to the existing agent runner.
 See the [runnable public graph consumer](consumers/graph/README.md)
 and [graph implementation tracker](docs/implementation/graph-flow/wave-tracker.md).
+The [external-job consumer](consumers/jobs/README.md) proves durable submission
+and receipt recovery against a separate local service; managed attachment is
+still part of the remaining runtime work.
 Terminal agent uncertainty settlement, complete-family PostgreSQL retention and
 shared work/child/depth budgets are implemented. Registered graph sweeping recovers
 expired work and changed idle dependencies after local wakeups are lost.

@@ -449,6 +449,43 @@ whether cancellation was requested, confirmed or unresolved. Ending local
 observation never implies that the remote job stopped. Saga and Grind remain
 consumer choices with no Fabric core dependencies.
 
+### Submission receipt boundary
+
+The first external-job checkpoint exercises the submit-and-return contract with
+an independently running local service. It uses a normal fenced graph activity;
+its typed answer is an acceptance receipt, not a business result. This is a
+prerequisite for managed attachment, not a replacement for it.
+
+- **J1 — stable submission:** a logical submission key identifies the graph run
+  and activation. An attempt is diagnostic data, never part of the deduplication
+  key. The external service atomically binds that key to the original input and
+  receipt; the same key with different input is refused.
+- **J2 — ambiguous acceptance:** after admission and a committed start, process
+  loss may hide a successful remote acceptance. Automatic replay is enabled only
+  for an adapter whose external service guarantees deduplication by that key.
+  The next attempt recovers the same receipt. Otherwise the graph stays uncertain
+  until explicit reconciliation; an unconfirmed submit is never definite failure.
+- **J3 — accepted is not complete:** a submission graph may complete while the
+  external job remains queued or running. A receipt identifies accepted work;
+  only a separate checked observation establishes its business outcome.
+- **J4 — saved receipt:** once Fabric records the receipt, recovery uses that
+  result without submitting again. Stopping or losing Fabric does not stop this
+  detached job. This checkpoint owns no remote cancellation rights.
+- **J5 — independent progress:** the service persists acceptance before replying
+  and processes actual work independently of Fabric. A restarted Fabric process
+  can query the same job and result. Deterministic artifact creation permits the
+  example service to resume interrupted local work without creating another job;
+  this is a service-specific guarantee, not general exactly-once execution.
+
+The retained consumer in `consumers/jobs` is the evidence owner for J1–J5.
+It uses a loopback-only HTTP service and a temporary SQLite database using
+Python's standard library, already provided by the development environment.
+These are example-service implementation choices, not Fabric dependencies.
+Acceptance requires real HTTP submission, stored receipts, actual artifact
+creation, concurrent duplicate submission and Fabric process loss across the
+acceptance/receipt boundary. Managed attachment, cancellation ownership,
+automatic completion observation and Fabric due-time discovery remain open.
+
 An optional due time is durable data. Timers are wakeup hints only; a due-wait
 scan or index plus an explicit wakeup owner must recover overdue waits after
 downtime. This is later wave 3 work, separate from manual signal delivery.
