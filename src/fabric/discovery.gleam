@@ -16,7 +16,7 @@ import gleam/result
 
 /// Bump when a record format or state changes discovery eligibility or keys.
 /// Backends must refresh older projections before using them for scheduling.
-pub const version = 3
+pub const version = 4
 
 pub type Trigger {
   Changed(dependency: run.RunId)
@@ -42,14 +42,20 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
       |> result.map(fn(metadata) { #(metadata.run, None) })
     Ok(state) -> {
       let wait = case state.phase {
-        graph.WaitingJob(activation) ->
+        graph.StoppingJob(_, job.RequestQueued)
+        | graph.StoppingJob(_, job.RequestStarted) -> None
+        graph.WaitingJob(activation) | graph.StoppingJob(activation, _) ->
           case activation.prepared.kind {
-            operation.Job(job.Every(every)) ->
+            operation.Job(job.Every(every))
+            | operation.OwnedJob(job.Every(every)) ->
               Some(Wait(
                 run.issued(state.run),
                 json.array(
                   [
-                    json.string("poll"),
+                    json.string(case state.phase {
+                      graph.StoppingJob(_, _) -> "stop_poll"
+                      _ -> "poll"
+                    }),
                     json.int(activation.id),
                     json.int(activation.attempt),
                     json.int(every),

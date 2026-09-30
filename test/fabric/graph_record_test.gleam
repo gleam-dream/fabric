@@ -35,6 +35,56 @@ fn initial() -> graph.State {
   state
 }
 
+pub fn owned_cancellation_records_require_version_nine_and_preserve_request_state_test() {
+  let initial = initial()
+  let assert graph.Ready(a) = initial.phase
+  let a =
+    graph.Activation(
+      ..a,
+      prepared: graph.Prepared(
+        ..a.prepared,
+        kind: operation.OwnedJob(job.Every(100)),
+      ),
+    )
+  list.each(
+    [
+      job.RequestQueued,
+      job.RequestStarted,
+      job.RequestAccepted,
+      job.RequestRefused("refused"),
+      job.RequestUncertain("unknown"),
+    ],
+    fn(progress) {
+      let state = graph.State(..initial, phase: graph.StoppingJob(a, progress))
+      let assert Ok(encoded) = record.encode(state)
+      record.decode(encoded) |> should.equal(Ok(state))
+      record.decode(string.replace(encoded, "\"version\":9", "\"version\":8"))
+      |> should.be_error
+      record.decode(string.replace(encoded, "owned_job", "job"))
+      |> should.be_error
+    },
+  )
+  record.encode(
+    graph.State(
+      ..initial,
+      phase: graph.Ended(graph.Cancelled(a, graph.JobDetached)),
+    ),
+  )
+  |> should.be_error
+  let readonly =
+    graph.Activation(
+      ..a,
+      prepared: graph.Prepared(..a.prepared, kind: operation.Job(job.Manual)),
+    )
+  record.encode(
+    graph.State(
+      ..initial,
+      phase: graph.Ended(graph.Cancelled(readonly, graph.JobStopped)),
+    ),
+  )
+  |> should.be_error
+}
+
 fn next(state: graph.State, event: graph.Event) -> graph.State {
   let assert Ok(#(state, _)) = graph.step(state, event)
   state
@@ -430,7 +480,7 @@ pub fn job_records_require_version_seven_and_cannot_claim_owned_effect_states_te
   waiting.phase |> should.equal(graph.WaitingJob(a))
   let assert Ok(encoded) = record.encode(waiting)
   record.decode(encoded) |> should.equal(Ok(waiting))
-  record.decode(string.replace(encoded, "\"version\":8", "\"version\":6"))
+  record.decode(string.replace(encoded, "\"version\":9", "\"version\":6"))
   |> should.be_error
   let cancelled = next(waiting, graph.Cancel)
   cancelled.phase
@@ -464,9 +514,9 @@ pub fn job_records_require_version_seven_and_cannot_claim_owned_effect_states_te
     fn(state) { record.encode(state) |> should.be_error },
   )
   let assert Ok(encoded) = record.encode(initial)
-  record.decode(string.replace(encoded, "\"version\":8", "\"version\":6"))
+  record.decode(string.replace(encoded, "\"version\":9", "\"version\":6"))
   |> should.equal(Ok(initial))
-  record.decode(string.replace(encoded, "\"version\":8", "\"version\":5"))
+  record.decode(string.replace(encoded, "\"version\":9", "\"version\":5"))
   |> should.equal(Ok(initial))
 }
 
@@ -486,7 +536,7 @@ pub fn scheduled_job_intervals_roundtrip_and_require_version_eight_test() {
     next(ready, graph.Inspected(graph.reference(ready, a), Ok(policy.Allow)))
   let assert Ok(encoded) = record.encode(waiting)
   record.decode(encoded) |> should.equal(Ok(waiting))
-  record.decode(string.replace(encoded, "\"version\":8", "\"version\":7"))
+  record.decode(string.replace(encoded, "\"version\":9", "\"version\":7"))
   |> should.be_error
   record.decode(string.replace(
     encoded,
@@ -521,6 +571,6 @@ pub fn scheduled_job_intervals_roundtrip_and_require_version_eight_test() {
       ),
     )
   let assert Ok(manual_bytes) = record.encode(manual)
-  record.decode(string.replace(manual_bytes, "\"version\":8", "\"version\":7"))
+  record.decode(string.replace(manual_bytes, "\"version\":9", "\"version\":7"))
   |> should.equal(Ok(manual))
 }

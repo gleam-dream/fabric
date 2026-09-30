@@ -141,13 +141,13 @@ pub fn unknown_corrupt_and_misfiled_records_have_no_usable_discovery_index_test(
   json.parse(indexed, decode.at(["wait", "dependency"], decode.string))
   |> should.equal(Ok(child.reserved_id("root", 1)))
   list.each(
-    ["invalid", string.replace(encoded, "\"version\":8", "\"version\":999")],
+    ["invalid", string.replace(encoded, "\"version\":9", "\"version\":999")],
     fn(encoded) {
       discovery.inspect(encoded) |> should.be_error
-      discovery.encode("root", encoded) |> should.equal("{\"version\":3}")
+      discovery.encode("root", encoded) |> should.equal("{\"version\":4}")
     },
   )
-  discovery.encode("wrong", encoded) |> should.equal("{\"version\":3}")
+  discovery.encode("wrong", encoded) |> should.equal("{\"version\":4}")
 }
 
 pub fn completed_and_settled_child_attachments_stop_dependency_discovery_test() {

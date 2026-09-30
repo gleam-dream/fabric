@@ -17,11 +17,13 @@ defines the selected six-step implementation program. The
 typed authoring proof, public durable serial runtime and remaining composition
 work. The graph runner now handles conditional routes, bounded cycles, approval,
 recovery, reconciliation, cancellation, shutdown handoff and typed durable
-signals. Initial managed subgraphs now cover restart, approvals, lost
-acknowledgements, cancellation races, idle/nested waits and local wakeups.
-Steps 3–6 remain: managed agents, family budgets/retention,
-deadlines and jobs, typed parallel composition, real adapters and
-agent-recipe evaluation. S7 remains part of the production backlog.
+signals. Managed subgraphs and agents cover restart, approvals, lost
+acknowledgements, cancellation races, idle/nested waits, shared family budgets,
+retention and registered recovery. External jobs support submission, scheduled
+observation and retained owned cancellation with real-service evidence.
+Steps 3–6 still require durable deadlines, typed parallel composition, real
+decision/MCP adapters and agent-recipe evaluation. S7 remains part of the
+production backlog.
 
 ## Next: S7 operations
 

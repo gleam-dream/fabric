@@ -94,7 +94,7 @@ pub fn waiting_runtime(
   submit: Submit,
   url: String,
 ) -> graph.Runtime(Nil, State, String) {
-  wait_with(runs, submit, url, job.Manual)
+  wait_with(runs, submit, url, job.Manual, Detached)
 }
 
 /// The registered sweeper can observe this graph's saved job every 100 ms.
@@ -103,7 +103,23 @@ pub fn scheduled_runtime(
   submit: Submit,
   url: String,
 ) -> graph.Runtime(Nil, State, String) {
-  wait_with(runs, submit, url, job.Every(100))
+  wait_with(runs, submit, url, job.Every(100), Detached)
+}
+
+type Lifetime {
+  Detached
+  Owned(fn(operation.Invocation, client.Receipt) -> Result(Nil, client.Error))
+}
+
+/// Submit and retain cancellation ownership. The scheduled observer confirms
+/// terminal evidence after `graph.cancel` acknowledges local cancellation intent.
+pub fn owned_runtime(
+  runs: store.Store,
+  submit: Submit,
+  request: fn(operation.Invocation, client.Receipt) -> Result(Nil, client.Error),
+  url: String,
+) -> graph.Runtime(Nil, State, String) {
+  wait_with(runs, submit, url, job.Every(100), Owned(request))
 }
 
 fn wait_with(
@@ -111,6 +127,7 @@ fn wait_with(
   submit: Submit,
   url: String,
   polling: job.Polling,
+  lifetime: Lifetime,
 ) -> graph.Runtime(Nil, State, String) {
   let assert Ok(submit_id) = definition.node_id("submit")
   let assert Ok(wait_id) = definition.node_id("wait")
@@ -146,7 +163,7 @@ fn wait_with(
         |> result.map(fn(status) {
           case status {
             client.Queued | client.CancelRequested -> job.Pending
-            client.Cancelled -> job.Failed("external job was cancelled")
+            client.Cancelled -> job.Cancelled
             client.Complete(digest) -> job.Completed(digest)
           }
         })
@@ -162,7 +179,15 @@ fn wait_with(
   let waiting =
     definition.node(
       wait_id,
-      operation.await_job(observer),
+      case lifetime {
+        Detached -> operation.await_job(observer)
+        Owned(request) ->
+          operation.own_job(
+            observer,
+            fn(_, invocation, receipt) { request(invocation, receipt) },
+            client.classify,
+          )
+      },
       fn(state) {
         case state {
           Accepted(receipt) -> Ok(receipt)

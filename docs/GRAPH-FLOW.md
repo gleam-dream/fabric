@@ -1,7 +1,8 @@
 # Fabric graph flow: design exploration
 
-2026-09-29. **Serial runtime and manual signals implemented; managed children,
-deadlines and jobs remain open.**
+2026-09-30. **Serial runtime, manual signals, managed children and external-job
+ownership are implemented. Durable deadlines, parallel composition, real
+decision adapters and agent-recipe evaluation remain open.**
 The user has authorized the six-step implementation program. Progress,
 executable contracts and acceptance evidence are retained in the
 [wave tracker](implementation/graph-flow/wave-tracker.md). The API sketches

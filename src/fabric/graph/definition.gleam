@@ -43,6 +43,7 @@ pub opaque type Node(context, state, answer) {
     check_output: fn(String) -> Result(Nil, Error),
     child: Result(child_driver.Driver, Error),
     job: fn(context, String) -> Result(job.Progress(String), String),
+    stop_job: fn(context, Invocation, String) -> Result(Nil, operation.Error),
   )
 }
 
@@ -159,6 +160,7 @@ pub fn node(
     check_output: fn(text) { decode_output(text) |> result.replace(Nil) },
     child: operation.child_driver(op) |> result.map_error(OperationRejected),
     job: operation.job_reader(op),
+    stop_job: operation.job_canceller(op),
   )
 }
 
@@ -233,7 +235,9 @@ fn manifest(spec: Spec(context, state, answer)) -> String {
           |> list.unique
           |> list.sort(string.compare)
         let schedule = case node.kind {
-          operation.Job(job.Every(ms)) -> [#("poll_every", json.int(ms))]
+          operation.Job(job.Every(ms)) | operation.OwnedJob(job.Every(ms)) -> [
+            #("poll_every", json.int(ms)),
+          ]
           _ -> []
         }
         json.object(list.append(
@@ -247,6 +251,7 @@ fn manifest(spec: Spec(context, state, answer)) -> String {
                 operation.Activity -> "activity"
                 operation.Signal -> "signal"
                 operation.Job(_) -> "job"
+                operation.OwnedJob(_) -> "owned_job"
                 operation.Subgraph -> "subgraph"
                 operation.Agent -> "agent"
               }),
@@ -391,6 +396,18 @@ pub fn observe_job(
 }
 
 @internal
+pub fn cancel_job(
+  definition: Definition(context, state, answer),
+  context: context,
+  invocation: Invocation,
+  prepared: control.Prepared,
+) -> Result(Nil, Error) {
+  use node <- result.try(check_prepared(definition, prepared))
+  node.stop_job(context, invocation, prepared.input)
+  |> result.map_error(OperationRejected)
+}
+
+@internal
 pub fn accept(
   definition: Definition(context, state, answer),
   state: String,
@@ -464,6 +481,7 @@ pub fn validate(
     | control.AwaitingApproval(a, _)
     | control.WaitingSignal(a)
     | control.WaitingJob(a)
+    | control.StoppingJob(a, _)
     | control.Joining(a, _)
     | control.WaitingChild(a, _)
     | control.ChildBlocked(a, _, _)

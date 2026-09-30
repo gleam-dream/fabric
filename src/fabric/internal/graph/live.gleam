@@ -25,6 +25,7 @@ pub type Work {
     check_output: fn(g.Activation, String) -> Result(Nil, definition.Error),
     observe_job: fn(g.Activation) ->
       Result(job.Progress(String), definition.Error),
+    cancel_job: fn(String, g.Activation) -> Body,
     validate: fn(g.State) -> Result(Nil, definition.Error),
     child: fn(g.Activation) -> Result(child_driver.Driver, definition.Error),
   )

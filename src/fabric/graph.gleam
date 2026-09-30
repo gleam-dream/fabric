@@ -127,6 +127,7 @@ pub type Failure {
 pub type Cancellation {
   BeforeStart
   JobDetached(job.Reference)
+  JobStopped(job.Reference)
   AfterResult
   AfterFailure(Failure)
   ChildSettled(child.Reference)
@@ -142,6 +143,7 @@ pub type Status(answer) {
   AwaitingApproval(Approval)
   AwaitingSignal(SignalReference)
   AwaitingJob(job.Reference)
+  CancellingJob(job.Reference, job.CancellationProgress)
   Child(child.Reference, child.Progress)
   /// Cancellation is committed; the owned child has not settled yet.
   CancellingChild(child.Reference)
@@ -243,6 +245,22 @@ pub fn new(
       },
       observe_job: fn(activation) {
         definition.observe_job(definition, context(), activation.prepared)
+      },
+      cancel_job: fn(id, activation) {
+        let context = context()
+        fn() {
+          definition.cancel_job(
+            definition,
+            context,
+            operation.Invocation(
+              run.issued(id),
+              activation.id,
+              activation.attempt,
+            ),
+            activation.prepared,
+          )
+          |> result.replace("null")
+        }
       },
       validate: fn(state) { definition.validate(definition, state) },
       child: fn(activation) { child(activation.prepared) },
@@ -467,6 +485,9 @@ fn child_progress(
           child.Approval(approval.requirement)
         control.WaitingSignal(a) -> child.Signal(a.prepared.operation)
         control.WaitingJob(a) -> child.Job(a.prepared.operation)
+        control.StoppingJob(_, job.RequestQueued)
+        | control.StoppingJob(_, job.RequestStarted) -> child.Working
+        control.StoppingJob(_, _) -> child.Cancelled(True)
         control.Blocked(_, problem) -> child.Uncertain(string.inspect(problem))
         control.ChildBlocked(_, _, reason) -> child.Uncertain(reason)
         control.Ended(control.Completed(output)) -> child.Succeeded(output)
@@ -626,6 +647,8 @@ fn attend(
   let left = deadline - now()
   case snapshot.status, left > 0 {
     Working, True
+    | CancellingJob(_, job.RequestQueued), True
+    | CancellingJob(_, job.RequestStarted), True
     | CancellingChild(_), True
     | Child(_, child.Working), True
     | Child(_, child.Succeeded(_)), True
@@ -670,6 +693,8 @@ pub fn recover(
 /// Inspect an admitted job wait once. Pending progress leaves its record
 /// unchanged; a checked outcome commits its route before successor work starts.
 /// Repeating an accepted reference reuses the saved result without another read.
+/// After owned cancellation, terminal evidence settles the canceled run without
+/// invoking its route. An accepted, refused or uncertain stop may be observed.
 pub fn poll_job(
   handle: Handle(context, state, answer),
   reference: job.Reference,
@@ -695,6 +720,9 @@ pub fn poll_job(
 /// Cancellation does not require the currently deployed definition to fit the
 /// record. A lost or unresponsive owner is fenced by a committed cancellation;
 /// effects whose results were not saved remain explicitly unresolved.
+/// For an admitted owned job this records intent, not proof that remote work
+/// stopped. Its request runs only with compatible code and a committed fence;
+/// manual or scheduled observation must confirm the terminal outcome.
 pub fn cancel(handle: Handle(context, state, answer)) -> Result(Nil, Error) {
   let runtime = handle.runtime
   runner.cancel(
@@ -1137,6 +1165,20 @@ fn snapshot(
           a.prepared.operation,
         )),
       )
+    control.StoppingJob(a, progress) ->
+      Ok(case control.needs_runner(state) && !runner.driven(entry, state) {
+        True -> Unattended
+        False ->
+          CancellingJob(
+            job.Reference(
+              run.issued(state.run),
+              a.id,
+              a.attempt,
+              a.prepared.operation,
+            ),
+            progress,
+          )
+      })
     control.WaitingSignal(a) ->
       Ok(
         AwaitingSignal(SignalReference(
@@ -1163,6 +1205,13 @@ fn snapshot(
           control.BeforeStart -> BeforeStart
           control.JobDetached ->
             JobDetached(job.Reference(
+              run.issued(state.run),
+              a.id,
+              a.attempt,
+              a.prepared.operation,
+            ))
+          control.JobStopped ->
+            JobStopped(job.Reference(
               run.issued(state.run),
               a.id,
               a.attempt,
@@ -1205,6 +1254,7 @@ fn snapshot(
     | control.AwaitingApproval(a, _)
     | control.WaitingSignal(a)
     | control.WaitingJob(a)
+    | control.StoppingJob(a, _)
     | control.Joining(a, _)
     | control.WaitingChild(a, _)
     | control.ChildBlocked(a, _, _)

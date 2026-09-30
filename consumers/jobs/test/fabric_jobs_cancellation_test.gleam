@@ -1,6 +1,7 @@
 //// J14–J17: explicit cancellation crosses the real remote service boundary.
 
 import fabric/graph
+import fabric/graph/job
 import fabric/graph/operation
 import fabric/policy
 import fabric/run
@@ -10,6 +11,7 @@ import fabric_jobs_demo/client
 import fabric_jobs_demo/support
 import gleam/erlang/process
 import gleam/list
+import gleam/result
 import gleeunit/should
 import json/blueprint/codec
 
@@ -266,4 +268,118 @@ pub fn completion_that_won_before_stop_is_returned_without_erasing_the_artifact_
   list.length(done.receipts) |> should.equal(1)
   client.artifact(support.url(), receipt)
   |> should.equal(Ok("RETAINED CANCELLATION"))
+}
+
+fn submit_owned(invocation, request) {
+  client.submit(support.url(), invocation, request)
+}
+
+fn request_owned(_, receipt) {
+  client.request_cancel(support.url(), receipt) |> result.replace(Nil)
+}
+
+fn poll_owned(handle, reference, left) {
+  let assert Ok(snapshot) = graph.poll_job(handle, reference)
+  case snapshot.status, left {
+    graph.Cancelled(_), _ -> snapshot
+    graph.CancellingJob(..), n if n > 0 -> {
+      process.sleep(20)
+      poll_owned(handle, reference, n - 1)
+    }
+    _, _ -> panic as "owned cancellation did not settle"
+  }
+}
+
+pub fn owned_cancellation_reconnects_to_the_real_terminal_outcome_after_restart_test() {
+  let directory = support.temp_dir()
+  let #(owner, runs) = support.owned(fn() { support.directory(directory) })
+  let assert Ok(handle) =
+    graph.start(
+      demo.owned_runtime(runs, submit_owned, request_owned, support.url()),
+      id("owned-real-stop"),
+      demo.Submitting(client.Request("never published", 5000)),
+    )
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert demo.Accepted(receipt) = waiting.value
+  graph.cancel(handle) |> should.equal(Ok(Nil))
+  let assert Ok(pending) = graph.await(handle, 5000)
+  pending.status
+  |> should.equal(graph.CancellingJob(reference, job.RequestAccepted))
+  support.crash(owner, runs)
+  let rt =
+    demo.owned_runtime(
+      support.directory(directory),
+      fn(_, _) { panic as "submission retained" },
+      fn(_, _) { panic as "request retained" },
+      support.url(),
+    )
+  let handle = graph.attach(rt, id("owned-real-stop"))
+  let assert Ok(recovered) = graph.recover(handle)
+  recovered.status |> should.equal(pending.status)
+  poll_owned(handle, reference, 100).status
+  |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
+  client.read(support.url(), receipt) |> should.equal(Ok(client.Cancelled))
+  client.artifact(support.url(), receipt) |> should.be_error
+  support.remove_dir(directory)
+}
+
+pub fn an_interrupted_owned_request_is_resolved_by_real_observation_without_replay_test() {
+  let directory = support.temp_dir()
+  let #(owner, runs) = support.owned(fn() { support.directory(directory) })
+  let accepted = process.new_subject()
+  let request = fn(invocation, receipt) {
+    let assert Ok(Nil) = request_owned(invocation, receipt)
+    process.send(accepted, Nil)
+    let never: process.Subject(Nil) = process.new_subject()
+    process.receive_forever(never)
+    Ok(Nil)
+  }
+  let assert Ok(handle) =
+    graph.start(
+      demo.owned_runtime(runs, submit_owned, request, support.url()),
+      id("owned-lost-stop"),
+      demo.Submitting(client.Request("lost stop ack", 5000)),
+    )
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.AwaitingJob(reference) = waiting.status
+  graph.cancel(handle) |> should.equal(Ok(Nil))
+  process.receive(accepted, 5000) |> should.equal(Ok(Nil))
+  support.crash(owner, runs)
+  let rt =
+    demo.owned_runtime(
+      support.directory(directory),
+      fn(_, _) { panic },
+      fn(_, _) { panic as "uncertain stop must not replay" },
+      support.url(),
+    )
+  let handle = graph.attach(rt, id("owned-lost-stop"))
+  let assert Ok(recovered) = graph.recover(handle)
+  let assert graph.CancellingJob(_, job.RequestUncertain(_)) = recovered.status
+  poll_owned(handle, reference, 100).status
+  |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
+  support.remove_dir(directory)
+}
+
+pub fn a_completed_owned_job_keeps_its_artifact_when_local_cancellation_wins_test() {
+  let assert Ok(handle) =
+    graph.start(
+      demo.owned_runtime(memory(), submit_owned, request_owned, support.url()),
+      id("owned-completed-stop"),
+      demo.Submitting(client.Request("already published", 0)),
+    )
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert demo.Accepted(receipt) = waiting.value
+  let digest = completed(receipt, 100)
+  graph.cancel(handle) |> should.equal(Ok(Nil))
+  let assert Ok(_) = graph.await(handle, 5000)
+  let done = poll_owned(handle, reference, 100)
+  done.status |> should.equal(graph.Cancelled(graph.AfterResult))
+  let assert [_, outcome] = done.receipts
+  codec.decode_json(codec.string(), outcome.output_json)
+  |> should.equal(Ok(digest))
+  outcome.route |> should.equal(graph.Canceled)
+  client.artifact(support.url(), receipt)
+  |> should.equal(Ok("ALREADY PUBLISHED"))
 }

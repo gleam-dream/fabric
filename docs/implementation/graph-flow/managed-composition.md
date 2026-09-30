@@ -30,10 +30,12 @@ encoded payload exactly, including JSON whitespace; acknowledgement uses the
 saved bytes rather than rerunning codecs to normalize historical results.
 
 Record version 2 introduced execution modes and the waiting phase. The current
-version 8 also retains subgraph and agent attachments, initial input, idle child
-waits, optional root budget declarations and read-only job observations. Versions
-5–7 remain readable for states they can represent; versions 1–4 are rejected.
+version 9 also retains subgraph and agent attachments, initial input, idle child
+waits, optional root budget declarations and job observations with explicit
+cancellation ownership. Versions 5–8 remain readable for states they can represent;
+versions 1–4 are rejected.
 Job observations require version 7; scheduled observations require version 8.
+Owned cancellation requires version 9.
 The mode participates in definition
 compatibility, preventing a stored wait from becoming an executable activity.
 
@@ -601,6 +603,45 @@ storage transaction. That is a property of this example service, not a promise
 that arbitrary external effects are exactly once or always cancelable. The
 subsequent owned binding must retain intent, request progress and uncertainty
 and must not route success after graph cancellation.
+
+### Owned job cancellation
+
+The managed binding extends the proven J14–J17 boundary. `operation.own_job`
+binds an observer to a typed stop-request callback. Its distinct `OwnedJob`
+policy action admits the lifetime obligation, including cancellation authority.
+The read-only `await_job` binding remains available. Admission reserves the wait's
+work grant; cleanup uses that existing grant even after family admission closes.
+
+- **J18 — retained ownership:** the operation kind, receipt and deployed contract
+  retain cancellation ownership. Cancellation before admission starts no remote
+  request. Cancellation of an admitted owned wait commits intent before dispatch,
+  suppresses all success routes, and retains the family until the job settles.
+- **J19 — fenced request:** queued and started requests are distinct durable
+  states. The executor calls the stop callback only after the start fence commits.
+  Compatible deployed code must be validated even when cancellation was recorded
+  without that code. Cleanup requires the saved owned admission, not an open
+  ancestor; it cannot start new business work or spend fresh family capacity.
+- **J20 — acknowledgment and uncertainty:** a successful callback records request
+  acceptance, never terminal cancellation. A definite refusal and an uncertain
+  response remain distinguishable. Loss after the start fence retains uncertainty;
+  recovery never repeats that request automatically. A compatible queued request
+  can recover because its effect never started. Repeated local cancellation cannot
+  erase uncertainty or dispatch another request.
+- **J21 — terminal observation:** manual or scheduled reads may resolve accepted,
+  refused or uncertain requests. Remote cancellation settles as `JobStopped`;
+  completion retains its checked output with a canceled route, and remote failure
+  retains its reason. No route callback runs. Read failure preserves the pending
+  state. Store loss retains both the request state and receipt. A parent exposes
+  unresolved cleanup and subsequently settles through saved child evidence.
+
+The first owned binding deliberately requires reconciliation of interrupted stop
+effects through authoritative job observation. The service-specific replay in
+the explicit cancellation workflow remains available; owning a job alone does
+not assert that its stop request is repeatable. These rules add graph record 9,
+retention projection 6 and discovery projection 4; PostgreSQL schema stays 4.
+Acceptance covers public API restart, fences, refusals, cancellation/completion
+races, managed ancestry, scheduled discovery, family retention and the real HTTP
+service. Deadlines remain the next contract.
 
 ## Required evidence
 
