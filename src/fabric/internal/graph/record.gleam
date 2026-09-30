@@ -21,7 +21,7 @@ import gleam/string
 
 pub const format = "fabric.graph"
 
-pub const version = 13
+pub const version = 14
 
 pub type EncodeError {
   InvalidState(detail: String)
@@ -415,6 +415,16 @@ pub fn decode(text: String) -> Result(g.State, DecodeError) {
             }
           },
           "fork scopes require graph version 13",
+        )
+        |> result.map_error(Corrupt),
+      )
+      use _ <- result.try(
+        require(
+          found >= 14
+            || !list.any(preparations(state), fn(p) {
+            p.deadline != None && is_fork(p.kind)
+          }),
+          "fork deadlines require graph version 14",
         )
         |> result.map_error(Corrupt),
       )
@@ -920,6 +930,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
   let count = list.length(state.receipts)
   case state.phase {
     g.PreparingFork(a) -> {
+      use _ <- result.try(check_armed_wait(a))
       use _ <- result.try(require(
         is_fork(a.prepared.kind)
           && g.current_fork(state, a.id) == Error(g.WrongPhase),
@@ -928,6 +939,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       pending(state, count, last, a)
     }
     g.Forking(a, mode) | g.WaitingFork(a, mode) -> {
+      use _ <- result.try(check_armed_wait(a))
       use fork <- result.try(
         g.current_fork(state, a.id)
         |> result.replace_error("missing fork membership"),
@@ -943,10 +955,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
           )
         g.ClosingFork(cause) -> {
           use _ <- result.try(check_stop_reason(a, cause))
-          require(
-            scope.snapshot(fork).stop != None,
-            "closing fork has no stop intent",
-          )
+          check_fork_stop(fork, cause)
         }
       })
       pending(state, count, last, a)
@@ -957,11 +966,11 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
         || a.prepared.kind == operation.Agent
       }
     -> {
-      use _ <- result.try(check_armed_child(a))
+      use _ <- result.try(check_armed_wait(a))
       pending(state, count, last, a)
     }
     g.Joining(a, id) | g.WaitingChild(a, id) | g.ChildBlocked(a, id, _) -> {
-      use _ <- result.try(check_armed_child(a))
+      use _ <- result.try(check_armed_wait(a))
       use _ <- result.try(require(
         {
           a.prepared.kind == operation.Subgraph
@@ -973,7 +982,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       pending(state, count, last, a)
     }
     g.StoppingChild(a, id, cause) -> {
-      use _ <- result.try(check_armed_child(a))
+      use _ <- result.try(check_armed_wait(a))
       use _ <- result.try(require(
         is_child(a.prepared.kind) && id == child.reserved_id(state.run, a.id),
         "invalid stopped child reservation",
@@ -994,6 +1003,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
           a.prepared.kind == operation.Signal
           || is_job(a.prepared.kind)
           || is_child(a.prepared.kind)
+          || is_fork(a.prepared.kind)
         }
           && a.prepared.deadline != None
           && a.deadline == None,
@@ -1005,6 +1015,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       use _ <- result.try(case a.prepared.kind, problem {
         operation.Activity, _ -> Ok(Nil)
         operation.Fork(..), g.InvalidResult(_, _) -> {
+          use _ <- result.try(check_armed_wait(a))
           use fork <- result.try(
             g.current_fork(state, a.id)
             |> result.replace_error("missing blocked fork"),
@@ -1082,11 +1093,16 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       ))
       pending(state, count, last, a)
     }
-    g.Ended(g.Failed(a, g.OperationFailed(_)))
-      if a.prepared.kind == operation.Subgraph
-      || a.prepared.kind == operation.Agent
-    -> {
-      use _ <- result.try(check_armed_child(a))
+    g.Ended(g.Failed(a, g.OperationFailed(_))) -> {
+      use _ <- result.try(case a.prepared.kind {
+        operation.Subgraph | operation.Agent | operation.Fork(..) ->
+          check_armed_wait(a)
+        _ ->
+          require(
+            a.deadline == None || is_job(a.prepared.kind),
+            "armed signal cannot fail before admission",
+          )
+      })
       pending(state, count, last, a)
     }
     g.Ended(g.Failed(a, _)) -> {
@@ -1128,7 +1144,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
     }
     g.Ended(g.Cancelled(a, disposition)) -> {
       use _ <- result.try(case disposition, is_child(a.prepared.kind) {
-        g.UnresolvedCancellation(_), True -> check_armed_child(a)
+        g.UnresolvedCancellation(_), True -> check_armed_wait(a)
         _, _ -> Ok(Nil)
       })
       use _ <- result.try(case disposition {
@@ -1145,10 +1161,15 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
             "stopped outcome requires an owned job",
           )
         g.AfterFork -> {
+          use _ <- result.try(check_armed_wait(a))
           use fork <- result.try(
             g.current_fork(state, a.id)
             |> result.replace_error("missing canceled fork"),
           )
+          use _ <- result.try(check_fork_stop(
+            fork,
+            operation.CancellationRequested,
+          ))
           require(
             case scope.join(fork) {
               scope.Ready(Error(_)) -> True
@@ -1158,7 +1179,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
           )
         }
         g.AfterChild(id) -> {
-          use _ <- result.try(check_armed_child(a))
+          use _ <- result.try(check_armed_wait(a))
           require(
             {
               a.prepared.kind == operation.Subgraph
@@ -1235,11 +1256,42 @@ fn check_expired(
 ) -> Result(Nil, String) {
   use _ <- result.try(check_activation(a))
   use _ <- result.try(require(
-    { is_job(a.prepared.kind) || is_child(a.prepared.kind) }
+    {
+      is_job(a.prepared.kind)
+      || is_child(a.prepared.kind)
+      || is_fork(a.prepared.kind)
+    }
       && a.deadline != None,
-    "expired outcome requires an armed job or child wait",
+    "expired outcome requires an armed job, child or fork",
   ))
   case disposition {
+    g.BeforeStart -> {
+      use _ <- result.try(require(
+        is_fork(a.prepared.kind)
+          && g.current_fork(state, a.id) == Error(g.WrongPhase),
+        "expiration before preparation cannot own fork members",
+      ))
+      pending(state, count, last, a)
+    }
+    g.AfterFork -> {
+      use members <- result.try(
+        g.current_fork(state, a.id)
+        |> result.replace_error("missing expired fork"),
+      )
+      let assert Some(due) = a.deadline
+      use _ <- result.try(check_fork_stop(
+        members,
+        operation.DeadlineReached(due),
+      ))
+      use _ <- result.try(require(
+        case scope.join(members) {
+          scope.Ready(Error(_)) -> True
+          _ -> False
+        },
+        "fork expiration retains unsettled work",
+      ))
+      pending(state, count, last, a)
+    }
     g.AfterChild(id) -> {
       use _ <- result.try(require(
         is_child(a.prepared.kind) && id == child.reserved_id(state.run, a.id),
@@ -1287,10 +1339,10 @@ fn check_expired(
   }
 }
 
-fn check_armed_child(a: g.Activation) -> Result(Nil, String) {
+fn check_armed_wait(a: g.Activation) -> Result(Nil, String) {
   require(
     { a.prepared.deadline == None } == { a.deadline == None },
-    "admitted child must retain its configured deadline",
+    "admitted wait must retain its configured deadline",
   )
 }
 
@@ -1381,6 +1433,22 @@ fn check_stop_reason(
         "stop cause must match the expired deadline",
       )
   }
+}
+
+fn check_fork_stop(
+  members: scope.Scope,
+  cause: operation.StopReason,
+) -> Result(Nil, String) {
+  require(
+    case scope.snapshot(members).stop, cause {
+      Some(fork.MemberFailed(_)), _ -> True
+      Some(fork.CancelledByCaller), operation.CancellationRequested -> True
+      Some(fork.DeadlineElapsed(saved)), operation.DeadlineReached(due) ->
+        saved == due
+      _, _ -> False
+    },
+    "fork stop cause differs from its retained parent intent",
+  )
 }
 
 fn stop_reason_json(cause: operation.StopReason) -> Json {

@@ -3,8 +3,8 @@
 This refines G9 in the [wave tracker](wave-tracker.md) under the authorized
 six-stage program. It owns the fork lifecycle described by
 [GRAPH-FLOW](../../GRAPH-FLOW.md#parallel-composition-without-shared-writes).
-Stage 4 remains open until the public runtime and persistent-backend scenarios
-exercise this contract.
+Stage 4 is accepted against the public runtime, directory recovery and
+PostgreSQL scenarios listed below. Real adapters remain stage 5 work.
 
 ## Membership and ownership
 
@@ -100,6 +100,36 @@ The parent record's revision check arbitrates concurrent observations, stop
 intent and join acceptance. An observation of a child result does not itself
 authorize a successor or replace the parent's ownership checks.
 
+## Fork deadlines
+
+`operation.with_deadline` applies to pair and map operations through the same
+backend-clock contract as managed children. Policy approval precedes arming;
+the committed absolute due time covers membership preparation, admission,
+member execution and join acceptance. Recovery retains that due time instead
+of starting another duration. Reads alone do not expire the scope.
+
+Before new member admission and before accepting a join, the owner checks the
+backend clock. If expiration wins the revision-checked transition, it withdraws
+pending members, cancels every admitted unsettled child and suppresses business
+acceptance and routing. Expiration before membership is fixed owns no children.
+A join callback that crosses the deadline cannot commit its proposed route.
+Failed join acceptance remains subject to the same deadline on reconciliation.
+
+Expiration retains the parent's deadline cause even if a member failure began
+cleanup first. Once cancellation or expiration is retained, another stop does
+not replace it. Uncertain children keep the scope unresolved and retained;
+authoritative settlement eventually produces `Expired(due, ForkSettled(...))`.
+Completed results remain evidence. Missing acknowledged children are data loss
+and cannot be recreated during expiration.
+
+Idle discovery is eligible on a changed member or the absolute deadline.
+After expiration commits, cleanup observes member changes with no elapsed
+deadline trigger, avoiding repeated immediate claims. A deadline is scheduling
+and admission control; it cannot undo an external effect or establish its
+outcome. Graph version 14 retains this contract; older record versions cannot
+hide a fork deadline. Discovery projection 10 and retention projection 11
+require a metadata refresh for existing backend indexes.
+
 ## Runtime and persistence integration
 
 The graph controller owns the scope within its execution record, retaining it
@@ -153,15 +183,16 @@ The pure scope tests cover F1–F8's transition and restoration cases. Public pa
 scenarios now prove overlapping execution, declared result order, typed fallback,
 partial directory-backend restart, join failure, cancellation during uncertain
 sibling cleanup, and refusal of changed membership or fabricated join results.
-Graph records write version 13 and read 5–13; new scopes and branch attachments
-cannot be downgraded. Retention projection 10 includes every owned member.
+Graph records write version 14 and read 5–14. Scopes and branch attachments
+require version 13; fork deadlines require version 14. Retention projection 11
+includes every owned member and its expired cleanup state.
 
 Map scenarios prove bounded overlap, ordered answers, distinct equal inputs,
 empty and oversized inputs, failure withdrawal, and directory-backend restart
 with completed, waiting and pending members. The separate graph consumer maps
 full generation/review loops with private child state.
 
-Discovery projection 9 schedules every unsettled member. Shared leased-backend
+Discovery projection 10 schedules every unsettled member and optional deadline. Shared leased-backend
 scenarios prove lost-watch recovery, convergent nested waits, cancellation with
 uncertain leaf effects, and independent branch recovery under a live foreign
 parent lease. PostgreSQL schema 6 retains all dependency revisions atomically;
@@ -177,6 +208,21 @@ survive recovery without reserving the same grant twice. Child admission refusal
 leaves the denied member distinct from already admitted siblings and withdrawn
 inputs. Nested scopes cannot reset ancestry depth or the parent's work limit.
 
-Wave 4 remains active. Fork deadlines still require runtime evidence. The
-persistent claim test covers a flat map; nested cleanup has been exercised
-through the shared leased backend rather than PostgreSQL.
+Deadline scenarios prove unchanged due times across restart, withdrawal of
+pending inputs, uncertainty without replay, late join suppression, successful
+join correction before the deadline, and refused routing after it. Record
+roundtrips cover arming, preparation, expiration before membership, waiting,
+cleanup, blocked joins and first-failure preservation. Conflicting stop causes
+and attempts to downgrade fork deadlines are refused.
+
+The PostgreSQL nested scenario runs two effect-bearing inner maps under one
+budgeted outer map, loses the original store, discovers the unchanged deadline,
+then loses its cleanup store. Reconciliation from another store lets registered
+sweeping finish the same scopes without replay, routing or admitting the pending
+third member. Pruning refuses the unresolved family, then removes its six rows
+including the budget ledger after settlement.
+
+These scenarios close stage 4's selected all-success/settled-failure fork model.
+Races, quorum joins, streaming partial output and shared sibling writes remain
+outside that contract, as recorded above. Stages 5–6 remain required for the
+full six-stage goal.

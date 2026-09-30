@@ -133,15 +133,15 @@ enforce work, child and depth reservations across restarts. Initialization
 creates/adopts the ledger and commits a root marker before any dispatch; an
 initialized root with a missing ledger refuses recovery. Retention projection
 version 3 introduced marker validation and attaches the ledger with matching
-limits. The current retention projection is version 10; it also understands graph
-job waits, owned cancellation, signal/job/child deadlines and every retained
+limits. The current retention projection is version 11; it also understands graph
+job waits, owned cancellation, signal/job/child/fork deadlines and every retained
 fork member. Run `refresh_retention` for existing
 rows before they can be pruned by the current projection.
 
-Graph records now write version 13 and read versions 5–13. Version 7 adds a retained
+Graph records now write version 14 and read versions 5–14. Version 7 adds a retained
 read-only job wait. Explicit `graph.poll_job` records its checked outcome;
 canceling the wait detaches observation without canceling remote work. Deploy
-version-13 graph readers before writing new records. Version 8 retains optional
+version-14 graph readers before writing new records. Version 8 retains optional
 polling intervals, including completed activation history. Missing intervals in
 older records mean manual observation. Scheduled intervals cannot be hidden in
 older record versions. PostgreSQL schema version 4 indexes scheduled polls along
@@ -153,8 +153,9 @@ arming, absolute due times and expiration outcomes. Version 11 adds job deadline
 and records expiration separately from stop progress and terminal evidence.
 Version 12 adds managed-child deadlines and retains expiration through uncertain
 child settlement. Version 13 adds retained fork scopes, ordered member results
-and reciprocal branch attachments. These cannot be hidden in older record
-versions. The current discovery projection is version 9 and schema version is 6.
+and reciprocal branch attachments. Version 14 adds fork deadlines, including
+preparation, join acceptance and retained cleanup. These cannot be hidden in
+older record versions. The current discovery projection is version 10 and schema version is 6.
 Schema migration 5 adds absolute due waits; migration 6 indexes every unfinished
 fork member. Run `refresh_discovery` to refresh existing metadata. Deadline
 contracts and due times cannot be hidden in older record versions.
@@ -363,6 +364,14 @@ Stop older backend writers before applying migration 6: it replaces the scalar
 The migration leaves record bytes, revisions, leases, retention ages and
 scheduled-poll observation times intact. Stale projections remain ineligible
 until refreshed; dependency waits receive a fresh baseline observation.
+
+Discovery projection 10 adds fork deadlines to those dependency waits. A changed
+member or the absolute deadline makes a joining scope eligible; after expiration,
+cleanup uses member changes alone. Failed join acceptance remains eligible at
+its retained deadline. Nested cleanup survives loss of both the original store
+and its recovery store, and unresolved effects prevent pruning until reconciled.
+No schema migration beyond 6 is required. Refresh discovery and retention metadata
+after deploying graph-version-14 readers.
 
 Register the graph with the shared sweeper. Only a claimed job is observed;
 recovery does not poll unclaimed relatives. Pending reads release their lease.

@@ -11,51 +11,29 @@
   stops at its activation limit. This is evidence for step 1, not completion
   of the full runtime objective.
 - Plan revision: 3, 2026-09-29; preserves the six requested steps.
-- Last closed wave: 3, managed agents/subgraphs, durable signals and external jobs.
-- Active wave: 4, typed fork/map/join with explicit failure handling.
-- Next wave: 5, real classifier, LLM and MCP adapters.
-- Open implementation: wave 4's scope lifecycle and failure/join semantics are
-  captured in the [parallel composition contract](parallel-composition.md).
-  The pure scope model now has checked restoration, ordered results, bounded
-  admission, retained first stop cause and explicit uncertainty. Public typed
-  pairs now run actual concurrent managed children, retain ordered results and
-  recover after a partial directory-backend restart. Bounded typed map now
-  preserves completed, waiting and pending members across restart, with one
-  private child per input and ordered answers. Multi-child discovery now follows
-  every unsettled member; nested idle scopes converge and retain cancellation
-  cleanup after lost notifications. Repeated visits, sibling isolation and shared
-  family-budget scenarios are verified. Fork deadlines remain open.
-  Submission, receipt recovery, retained read-only
-  job waits and scheduled observation are proven against an independently
-  retained service. An explicit cancellation workflow now proves stop admission,
-  retained acknowledgment, uncertain requests and terminal evidence against
-  that service. The managed owned binding now retains fenced stop requests and
-  resolves accepted, refused and uncertain requests through terminal observation.
-  Backend-owned due intervals survive store loss. The public backend clock now
-  supplies UTC Unix milliseconds for persisted signal deadlines. Signal arming,
-  expiration arbitration and automatic overdue discovery are implemented.
-  Job expiration retains its cause separately from owned cleanup and terminal
-  evidence; combined polling/deadline discovery survives restart. Managed-child
-  deadlines now retain stop causes, child results and unresolved effects. Registered
-  discovery follows nested cleanup without restarting parent business routing.
-  Idle dependency discovery is implemented. Public shared work/child/depth budgets, mixed-family admission,
-  root initialization and ledger retention are implemented. Registered graph
-  sweeping recovers expired work and changed idle dependencies through mixed attachments. Shared parent
-  identities and manual signal contracts are implemented.
-  Native authoring, serial lifecycle, compatibility and public control are now
-  concrete in the [durable sequential contract](durable-sequential.md).
-  Actual remote credentials/endpoints are checked before wave 5. No new paid
-  infrastructure is selected.
+- Last closed wave: 4, typed fork/map/join with explicit failure handling.
+- Active wave: 5, real classifier, LLM and MCP adapters.
+- Next wave: 6, agent-loop graph recipe evaluation after parity.
+- Open implementation: stage 5 needs actual structured LLM and classifier
+  producers, an MCP operation adapter, typed provider evidence and real protocol
+  exercises. Existing OpenAI and Anthropic environment variables are present;
+  their usability has not yet been verified. Classifier access and an appropriate
+  MCP client remain to be established. No new paid infrastructure is selected.
+  Stage 4 now includes typed pairs and bounded maps, isolated results, cyclic
+  and sibling identity, shared budgets, persistent discovery and retained
+  cancellation/expiration through nested cleanup. Its acceptance evidence is
+  recorded below and in the [parallel contract](parallel-composition.md).
+  The [durable sequential contract](durable-sequential.md) and
+  [managed composition contract](managed-composition.md) own stages 2–3.
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: 601 root tests, five graph consumer tests, 15 app consumer tests,
-  19 external-job scenarios, five independent service tests and 56 PostgreSQL
+- Gate status: 607 root tests, five graph consumer tests, 15 app consumer tests,
+  19 external-job scenarios, five independent service tests and 57 PostgreSQL
   tests pass. Builds use warnings as errors. Source formatting, `nix fmt`,
-  `nix flake check` and `git diff --check` pass on this host. One existing lease
-  scenario timed out in the discovery checkpoint's initial full run; its isolated
-  check and the full rerun passed without source changes. The subsequent
-  family-scenario checkpoint passed its full root gate on the first run.
+  `nix flake check` and `git diff --check` pass on this host. The current deadline
+  checkpoint passed its root and integration gates; earlier transient failures
+  remain recorded with their historical checkpoints.
 - Current evidence: typed native operations and commands run through public
   start/read/await/recover/approval/reconciliation/cancellation APIs. Directory
   and PostgreSQL scenarios retain work over store-process loss. Terminal tool
@@ -63,9 +41,11 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: implement fork deadlines and exercise nested cleanup on
-  PostgreSQL before accepting stage 4. Existing pair/map evidence does not
-  close the full parallel contract.
+- Next action: inspect the current llm_wire structured-output contract and
+  classifier/MCP primary documentation, select the smallest real adapter
+  boundary, and prove typed decisions through the existing public graph runtime.
+  Preserve provider uncertainty, usage and refusal semantics. Stages 5–6 are
+  still open; stage-4 acceptance does not complete the full goal.
 - Resume note: the user requested another checkpoint commit and continued
   implementation on 2026-09-30. The app goal is confirmed active with all six
   stages preserved. The initial runtime checkpoint
@@ -1514,3 +1494,52 @@ six-step goal remains active, with wave 3 next.
   retained-cleanup contracts, exercise nested cleanup against PostgreSQL, then
   assess the full parallel contract before accepting stage 4. Real adapters
   and the agent-recipe evaluation remain required afterward.
+
+### Wave 4 — retained fork deadlines and acceptance
+
+- Status: stage 4 accepted; stage 5 is now active. The six-stage goal remains
+  active and unbounded, with real adapters and agent-recipe evaluation still
+  required. No Saga/Grind dependency or new infrastructure was introduced.
+- Delivery: `operation.with_deadline` bounds pair and map scopes using the
+  existing backend-clock protocol. Approval precedes arming; preparation,
+  admission, execution and acceptance share the retained absolute due time.
+  Expiration withdraws pending members and preserves admitted cleanup. It keeps
+  the parent's deadline cause even when a member failure started cleanup first.
+  Cancellation after expiration cannot replace that cause.
+- Arbitration: checks before member admission and around join callbacks prevent
+  a known overdue result from routing. Reconciliation can correct an accepted
+  member result's mapping before the deadline; afterward it expires the scope.
+  Member results remain recorded in either case. Uncertain effects retain the
+  family until authoritative child reconciliation, with no implicit replay.
+- Persistence: joining waits are eligible on any member change or the deadline.
+  Cleanup uses member changes only, so the expired timestamp cannot spin. The
+  real PostgreSQL scenario proves two store losses around nested cleanup,
+  reconciliation from another store, no extra member admission or effect replay,
+  and pruning only after all five execution rows and their budget ledger settle.
+- Compatibility: graph records write 14/read 5–14; fork deadlines cannot be
+  downgraded to 13. Agent records remain 7. Discovery is 10, retention is 11,
+  and PostgreSQL remains schema 6. Deploy compatible readers, then refresh both
+  projections in bounded batches. Record checks reject mismatched stop causes,
+  missing armed deadlines and invalid expired dispositions.
+- Gate: root warnings-as-errors build and all 607 tests pass, including five
+  public deadline scenarios and the expanded record lifecycle checks. Graph/app
+  consumer builds and five/15 tests pass. External jobs pass 19 scenarios and
+  five independent service tests. PostgreSQL passes 57 tests. Source formatting,
+  `nix fmt`, `nix flake check` and `git diff --check` pass on this host.
+- Acceptance audit of stage 4:
+
+| Requirement                                                             | Current evidence                                                                                                                        |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Typed heterogeneous pair and homogeneous bounded map                    | Public `graph.both`/`graph.map` scenarios in `graph_parallel_test`; separate graph consumer maps complete review loops.                 |
+| Fixed members, capacity, empty/oversized input and ordered join (F1–F4) | Pure fork transitions plus public overlap, reverse completion, capacity and equal-input cases.                                          |
+| Private state across sibling scopes and loop visits (G3, G9)            | `graph_parallel_family_test` rejects cross-sibling and stale-visit signals, preserving prior receipts across directory restart.         |
+| Shared work, child and depth limits (G7)                                | Exact-capacity restart, explicit limit refusals and nested PostgreSQL cleanup with one root budget.                                     |
+| Definite failure, cancellation and uncertainty (F5–F7)                  | Typed fallback, cancellation during uncertain sibling cleanup, retained first cause, reconciliation and suppressed canceled routing.    |
+| Join failure and deadline arbitration (F6–F8)                           | Corrected join succeeds once before deadline; late callback/reconciliation expires without replay or successor receipts.                |
+| Recovery, ownership and discovery (G7, F8)                              | Partial directory restart, lost-watch and foreign-parent lease cases, PostgreSQL competing claims and nested two-store-loss expiration. |
+| Compatibility and retention (F8)                                        | Record 5–14 reads, downgrade/corruption refusal, retained reciprocal member attachments and six-row family pruning after settlement.    |
+
+- Remaining goal work: actual LLM/classifier/MCP adapters and their real boundary
+  evidence, then agent-loop parity evaluation. Broader quorum/streaming/shared
+  state parallelism remains outside the selected fork contract rather than
+  being silently counted as implemented.

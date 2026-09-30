@@ -18,7 +18,7 @@ import gleam/result
 
 /// Bump when a record format or state changes discovery eligibility or keys.
 /// Backends must refresh older projections before using them for scheduling.
-pub const version = 9
+pub const version = 10
 
 pub type Trigger {
   Changed(dependencies: List(run.RunId), deadline: Option(Int))
@@ -50,18 +50,23 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
           case graph.current_fork(state, a.id) {
             Error(_) -> None
             Ok(members) ->
-              Some(dependency(
-                state,
-                a,
-                list.map(scope.unsettled(members), fn(ref) {
-                  child.branch_id(state.run, a.id, ref.member)
-                }),
-                case mode {
-                  graph.JoiningFork -> "observe_fork"
-                  graph.ClosingFork(_) -> "settle_fork"
-                },
-                None,
-              ))
+              Some(
+                dependency(
+                  state,
+                  a,
+                  list.map(scope.unsettled(members), fn(ref) {
+                    child.branch_id(state.run, a.id, ref.member)
+                  }),
+                  case mode {
+                    graph.JoiningFork -> "observe_fork"
+                    graph.ClosingFork(_) -> "settle_fork"
+                  },
+                  case mode {
+                    graph.JoiningFork -> a.deadline
+                    graph.ClosingFork(_) -> None
+                  },
+                ),
+              )
           }
         graph.WaitingSignal(activation) ->
           case activation.deadline {
@@ -147,6 +152,7 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
           ))
         graph.Blocked(a, graph.InvalidResult(_, _)) ->
           case a.prepared.kind, a.deadline {
+            operation.Fork(..), Some(due) -> Some(fork_deadline(state, a, due))
             operation.Agent, Some(_) | operation.Subgraph, Some(_) ->
               Some(dependency(
                 state,
@@ -196,6 +202,21 @@ fn dependency(
     )
     |> json.to_string
   Wait(run.issued(state.run), key, Changed(list.map(ids, run.issued), deadline))
+}
+
+fn fork_deadline(state: graph.State, a: graph.Activation, due: Int) -> Wait {
+  let key =
+    json.array(
+      [
+        json.string("fork_deadline"),
+        json.int(a.id),
+        json.int(a.attempt),
+        json.int(due),
+      ],
+      fn(value) { value },
+    )
+    |> json.to_string
+  Wait(run.issued(state.run), key, At(due))
 }
 
 /// Metadata for a backend index. Check its version and source revision before
