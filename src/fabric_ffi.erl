@@ -3,7 +3,7 @@
          directory_insert/3, directory_compare_and_set/4, claim_new/0,
          claim_take/2, exit_shutdown/0, factory_name/1,
          await_or_shutdown/3, requeue_shutdown/1, take_shutdown/1, graph_child_id/2,
-         family_budget_id/1]).
+         family_budget_id/1, system_time_ms/0]).
 
 family_budget_id(Root) ->
     Hash = crypto:hash(sha256, [<<"fabric.family.budget:">>, Root]),
@@ -57,9 +57,13 @@ factory_name(Name) ->
 random_id() ->
     binary:encode_hex(crypto:strong_rand_bytes(16), lowercase).
 
-%% Monotonic milliseconds, for deadlines.
+%% Monotonic milliseconds, for process-local timeout durations only.
 now_ms() ->
     erlang:monotonic_time(millisecond).
+
+%% Stable UTC epoch for deadlines retained by an unleased local store.
+system_time_ms() ->
+    erlang:system_time(millisecond).
 
 %% --- claims -----------------------------------------------------------------
 %%

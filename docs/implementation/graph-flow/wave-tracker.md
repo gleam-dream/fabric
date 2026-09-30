@@ -21,7 +21,9 @@
   retained acknowledgment, uncertain requests and terminal evidence against
   that service. The managed owned binding now retains fenced stop requests and
   resolves accepted, refused and uncertain requests through terminal observation.
-  Backend-owned due intervals survive store loss.
+  Backend-owned due intervals survive store loss. The public backend clock now
+  supplies UTC Unix milliseconds for future persisted wait deadlines; expiration
+  lifecycle and discovery remain to be implemented.
   Idle dependency discovery is implemented. Public shared work/child/depth budgets, mixed-family admission,
   root initialization and ledger retention are implemented. Registered graph
   sweeping recovers expired work and changed idle dependencies through mixed attachments. Shared parent
@@ -33,9 +35,9 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: 534 root tests, four graph consumer tests, 15 app consumer tests,
+- Gate status: 537 root tests, four graph consumer tests, 15 app consumer tests,
   17 external-job consumer scenarios and five independent service tests pass.
-  The PostgreSQL gate passes 50 tests, including owned cancellation, scheduled job recovery and pruning,
+  The PostgreSQL gate passes 51 tests, including database time, owned cancellation, scheduled job recovery and pruning,
   migration and concurrent index refresh. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -1121,3 +1123,34 @@ six-step goal remains active, with wave 3 next.
 - Next: retain deadline identity and expiration outcomes, using backend time and
   durable scheduling. Expiration must not be confused with confirmed remote
   cancellation, and interrupted cleanup must remain recoverable.
+
+### Wave 3 — authoritative clock for durable deadlines
+
+- Status: `store.now` exposes UTC Unix milliseconds through the new required
+  `LeasedBackend.now` callback. This delivers D1–D3 as a prerequisite for retained
+  wait deadlines. It does not implement wait expiration or close wave 3.
+- Authority: PostgreSQL reads database time; unleased memory/directory stores
+  use host UTC time. The leased test backend uses one UTC clock plus its test
+  offset for reads, leases and discovery. Backend errors, crashes and timeouts
+  propagate without a local fallback. Clock calls are bounded and leave the
+  store actor free to serve unrelated reads.
+- Evidence: three public scenarios cover shared time across store restart,
+  nonmutating reads, unavailable/crashed/blocked callbacks and local epoch time.
+  The shared backend contract checks preserved records and leases. PostgreSQL
+  brackets public clock reads with independent database samples and verifies
+  unchanged records. These tests establish clock behavior, not deadline recovery.
+- Compatibility: custom leased backend constructors must supply `now`; record
+  update syntax inherits it. Graph/agent records, discovery/retention projections
+  and PostgreSQL schema versions remain unchanged. Wall-clock corrections can
+  advance or delay eligibility; samples are not guaranteed monotonic.
+- Gate: warnings-as-errors builds and all 537 root tests pass. Graph/app
+  consumers pass four/15 tests; the real job service passes 17 Gleam scenarios
+  and five Python tests. The temporary PostgreSQL gate passes 51 tests. Source
+  formatting, `nix fmt`, `nix flake check` and `git diff --check` pass.
+- Conformance: the full six-stage goal is confirmed active after the user's
+  commit-and-proceed request. Stage 3 remains open for retained activation
+  deadlines, expiration arbitration and recovery of overdue waits. Stages 4–6
+  remain unchanged.
+- Next: add activation-scoped signal deadlines and durable discovery, then
+  extend expiration to managed children and external jobs while preserving
+  owned cancellation progress and terminal evidence.
