@@ -19,6 +19,7 @@
 //// rows with `FOR UPDATE SKIP LOCKED` so that concurrent claimers never
 //// take the same run. Neither changes a revision.
 
+import fabric/retention
 import fabric/store.{
   type Current, type Holder, type Lease, type LeasedBackend, type StoreError,
   AlreadyExists, Claim, Conflict, Current, Free, Held, Hold, LeaseRefused,
@@ -110,16 +111,17 @@ fn insert(
     pog.query(
       "INSERT INTO "
       <> table
-      <> " (run_id, revision, record, phase, lease_owner, lease_until)"
+      <> " (run_id, revision, record, phase, lease_owner, lease_until, retention, retention_revision)"
       <> " VALUES ($1, 1, $2, $3, $4::text, CASE WHEN $4::text IS NULL THEN NULL ELSE "
       <> expiry
-      <> " END) ON CONFLICT (run_id) DO NOTHING",
+      <> " END, $6::jsonb, 1) ON CONFLICT (run_id) DO NOTHING",
     )
     |> pog.parameter(pog.text(run))
     |> pog.parameter(pog.text(record))
     |> pog.parameter(phase(record))
     |> pog.parameter(owner)
     |> pog.parameter(pog.int(ttl))
+    |> pog.parameter(pog.text(retention.encode(run, record)))
     |> pog.execute(connection)
   case outcome {
     Ok(returned) if returned.count == 1 -> Ok(Nil)
@@ -151,22 +153,22 @@ fn compare_and_set(
   let update =
     "UPDATE "
     <> table
-    <> " SET revision = revision + 1, record = $3, phase = $4, updated_at = clock_timestamp()"
+    <> " SET revision = revision + 1, record = $3, phase = $4, updated_at = clock_timestamp(), retention = $5::jsonb, retention_revision = revision + 1"
   let current = " WHERE run_id = $1 AND revision = $2"
   let #(sql, parameters) = case lease {
-    Hold(owner) -> #(update <> current <> " AND lease_owner = $5", [
+    Hold(owner) -> #(update <> current <> " AND lease_owner = $6", [
       pog.text(owner),
     ])
     Claim(owner, ttl) -> #(
       update
-        <> ", lease_owner = $5, lease_until = clock_timestamp() + $6::bigint * interval '1 millisecond'"
+        <> ", lease_owner = $6, lease_until = clock_timestamp() + $7::bigint * interval '1 millisecond'"
         <> current
-        <> " AND (lease_owner IS NULL OR lease_owner = $5 OR lease_until <= clock_timestamp())",
+        <> " AND (lease_owner IS NULL OR lease_owner = $6 OR lease_until <= clock_timestamp())",
       [pog.text(owner), pog.int(ttl)],
     )
     Seize(owner, ttl) -> #(
       update
-        <> ", lease_owner = $5, lease_until = clock_timestamp() + $6::bigint * interval '1 millisecond'"
+        <> ", lease_owner = $6, lease_until = clock_timestamp() + $7::bigint * interval '1 millisecond'"
         <> current,
       [pog.text(owner), pog.int(ttl)],
     )
@@ -181,6 +183,7 @@ fn compare_and_set(
     |> pog.parameter(pog.int(expected))
     |> pog.parameter(pog.text(record))
     |> pog.parameter(phase(record))
+    |> pog.parameter(pog.text(retention.encode(run, record)))
     |> list.fold(parameters, _, pog.parameter)
     |> pog.execute(connection)
   let again = fn() {

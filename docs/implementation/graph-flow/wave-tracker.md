@@ -14,7 +14,7 @@
 - Last closed wave: 2, public durable serial graph runtime.
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's family budget/retention and job/deadline
+- Open decisions: wave 3's shared family budgets and job/deadline
   contracts are being refined. Shared parent identities and manual signal
   contracts are implemented.
   Native authoring, serial lifecycle, compatibility and public control are now
@@ -24,16 +24,18 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: terminal agent settlement passes 456 root tests, 34 PostgreSQL tests,
+- Gate status: mixed-family retention passes 459 root tests, 40 PostgreSQL tests,
   four graph consumer tests and 15 existing app consumer tests. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
 - Current evidence: typed native operations and commands run through public
   start/read/await/recover/approval/reconciliation/cancellation APIs. Directory
   and PostgreSQL scenarios retain work over store-process loss. Terminal tool
-  evidence and delegated outcomes settle without resuming canceled work. Shared host
+  evidence and delegated outcomes settle without resuming canceled work.
+  PostgreSQL prunes complete settled graph/agent families from their saved
+  attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: establish family budgeting/retention, then jobs
+- Next action: reserve shared family budgets across graph/agent admissions, then jobs
   and deadlines under the [managed composition contract](managed-composition.md).
   These remain runtime states rather than blocking operation wrappers.
 - Resume note: the user requested a checkpoint commit and resumed implementation
@@ -656,3 +658,44 @@ six-step goal remains active, with wave 3 next.
 - Next: make shared family limits and retention explicit across graph/agent
   boundaries, including PostgreSQL metadata for hashed graph reservations;
   then add external-job attachments and durable deadlines.
+
+### Wave 3 — retention across graph and agent families
+
+- Status: `fabric/retention` projects immediate attachments and settlement from
+  supported records through their real decoders. PostgreSQL uses those saved
+  relationships for arbitrary root IDs, hashed graph children and agent
+  descendants. The former `run-…` prefix no longer defines a family.
+- Retention: all members must be terminal and settled, old enough, readable,
+  current in the index and free of live leases. Every named child must exist
+  and repeat the parent's attachment; unexpected children also block deletion.
+  Unresolved canceled effects retain the entire family. Historical receipts
+  and delegation actions keep their child references until the family is pruned.
+- Concurrency: pruning uses a serializable transaction with bounded retries,
+  locks distinct roots for concurrent pruners, and revalidates member changes
+  and renewed leases. A parent foreign key prevents late child inserts from
+  creating an orphan after deletion. Pruning ends the family's replay window;
+  run IDs must not be reused for new executions that may receive old messages.
+- Upgrade: schema migration 2 adds the projection/source revision and indexed
+  parent link. Original record bytes and agent/graph formats stay unchanged.
+  Existing rows remain retained until bounded `refresh_retention` batches
+  examine them. Refresh changes no execution revision, lease or record age.
+  Old backend writes invalidate the source revision. Unknown records and
+  missing-parent orphans remain retained, including after refresh.
+- Evidence: three core projection tests cover all unsettled agent action
+  variants, graph receipts/cancellation, reciprocal keys, unknown versions and
+  storage-key mismatch. Six additional PostgreSQL scenarios cover incomplete
+  or mismatched families, independent IDs sharing a prefix, old-root starvation,
+  tombstones and late child insertion, uncertainty and child age, migration and
+  old writes, concurrent lease renewal and escaped-NUL attachment keys. Existing
+  concurrent-pruner tests now use validated records. Public graph cancellation
+  tests verify retention before settlement and whole-family deletion afterward.
+- Gate: 459 root tests, 40 PostgreSQL tests, four graph consumer tests and 15
+  existing app consumer tests pass with warning-free builds. Source formatting,
+  `nix fmt`, `nix flake check` and `git diff --check` pass on this host.
+- Conformance: this establishes the PostgreSQL retention part of G7. It does
+  not establish shared execution budgets, automatic graph recovery scanning,
+  external jobs, deadlines or a directory-store pruning service. The full
+  six-step objective stays active; waves 4–6 are unchanged.
+- Next: define and reserve shared family budgets before graph/agent work is
+  admitted, retaining the reservations across restarts and cancellation;
+  continue with external jobs and durable deadlines.

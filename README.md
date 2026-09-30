@@ -334,6 +334,10 @@ with any remaining uncertain actions and need no deployed agent definition.
 For a graph-owned agent, recover the graph parent afterward; it stays canceled
 and records the child's settlement without invoking a route.
 
+PostgreSQL retention follows saved graph and agent attachments. It preserves
+whole families with unresolved effects or missing children, and prunes them
+together only after settlement. See the [migration and refresh procedure](integrations/fabric_postgres/README.md#pruning).
+
 A Saga workflow is one typed tool too, from the separate package
 `integrations/fabric_saga`: `fabric_saga.tool(definition, workflow,
 execution.config(), explain:, rollback_within:)`. A cancelled call waits up

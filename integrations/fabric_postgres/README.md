@@ -165,11 +165,14 @@ CREATE TABLE fabric_runs (
   revision bigint NOT NULL CHECK (revision >= 1),
   record text NOT NULL,          -- the exact bytes written
   phase text,                    -- the record's phase tag, for queries
-  root_id text GENERATED ALWAYS AS (substring(run_id from '^run-[0-9a-f]+')) STORED,
+  retention jsonb,               -- Fabric's validated family projection
+  retention_revision bigint,     -- source revision of that projection
+  parent_id text GENERATED ALWAYS AS (retention ->> 'parent') STORED
+    REFERENCES fabric_runs(run_id) DEFERRABLE INITIALLY IMMEDIATE,
   lease_owner text, lease_until timestamptz,
   updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   CHECK ((lease_owner IS NULL) = (lease_until IS NULL)));
--- indexes: expired leases, ended runs by age, families by root
+-- indexes: expired leases, settled roots by age, immediate parents
 ```
 
 Every write is one conditional statement, committed on its own: an insert
@@ -184,12 +187,44 @@ Fabric confirms by reading its write back.
 
 ## Pruning
 
-`prune(settings, ended_for: ms, limit: n)` deletes up to `n` finished
-families: a root run that ended at least `ms` ago, with every sub-agent
-run of its family, only when all of them ended (or never started) and none
-holds a live lease. An ended sub-agent run is never deleted on its own,
-since recovering its parent would start it again. Run it periodically from
-any node; concurrent calls delete each family once.
+`prune(settings, ended_for: ms, limit: n)` deletes up to `n` complete,
+settled families, oldest first. A family follows saved parent attachments,
+including hashed graph children, managed agents and delegated descendants.
+Run names do not establish membership. Every member must have a current,
+readable retention projection, a definite terminal outcome, no live lease,
+and no record update within `ms`. Terminal uncertainty, missing children,
+unreadable records, mismatched attachments and unacknowledged children retain
+the whole family. A new settlement starts its member's retention interval
+again. A child is never pruned alone.
+
+Fabric's `fabric/retention` projection uses the actual agent and graph record
+decoders. It includes each parent/child attachment and whether the run settled.
+Attachment keys are escaped JSON text, so a provider call ID containing NUL
+does not become a NUL in PostgreSQL's index. The original record remains
+byte-for-byte text. Each backend write updates its projection and source
+revision atomically. An older backend's write leaves a revision mismatch,
+which refuses pruning until refreshed.
+
+Schema migration 2 replaces the name-prefix index with these projections and
+a parent foreign key. Apply migrations before starting the new backend. Existing
+records initially have no projection and remain retained. Call
+`refresh_retention(settings, limit: 100)` in bounded batches until it returns
+zero. It changes no record bytes, revisions, leases or record timestamps.
+The count includes unreadable records and missing-parent orphans; they receive
+an unknown projection and remain retained. Concurrent refreshers skip rows
+another refresher holds, so zero is local to that call. Normal record writes
+and a later projection-version upgrade refresh metadata again.
+
+Pruning runs as a serializable transaction with bounded retries. Concurrent
+pruners lock different roots; concurrent member updates or lease renewals
+force revalidation. The foreign key prevents a delayed child insert from
+recreating an orphan after its parent is deleted. This uses PostgreSQL's
+[serializable isolation](https://www.postgresql.org/docs/16/transaction-iso.html#XACT-SERIALIZABLE)
+and [foreign key constraints](https://www.postgresql.org/docs/16/ddl-constraints.html#DDL-CONSTRAINTS-FK).
+Pruning ends the family's durable replay window; do not reuse its IDs for
+another execution that could receive old messages.
+A connection lost during commit can leave the deletion count unknown. A later
+prune remains safe, but cannot report how many rows that earlier call removed.
 
 ## Tests
 

@@ -27,6 +27,7 @@
 import fabric/store.{type LeaseConfigError, type LeasedBackend, type Store}
 import fabric_postgres/internal/backend
 import fabric_postgres/internal/migrations
+import fabric_postgres/internal/retention
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Name}
 import gleam/list
@@ -202,21 +203,23 @@ pub fn store(
   )
 }
 
-/// Why `prune` deleted nothing.
+/// Why `prune` could not confirm a deletion count.
 pub type PruneError {
   PruneAgeNegative(Int)
   PruneLimitNotPositive(Int)
-  /// The database was unreachable or refused the statement (`reason`);
-  /// nothing was deleted.
+  /// The database was unreachable or refused the transaction. A lost commit
+  /// acknowledgement can leave the outcome unknown. Repeating pruning is safe,
+  /// but cannot recover the count of an already committed deletion.
   PruneFailed(reason: String)
 }
 
 /// Deletes finished runs, a whole family at a time: up to `limit` root
 /// runs that ended at least `ended_for` milliseconds ago (by the
-/// database's clock), each with every sub-agent run of its family, and
-/// only when every run of the family has ended (or never started) and
-/// none holds a live lease. An ended sub-agent run is never deleted on its
-/// own, since recovering its parent would start it again. Returns how many
+/// database's clock), each with every graph and agent descendant. All members
+/// must have current, readable retention projections, reciprocal attachments,
+/// no missing children, no unresolved effects and no live lease. Every member
+/// must be old enough; a new settlement restarts its retention interval.
+/// A child run is never deleted alone. Returns how many
 /// runs it deleted, sub-agent runs included. Safe to call from several
 /// nodes at once: each family is deleted by one of them.
 pub fn prune(
@@ -229,25 +232,32 @@ pub fn prune(
     True, _ -> Error(PruneAgeNegative(milliseconds))
     _, True -> Error(PruneLimitNotPositive(limit))
     False, False ->
-      pog.query(
-        "WITH roots AS (SELECT r.run_id FROM "
-        <> table
-        <> " AS r WHERE r.phase = 'ended' AND r.root_id = r.run_id"
-        <> " AND r.updated_at <= clock_timestamp() - $1::bigint * interval '1 millisecond'"
-        <> " AND NOT EXISTS (SELECT 1 FROM "
-        <> table
-        <> " AS m WHERE m.root_id = r.run_id AND (m.phase IS NULL"
-        <> " OR m.phase NOT IN ('ended', 'never_started') OR m.lease_until > clock_timestamp()))"
-        <> " ORDER BY r.updated_at LIMIT $2 FOR UPDATE SKIP LOCKED)"
-        <> " DELETE FROM "
-        <> table
-        <> " AS d USING roots WHERE d.root_id = roots.run_id",
-      )
-      |> pog.parameter(pog.int(milliseconds))
-      |> pog.parameter(pog.int(limit))
-      |> pog.execute(settings.connection)
-      |> result.map(fn(returned) { returned.count })
-      |> result.map_error(fn(error) { PruneFailed(backend.describe(error)) })
+      retention.prune(settings.connection, table, milliseconds, limit)
+      |> result.map_error(PruneFailed)
+  }
+}
+
+/// A retention-index refresh could not run. No execution record is changed.
+pub type RefreshError {
+  RefreshLimitNotPositive(Int)
+  RefreshFailed(reason: String)
+}
+
+/// Refreshes up to `limit` stale retention projections after a schema or
+/// runtime upgrade. Returns the number examined, including unreadable records
+/// and missing-parent orphans, which remain ineligible for pruning. Repeat
+/// until zero. Original bytes, revisions, leases and record ages are unchanged.
+/// Normal writes maintain their own projection atomically. A write by an old
+/// backend leaves a revision mismatch, which pruning refuses until refreshed.
+pub fn refresh_retention(
+  settings: Settings,
+  limit: Int,
+) -> Result(Int, RefreshError) {
+  case limit > 0 {
+    False -> Error(RefreshLimitNotPositive(limit))
+    True ->
+      retention.refresh(settings.connection, table(settings), limit)
+      |> result.map_error(RefreshFailed)
   }
 }
 
