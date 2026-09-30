@@ -13,8 +13,9 @@ agents with idle/nested waits. `fabric/graph/agent` binds a native input,
 prompt and typed reply conversion to the existing agent runner.
 See the [runnable public graph consumer](consumers/graph/README.md)
 and [graph implementation tracker](docs/implementation/graph-flow/wave-tracker.md).
-Terminal agent uncertainty settlement, shared family budgets/retention, durable
-deadlines, external-job attachment, parallel composition and real decision
+Terminal agent uncertainty settlement, complete-family PostgreSQL retention and
+shared work/child/depth budgets are implemented. Automatic graph recovery scans,
+durable deadlines, external-job attachment, parallel composition and real decision
 adapters remain in that implementation program.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
@@ -320,13 +321,25 @@ Rolling upgrades: the default agent-record writer is version 7; readers accept
 versions 1–7. Writers 2–6 remain available for representable states.
 Assistant provider data requires at least version 4; graph parent attachments
 require version 5; settled child evidence requires version 6; retained root
-family-budget declarations require version 7. Family-budget admission is still
-under construction and has no public start API. Older writers refuse unrepresentable records before
-dispatching work. Configure the store before
+family-budget declarations and quota outcomes require version 7. Older writers
+refuse unrepresentable records before dispatching work. Configure the store before
 starting it and use the returned value for every handle and sweeper.
 Existing values and runners keep their setting; this does not migrate rows.
 See the [rollout procedure](integrations/fabric_postgres/README.md#record-versions)
 for compatibility and rollback limits.
+
+Use `fabric.start_with_budget(store, agent, context, prompt, limits)` or
+`graph.start_with_budget(runtime, id, initial, limits)` to bound the whole family.
+For example, `budget.Limits(work: 40, children: 6, depth: 3)` allows up to 40
+work admissions and six children, at most three levels below the root.
+Graph attempts, model attempts and agent tool actions each spend one work unit;
+managed children inherit the same ledger across graph/agent boundaries and
+restarts. Rechecking an approval reuses its saved claim. Failed or uncertain
+attempts retain their charge; these limits do not predict provider token costs.
+Existing `start` calls keep their per-run limits without a shared family budget.
+Quota exhaustion is a typed `FamilyLimit` agent outcome or `FamilyBudget` graph
+failure, with started effects preserved for reconciliation. See the
+[reservation contract](docs/implementation/graph-flow/managed-composition.md#shared-family-reservations).
 
 After cancellation, `fabric.reconcile_stored(store, effect, content)` records
 evidence for an uncertain tool without resuming the agent. Then

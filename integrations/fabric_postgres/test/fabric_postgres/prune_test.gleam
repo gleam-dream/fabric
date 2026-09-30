@@ -128,7 +128,9 @@ pub fn budget_ledgers_are_pruned_only_with_their_matching_root_test() {
     |> string.replace("\"version\":6", "\"version\":7")
     |> string.replace(
       "\"format\":",
-      "\"family_budget\":" <> json.to_string(limits) <> ",\"format\":",
+      "\"family_budget\":"
+        <> string.replace(json.to_string(limits), "}", ",\"initialized\":true}")
+        <> ",\"format\":",
     )
   let assert Ok(metadata) = retention.inspect(root)
   let assert [link] = metadata.children

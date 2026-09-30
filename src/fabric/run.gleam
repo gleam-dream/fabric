@@ -1,6 +1,7 @@
 //// What a run is and what it can become. These are plain data: a suspended
 //// run is exactly its stored `Snapshot`, with no process behind it.
 
+import fabric/budget
 import fabric/model.{type Message, type ModelError, type ToolCall}
 import gleam/list
 import gleam/option.{type Option}
@@ -154,6 +155,8 @@ pub type Outcome {
 pub type Budget {
   TurnLimit(limit: Int)
   TokenLimit(limit: Int, used: Int)
+  /// Shared by the root and all managed descendants.
+  FamilyLimit(budget.Denial)
 }
 
 /// The sub-agent limit that refused one delegation; the run continues.

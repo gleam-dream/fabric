@@ -234,6 +234,11 @@ pub fn with_record_version(
   |> result.replace_error(UnwritableVersion(version, 2, record.version))
 }
 
+@internal
+pub fn supports_family_budget(store: Store) -> Bool {
+  store.write_version == record.V7
+}
+
 /// Encode once per logical write, before effects, and reuse the bytes on
 /// retries so the write token still confirms exactly that attempt.
 @internal

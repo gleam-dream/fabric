@@ -6,6 +6,8 @@
 //// status is read from every record, so a child's pending approvals are
 //// the parent's pending approvals without a second owner of the decision.
 
+import fabric/internal/budget/admission as capacity
+import fabric/internal/budget/bootstrap
 import fabric/internal/controller.{type State}
 import fabric/internal/observe
 import fabric/internal/registry
@@ -307,7 +309,7 @@ pub fn take_over(
   case
     runner.live_runner(entry, state),
     runner.held_elsewhere(entry),
-    controller.needs_runner(state)
+    controller.needs_runner(state) || bootstrap.pending(state.family_budget)
   {
     // Leases belong to runs, not families. Leave this foreign runner
     // alone, but recover eligible children through the root's setup.
@@ -320,7 +322,12 @@ pub fn take_over(
       Ok(Nil)
     }
     None, False, True -> {
-      let #(next, effects) = controller.recover(setup.env, state)
+      let #(next, effects) = case controller.needs_runner(state) {
+        True -> controller.recover(setup.env, state)
+        // Cancellation can land before budget initialization finishes. Seal
+        // that bookkeeping without reviving any completed or canceled work.
+        False -> #(state, [])
+      }
       case runner.launch(setup, Some(#(entry.revision, state)), next, effects) {
         Ok(_) -> {
           case entry.holding {
@@ -400,17 +407,20 @@ fn reattach_child(
         Error(runner.NotFound) if action.approvals != [] ->
           runner.notify_parent(child_setup, controller.ChildMissing)
         Error(runner.NotFound) ->
-          case
-            runner.ancestors_open(setup.store, parent.run, parent.parent),
-            registry.prompt(
-              setup.env.registry,
-              action.call.name,
-              action.call.arguments_json,
-            )
-          {
-            // An ancestor stopped: as at a start, the run cancels itself,
-            // and its cancellation buries the child that was never stored.
-            False, _ -> {
+          case runner.reserve_child(setup, parent, action.id, child) {
+            Error(capacity.Unavailable(_)) -> Nil
+            Error(capacity.Limited(reason)) -> {
+              let _ =
+                runner.command(
+                  setup,
+                  parent.run,
+                  setup.env,
+                  controller.FamilyBudgetReached(reason),
+                  8,
+                )
+              Nil
+            }
+            Error(capacity.Closed) -> {
               let _ =
                 runner.command(
                   setup,
@@ -421,20 +431,32 @@ fn reattach_child(
                 )
               Nil
             }
-            True, Ok(prompt) -> {
-              let #(state, effects) =
-                runner.child_state(
-                  child_setup,
-                  child,
-                  prompt,
-                  parent,
-                  action.id,
+            Ok(Nil) ->
+              case
+                registry.prompt(
+                  setup.env.registry,
+                  action.call.name,
+                  action.call.arguments_json,
                 )
-              let _ = runner.launch(child_setup, None, state, effects)
-              Nil
-            }
-            True, Error(detail) ->
-              runner.notify_parent(child_setup, controller.ChildLost(detail))
+              {
+                Ok(prompt) -> {
+                  let #(state, effects) =
+                    runner.child_state(
+                      child_setup,
+                      child,
+                      prompt,
+                      parent,
+                      action.id,
+                    )
+                  let _ = runner.launch(child_setup, None, state, effects)
+                  Nil
+                }
+                Error(detail) ->
+                  runner.notify_parent(
+                    child_setup,
+                    controller.ChildLost(detail),
+                  )
+              }
           }
         Error(problem) ->
           runner.notify_parent(

@@ -2,7 +2,7 @@
 
 ## Current state
 
-- Last updated: 2026-09-29.
+- Last updated: 2026-09-30.
 - Program status: active. Full six-step objective remains open.
 - Target design: [GRAPH-FLOW](../../GRAPH-FLOW.md), as selected by the user's
   explicit six-step implementation goal following the exploration.
@@ -14,11 +14,10 @@
 - Last closed wave: 2, public durable serial graph runtime.
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's budget admission integration and job/deadline
-  contracts are being refined. Durable reservations, root configuration,
-  mixed-family lookup and ledger retention are implemented internally;
-  runner enforcement remains open. Shared parent identities and manual signal
-  contracts are implemented.
+- Open decisions: wave 3's recovery scanning and job/deadline contracts are
+  being refined. Public shared work/child/depth budgets, mixed-family admission,
+  root initialization and ledger retention are implemented. Shared parent
+  identities and manual signal contracts are implemented.
   Native authoring, serial lifecycle, compatibility and public control are now
   concrete in the [durable sequential contract](durable-sequential.md).
   Actual remote credentials/endpoints are checked before wave 5. No new paid
@@ -26,7 +25,7 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: family budget records pass 477 root tests, 41 PostgreSQL tests,
+- Gate status: shared budget enforcement passes 498 root tests, 42 PostgreSQL tests,
   four graph consumer tests and 15 existing app consumer tests. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -37,7 +36,7 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: wire shared family reservations into graph/agent admissions, then jobs
+- Next action: add automatic graph recovery scanning, external jobs
   and deadlines under the [managed composition contract](managed-composition.md).
   These remain runtime states rather than blocking operation wrappers.
 - Resume note: the user requested a checkpoint commit and resumed implementation
@@ -71,19 +70,19 @@ The full objective includes all six waves below, not merely that first path.
 These identifiers project the selected graph design into executable evidence.
 They clarify the proposed examples for the authorized implementation program.
 
-| Rule | Contract                                                                                                                                                                  | First evidence owner                                     |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| G1   | A graph binds heterogeneous native operation types without unchecked casts; codecs are required for durable values, provider schema is not.                               | Wave 1 authoring consumer and codec tests                |
-| G2   | Construction validates identity, positive bounds, unique nodes and destination references before any work runs. A runtime destination must be allowed by its source node. | Wave 1 construction/routing tests                        |
-| G3   | Every visit gets a fresh activation identity, including pure cycles; the limit stops the next activation before its body runs.                                            | Wave 1 loop trace and bound tests; wave 2 recovery tests |
-| G4   | Input selection, operation failure, codec failure and transition failure remain distinct; invalid or uncertain results release no successor work.                         | Wave 1 failure tests; wave 2 fenced effects              |
-| G5   | Result, state, route, new activation identities and budgets commit together before dispatch. Stored decisions are reused.                                                 | Wave 2 persistent restart and lost-ack tests             |
-| G6   | An effect starts only after validated admission and a committed start fence. Lost results remain uncertain; approval uses fresh context after recovery.                   | Wave 2 effect/policy tests                               |
-| G7   | Child identity is reserved before start; recovery adopts the same child and redelivers outcomes. Signals are correlated, consumed once and retained durably.              | Wave 3 child/signal tests                                |
-| G8   | External submission, accepted receipt and business completion are distinct; attachment/cancellation ownership is explicit.                                                | Wave 3 real local job integration                        |
-| G9   | A structured fork retains private branch results, joins only its own members in defined order, and preserves failure/uncertainty.                                         | Wave 4 pair/map/join tests                               |
-| G10  | Changing a typed decision producer does not change routes or recovery. Provider adapters preserve their real protocol and effect semantics.                               | Wave 5 adapter tests and live/local protocol exercises   |
-| G11  | An agent recipe is evaluated against current transcript, policy, approval, recovery, cancellation and version guarantees.                                                 | Wave 6 parity report and scenarios                       |
+| Rule | Contract                                                                                                                                                                              | First evidence owner                                     |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| G1   | A graph binds heterogeneous native operation types without unchecked casts; codecs are required for durable values, provider schema is not.                                           | Wave 1 authoring consumer and codec tests                |
+| G2   | Construction validates identity, positive bounds, unique nodes and destination references before any work runs. A runtime destination must be allowed by its source node.             | Wave 1 construction/routing tests                        |
+| G3   | Every visit gets a fresh activation identity, including pure cycles; the limit stops the next activation before its body runs.                                                        | Wave 1 loop trace and bound tests; wave 2 recovery tests |
+| G4   | Input selection, operation failure, codec failure and transition failure remain distinct; invalid or uncertain results release no successor work.                                     | Wave 1 failure tests; wave 2 fenced effects              |
+| G5   | Result, state, route, activation identities and per-run bounds commit together before dispatch. Family capacity is reserved separately before admission; stored decisions are reused. | Wave 2 persistent restart and lost-ack tests             |
+| G6   | An effect starts only after validated admission and a committed start fence. Lost results remain uncertain; approval uses fresh context after recovery.                               | Wave 2 effect/policy tests                               |
+| G7   | Child identity and shared family capacity are reserved before start; recovery adopts saved children and grants. Signals are correlated, consumed once and retained durably.           | Wave 3 child/signal tests                                |
+| G8   | External submission, accepted receipt and business completion are distinct; attachment/cancellation ownership is explicit.                                                            | Wave 3 real local job integration                        |
+| G9   | A structured fork retains private branch results, joins only its own members in defined order, and preserves failure/uncertainty.                                                     | Wave 4 pair/map/join tests                               |
+| G10  | Changing a typed decision producer does not change routes or recovery. Provider adapters preserve their real protocol and effect semantics.                                           | Wave 5 adapter tests and live/local protocol exercises   |
+| G11  | An agent recipe is evaluated against current transcript, policy, approval, recovery, cancellation and version guarantees.                                                             | Wave 6 parity report and scenarios                       |
 
 Canonical design anchors: GRAPH-FLOW sections “Four concepts at the authoring
 boundary”, “One control decision per activation”, “Parallel composition
@@ -769,3 +768,39 @@ six-step goal remains active, with wave 3 next.
   effects and never-started child evidence. Expose root configuration only
   after both runners enforce the shared budget and mixed-family recovery is
   proved through public APIs.
+
+### Wave 3 — shared graph and agent budget enforcement
+
+- Status: public agent and graph `start_with_budget` APIs enforce immutable
+  work/child/depth limits across mixed families. Existing starts retain their
+  per-run behavior. Saga and Grind remain absent from core.
+- Initialization: commit the root declaration, create/adopt its ledger, then
+  seal an initialized marker before releasing work. Lost/late acknowledgements
+  are confirmed; existing claims are retained. A missing ledger after sealing
+  is data loss, never fresh capacity. Recovery also finishes initialization of
+  a canceled root without reviving work.
+- Admission: graph attempts, agent model attempts and tool actions reserve work;
+  managed children also reserve count/depth using verified family ancestry.
+  Approval rechecks reuse claims, retries spend new units, and canceled or
+  uncertain grants are never refunded implicitly. Missing-child recovery uses
+  the same admission boundary. Quota refusals are typed; infrastructure failure
+  leaves recoverable work without dispatching.
+- Settlement: quota stops preserve started tools as uncertain, withdraw queued
+  calls and settle children, recording never-started evidence where necessary.
+  Older writers cannot discard either configuration or quota outcomes.
+  Retention projection 3 validates initialized declarations and quota states;
+  existing projections need refresh, while PostgreSQL schema stays at 2.
+- Evidence: public scenarios cover shared graph/agent capacity, nested depth,
+  zero-child rejection, cyclic graph bounds, approval restart, model retries,
+  lost model reservations, interrupted model charges, partial tool batches,
+  initialized-ledger loss, canceled bootstrap repair, and codec compatibility.
+  Real PostgreSQL restart proves limits survive approval and that root, child
+  and ledger prune as one settled family.
+- Gate: 498 root tests, 42 PostgreSQL tests, four graph consumer tests and 15
+  app consumer tests pass with warnings as errors. Formatting, `nix flake check`
+  and `git diff --check` pass on this host.
+- Conformance: G1–G6 remain green; G7 shared budget enforcement is proved. Wave
+  3 remains active for graph recovery scanning, external jobs and durable
+  deadlines. Waves 4–6 and the full six-step goal remain open and unchanged.
+- Next: recover registered graph definitions through a bounded scan after
+  process loss, then attach independently retained jobs and recover due waits.

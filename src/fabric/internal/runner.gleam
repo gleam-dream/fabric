@@ -32,6 +32,9 @@
 import fabric/agent
 import fabric/internal/ancestry
 import fabric/internal/bounded
+import fabric/internal/budget/admission as capacity
+import fabric/internal/budget/bootstrap
+import fabric/internal/budget/model as reservations
 import fabric/internal/claim
 import fabric/internal/controller.{type Effect, type Event, type State}
 import fabric/internal/executor.{type Executor}
@@ -448,9 +451,9 @@ fn launch_over(
 ) -> Result(Int, store.StoreError) {
   case controller.needs_runner(state) {
     False -> {
-      use revision <- result.map(write(
+      use #(revision, state) <- result.map(write_initialized(
         setup.store,
-        state.run,
+        state,
         expected,
         encoded,
         store.Detached(in_flight: False, seize:),
@@ -465,9 +468,9 @@ fn launch_over(
         // work is committed and started by nobody, as if its runner had been
         // lost at once. It is `Unattended` until recovered.
         Error(Nil) -> {
-          use revision <- result.map(write(
+          use #(revision, state) <- result.map(write_initialized(
             setup.store,
-            state.run,
+            state,
             expected,
             encoded,
             store.Detached(in_flight: True, seize:),
@@ -478,8 +481,8 @@ fn launch_over(
         Ok(#(pid, mailbox, go)) -> {
           let claim =
             store.Launch(pid, store.Live(state.incarnation, mailbox), seize:)
-          case write(setup.store, state.run, expected, encoded, claim) {
-            Ok(revision) -> {
+          case write_initialized(setup.store, state, expected, encoded, claim) {
+            Ok(#(revision, state)) -> {
               // The runner starts before this commit's events are emitted: a
               // handler running here does not hold up the work.
               process.send(go, Go(revision, state, effects, work))
@@ -493,6 +496,43 @@ fn launch_over(
           }
         }
       }
+  }
+}
+
+fn write_initialized(
+  runs: Store,
+  state: State,
+  expected: Option(Int),
+  encoded: String,
+  ownership: store.Ownership,
+) -> Result(#(Int, State), store.StoreError) {
+  use revision <- result.try(write(
+    runs,
+    state.run,
+    expected,
+    encoded,
+    ownership,
+  ))
+  use declaration <- result.try(bootstrap.prepare(
+    runs,
+    state.run,
+    state.parent,
+    state.family_budget,
+  ))
+  case declaration == state.family_budget {
+    True -> Ok(#(revision, state))
+    False -> {
+      let initialized = controller.State(..state, family_budget: declaration)
+      use encoded <- result.try(store.encode(runs, initialized))
+      use revision <- result.map(store.commit(
+        runs,
+        state.run,
+        revision,
+        encoded,
+        ownership,
+      ))
+      #(revision, initialized)
+    }
   }
 }
 
@@ -715,6 +755,7 @@ fn receive_next(runner: Runner(context)) -> Nil {
           })
         }
       }
+    live.CapacityUnavailable(_) -> Error(Superseded)
     live.ModelDone(turn, result) -> {
       let model_failures = case result {
         Error(model.ModelError(retryable: True, ..)) ->
@@ -740,52 +781,7 @@ fn receive_next(runner: Runner(context)) -> Nil {
       process.send(reply, False)
       Ok(runner)
     }
-    live.Fence(id, reply) ->
-      case
-        ancestors_open(
-          runner.setup.store,
-          runner.state.run,
-          runner.state.parent,
-        )
-      {
-        False -> {
-          process.send(reply, False)
-          apply(runner, controller.Cancel)
-        }
-        True -> {
-          let open_after = process.new_subject()
-          let started =
-            commit_answering(
-              runner,
-              controller.step(
-                runner.setup.env,
-                runner.state,
-                controller.ToolStarting(id),
-              ),
-              runner.work,
-              fn(answer) {
-                let start = case answer {
-                  live.Applied(_) -> {
-                    let open =
-                      ancestors_open(
-                        runner.setup.store,
-                        runner.state.run,
-                        runner.state.parent,
-                      )
-                    process.send(open_after, open)
-                    open
-                  }
-                  _ -> False
-                }
-                process.send(reply, start)
-              },
-            )
-          case started, process.receive(open_after, 0) {
-            Ok(runner), Ok(False) -> apply(runner, controller.Cancel)
-            started, _ -> started
-          }
-        }
-      }
+    live.Fence(id, reply) -> fence(runner, id, reply)
     live.Executed(executor.Reported(id, outcome)) ->
       apply(runner, controller.ToolReported(id, outcome))
     live.Executed(executor.Crashed(id, reason)) ->
@@ -808,6 +804,65 @@ fn receive_next(runner: Runner(context)) -> Nil {
     // A refused event changes nothing.
     Error(Refused(_)) -> serve(runner)
     Error(Superseded) -> shutdown(runner)
+  }
+}
+
+fn fence(
+  runner: Runner(context),
+  id: ActionId,
+  reply: Subject(Bool),
+) -> Result(Runner(context), ApplyError) {
+  let transition =
+    controller.step(runner.setup.env, runner.state, controller.ToolStarting(id))
+  case transition {
+    Error(reason) -> {
+      process.send(reply, False)
+      Error(Refused(reason))
+    }
+    Ok(_) ->
+      case
+        capacity.work(
+          runner.setup.store,
+          runner.state.run,
+          runner.state.parent,
+          runner.state.family_budget,
+          reservations.ToolAction(runner.state.run, id.turn, id.call_id),
+        )
+      {
+        Error(error) -> {
+          process.send(reply, False)
+          case error {
+            capacity.Limited(reason) ->
+              apply(runner, controller.FamilyBudgetReached(reason))
+            capacity.Closed -> apply(runner, controller.Cancel)
+            capacity.Unavailable(_) -> Error(Superseded)
+          }
+        }
+        Ok(Nil) -> {
+          let open_after = process.new_subject()
+          let started =
+            commit_answering(runner, transition, runner.work, fn(answer) {
+              let start = case answer {
+                live.Applied(_) -> {
+                  let open =
+                    ancestors_open(
+                      runner.setup.store,
+                      runner.state.run,
+                      runner.state.parent,
+                    )
+                  process.send(open_after, open)
+                  open
+                }
+                _ -> False
+              }
+              process.send(reply, start)
+            })
+          case started, process.receive(open_after, 0) {
+            Ok(runner), Ok(False) -> apply(runner, controller.Cancel)
+            started, _ -> started
+          }
+        }
+      }
   }
 }
 
@@ -1046,6 +1101,14 @@ fn perform(
       let runs = runner.setup.store
       let parent = runner.state.parent
       let id = runner.state.run
+      let reservation =
+        reservations.ModelAttempt(
+          id,
+          runner.state.incarnation,
+          turn,
+          runner.model_failures + 1,
+        )
+      let declaration = runner.state.family_budget
       let delay =
         retry_delay(runner.setup.model_retry_delay, runner.model_failures)
       let issue = claim.new()
@@ -1064,17 +1127,34 @@ fn perform(
             _, False -> Nil
             False, True -> process.send(self, live.Apply(controller.Cancel))
             True, True -> {
-              let result = case
-                executor.rescue(fn() { model.call(model, request) })
-              {
-                Ok(result) -> result
-                Error(crash) ->
-                  Error(model.ModelError(
-                    "model crashed: " <> crash,
-                    retryable: False,
-                  ))
+              case capacity.work(runs, id, parent, declaration, reservation) {
+                Error(capacity.Limited(reason)) ->
+                  process.send(
+                    self,
+                    live.Apply(controller.FamilyBudgetReached(reason)),
+                  )
+                Error(capacity.Closed) ->
+                  process.send(self, live.Apply(controller.Cancel))
+                Error(capacity.Unavailable(reason)) ->
+                  process.send(self, live.CapacityUnavailable(reason))
+                Ok(Nil) ->
+                  case ancestors_open(runs, id, parent) {
+                    False -> process.send(self, live.Apply(controller.Cancel))
+                    True -> {
+                      let result = case
+                        executor.rescue(fn() { model.call(model, request) })
+                      {
+                        Ok(result) -> result
+                        Error(crash) ->
+                          Error(model.ModelError(
+                            "model crashed: " <> crash,
+                            retryable: False,
+                          ))
+                      }
+                      process.send(self, live.ModelDone(turn, result))
+                    }
+                  }
               }
-              process.send(self, live.ModelDone(turn, result))
             }
           }
         })
@@ -1107,8 +1187,11 @@ fn perform(
         }
       }
     controller.StartChild(id, child, call) -> {
-      let report = work.start_child(runner.state, id, child, call)
-      process.send(runner.reports, report)
+      case work.start_child(runner.state, id, child, call) {
+        Ok(report) -> process.send(runner.reports, report)
+        Error(reason) ->
+          process.send(runner.self, live.CapacityUnavailable(reason))
+      }
       runner
     }
     controller.AwaitSettlement(id, within) -> {
@@ -1149,16 +1232,41 @@ fn start_child(
   id: ActionId,
   child: String,
   call: model.ToolCall,
-) -> controller.Event {
+) -> Result(controller.Event, String) {
   let rejected = fn(detail) {
     controller.ToolReported(id, invocation.ArgumentsRejected(detail))
   }
-  case ancestors_open(setup.store, parent.run, parent.parent) {
+  case reserve_child(setup, parent, id, child) {
     // An ancestor stopped: the run cancels itself, and with it this start.
-    False -> controller.Cancel
-    True ->
-      store_started_child(setup, context, parent, id, child, call, rejected)
+    Error(capacity.Closed) -> Ok(controller.Cancel)
+    Error(capacity.Limited(reason)) ->
+      Ok(controller.FamilyBudgetReached(reason))
+    Error(capacity.Unavailable(reason)) -> Error(reason)
+    Ok(Nil) ->
+      Ok(store_started_child(setup, context, parent, id, child, call, rejected))
   }
+}
+
+pub fn reserve_child(
+  setup: Setup(context),
+  parent: State,
+  action: ActionId,
+  child: String,
+) -> Result(Nil, capacity.Error) {
+  use Nil <- result.try(capacity.work(
+    setup.store,
+    parent.run,
+    parent.parent,
+    parent.family_budget,
+    reservations.ToolAction(parent.run, action.turn, action.call_id),
+  ))
+  capacity.child(
+    setup.store,
+    parent.run,
+    parent.parent,
+    parent.family_budget,
+    child,
+  )
 }
 
 fn store_started_child(
@@ -1451,8 +1559,10 @@ pub fn cancel_unattended(
       store.encode(store, next)
       |> result.map_error(fn(error) { Unreadable(StoreFailed(error)) }),
     )
-    case store.commit(store, id, entry.revision, encoded, detached) {
-      Ok(_) -> {
+    case
+      write_initialized(store, next, Some(entry.revision), encoded, detached)
+    {
+      Ok(#(_, next)) -> {
         observe.committed(Some(state), next)
         Ok(next)
       }

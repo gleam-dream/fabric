@@ -1,3 +1,4 @@
+import fabric/budget as quota
 import fabric/graph/child
 import fabric/graph/operation
 import fabric/internal/budget/model as budget
@@ -16,7 +17,7 @@ import gleam/string
 import gleeunit/should
 
 fn limits() {
-  budget.Limits(8, 2, 2)
+  quota.Limits(8, 2, 2)
 }
 
 fn agent_root() {
@@ -33,7 +34,7 @@ fn agent_root() {
     [],
     0,
     agent.Ended(run.Cancelled),
-    Some(limits()),
+    Some(budget.Declaration(limits(), False)),
   )
 }
 
@@ -51,7 +52,7 @@ fn graph_root() {
         operation.Activity,
       ),
     )
-  graph.State(..state, family_budget: Some(limits()))
+  graph.State(..state, family_budget: Some(budget.Declaration(limits(), False)))
 }
 
 pub fn agent_roots_retain_limits_and_old_writers_refuse_to_discard_them_test() {
@@ -129,27 +130,119 @@ pub fn children_cannot_declare_replacement_family_limits_test() {
 
 pub fn invalid_root_limits_are_refused_by_both_codecs_test() {
   list.each(
-    [budget.Limits(-1, 2, 2), budget.Limits(2, -1, 2), budget.Limits(2, 2, 64)],
+    [quota.Limits(-1, 2, 2), quota.Limits(2, -1, 2), quota.Limits(2, 2, 64)],
     fn(limits) {
-      let state = agent.State(..agent_root(), family_budget: Some(limits))
+      let state =
+        agent.State(
+          ..agent_root(),
+          family_budget: Some(budget.Declaration(limits, False)),
+        )
       record.encode_as(state, record.V7) |> should.be_error
       record.decode(record.encode(state)) |> should.be_error
       graph_record.encode(
-        graph.State(..graph_root(), family_budget: Some(limits)),
+        graph.State(
+          ..graph_root(),
+          family_budget: Some(budget.Declaration(limits, False)),
+        ),
       )
       |> should.be_error
     },
   )
 }
 
+pub fn quota_outcomes_roundtrip_but_cannot_be_hidden_in_older_formats_test() {
+  list.each(
+    [quota.WorkLimit(0), quota.ChildLimit(2), quota.DepthLimit(1, 2)],
+    fn(reason) {
+      let base = agent.State(..agent_root(), family_budget: None)
+      list.each(
+        [
+          agent.Ended(run.BudgetExhausted(run.FamilyLimit(reason))),
+          agent.Stopping(1, [], agent.FamilyBudget(reason), False),
+        ],
+        fn(phase) {
+          let state = agent.State(..base, phase: phase)
+          let assert Ok(encoded) = record.encode_as(state, record.V7)
+          record.decode(encoded) |> should.equal(Ok(state))
+          list.each(
+            [record.V2, record.V3, record.V4, record.V5, record.V6],
+            fn(writer) { record.encode_as(state, writer) |> should.be_error },
+          )
+          record.decode(string.replace(
+            encoded,
+            "\"version\":7",
+            "\"version\":6",
+          ))
+          |> should.be_error
+        },
+      )
+      let base = graph.State(..graph_root(), family_budget: None)
+      let assert graph.Ready(activation) = base.phase
+      let assert Ok(#(failed, _)) =
+        graph.step(
+          base,
+          graph.BudgetRefused(graph.reference(base, activation), reason),
+        )
+      let cancelled =
+        graph.State(
+          ..failed,
+          phase: graph.Ended(graph.Cancelled(
+            activation,
+            graph.AfterFailure(graph.FamilyBudget(reason)),
+          )),
+        )
+      list.each([failed, cancelled], fn(state) {
+        let assert Ok(encoded) = graph_record.encode(state)
+        graph_record.decode(encoded) |> should.equal(Ok(state))
+        graph_record.decode(string.replace(
+          encoded,
+          "\"version\":6",
+          "\"version\":5",
+        ))
+        |> should.be_error
+      })
+    },
+  )
+}
+
+pub fn malformed_quota_denials_and_missing_initialization_markers_are_refused_test() {
+  let state =
+    agent.State(
+      ..agent_root(),
+      phase: agent.Ended(
+        run.BudgetExhausted(run.FamilyLimit(quota.DepthLimit(1, 2))),
+      ),
+    )
+  let encoded = record.encode(state)
+  list.each(
+    [
+      #("\"limit\":1", "\"limit\":-1"),
+      #("\"requested\":2", "\"requested\":1"),
+      #("\"initialized\":false", "\"missing_marker\":false"),
+    ],
+    fn(replacement) {
+      record.decode(string.replace(encoded, replacement.0, replacement.1))
+      |> should.be_error
+    },
+  )
+  let assert Ok(encoded) = graph_record.encode(graph_root())
+  graph_record.decode(string.replace(
+    encoded,
+    "\"initialized\":false",
+    "\"missing_marker\":false",
+  ))
+  |> should.be_error
+}
+
 pub fn graph_cancellation_and_recovery_keep_the_root_budget_declaration_test() {
   let state = graph_root()
   let assert Ok(#(recovered, _)) = graph.recover(state)
-  recovered.family_budget |> should.equal(Some(limits()))
+  recovered.family_budget
+  |> should.equal(Some(budget.Declaration(limits(), False)))
   let assert Ok(#(canceled, _)) = graph.step(recovered, graph.Cancel)
   let assert Ok(encoded) = graph_record.encode(canceled)
   let assert Ok(saved) = graph_record.decode(encoded)
-  saved.family_budget |> should.equal(Some(limits()))
+  saved.family_budget |> should.equal(Some(budget.Declaration(limits(), False)))
 }
 
 pub fn retention_links_the_ledger_to_either_root_with_matching_limits_test() {
@@ -167,7 +260,7 @@ pub fn retention_links_the_ledger_to_either_root_with_matching_limits_test() {
   })
   ledger.settled |> should.be_true
   ledger.children |> should.equal([])
-  let assert Ok(other) = budget.new(budget.Limits(9, 2, 2))
+  let assert Ok(other) = budget.new(quota.Limits(9, 2, 2))
   let assert Ok(changed) =
     retention.inspect(budget_record.encode(budget_record.Record("root", other)))
   let assert Some(changed_parent) = changed.parent

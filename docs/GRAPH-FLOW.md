@@ -217,8 +217,10 @@ are separate features, outside this proposal's first implementation.
 Limits must count graph activations as well as model attempts. Pure routing
 can loop forever without a model turn. Reserve activation/fan-out budgets
 before creating work, and define child depth/count, active work and resource
-accounting. Shared family budgets and elapsed-time limits are additional
-work; current per-run chat limits do not provide them automatically.
+accounting. Shared family work/child/depth budgets are implemented through
+root `start_with_budget` APIs and one persistent reservation ledger. These are
+additional to per-run activation and chat limits; elapsed-time limits remain
+wave 3 work. See the [reservation contract](implementation/graph-flow/managed-composition.md#shared-family-reservations).
 
 ## Parallel composition without shared writes
 

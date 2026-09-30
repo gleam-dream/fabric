@@ -41,6 +41,7 @@
 //// child's end arrives as `ChildEnded`. A delegated action needs no runner:
 //// the child run drives itself.
 
+import fabric/budget as quota
 import fabric/internal/budget/model as budget
 import fabric/internal/invocation
 import fabric/internal/registry.{type Registry}
@@ -84,6 +85,7 @@ pub type Limits {
 pub type StopReason {
   CancelRequested
   HostFault(HostFailure)
+  FamilyBudget(quota.Denial)
 }
 
 pub type Phase {
@@ -128,7 +130,7 @@ pub type State {
     approvals_issued: Int,
     phase: Phase,
     /// Only a root declares limits; children inherit via saved attachments.
-    family_budget: Option(budget.Limits),
+    family_budget: Option(budget.Declaration),
   )
 }
 
@@ -147,6 +149,7 @@ pub type Event {
   /// the environment the event is applied with.
   Answer(reference: ApprovalRef, answer: Answer, reviewer: Option(String))
   Cancel
+  FamilyBudgetReached(quota.Denial)
   /// The child run of a delegation is stored and runs.
   ChildStarted(ActionId)
   /// The child run of a delegation ended (or cannot be continued).
@@ -279,6 +282,18 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
     AwaitingModel(turn), ModelFailed(t, error) if t == turn ->
       Ok(model_failed(env, state, error))
     _, Cancel -> cancel(state)
+    AwaitingModel(_), FamilyBudgetReached(reason) ->
+      Ok(
+        #(
+          State(
+            ..state,
+            phase: Ended(run.BudgetExhausted(run.FamilyLimit(reason))),
+          ),
+          [AbortModel],
+        ),
+      )
+    Acting(turn, actions), FamilyBudgetReached(reason) ->
+      Ok(stop(state, turn, actions, FamilyBudget(reason)))
     AwaitingModel(_), _ -> Error(StaleEvent)
 
     Acting(turn, actions), ToolStarting(id) ->
@@ -1229,6 +1244,7 @@ fn stop_outcome(reason: StopReason) -> Outcome {
   case reason {
     CancelRequested -> run.Cancelled
     HostFault(failure) -> run.Failed(failure)
+    FamilyBudget(reason) -> run.BudgetExhausted(run.FamilyLimit(reason))
   }
 }
 

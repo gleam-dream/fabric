@@ -2,11 +2,15 @@
 //// callbacks and fenced executor. No effect is released by an unconfirmed
 //// commit. Every runner pins the store process that owns its lifetime.
 
+import fabric/budget
 import fabric/graph/child
 import fabric/graph/definition
 import fabric/graph/operation
 import fabric/internal/ancestry
 import fabric/internal/bounded
+import fabric/internal/budget/admission as capacity
+import fabric/internal/budget/bootstrap
+import fabric/internal/budget/model as reservations
 import fabric/internal/claim
 import fabric/internal/executor
 import fabric/internal/graph/child_driver
@@ -14,6 +18,7 @@ import fabric/internal/graph/controller as g
 import fabric/internal/graph/live
 import fabric/internal/graph/record
 import fabric/internal/runner_host as host
+import fabric/policy
 import fabric/store
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
@@ -67,26 +72,69 @@ pub fn load_raw(
   Ok(#(entry, state))
 }
 
+pub type AdmissionError {
+  PolicyRejected(String)
+  BudgetLimited(budget.Denial)
+  BudgetUnavailable(String)
+}
+
+fn capacity_error(error: capacity.Error) -> AdmissionError {
+  case error {
+    capacity.Limited(reason) -> BudgetLimited(reason)
+    capacity.Closed -> PolicyRejected("parent no longer accepts child work")
+    capacity.Unavailable(reason) -> BudgetUnavailable(reason)
+  }
+}
+
 pub fn admit(
   runs: store.Store,
   work: live.Work,
   options: Options,
   state: g.State,
   activation: g.Activation,
-) -> Result(live.Admission, String) {
+) -> Result(live.Admission, AdmissionError) {
   use _ <- result.try(
-    check_ancestry(runs, state) |> result.map_error(string.inspect),
+    capacity.work(
+      runs,
+      state.run,
+      state.parent,
+      state.family_budget,
+      reservations.GraphAttempt(state.run, activation.id, activation.attempt),
+    )
+    |> result.map_error(capacity_error),
   )
-  bounded.call(options.callback_timeout, fn() {
-    use _ <- result.try(case activation.prepared.kind {
-      operation.Subgraph | operation.Agent ->
-        checked_child(runs, work, activation) |> result.replace(Nil)
-      operation.Activity | operation.Signal -> Ok(Nil)
+  use admitted <- result.try(
+    bounded.call(options.callback_timeout, fn() {
+      use _ <- result.try(case activation.prepared.kind {
+        operation.Subgraph | operation.Agent ->
+          checked_child(runs, work, activation) |> result.replace(Nil)
+        operation.Activity | operation.Signal -> Ok(Nil)
+      })
+      work.admit(state.run, activation)
     })
-    work.admit(state.run, activation)
+    |> result.map_error(string.inspect)
+    |> result.flatten
+    |> result.map_error(PolicyRejected),
+  )
+  let starts = case admitted.decision, state.phase {
+    policy.Allow, _ -> True
+    policy.RequireApproval(requirement), g.AwaitingApproval(_, approval) ->
+      requirement == approval.requirement
+    _, _ -> False
+  }
+  use _ <- result.try(case starts, activation.prepared.kind {
+    True, operation.Agent | True, operation.Subgraph ->
+      capacity.child(
+        runs,
+        state.run,
+        state.parent,
+        state.family_budget,
+        child.reserved_id(state.run, activation.id),
+      )
+      |> result.map_error(capacity_error)
+    _, _ -> Ok(Nil)
   })
-  |> result.map_error(string.inspect)
-  |> result.flatten
+  Ok(admitted)
 }
 
 pub fn check_ancestry(runs: store.Store, state: g.State) -> Result(Nil, Error) {
@@ -121,7 +169,7 @@ pub fn driven(entry: store.Entry, state: g.State) -> Bool {
 }
 
 type Go {
-  Go(revision: Int)
+  Go(revision: Int, state: g.State)
   Abandon
 }
 
@@ -160,22 +208,28 @@ pub fn launch(
         g.WaitingChild(_, child) -> park(runs, work, options, state.run, child)
         _ -> store.Detached(False, seize)
       }
-      write(runs, state.run, expected, encoded, ownership)
-      |> result.map_error(StoreFailed)
+      write_initialized(runs, state, expected, encoded, ownership)
+      |> result.map(fn(entry) { entry.0 })
     }
     True -> {
       let prepared =
         host.prepare(
           runs,
           fn(pinned, owners, ready) {
-            begin(pinned, work, options, state, effects, body, owners, ready)
+            begin(pinned, work, options, effects, body, owners, ready)
           },
           Abandon,
         )
       case prepared {
         Error(Nil) ->
-          write(runs, state.run, expected, encoded, store.Detached(True, seize))
-          |> result.map_error(StoreFailed)
+          write_initialized(
+            runs,
+            state,
+            expected,
+            encoded,
+            store.Detached(True, seize),
+          )
+          |> result.map(fn(entry) { entry.0 })
         Ok(#(pid, mailbox, go)) -> {
           let ownership =
             store.Launch(
@@ -183,18 +237,50 @@ pub fn launch(
               store.GraphLive(state.incarnation, mailbox),
               seize,
             )
-          case write(runs, state.run, expected, encoded, ownership) {
-            Ok(revision) -> {
-              process.send(go, Go(revision))
+          case write_initialized(runs, state, expected, encoded, ownership) {
+            Ok(#(revision, state)) -> {
+              process.send(go, Go(revision, state))
               Ok(revision)
             }
             Error(error) -> {
               process.send(go, Abandon)
-              Error(StoreFailed(error))
+              Error(error)
             }
           }
         }
       }
+    }
+  }
+}
+
+fn write_initialized(
+  runs: store.Store,
+  state: g.State,
+  expected: Option(Int),
+  encoded: String,
+  ownership: store.Ownership,
+) -> Result(#(Int, g.State), Error) {
+  use revision <- result.try(
+    write(runs, state.run, expected, encoded, ownership)
+    |> result.map_error(StoreFailed),
+  )
+  use declaration <- result.try(
+    bootstrap.prepare(runs, state.run, state.parent, state.family_budget)
+    |> result.map_error(StoreFailed),
+  )
+  case declaration == state.family_budget {
+    True -> Ok(#(revision, state))
+    False -> {
+      let initialized = g.State(..state, family_budget: declaration)
+      use encoded <- result.try(
+        record.encode(initialized)
+        |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
+      )
+      use revision <- result.map(
+        store.commit(runs, state.run, revision, encoded, ownership)
+        |> result.map_error(StoreFailed),
+      )
+      #(revision, initialized)
     }
   }
 }
@@ -216,7 +302,6 @@ fn begin(
   runs: store.Store,
   work: live.Work,
   options: Options,
-  state: g.State,
   effects: List(g.Effect),
   body: Option(live.Body),
   owners: #(Pid, Pid, Pid),
@@ -231,7 +316,7 @@ fn begin(
   process.send(ready, #(self, go))
   case host.first_state(go, runs, factory, False) {
     Error(Nil) | Ok(#(Abandon, _)) -> Nil
-    Ok(#(Go(revision), draining)) -> {
+    Ok(#(Go(revision, state), draining)) -> {
       process.demonitor_process(caller_monitor)
       let runner =
         Runner(
@@ -341,22 +426,39 @@ fn perform(runner: Runner, effects: List(g.Effect)) -> Result(Runner, Error) {
       | g.CancelChild(_, _), True
       -> Ok(runner)
       g.Inspect(activation), False -> {
-        let #(decision, body) = case
-          admit(
-            runner.runs,
-            runner.work,
-            runner.options,
-            runner.state,
-            activation,
-          )
-        {
-          Ok(live.Admission(decision, body)) -> #(Ok(decision), Some(body))
-          Error(reason) -> #(Error(reason), None)
-        }
-        apply(
-          Runner(..runner, body:),
-          g.Inspected(g.reference(runner.state, activation), decision),
+        use #(event, body) <- result.try(
+          case
+            admit(
+              runner.runs,
+              runner.work,
+              runner.options,
+              runner.state,
+              activation,
+            )
+          {
+            Ok(live.Admission(decision, body)) ->
+              Ok(#(
+                g.Inspected(g.reference(runner.state, activation), Ok(decision)),
+                Some(body),
+              ))
+            Error(PolicyRejected(reason)) ->
+              Ok(#(
+                g.Inspected(
+                  g.reference(runner.state, activation),
+                  Error(reason),
+                ),
+                None,
+              ))
+            Error(BudgetLimited(reason)) ->
+              Ok(#(
+                g.BudgetRefused(g.reference(runner.state, activation), reason),
+                None,
+              ))
+            Error(BudgetUnavailable(reason)) ->
+              Error(StoreFailed(store.Unavailable(reason)))
+          },
         )
+        apply(Runner(..runner, body:), event)
       }
       g.Dispatch(activation), False -> {
         use body <- result.try(case runner.body {
@@ -851,12 +953,16 @@ fn recover_work(
     g.ChildBlocked(_, _, _) | g.WaitingChild(_, _) -> True
     _ -> g.needs_runner(state)
   }
-  case driven(entry, state) || !recoverable {
+  case
+    driven(entry, state)
+    || { !recoverable && !bootstrap.pending(state.family_budget) }
+  {
     True -> Ok(state)
     False -> {
-      use #(next, effects) <- result.try(
-        g.recover(state) |> result.map_error(Refused),
-      )
+      use #(next, effects) <- result.try(case recoverable {
+        True -> g.recover(state) |> result.map_error(Refused)
+        False -> Ok(#(state, []))
+      })
       commit_recovery(runs, work, options, entry, next, effects, tries)
     }
   }

@@ -61,6 +61,8 @@
 //// (`store.new`).
 
 import fabric/agent.{type Agent}
+import fabric/budget
+import fabric/internal/budget/model as reservations
 import fabric/internal/controller.{type State}
 import fabric/internal/family
 import fabric/internal/runner
@@ -167,9 +169,47 @@ pub fn start(
   context: context,
   prompt: String,
 ) -> Result(Run(context), StartError) {
+  start_root(store, agent, context, prompt, None)
+}
+
+/// Starts a root with one durable budget shared by all managed descendants.
+/// Failed or uncertain reservations keep their charge. These admission bounds
+/// complement the agent's own turn, token and delegation limits.
+pub fn start_with_budget(
+  store: Store,
+  agent: Agent(context),
+  context: context,
+  prompt: String,
+  limits: budget.Limits,
+) -> Result(Run(context), StartError) {
+  use _ <- result.try(
+    reservations.new(limits)
+    |> result.replace_error(StartRefused("invalid family budget limits")),
+  )
+  use Nil <- result.try(case store.supports_family_budget(store) {
+    True -> Ok(Nil)
+    False -> Error(StartRefused("family budgets require agent record writer 7"))
+  })
+  start_root(
+    store,
+    agent,
+    context,
+    prompt,
+    Some(reservations.Declaration(limits, False)),
+  )
+}
+
+fn start_root(
+  store: Store,
+  agent: Agent(context),
+  context: context,
+  prompt: String,
+  declaration: Option(reservations.Declaration),
+) -> Result(Run(context), StartError) {
   let setup = runner.setup(store, agent.admitted(agent), context, None)
   let id = "run-" <> random_id()
   let #(state, effects) = runner.root_state(setup, id, prompt)
+  let state = controller.State(..state, family_budget: declaration)
   case runner.launch_new(setup, state, effects) {
     Ok(_) -> Ok(Run(id:, setup:))
     Error(store.AlreadyExists) ->

@@ -6,11 +6,13 @@
 //// effects and completed runs live as stored data. `recover` reconnects work
 //// whose owner is gone; recorded routing decisions are never recomputed.
 
+import fabric/budget
 import fabric/graph/child
 import fabric/graph/definition
 import fabric/graph/operation
 import fabric/graph/signal
 import fabric/internal/bounded
+import fabric/internal/budget/model as reservations
 import fabric/internal/graph/agent_child
 import fabric/internal/graph/child_driver
 import fabric/internal/graph/controller as control
@@ -89,6 +91,7 @@ pub type Failure {
   Denied(String)
   PolicyFailed(String)
   OperationFailed(String)
+  FamilyBudget(budget.Denial)
 }
 
 pub type Cancellation {
@@ -462,6 +465,41 @@ pub fn start(
   id: run.RunId,
   initial: state,
 ) -> Result(Handle(context, state, answer), Error) {
+  start_root(runtime, id, initial, None)
+}
+
+/// Starts a root with durable admission limits shared by graphs and agents
+/// throughout its managed family. A new attempt spends new work capacity;
+/// acknowledging an existing reservation never spends twice.
+pub fn start_with_budget(
+  runtime: Runtime(context, state, answer),
+  id: run.RunId,
+  initial: state,
+  limits: budget.Limits,
+) -> Result(Handle(context, state, answer), Error) {
+  use _ <- result.try(
+    reservations.new(limits)
+    |> result.replace_error(CommandRefused("invalid family budget limits")),
+  )
+  use Nil <- result.try(case store.supports_family_budget(runtime.store) {
+    True -> Ok(Nil)
+    False ->
+      Error(CommandRefused("family budgets require agent record writer 7"))
+  })
+  start_root(
+    runtime,
+    id,
+    initial,
+    Some(reservations.Declaration(limits, False)),
+  )
+}
+
+fn start_root(
+  runtime: Runtime(context, state, answer),
+  id: run.RunId,
+  initial: state,
+  declaration: option.Option(reservations.Declaration),
+) -> Result(Handle(context, state, answer), Error) {
   use prepared <- result.try(
     bounded.call(runtime.options.callback_timeout, fn() {
       definition.prepare(runtime.definition, initial)
@@ -480,6 +518,7 @@ pub fn start(
     )
     |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
   )
+  let state = control.State(..state, family_budget: declaration)
   use _ <- result.try(
     runner.launch(
       runtime.store,
@@ -782,8 +821,8 @@ fn answer_approval(
   use _ <- result.try(
     runner.check_ancestry(runtime.store, state) |> result.map_error(from_runner),
   )
-  let #(event, body) = case rejection {
-    Some(reason) -> #(control.Rejected(reference, reason), None)
+  use #(event, body) <- result.try(case rejection {
+    Some(reason) -> Ok(#(control.Rejected(reference, reason), None))
     None ->
       case
         runner.admit(
@@ -794,13 +833,19 @@ fn answer_approval(
           activation,
         )
       {
-        Ok(live.Admission(decision, body)) -> #(
-          control.Approved(reference, Ok(decision)),
-          Some(body),
-        )
-        Error(reason) -> #(control.Approved(reference, Error(reason)), None)
+        Ok(live.Admission(decision, body)) ->
+          Ok(#(control.Approved(reference, Ok(decision)), Some(body)))
+        Error(runner.PolicyRejected(reason)) ->
+          Ok(#(control.Approved(reference, Error(reason)), None))
+        Error(runner.BudgetLimited(reason)) ->
+          Ok(#(
+            control.BudgetRefused(control.reference(state, activation), reason),
+            None,
+          ))
+        Error(runner.BudgetUnavailable(reason)) ->
+          Error(StoreFailed(store.Unavailable(reason)))
       }
-  }
+  })
   use #(next, effects) <- result.try(
     control.step(state, event)
     |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
@@ -1128,6 +1173,7 @@ fn failure(fault: control.Fault) -> Failure {
     control.Denied(reason) -> Denied(reason)
     control.PolicyFailed(reason) -> PolicyFailed(reason)
     control.OperationFailed(reason) -> OperationFailed(reason)
+    control.FamilyBudget(reason) -> FamilyBudget(reason)
   }
 }
 

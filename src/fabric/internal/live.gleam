@@ -17,7 +17,8 @@ import gleam/option.{type Option}
 pub type Work {
   Work(
     invoke: fn(String, ActionId, ToolCall) -> invocation.Outcome,
-    start_child: fn(State, ActionId, String, ToolCall) -> controller.Event,
+    start_child: fn(State, ActionId, String, ToolCall) ->
+      Result(controller.Event, String),
   )
 }
 
@@ -34,6 +35,8 @@ pub type Message {
     reply: Subject(CommandReply),
   )
   ModelDone(turn: Int, result: Result(Reply, ModelError))
+  /// Storage could not grant capacity. Leave the committed work for recovery.
+  CapacityUnavailable(String)
   /// The fence: a tool task asks to start an action's body.
   Fence(ActionId, reply: Subject(Bool))
   Executed(executor.Report(ActionId, invocation.Outcome))
