@@ -241,6 +241,18 @@ pub fn next(scope: Scope) -> Option(Reference) {
   }
 }
 
+/// Parking must not abandon a ready admission or an unacknowledged child start.
+pub fn can_wait(scope: Scope) -> Bool {
+  case join(scope) {
+    Ready(_) -> False
+    Waiting | Unresolved(_) ->
+      next(scope) == None
+      && !list.any(snapshot(scope).members, fn(member) {
+        member.status == Reserved
+      })
+  }
+}
+
 pub fn admit(scope: Scope, reference: Reference) -> Result(Scope, Rejection) {
   use _ <- result.try(check_next(scope, reference))
   Ok(replace(scope, reference, Reserved))

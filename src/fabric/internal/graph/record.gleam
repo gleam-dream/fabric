@@ -1350,11 +1350,8 @@ fn validate_forks(state: g.State) -> Result(Nil, String) {
               | g.Ended(g.Expired(_, g.AfterFork)) -> Ok(Nil)
               g.WaitingFork(_, _) ->
                 require(
-                  case scope.join(restored) {
-                    scope.Waiting | scope.Unresolved(_) -> True
-                    scope.Ready(_) -> False
-                  },
-                  "settled fork cannot remain parked",
+                  scope.can_wait(restored),
+                  "fork cannot park with ready work or unacknowledged starts",
                 )
               _ -> Error("fork scope has no owning execution phase")
             }

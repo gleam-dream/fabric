@@ -7,6 +7,7 @@ import fabric/graph/child
 import fabric/graph/job
 import fabric/graph/operation
 import fabric/internal/graph/controller as graph
+import fabric/internal/graph/fork as scope
 import fabric/internal/graph/record
 import fabric/retention
 import fabric/run
@@ -17,10 +18,10 @@ import gleam/result
 
 /// Bump when a record format or state changes discovery eligibility or keys.
 /// Backends must refresh older projections before using them for scheduling.
-pub const version = 8
+pub const version = 9
 
 pub type Trigger {
-  Changed(dependency: run.RunId, deadline: Option(Int))
+  Changed(dependencies: List(run.RunId), deadline: Option(Int))
   Poll(every: Int, deadline: Option(Int))
   /// Absolute UTC Unix milliseconds; backend time alone judges eligibility.
   At(due: Int)
@@ -45,6 +46,23 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
       |> result.map(fn(metadata) { #(metadata.run, None) })
     Ok(state) -> {
       let wait = case state.phase {
+        graph.WaitingFork(a, mode) ->
+          case graph.current_fork(state, a.id) {
+            Error(_) -> None
+            Ok(members) ->
+              Some(dependency(
+                state,
+                a,
+                list.map(scope.unsettled(members), fn(ref) {
+                  child.branch_id(state.run, a.id, ref.member)
+                }),
+                case mode {
+                  graph.JoiningFork -> "observe_fork"
+                  graph.ClosingFork(_) -> "settle_fork"
+                },
+                None,
+              ))
+          }
         graph.WaitingSignal(activation) ->
           case activation.deadline {
             None -> None
@@ -120,14 +138,20 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
         }
         graph.WaitingChild(activation, id)
         | graph.ChildBlocked(activation, id, _) ->
-          Some(dependency(state, activation, id, "observe", activation.deadline))
+          Some(dependency(
+            state,
+            activation,
+            [id],
+            "observe",
+            activation.deadline,
+          ))
         graph.Blocked(a, graph.InvalidResult(_, _)) ->
           case a.prepared.kind, a.deadline {
             operation.Agent, Some(_) | operation.Subgraph, Some(_) ->
               Some(dependency(
                 state,
                 a,
-                child.reserved_id(state.run, a.id),
+                [child.reserved_id(state.run, a.id)],
                 "observe",
                 a.deadline,
               ))
@@ -140,7 +164,7 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
               Some(dependency(
                 state,
                 activation,
-                child.reserved_id(state.run, activation.id),
+                [child.reserved_id(state.run, activation.id)],
                 "settle",
                 None,
               ))
@@ -156,7 +180,7 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
 fn dependency(
   state: graph.State,
   activation: graph.Activation,
-  id: String,
+  ids: List(String),
   mode: String,
   deadline: Option(Int),
 ) -> Wait {
@@ -166,12 +190,12 @@ fn dependency(
         json.string(mode),
         json.int(activation.id),
         json.int(activation.attempt),
-        json.string(id),
+        json.array(ids, json.string),
       ],
       fn(value) { value },
     )
     |> json.to_string
-  Wait(run.issued(state.run), key, Changed(run.issued(id), deadline))
+  Wait(run.issued(state.run), key, Changed(list.map(ids, run.issued), deadline))
 }
 
 /// Metadata for a backend index. Check its version and source revision before
@@ -186,8 +210,11 @@ pub fn encode(stored_id: String, encoded: String) -> String {
             "wait",
             json.nullable(wait, fn(wait) {
               let trigger = case wait.trigger {
-                Changed(id, due) -> [
-                  #("dependency", json.string(run.id_to_string(id))),
+                Changed(ids, due) -> [
+                  #(
+                    "dependencies",
+                    json.array(ids, fn(id) { json.string(run.id_to_string(id)) }),
+                  ),
                   ..deadline_fields(due)
                 ]
                 Poll(every, due) -> [

@@ -332,22 +332,23 @@ fn claim_ready(
     False -> Ok([])
     True ->
       pog.query(
-        "WITH candidates AS (SELECT r.run_id, r.discovery #>> '{wait,key}' AS key, d.revision AS dependency_revision FROM "
+        "WITH candidates AS (SELECT r.run_id, r.discovery #>> '{wait,key}' AS key, dependencies.revisions FROM "
         <> table
-        <> " r LEFT JOIN "
+        <> " r LEFT JOIN LATERAL (SELECT COALESCE(jsonb_object_agg(ids.id, d.revision), '{}'::jsonb) AS revisions"
+        <> " FROM jsonb_array_elements_text(COALESCE(r.dependency_ids, '[]'::jsonb)) AS ids(id) LEFT JOIN "
         <> table
-        <> " d ON d.run_id = r.dependency_id"
+        <> " d ON d.run_id = ids.id) AS dependencies ON TRUE"
         <> " WHERE r.lease_owner IS NULL"
-        <> " AND (r.dependency_id IS NOT NULL OR r.discovery #>> '{wait,every}' IS NOT NULL OR r.discovery #>> '{wait,due}' IS NOT NULL)"
+        <> " AND (r.dependency_ids IS NOT NULL OR r.discovery #>> '{wait,every}' IS NOT NULL OR r.discovery #>> '{wait,due}' IS NOT NULL)"
         <> " AND r.discovery_revision = r.revision AND r.discovery->>'version' = $4"
-        <> " AND ((r.dependency_id IS NOT NULL AND (r.observed_key IS DISTINCT FROM r.discovery #>> '{wait,key}' OR r.observed_revision IS DISTINCT FROM d.revision))"
+        <> " AND ((r.dependency_ids IS NOT NULL AND (r.observed_key IS DISTINCT FROM r.discovery #>> '{wait,key}' OR r.observed_dependencies IS DISTINCT FROM dependencies.revisions))"
         <> " OR (r.discovery #>> '{wait,every}' IS NOT NULL AND (r.observed_key IS DISTINCT FROM r.discovery #>> '{wait,key}' OR r.discovery_checked_at + (r.discovery #>> '{wait,every}')::bigint * interval '1 millisecond' <= clock_timestamp()))"
         <> " OR (r.discovery #>> '{wait,due}' IS NOT NULL AND (r.discovery #>> '{wait,due}')::bigint <= floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint))"
         <> " ORDER BY r.discovery_checked_at, r.run_id LIMIT $3 FOR UPDATE OF r SKIP LOCKED)"
         <> " UPDATE "
         <> table
         <> " r SET lease_owner = $1, lease_until = clock_timestamp() + $2::bigint * interval '1 millisecond',"
-        <> " observed_key = c.key, observed_revision = c.dependency_revision, discovery_checked_at = clock_timestamp()"
+        <> " observed_key = c.key, observed_dependencies = c.revisions, discovery_checked_at = clock_timestamp()"
         <> " FROM candidates c WHERE r.run_id = c.run_id RETURNING r.run_id",
       )
       |> pog.parameter(pog.text(owner))

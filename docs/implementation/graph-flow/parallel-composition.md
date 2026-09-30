@@ -115,6 +115,21 @@ every admitted child's reciprocal attachment and refuses pruning an incomplete
 or unresolved family. Neither scheduling hints nor missing child records grant
 permission to fabricate a result or a replacement child.
 
+A fork may park only when it cannot admit another member, has no unacknowledged
+starts, and is not ready to join. Discovery retains every unsettled child identity
+and compares its last observed revision, including absence as evidence. A backend
+claims the parent and records these observations atomically. The wait key includes
+activation, attempt, mode and membership; execution revisions and incarnations
+are not new waits. A membership change may require one new baseline observation.
+
+Nested idle scopes expose retained progress without restarting children on each
+observation. Discovery leaves an unchanged, unclaimed ancestor read-only and
+releases an unchanged claimed wait after restoring its watches. It can recover
+an independently expired descendant while preserving a live foreign parent
+lease. Repeated cancellation follows retained cleanup instead of restarting it.
+Both active and stopping scopes keep these rules, so scans converge after lost
+notifications without reopening canceled business routes.
+
 This introduces no Saga, Grind or new infrastructure dependency. The first
 model supports all-success joins with settled failure handling. Streaming
 partial results, sibling writes to shared state, races and quorum policies
@@ -146,9 +161,16 @@ empty and oversized inputs, failure withdrawal, and directory-backend restart
 with completed, waiting and pending members. The separate graph consumer maps
 full generation/review loops with private child state.
 
-Wave 4 remains active. Persistent discovery across every unsettled member,
-nested idle scopes, fork deadlines, repeated visits and sibling scopes,
-shared-budget scenarios, and persistent parallel contention still require
-runtime evidence. Local wakeups and explicit recovery do not establish recovery
-after a missed notification across backend restart. Discovery projection 8
-recognizes the record format but does not yet schedule multi-member waits.
+Discovery projection 9 schedules every unsettled member. Shared leased-backend
+scenarios prove lost-watch recovery, convergent nested waits, cancellation with
+uncertain leaf effects, and independent branch recovery under a live foreign
+parent lease. PostgreSQL schema 6 retains all dependency revisions atomically;
+its map scenario proves competing claims after store loss, changes in nonfirst
+members, ordered completion through registered sweeping, and family pruning.
+The schema upgrade preserves execution bytes, revisions, ages and scheduled
+observation times. Older projections require a bounded metadata refresh.
+
+Wave 4 remains active. Fork deadlines, repeated visits and sibling scopes,
+and shared-budget scenarios still require runtime evidence. The persistent
+claim test covers a flat map; nested cleanup has been exercised through the
+shared leased backend rather than PostgreSQL.

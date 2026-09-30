@@ -712,6 +712,7 @@ fn poll_child(runner: Runner) -> Result(Runner, Error) {
     | Ok(child.AgentInput(..)), False
     | Ok(child.Signal(_)), False
     | Ok(child.Job(_)), False
+    | Ok(child.Fork(_)), False
     -> apply(runner, g.ChildWaiting(ref, id))
     Error(reason), False
     | Ok(child.Uncertain(reason)), False
@@ -752,6 +753,7 @@ fn poll_child(runner: Runner) -> Result(Runner, Error) {
       apply(runner, g.ChildStopped(ref, id, uncertain))
     Ok(child.FinishedUncertain(_)), True ->
       apply(runner, g.ChildStopped(ref, id, True))
+    Ok(child.Fork(_)), True -> apply(runner, g.ChildStopped(ref, id, True))
     Ok(child.InvalidOutput(..)), True ->
       apply(runner, g.ChildStopped(ref, id, False))
     Ok(child.Succeeded(_)), True | Ok(child.Failed(_)), True ->
@@ -946,25 +948,6 @@ fn admit_fork_members(
   }
 }
 
-fn fork_progress(progress: child.Progress) -> fork.Progress {
-  case progress {
-    child.Working
-    | child.Approval(_)
-    | child.AgentInput(..)
-    | child.Signal(_)
-    | child.Job(_) -> fork.Active
-    child.Uncertain(reason) | child.FinishedUncertain(reason) ->
-      fork.Uncertain(reason)
-    child.InvalidOutput(output, reason) ->
-      fork.Uncertain(reason <> ": " <> output)
-    child.Succeeded(output) -> fork.Succeeded(output)
-    child.Failed(reason) -> fork.Failed(reason)
-    child.Cancelled(False) -> fork.Cancelled
-    child.Cancelled(True) ->
-      fork.Uncertain("child cancellation retains uncertain effects")
-  }
-}
-
 fn observe_fork_member(
   runner: Runner,
   a: g.Activation,
@@ -1011,7 +994,7 @@ fn observe_fork_member(
     |> result.flatten
     |> result.map_error(CallbackFailed),
   )
-  let observed = fork_progress(progress)
+  let observed = fork_driver.progress(progress)
   use runner <- result.map(case member.status == fork.Admitted(observed) {
     True -> Ok(runner)
     False ->
@@ -1080,7 +1063,7 @@ pub fn fork_has_activity(
         ),
       )
       progress == child.Working
-      || member.status != fork.Admitted(fork_progress(progress))
+      || member.status != fork.Admitted(fork_driver.progress(progress))
     }),
   )
   list.any(observed, fn(changed) { changed })
@@ -1239,6 +1222,10 @@ pub fn discover(
     Some(_) -> recover_abandoned(runs, work, options, entry, state, 1)
     None ->
       case state.phase {
+        g.WaitingFork(a, _) ->
+          discover_fork(runs, work, options, entry, state, a)
+        g.Forking(a, _) if inspect_child ->
+          discover_fork(runs, work, options, entry, state, a)
         g.WaitingSignal(_) ->
           case driven(entry, state) {
             True -> Ok(state)
@@ -1324,6 +1311,80 @@ pub fn discover(
   }
 }
 
+/// A claimed fork follows its existing members. Unchanged unclaimed ancestors
+/// stay read-only, so nested discovery can converge instead of waking itself.
+fn discover_fork(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  entry: store.Entry,
+  state: g.State,
+  a: g.Activation,
+) -> Result(g.State, Error) {
+  use changed <- result.try(
+    bounded.call(options.callback_timeout, fn() {
+      use members <- result.try(
+        g.current_fork(state, a.id) |> result.map_error(string.inspect),
+      )
+      use driver <- result.try(checked_fork(runs, work, a))
+      use _ <- result.try(
+        list.try_each(scope.unsettled(members), fn(ref) {
+          use member <- result.try(
+            scope.member(members, ref) |> result.map_error(string.inspect),
+          )
+          use binding <- result.try(driver.member(ref.member))
+          let id = child.branch_id(state.run, a.id, ref.member)
+          case store.get(runs, id), member.status {
+            Error(store.NotFound), fork.Reserved -> Ok(Nil)
+            Error(error), _ -> Error(string.inspect(error))
+            Ok(_), _ -> {
+              let parent = child.Branch(state.run, a.id, ref.member)
+              use _ <- result.try(case scope.snapshot(members).stop {
+                None -> Ok(Nil)
+                Some(_) ->
+                  binding.reserve(
+                    parent,
+                    id,
+                    member.request.input,
+                    child_driver.Cancel,
+                  )
+              })
+              binding.reserve(
+                parent,
+                id,
+                member.request.input,
+                child_driver.Discover,
+              )
+            }
+          }
+        }),
+      )
+      case driven(entry, state) {
+        True -> Ok(False)
+        False -> fork_has_activity(runs, work, state, a)
+      }
+    })
+    |> result.map_error(string.inspect)
+    |> result.flatten
+    |> result.map_error(CallbackFailed),
+  )
+  case driven(entry, state), changed, entry.holding {
+    True, _, _ -> Ok(state)
+    False, False, store.Unheld -> Ok(state)
+    False, False, _ ->
+      commit_recovery(
+        runs,
+        work,
+        options,
+        entry,
+        g.State(..state, incarnation: state.incarnation + 1),
+        [],
+        1,
+      )
+    False, True, _ -> recover_work(runs, work, options, entry, state, 1)
+  }
+}
+
 fn discover_job(
   runs: store.Store,
   work: live.Work,
@@ -1392,6 +1453,7 @@ fn resting_child(phase: g.Phase, progress: child.Progress) -> Option(g.Phase) {
     | g.WaitingChild(..), child.AgentInput(..)
     | g.WaitingChild(..), child.Signal(_)
     | g.WaitingChild(..), child.Job(_)
+    | g.WaitingChild(..), child.Fork(_)
     -> Some(phase)
     g.ChildBlocked(a, id, _), child.Uncertain(reason)
     | g.ChildBlocked(a, id, _), child.FinishedUncertain(reason)
@@ -1906,7 +1968,8 @@ fn wake_parent(
         child.Approval(_)
         | child.AgentInput(..)
         | child.Signal(_)
-        | child.Job(_) -> Ok(store.KeepWatching)
+        | child.Job(_)
+        | child.Fork(_) -> Ok(store.KeepWatching)
         _ ->
           recover_work(runs, work, options, entry, state, 3)
           |> result.replace(store.KeepWatching)
@@ -1977,6 +2040,7 @@ fn settle_child(
     | child.AgentInput(..)
     | child.Signal(_)
     | child.Job(_)
+    | child.Fork(_)
     | child.Uncertain(_)
     | child.FinishedUncertain(_)
     | child.Cancelled(True) -> Ok(state)
