@@ -316,10 +316,12 @@ history and effects; llm_wire validates and interprets the provider data.
 Application models return `model.ToolRequest(turn, usage)` and use
 `model.AssistantTurn(text, calls, None)` when they have no provider data.
 
-Rolling upgrades: the default agent-record writer is version 6; readers accept
-versions 1–6. Writers 2–5 remain available for representable states.
+Rolling upgrades: the default agent-record writer is version 7; readers accept
+versions 1–7. Writers 2–6 remain available for representable states.
 Assistant provider data requires at least version 4; graph parent attachments
-require version 5; settled child evidence requires version 6. Older writers refuse unrepresentable records before
+require version 5; settled child evidence requires version 6; retained root
+family-budget declarations require version 7. Family-budget admission is still
+under construction and has no public start API. Older writers refuse unrepresentable records before
 dispatching work. Configure the store before
 starting it and use the returned value for every handle and sweeper.
 Existing values and runners keep their setting; this does not migrate rows.

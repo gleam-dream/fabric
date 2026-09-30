@@ -1,6 +1,8 @@
 //// Checked ownership above either runtime. A parent must still retain the
 //// exact child reservation; an open but unrelated run cannot admit work.
 
+import fabric/internal/budget/config
+import fabric/internal/budget/model as budget
 import fabric/internal/controller as agent
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
@@ -17,14 +19,47 @@ pub type Error {
   Corrupt(String)
 }
 
+/// Resolved from saved reciprocal attachments, never from a child's local
+/// depth counter. The declaration is read only from the root of the chain.
+pub type Family {
+  Family(root: String, depth: Int, limits: Option(budget.Limits))
+}
+
 pub fn read(
   runs: store.Store,
   descendant: String,
   parent: Option(run.Parent),
   left: Int,
 ) -> Result(Bool, Error) {
+  family(runs, descendant, parent, None, left)
+  |> result.map(fn(family) { family != None })
+}
+
+/// `None` means a parent no longer admits this descendant. Unreadable or
+/// overlong ancestry is an error, never a new independent root.
+pub fn family(
+  runs: store.Store,
+  descendant: String,
+  parent: Option(run.Parent),
+  limits: Option(budget.Limits),
+  left: Int,
+) -> Result(Option(Family), Error) {
+  walk(runs, descendant, parent, limits, left, 0)
+}
+
+fn walk(
+  runs: store.Store,
+  descendant: String,
+  parent: Option(run.Parent),
+  limits: Option(budget.Limits),
+  left: Int,
+  depth: Int,
+) -> Result(Option(Family), Error) {
+  use Nil <- result.try(
+    config.validate(parent == None, limits) |> result.map_error(Corrupt),
+  )
   case parent {
-    None -> Ok(True)
+    None -> Ok(Some(Family(descendant, depth, limits)))
     Some(_) if left <= 0 ->
       Error(Corrupt("the chain of parent runs is too long"))
     Some(link) -> {
@@ -32,7 +67,7 @@ pub fn read(
       use entry <- result.try(
         store.get(runs, id) |> result.map_error(StoreFailed),
       )
-      use #(stored_id, above, accepts) <- result.try(case link {
+      use #(stored_id, above, limits, accepts) <- result.try(case link {
         run.AgentParent(_, action) -> {
           use state <- result.map(
             agent_record.decode(entry.record)
@@ -50,7 +85,7 @@ pub fn read(
               })
             _ -> False
           }
-          #(state.run, state.parent, accepts)
+          #(state.run, state.parent, state.family_budget, accepts)
         }
         run.GraphParent(_, activation) -> {
           use state <- result.map(
@@ -69,13 +104,13 @@ pub fn read(
               a.id == activation && child == descendant
             _ -> False
           }
-          #(state.run, state.parent, accepts)
+          #(state.run, state.parent, state.family_budget, accepts)
         }
       })
       case stored_id == id, accepts {
         False, _ -> Error(Corrupt("parent record belongs to a different run"))
-        True, False -> Ok(False)
-        True, True -> read(runs, id, above, left - 1)
+        True, False -> Ok(None)
+        True, True -> walk(runs, id, above, limits, left - 1, depth + 1)
       }
     }
   }

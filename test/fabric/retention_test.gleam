@@ -28,6 +28,7 @@ fn agent_state(id, parent, actions) {
     actions,
     0,
     agent.Ended(run.Cancelled),
+    None,
   )
 }
 
@@ -160,12 +161,12 @@ pub fn unreadable_future_or_wrongly_keyed_records_cannot_claim_retention_metadat
     [
       "not json",
       "{}",
-      string.replace(encoded, "\"version\":6", "\"version\":999"),
+      string.replace(encoded, "\"version\":7", "\"version\":999"),
     ],
     fn(encoded) {
       retention.inspect(encoded) |> should.equal(Error(Nil))
-      retention.encode("root", encoded) |> should.equal("{\"version\":1}")
+      retention.encode("root", encoded) |> should.equal("{\"version\":2}")
     },
   )
-  retention.encode("different", encoded) |> should.equal("{\"version\":1}")
+  retention.encode("different", encoded) |> should.equal("{\"version\":2}")
 }

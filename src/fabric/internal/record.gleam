@@ -41,6 +41,8 @@
 //// Version 6 adds `child_settled`, retained evidence on a finished parent's
 //// delegation. Earlier writers refuse this state instead of inventing a
 //// model-visible result.
+//// Version 7 retains optional family budget limits on roots. Earlier writers
+//// refuse configured limits; children inherit from their saved root.
 ////
 //// An outcome's budget is written under its own tag (`turn_limit`,
 //// `token_limit`). The tag `budget_exhausted`, which wraps a budget, is
@@ -54,6 +56,7 @@
 //// stop.
 
 import fabric/graph/child
+import fabric/internal/budget/config as budget_config
 import fabric/internal/controller.{type Phase, type State, State}
 import fabric/internal/registry.{type Registry}
 import fabric/model.{type Message, type ToolCall}
@@ -71,7 +74,7 @@ import gleam/string
 
 pub const format = "fabric.run"
 
-pub const version = 6
+pub const version = 7
 
 /// The writer window is narrower than the reader's accepted versions.
 pub type WriteVersion {
@@ -80,6 +83,7 @@ pub type WriteVersion {
   V4
   V5
   V6
+  V7
 }
 
 pub fn writer(version: Int) -> Result(WriteVersion, Nil) {
@@ -89,6 +93,7 @@ pub fn writer(version: Int) -> Result(WriteVersion, Nil) {
     4 -> Ok(V4)
     5 -> Ok(V5)
     6 -> Ok(V6)
+    7 -> Ok(V7)
     _ -> Error(Nil)
   }
 }
@@ -103,23 +108,29 @@ pub fn encode_as(
   state: State,
   target: WriteVersion,
 ) -> Result(String, EncodeError) {
+  use Nil <- result.try(
+    budget_config.validate(state.parent == None, state.family_budget)
+    |> result.map_error(Unrepresentable(writer_number(target), _)),
+  )
+  use Nil <- result.try(case target, state.family_budget {
+    V7, _ | _, None -> Ok(Nil)
+    _, Some(_) ->
+      Error(Unrepresentable(
+        writer_number(target),
+        "family budgets require version 7",
+      ))
+  })
   use Nil <- result.try(case target, state.parent {
-    V5, _ | V6, _ -> Ok(Nil)
+    V5, _ | V6, _ | V7, _ -> Ok(Nil)
     _, Some(run.GraphParent(..)) ->
       Error(Unrepresentable(
-        case target {
-          V2 -> 2
-          V3 -> 3
-          V4 -> 4
-          V5 -> 5
-          V6 -> 6
-        },
+        writer_number(target),
         "a graph parent requires version 5",
       ))
     _, _ -> Ok(Nil)
   })
   use Nil <- result.try(case target {
-    V6 -> Ok(Nil)
+    V6 | V7 -> Ok(Nil)
     _ -> {
       let settled =
         list.any(state_actions(state), fn(action) {
@@ -132,13 +143,7 @@ pub fn encode_as(
         False -> Ok(Nil)
         True ->
           Error(Unrepresentable(
-            case target {
-              V2 -> 2
-              V3 -> 3
-              V4 -> 4
-              V5 -> 5
-              V6 -> 6
-            },
+            writer_number(target),
             "settled child evidence requires version 6",
           ))
       }
@@ -159,7 +164,8 @@ pub fn encode_as(
     _, _ -> Ok(Nil)
   })
   case target, state.phase, state.transcript {
-    V6, _, _ -> Ok(encode(state))
+    V7, _, _ -> Ok(encode(state))
+    V6, _, _ -> Ok(encode_version(state, 6, state.phase))
     V5, _, _ -> Ok(encode_version(state, 5, state.phase))
     V4, _, _ -> Ok(encode_version(state, 4, state.phase))
     V3, _, _ -> Ok(encode_version(state, 3, state.phase))
@@ -173,6 +179,17 @@ pub fn encode_as(
         "an empty cancelled run would mean never started",
       ))
     V2, _, _ -> Ok(encode_version(state, 2, state.phase))
+  }
+}
+
+fn writer_number(target: WriteVersion) -> Int {
+  case target {
+    V2 -> 2
+    V3 -> 3
+    V4 -> 4
+    V5 -> 5
+    V6 -> 6
+    V7 -> 7
   }
 }
 
@@ -191,7 +208,7 @@ pub fn encode(state: State) -> String {
 }
 
 fn encode_version(state: State, version: Int, phase: Phase) -> String {
-  json.object([
+  let fields = [
     #("format", json.string(format)),
     #("version", json.int(version)),
     #("write", json.string(write_token())),
@@ -246,7 +263,18 @@ fn encode_version(state: State, version: Int, phase: Phase) -> String {
     #("history", json.array(state.history, action)),
     #("approvals_issued", json.int(state.approvals_issued)),
     #("phase", phase_json(phase)),
-  ])
+  ]
+  let fields = case version >= 7 {
+    True ->
+      list.append(fields, [
+        #(
+          "family_budget",
+          json.nullable(state.family_budget, budget_config.encode),
+        ),
+      ])
+    False -> fields
+  }
+  json.object(fields)
   |> json.to_string
 }
 
@@ -495,6 +523,10 @@ fn never_started_before_3(state: State, found: Int) -> State {
 /// Descendants started by this agent still follow the agent naming rule.
 /// Cross-runtime ancestry is checked separately with a bounded walk.
 fn linked(state: State) -> Result(State, DecodeError) {
+  use Nil <- result.try(
+    budget_config.validate(state.parent == None, state.family_budget)
+    |> result.map_error(Corrupt),
+  )
   let parent = case state.parent {
     Some(run.AgentParent(parent, _)) ->
       extends(state.run, run.id_to_string(parent))
@@ -640,6 +672,7 @@ fn state_decoder(found: Int) -> Decoder(State) {
   use history <- decode.field("history", decode.list(action_decoder(found)))
   use approvals_issued <- decode.field("approvals_issued", decode.int)
   use phase <- decode.field("phase", phase_decoder(found))
+  use family_budget <- decode.then(budget_config.field(found >= 7))
   decode.success(State(
     run:,
     agent:,
@@ -653,6 +686,7 @@ fn state_decoder(found: Int) -> Decoder(State) {
     history:,
     approvals_issued:,
     phase:,
+    family_budget:,
   ))
 }
 

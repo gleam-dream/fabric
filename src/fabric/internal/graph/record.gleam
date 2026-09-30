@@ -5,6 +5,7 @@
 
 import fabric/graph/child
 import fabric/graph/operation
+import fabric/internal/budget/config as budget_config
 import fabric/internal/graph/controller as g
 import fabric/run
 import gleam/dynamic/decode.{type Decoder}
@@ -16,7 +17,7 @@ import gleam/string
 
 pub const format = "fabric.graph"
 
-pub const version = 5
+pub const version = 6
 
 pub type EncodeError {
   InvalidState(detail: String)
@@ -71,6 +72,10 @@ pub fn encode(state: g.State) -> Result(String, EncodeError) {
         }),
       ),
       #("phase", phase_json(state.phase)),
+      #(
+        "family_budget",
+        json.nullable(state.family_budget, budget_config.encode),
+      ),
     ])
     |> json.to_string,
   )
@@ -246,10 +251,11 @@ pub fn decode(text: String) -> Result(g.State, DecodeError) {
     Error(error) -> Error(Corrupt(string.inspect(error)))
     Ok(#(found, _)) if found != format ->
       Error(Corrupt("not a Fabric graph record: " <> found))
-    Ok(#(_, found)) if found != version -> Error(UnsupportedVersion(found))
-    Ok(_) -> {
+    Ok(#(_, found)) if found < 5 || found > version ->
+      Error(UnsupportedVersion(found))
+    Ok(#(_, found)) -> {
       use state <- result.try(
-        json.parse(text, state_decoder())
+        json.parse(text, state_decoder(found))
         |> result.map_error(fn(error) { Corrupt(string.inspect(error)) }),
       )
       use _ <- result.try(validate(state) |> result.map_error(Corrupt))
@@ -479,7 +485,7 @@ fn phase_decoder() -> Decoder(g.Phase) {
   }
 }
 
-fn state_decoder() -> Decoder(g.State) {
+fn state_decoder(found: Int) -> Decoder(g.State) {
   use run <- decode.field("run", decode.string)
   use definition <- decode.field("definition", {
     use identity <- decode.field("identity", identity_decoder())
@@ -511,6 +517,7 @@ fn state_decoder() -> Decoder(g.State) {
     }),
   )
   use phase <- decode.field("phase", phase_decoder())
+  use family_budget <- decode.then(budget_config.field(found >= 6))
   decode.success(g.State(
     run,
     definition,
@@ -522,6 +529,7 @@ fn state_decoder() -> Decoder(g.State) {
     phase,
     initial,
     parent,
+    family_budget,
   ))
 }
 
@@ -561,6 +569,10 @@ fn check_activation(activation: g.Activation) -> Result(Nil, String) {
 /// Validate cross-field invariants before trusting a persisted control state.
 @internal
 pub fn validate(state: g.State) -> Result(Nil, String) {
+  use Nil <- result.try(budget_config.validate(
+    state.parent == None,
+    state.family_budget,
+  ))
   use _ <- result.try(
     run.parse_id(state.run) |> result.replace_error("invalid run identity"),
   )

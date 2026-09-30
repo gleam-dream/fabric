@@ -216,14 +216,14 @@ pub type UnwritableVersion {
 }
 
 /// Chooses the record format for writes through this Store value. The
-/// default is 6; versions 2 through 6 can be written, and 1 through 6 read.
+/// default is 7; versions 2 through 7 can be written, and 1 through 7 read.
 /// Configure before starting the store and use the returned value for
 /// every handle and sweeper. Existing values and runners are unchanged.
 ///
 /// During a rolling upgrade, select a version every node can read. Versions
 /// 2 and 3 refuse assistant provider data, which requires version 4.
 /// Graph parent links require version 5; terminal child settlement requires
-/// version 6. Upgrade all readers before selecting a newer writer.
+/// version 6; family budgets require version 7. Upgrade all readers before selecting a newer writer.
 /// Records are changed only by ordinary writes, never by this setting.
 pub fn with_record_version(
   store: Store,
@@ -306,7 +306,7 @@ pub fn new(
     None,
     default_drain,
     None,
-    record.V6,
+    record.V7,
   )
 }
 
@@ -320,7 +320,7 @@ pub fn in_memory(name: Name(Message)) -> Store {
     None,
     default_drain,
     None,
-    record.V6,
+    record.V7,
   )
 }
 
@@ -367,7 +367,7 @@ pub fn directory(name: Name(Message), path: String) -> Store {
     None,
     default_drain,
     None,
-    record.V6,
+    record.V7,
   )
 }
 
@@ -422,7 +422,7 @@ pub fn leased(
         None,
         default_drain,
         Some(Leasing(node, ms)),
-        record.V6,
+        record.V7,
       ))
   }
 }

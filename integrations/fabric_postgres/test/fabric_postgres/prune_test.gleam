@@ -2,6 +2,7 @@
 //// sub-agent run on its own.
 
 import fabric/retention
+import fabric/run
 import fabric/store
 import fabric_postgres
 import fabric_postgres/internal/migrations
@@ -109,6 +110,54 @@ fn parent(id) {
       Some(parts |> list.drop(1) |> list.reverse |> string.join("-"))
     _ -> None
   }
+}
+
+/// A ledger is part of the saved family, including its immutable limits.
+/// It must neither be orphaned nor allow incomplete-family deletion.
+pub fn budget_ledgers_are_pruned_only_with_their_matching_root_test() {
+  let settings = support.migrated(support.pool(2), "a", support.schema())
+  let backend = fabric_postgres.backend(settings)
+  let limits =
+    json.object([
+      #("work", json.int(8)),
+      #("children", json.int(2)),
+      #("depth", json.int(2)),
+    ])
+  let root =
+    record("root", "ended", None, [])
+    |> string.replace("\"version\":6", "\"version\":7")
+    |> string.replace(
+      "\"format\":",
+      "\"family_budget\":" <> json.to_string(limits) <> ",\"format\":",
+    )
+  let assert Ok(metadata) = retention.inspect(root)
+  let assert [link] = metadata.children
+  let ledger_id = run.id_to_string(link.run)
+  let ledger =
+    json.object([
+      #("format", json.string("fabric.budget")),
+      #("version", json.int(1)),
+      #("run", json.string(ledger_id)),
+      #("root", json.string("root")),
+      #("limits", limits),
+      #("claims", json.array([], fn(value) { value })),
+    ])
+    |> json.to_string
+  let assert Ok(_) = backend.insert("root", root, store.Release)
+  // The root has ended, but its named ledger is absent.
+  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(0))
+  let changed = string.replace(ledger, "\"work\":8", "\"work\":9")
+  let assert Ok(_) = backend.insert(ledger_id, changed, store.Release)
+  // Both records are valid, but the reciprocal limit contract disagrees.
+  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(0))
+  let assert Ok(_) =
+    backend.compare_and_set(ledger_id, 1, ledger, store.Release)
+  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(2))
+  backend.get("root") |> should.equal(Error(store.NotFound))
+  backend.get(ledger_id) |> should.equal(Error(store.NotFound))
+  // Delayed bookkeeping cannot recreate a ledger after the family was pruned.
+  let assert Error(store.Unavailable(_)) =
+    backend.insert(ledger_id, ledger, store.Release)
 }
 
 pub fn prune_deletes_only_whole_finished_families_test() {

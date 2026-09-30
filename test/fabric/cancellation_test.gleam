@@ -378,6 +378,7 @@ fn store_stopping_root(store: store.Store, id: String) -> Nil {
   let call = scripted.call("r", "research", "{\"topic\":\"x\"}")
   let root =
     controller.State(
+      family_budget: None,
       run: id,
       agent: run.Identity("agent", 1),
       incarnation: 1,
@@ -423,6 +424,7 @@ fn store_orphaned_child(
   let child = id <> "-1"
   let state =
     controller.State(
+      family_budget: None,
       run: child,
       agent:,
       incarnation: 1,
