@@ -155,7 +155,7 @@ Version 12 adds managed-child deadlines and retains expiration through uncertain
 child settlement. Version 13 adds retained fork scopes, ordered member results
 and reciprocal branch attachments. Version 14 adds fork deadlines, including
 preparation, join acceptance and retained cleanup. These cannot be hidden in
-older record versions. The current discovery projection is version 10 and schema version is 6.
+older record versions. The current discovery projection is version 10 and schema version is 7.
 Schema migration 5 adds absolute due waits; migration 6 indexes every unfinished
 fork member. Run `refresh_discovery` to refresh existing metadata. Deadline
 contracts and due times cannot be hidden in older record versions.
@@ -416,5 +416,5 @@ unsupported, corrupt and mismatched records count as unknown; they never become
 healthy zeroes. Unreadable records are examined once per projection version.
 
 See the core [operations contract](../../docs/implementation/production-readiness/operations.md)
-for classification and timestamp semantics. Shutdown summaries and the complete
-operations runbook remain under development.
+for classification and timestamp semantics, and the [operations runbook](../../docs/OPERATIONS.md)
+for startup, monitoring, recovery, shutdown, upgrades and retention procedures.

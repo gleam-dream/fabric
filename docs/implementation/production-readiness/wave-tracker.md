@@ -2,12 +2,12 @@
 
 ## Current state
 
-- Last updated: 2026-09-30. Program active; wave 1 accepted locally.
+- Last updated: 2026-09-30. Program active; waves 1 and 2 accepted locally.
 - Approved outcome: the user's three-part goal below, in full. This follows the
   accepted graph program, not a reopening or reduction of that program.
-- Active wave: operations contracts and S7.
-- Next: shutdown accounting and the operations runbook, then the
-  realistic application comparison.
+- Active wave: realistic application and provider comparison.
+- Next: define and build the realistic generation/review/revision application,
+  then run the same corpus through live LLM and TypeSafe reviewers.
 - Evidence: the working tree began clean at `000edd9`. Existing CI checks out
   only Fabric and runs only its root suite. Four clean sibling revisions supply
   required path dependencies; their advertised GitHub locations did not serve
@@ -23,8 +23,7 @@
   passed all 41 checks, including 625 core and 57 real PostgreSQL tests.
 - Checkpoints: `39e28a8` repairs scheduled observation; `4e491af` prepares the
   local gate and reconciles the backlog.
-- Next action: shutdown accounting. The first S7 slice, store
-  readiness, passed the complete local gate. Its
+- Readiness status: the first S7 slice passed the complete local gate. Its
   [operations contract](operations.md) defines bounded storage probes, live
   acceptance, safe lease evidence and renewal age. Seven focused core scenarios
   pass, including a delayed probe, renewal failure, restart and an expired
@@ -37,6 +36,12 @@
   harness's 300-connection limit; server logs confirmed it. The new scenarios
   now close their pools on success or failure. The complete gate passed all
   41 checks, including 638 core and 64 PostgreSQL tests; statistics are accepted.
+
+- Shutdown and runbook: O12–O16 and the [operations runbook](../../OPERATIONS.md)
+  are implemented. Twelve public shutdown scenarios and the complete gate pass:
+  all 41 checks, 650 core tests and 64 PostgreSQL tests. S7 is accepted locally.
+  The next wave still requires the realistic application and actual provider
+  comparison; earlier live adapter checks are not substituted for it.
 
 ## Original objective and authorization
 
@@ -249,3 +254,49 @@ is limited to these diagnostic contracts; observations still grant no effect
 authority. No dependency, hosted CI activation, publication or deployment was
 added. S7 still requires shutdown summaries and the complete runbook; wave 3
 still requires the real application and live comparison.
+
+### Wave 2 — shutdown and operations accepted 2026-09-30
+
+O12–O16 now report the supervised shutdown cohort through `observation.drain`.
+The store confirms handoff writes, retains exit evidence from monitors, and a
+reporting worker stops between the factory and store. Confirmed, failed and
+pending handoffs are independent of killed, other and unobserved exits. Store
+loss emits `drain_unavailable`. Collection and emission are bounded and neither
+can authorize a workflow effect. Per-runner drain limits and recovery ownership
+are unchanged; the application must budget the documented reporting overhead.
+
+The first public scenario failed because the summary API was missing. Twelve
+public scenarios now cover confirmed writes, lost acknowledgment readback,
+unconfirmed writes, deadline kills, commits still pending after the deadline,
+confirmed handoff followed by a blocked handler/kill, bounded summary observers,
+idle stores with completed/suspended runs, graph handoff, admitted starts racing
+drain, store loss and normal completion during drain. The admitted-start scenario
+initially expected no handoff; inspection showed the existing runner can finish
+its initial commit then hand off without starting effects, and the assertion was
+corrected to that behavior. Existing drain, graph and supervision suites pass.
+
+`nix develop -c python3 scripts/check.py full --logs
+/tmp/fabric-shutdown-full-gate` passed all 41 checks, including 650 core and 64
+real PostgreSQL tests, all integrations/consumers and compiler-negative proof.
+The runbook was checked against the public APIs, lease/sweeper implementation,
+current execution and projection versions, SQL schema and adapter migration notes.
+It covers startup order, node identity, readiness, count/age interpretation,
+recovery lag, lease/sweep tuning, shutdown, rolling upgrades, unknown identities,
+reconciliation and complete-family retention. Final documentation formatting is
+checked separately after this gate; no runtime edits followed the green gate.
+
+Acceptance audit:
+
+| Requirement                             | Evidence and judgment                                                                                                                                                       |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Readiness and renewal age               | O1–O5; seven core scenarios plus real PostgreSQL migration/no-mutation evidence. Passed.                                                                                    |
+| Counts, ages, intervention and unknowns | O6–O11; six core and six PostgreSQL scenarios, including concurrency and read-only snapshots. Passed.                                                                       |
+| Per-node leases and recovery backlog    | Statistics snapshot and expired-lease overdue age, with existing sweep/lease events. Passed; backlog age is explicitly not end-to-end latency.                              |
+| Shutdown outcomes                       | O12–O16; twelve public scenarios, independent handoff/exit facts and bounded reporting. Passed.                                                                             |
+| Operational procedures                  | Runbook tied to actual APIs, independent version windows and failure behavior. Passed by source review; no deployed-environment drill is claimed.                           |
+| Design, scope and craft                 | No new dependency or stored execution format; observation remains diagnostic. State owns explicit evidence, effects stay supervised, and tests use public outcomes. Passed. |
+| Complete verification                   | All 41 local checks pass. Hosted CI/publication remain deferred by the user.                                                                                                |
+
+Wave 2 is accepted. Remaining authorized work is wave 3: the realistic artifact
+workflow, approval/restart evidence and measured live decision comparison.
+Publication, deployment and hosted CI activation remain outside this run.

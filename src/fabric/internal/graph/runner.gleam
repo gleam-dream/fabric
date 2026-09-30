@@ -383,7 +383,10 @@ fn serve(runner: Runner) -> Nil {
   {
     False, _ -> stop(runner)
     True, True -> {
-      let _ = persist(runner, runner.state, store.HandOff(process.self()))
+      case persist(runner, runner.state, store.HandOff(process.self())) {
+        Ok(_) -> Nil
+        Error(_) -> store.handoff_failed(runner.runs, process.self())
+      }
       stop(runner)
     }
     True, False -> receive(runner)

@@ -214,8 +214,8 @@ and the remaining activation steps.
 
 The accepted production-runtime design (2026-09-28, at `7901edb`; user
 decisions D1 to D5) is built in slices. This section records the slices
-built so far (S1 to S6). Operations remain in S7; the optional Grind
-integration follows in S8. [Remaining work](REMAINING.md) consolidates the
+built so far (S1 to S7). The optional Grind integration follows in S8.
+S7 acceptance and operational procedures are linked below. [Remaining work](REMAINING.md) consolidates the
 current backlog; the earlier slice sections retain their historical findings.
 
 ### S1: limits
@@ -760,6 +760,37 @@ passed format checking and warnings-as-errors compilation; PostgreSQL
 used only its temporary cluster. The repository formatting gate passed.
 An independent review found no encoding bypass and verified the frozen
 decoder and domain declarations against their historical source.
+
+### S7: production operations
+
+Completed 2026-09-30 under the [production-readiness program](implementation/production-readiness/wave-tracker.md).
+The [operations contract](implementation/production-readiness/operations.md)
+records O1–O16; the [runbook](OPERATIONS.md) ties diagnosis and response to the
+implemented APIs. Historical S2–S6 deferrals above are resolved by this slice.
+
+- `store.readiness` performs a bounded backend probe and samples current
+  admission and lease evidence afterward. Idle stores need no successful renewal;
+  active runners need safe lease windows. Reporting changes no execution state.
+- `fabric_postgres.stats` reports individual run groups and record-write ages,
+  overlapping approval/reconciliation counts, explicit unknowns, budget records,
+  live leases by node and oldest expired-lease backlog. One SQL read shares one
+  snapshot and clock. Schema 7 stores a revision-matched diagnostic projection;
+  bounded refresh leaves execution bytes, revisions, leases and ages unchanged.
+- `observation.drain` reports the supervised shutdown cohort after the factory
+  stops, while the store remains available. Confirmed, failed and pending handoffs
+  are independent of forced and other exits; unavailable accounting is a distinct
+  event. A killed runner need not report itself. Collection and emission are
+  bounded, and reporting never grants effect authority.
+- The runbook covers startup/migration order, node identity, gauge meanings,
+  lease/sweep tuning, shutdown budgets, rolling format windows, unknown recovery
+  identities, external reconciliation and complete-family retention.
+
+Acceptance: the complete local gate passed all 41 checks at
+`/tmp/fabric-shutdown-full-gate`, including 650 core and 64 PostgreSQL tests.
+Twelve public shutdown scenarios supplement the readiness/statistics and existing
+recovery suites. No execution record format or runtime dependency changed.
+Hosted CI and publication remain explicitly deferred by the user. The realistic
+application comparison is the next program wave, not a missing S7 requirement.
 
 ## Library adoption: caller-owned conversations
 

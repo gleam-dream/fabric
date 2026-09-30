@@ -107,6 +107,7 @@
 
 import fabric/internal/bounded
 import fabric/internal/controller
+import fabric/internal/drain
 import fabric/internal/executor
 import fabric/internal/graph/live as graph_live
 import fabric/internal/live
@@ -312,7 +313,7 @@ pub opaque type Message {
   Unwatch(run: String, watcher: Subject(Nil))
   Wake(run: String, token: String)
   Awoke(run: String, token: String, disposition: WakeupDisposition)
-  Down(pid: Pid)
+  Down(pid: Pid, reason: process.ExitReason)
   /// A worker finished the backend call of the run's current request.
   Finished(run: String, done: Done)
   SetTimeout(milliseconds: Int)
@@ -324,6 +325,11 @@ pub opaque type Message {
   /// A runner of the factory `pid` received its shutdown: the factory takes
   /// no more runners.
   Draining(factory: Pid)
+  BeginDrain(factory: Pid, reply: Subject(Nil))
+  TrackRunner(factory: Pid, runner: Pid, reply: Subject(Nil))
+  HandoffFailed(runner: Pid)
+  ReportDrain(reply: Subject(Result(o.Drain, Nil)))
+  CompleteDrainReport
   /// A leased store renews the leases of its runners; `tick`: the timer's
   /// (which sets the next one), not a test's.
   Renew(tick: Bool)
@@ -517,7 +523,8 @@ const longest_timer = 4_294_967_295
 /// Sets how long each runner may take to finish its work when the store's
 /// subtree shuts down (default 25 000 ms): see `supervised`. Up to 2^32 - 1
 /// ms. Give the application's own shutdown timeout for the store's
-/// subtree room for it.
+/// subtree room for it, plus bounded admission/accounting/observation work
+/// (up to four seconds) and process cleanup.
 pub fn with_drain(
   store: Store,
   milliseconds: Int,
@@ -539,7 +546,9 @@ pub fn with_drain(
 ///
 /// On shutdown the store's process is told first that its runners are
 /// draining, so that it starts no runner meanwhile; then the runners stop,
-/// and the store's process last. Each
+/// a bounded reporter emits `observation.drain`, and the store's process
+/// stops last. Accounting that cannot be read emits `drain_unavailable`.
+/// Keep the event forwarder and backend alive until after this subtree. Each
 /// runner drains within the store's drain window (`with_drain`, default
 /// 25 000 ms): it starts no tool body, model call or sub-agent, waits for
 /// the tool bodies running and a model reply in flight, commits their
@@ -651,8 +660,9 @@ fn exit_shutdown() -> Nil
 @external(erlang, "erlang", "exit")
 fn exit_with(reason: dynamic.Dynamic) -> Nil
 
-/// The store's process first, then its runner factory, so that runners
-/// stop before the process they commit through, and last a sentinel, which
+/// The store's process first, then the reporter and runner factory, so that
+/// runners stop before reporting and the process they commit through. Last
+/// a sentinel, which
 /// stops first and tells the store's process that its runners are about
 /// to drain, before any runner is told. With a `starter`, the store's
 /// process stops when it exits and reports a failure to start to its
@@ -682,10 +692,24 @@ fn subtree(
     |> supervision.restart(restart),
   )
   |> static_supervisor.add(
+    supervision.worker(fn() { drain_reporter(store) })
+    |> supervision.timeout(ms: 3000)
+    |> supervision.restart(restart),
+  )
+  |> static_supervisor.add(
     // Runners are temporary: one that stops is never restarted, since
     // recovery is explicit. Each is given the drain window to stop.
     factory_supervisor.worker_child(fn(spawn: fn(Pid) -> Pid) {
-      Ok(actor.Started(spawn(process.self()), Nil))
+      let factory = process.self()
+      let runner = spawn(factory)
+      case call(store, TrackRunner(factory, runner, _)) {
+        Ok(Nil) -> Ok(actor.Started(runner, Nil))
+        Error(_) -> {
+          process.unlink(runner)
+          process.kill(runner)
+          Error(actor.InitFailed("the store stopped before runner registration"))
+        }
+      }
     })
     |> factory_supervisor.restart_strategy(supervision.Temporary)
     |> factory_supervisor.timeout(ms: store.drain)
@@ -719,13 +743,48 @@ fn sentinel(
       case process.named(factory), process.named(name) {
         Ok(pid), Ok(_) -> {
           let _ =
-            executor.rescue(fn() {
-              process.send(process.named_subject(name), Draining(pid))
+            bounded.call(1000, fn() {
+              let reply = process.new_subject()
+              process.send(process.named_subject(name), BeginDrain(pid, reply))
+              process.receive_forever(reply)
             })
           Nil
         }
         _, _ -> Nil
       }
+      case exit.reason {
+        process.Normal -> Nil
+        process.Killed -> process.kill(process.self())
+        process.Abnormal(reason) -> exit_with(reason)
+      }
+    })
+  process.receive_forever(ready)
+  Ok(actor.Started(pid, Nil))
+}
+
+/// This worker stops after the factory and before the store. Both accounting
+/// and observation are bounded, even when the store or a handler is stuck.
+fn drain_reporter(
+  store: Store,
+) -> Result(actor.Started(Nil), actor.StartError) {
+  let ready = process.new_subject()
+  let pid =
+    process.spawn(fn() {
+      process.trap_exits(True)
+      process.send(ready, Nil)
+      let exit =
+        process.new_selector()
+        |> process.select_trapped_exits(fn(exit) { exit })
+        |> process.selector_receive_forever
+      let report = bounded.call(1250, fn() { call(store, ReportDrain) })
+      let _ =
+        bounded.call(1000, fn() {
+          case report {
+            Ok(Ok(Ok(summary))) ->
+              observe.drained(summary, name_text(store.name))
+            _ -> observe.drain_unavailable(name_text(store.name))
+          }
+        })
       case exit.reason {
         process.Normal -> Nil
         process.Killed -> process.kill(process.self())
@@ -882,6 +941,12 @@ pub fn draining(store: Store, factory: Pid) -> Nil {
   process.send(target(store), Draining(factory))
 }
 
+/// Also covers an encoding failure before a handoff reaches the write port.
+@internal
+pub fn handoff_failed(store: Store, runner: Pid) -> Nil {
+  process.send(target(store), HandoffFailed(runner))
+}
+
 /// Where requests to the store's process go.
 fn target(store: Store) -> Subject(Message) {
   case store.pinned {
@@ -1016,6 +1081,8 @@ type Loop {
     factory: Name(FactoryMessage),
     /// The runner factory process that reported it is shutting down.
     draining: Option(Pid),
+    drain: drain.Accounting,
+    drain_reply: Option(Subject(Result(o.Drain, Nil))),
     watchers: Dict(String, List(#(Pid, Subject(Nil)))),
     wakeups: Dict(String, Wakeup),
     job_observations: Dict(String, Pid),
@@ -1074,8 +1141,8 @@ fn run(
       |> process.select(subject)
       |> process.select_monitors(fn(down) {
         case down {
-          process.ProcessDown(pid:, ..) -> Down(pid)
-          process.PortDown(..) -> Down(process.self())
+          process.ProcessDown(pid:, reason:, ..) -> Down(pid, reason)
+          process.PortDown(reason:, ..) -> Down(process.self(), reason)
         }
       })
     let lessee =
@@ -1099,6 +1166,8 @@ fn run(
       fence_at: None,
       factory: factory_name(store.name),
       draining: None,
+      drain: drain.new(),
+      drain_reply: None,
       watchers: dict.new(),
       wakeups: dict.new(),
       job_observations: dict.new(),
@@ -1113,8 +1182,8 @@ fn run(
   |> actor.named(store.name)
   |> actor.on_message(fn(state, message) {
     case message {
-      Down(pid) if state.starter == Some(pid) -> actor.stop()
-      _ -> actor.continue(serve(state, message))
+      Down(pid, _) if state.starter == Some(pid) -> actor.stop()
+      _ -> actor.continue(serve(state, message) |> finish_drain_report(False))
     }
   })
   |> actor.start
@@ -1218,7 +1287,28 @@ fn serve(state: Loop, message: Message) -> Loop {
       })
       state
     }
-    Draining(pid) -> Loop(..state, draining: Some(pid))
+    Draining(pid) -> begin_drain(state, pid)
+    BeginDrain(pid, reply) -> {
+      let state = begin_drain(state, pid)
+      process.send(reply, Nil)
+      state
+    }
+    TrackRunner(factory, runner, reply) -> {
+      let state =
+        Loop(
+          ..monitor(state, runner),
+          drain: drain.track(state.drain, factory, runner),
+        )
+      process.send(reply, Nil)
+      state
+    }
+    HandoffFailed(runner) ->
+      Loop(..state, drain: drain.handoff(state.drain, runner, drain.Failed))
+    ReportDrain(reply) -> {
+      let _ = process.send_after(state.subject, 1000, CompleteDrainReport)
+      Loop(..state, drain_reply: Some(reply))
+    }
+    CompleteDrainReport -> finish_drain_report(state, True)
     ReadReadiness(reply) -> {
       process.spawn(fn() {
         let checked =
@@ -1271,8 +1361,18 @@ fn serve(state: Loop, message: Message) -> Loop {
     Renew(tick) -> renew(state, tick)
     Renewed(sent, runs, renewed) -> renewed_leases(state, sent, runs, renewed)
     Fence -> Loop(..state, fence_at: None) |> fence |> schedule_fence
-    Get(run, ..) as request | Write(run, ..) as request ->
+    Get(run, ..) as request -> enqueue(state, run, request)
+    Write(run, ownership:, ..) as request -> {
+      let state = case ownership {
+        HandOff(runner) ->
+          Loop(
+            ..state,
+            drain: drain.handoff(state.drain, runner, drain.Pending),
+          )
+        _ -> state
+      }
       enqueue(state, run, request)
+    }
     Finished(run, done) -> finish(state, run, done)
     Watch(run, watcher, reply) -> {
       let state = case process.subject_owner(watcher) {
@@ -1296,7 +1396,7 @@ fn serve(state: Loop, message: Message) -> Loop {
           |> list.filter(fn(entry) { entry.1 != watcher })
         }),
       )
-    Down(pid) -> {
+    Down(pid, reason) -> {
       let #(released, live) =
         dict.fold(state.live, #([], state.live), fn(acc, run, entry) {
           case entry.0 == pid {
@@ -1311,6 +1411,10 @@ fn serve(state: Loop, message: Message) -> Loop {
       let state =
         Loop(
           ..state,
+          drain: drain.exited(state.drain, pid, case reason {
+            process.Killed -> drain.Killed
+            process.Normal | process.Abnormal(_) -> drain.Exited
+          }),
           live:,
           valid: dict.drop(state.valid, released),
           watchers:,
@@ -1322,6 +1426,35 @@ fn serve(state: Loop, message: Message) -> Loop {
       list.each(released, notify(state, _))
       state
     }
+  }
+}
+
+fn begin_drain(state: Loop, factory: Pid) -> Loop {
+  Loop(
+    ..state,
+    draining: Some(factory),
+    drain: drain.begin(state.drain, factory, now_ms()),
+  )
+}
+
+fn finish_drain_report(state: Loop, deadline: Bool) -> Loop {
+  case state.drain_reply {
+    None -> state
+    Some(reply) ->
+      case drain.report(state.drain, now_ms()) {
+        None -> {
+          process.send(reply, Error(Nil))
+          Loop(..state, drain_reply: None)
+        }
+        Some(summary)
+          if deadline
+          || { summary.pending_handoffs == 0 && summary.unobserved == 0 }
+        -> {
+          process.send(reply, Ok(summary))
+          Loop(..state, drain_reply: None)
+        }
+        Some(_) -> state
+      }
   }
 }
 
@@ -1474,6 +1607,17 @@ fn finish(state: Loop, run: String, done: Done) -> Loop {
           state
         }
         Write(ownership:, reply:, ..), Wrote(written, sent) -> {
+          let state = case ownership {
+            HandOff(runner) ->
+              Loop(
+                ..state,
+                drain: drain.handoff(state.drain, runner, case written {
+                  Ok(_) -> drain.Confirmed
+                  Error(_) -> drain.Failed
+                }),
+              )
+            _ -> state
+          }
           process.send(reply, written)
           case written {
             Error(_) -> state

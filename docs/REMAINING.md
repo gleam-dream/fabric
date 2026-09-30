@@ -29,29 +29,26 @@ prepares complete local verification, delivers S7 and exercises a realistic
 application with both decision providers. The user deferred CI activation and
 library publication; those remain explicit later work.
 
-## Next: S7 operations
+## Next: realistic application evidence
 
-Complete the accepted production-runtime plan with:
+S7 is complete: the [operations runbook](OPERATIONS.md) covers startup,
+readiness, leases and sweeping, shutdown, rolling upgrades, unknown identities,
+uncertain-effect reconciliation and retention. `store.readiness` reports bounded
+backend reachability and current acceptance/lease evidence. `fabric_postgres.stats`
+reports run counts, record ages, approvals, reconciliation, unknown records,
+per-node live leases and oldest expired-lease lag. Schema 7 maintains diagnostic
+projections; `refresh_statistics` rebuilds stale metadata without changing source
+records, leases or ages. `observation.drain` reports per-runner confirmed, failed
+and pending handoffs independently of forced and other exits; unavailable
+accounting is explicit. Existing lease events, sweep counts, forwarder drop
+counts and family-safe pruning remain in place. See the [operations contract](implementation/production-readiness/operations.md)
+and [acceptance evidence](implementation/production-readiness/wave-tracker.md).
 
-- **Drain summary:** report runners handed off, runners killed at the
-  deadline and failed handoffs. The supervising process must account for
-  killed runners because they cannot report their own shutdown.
-- **Operations runbook:** startup and migration order, node identity,
-  readiness, lease and sweep tuning, shutdown, rolling upgrades, unknown
-  agent identities, uncertain-effect reconciliation and retention. Tie
-  each procedure to the available events and gauges.
-
-Already delivered from S7's original scope: family-safe PostgreSQL pruning;
-`lease_lost`, `renewal_failed`, `run_taken_over` and per-run handoff events;
-basic sweep counts; Sinal's unavailable-forwarder drop count; and
-`store.readiness`, with a bounded backend probe, current acceptance, local
-runner count and renewal age. New claims supply the first safe lease window;
-idle stores need no renewal. See the precise [operations contract](implementation/production-readiness/operations.md).
-`fabric_postgres.stats` now reports run counts, record ages, approvals,
-reconciliation, unknown records, live leases per node and oldest expired-lease
-lag. Schema 7 maintains diagnostic projections; `refresh_statistics` rebuilds
-stale metadata without changing records, leases or ages. Preserve
-these and extend their coverage as the remaining operations surface lands.
+The remaining accepted program is the generation/review/revision application:
+actual artifact tools, human approval and restart recovery, then the same corpus
+through real LLM and TypeSafe decisions. Retain measured quality, latency,
+usage/cost evidence and concrete authoring friction. Earlier adapter smoke tests
+do not complete this application comparison.
 
 ## Later: S8 Grind integration
 
