@@ -10,6 +10,7 @@ import fabric/support
 import fabric/support/flaky
 import fabric/support/restart
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleeunit/should
@@ -21,6 +22,7 @@ fn prepared(node: String) -> graph.Prepared {
     "{\"input\":1}",
     operation.RequireReconciliation,
     operation.Activity,
+    deadline: None,
   )
 }
 
@@ -33,6 +35,76 @@ fn initial() -> graph.State {
       prepared("generate"),
     )
   state
+}
+
+pub fn deadlines_retain_arming_due_time_and_expiration_without_legacy_downgrades_test() {
+  let initial = initial()
+  let assert graph.Ready(a) = initial.phase
+  let a =
+    graph.Activation(
+      ..a,
+      prepared: graph.Prepared(
+        ..a.prepared,
+        kind: operation.Signal,
+        deadline: Some(1000),
+      ),
+    )
+  let ready = graph.State(..initial, phase: graph.Ready(a))
+  let assert Ok(#(arming, _)) =
+    graph.step(
+      ready,
+      graph.Inspected(graph.reference(ready, a), Ok(policy.Allow)),
+    )
+  let assert Ok(#(waiting, _)) =
+    graph.step(arming, graph.SignalArmed(graph.reference(arming, a), 10_000))
+  let assert graph.WaitingSignal(armed) = waiting.phase
+  armed.deadline |> should.equal(Some(11_000))
+  graph.step(
+    waiting,
+    graph.ExpireSignal(graph.reference(waiting, armed), 10_999),
+  )
+  |> should.be_error
+  let assert Ok(#(expired, _)) =
+    graph.step(
+      waiting,
+      graph.ExpireSignal(graph.reference(waiting, armed), 11_000),
+    )
+  let assert Ok(#(accepted, _)) =
+    graph.step(
+      waiting,
+      graph.Signaled(armed.id, armed.attempt, "1", graph.Complete("1", "1")),
+    )
+  list.each([ready, arming, waiting, expired, accepted], fn(state) {
+    let assert Ok(encoded) = record.encode(state)
+    record.decode(encoded) |> should.equal(Ok(state))
+    record.decode(string.replace(encoded, "\"version\":10", "\"version\":9"))
+    |> should.be_error
+  })
+  list.each(
+    [
+      graph.State(..initial, phase: graph.Ready(armed)),
+      graph.State(..initial, phase: graph.ArmingSignal(armed)),
+      graph.State(..initial, phase: graph.WaitingSignal(a)),
+      graph.State(
+        ..initial,
+        phase: graph.Ended(graph.Failed(armed, graph.DeadlineExpired(12_000))),
+      ),
+      graph.State(
+        ..initial,
+        phase: graph.Ended(graph.Cancelled(
+          armed,
+          graph.AfterFailure(graph.DeadlineExpired(11_000)),
+        )),
+      ),
+    ],
+    fn(state) { record.encode(state) |> should.be_error },
+  )
+  let assert Ok(bytes) = record.encode(waiting)
+  record.decode(string.replace(bytes, "\"deadline\":11000", "\"deadline\":null"))
+  |> should.be_error
+  let assert Ok(legacy) = record.encode(initial)
+  record.decode(string.replace(legacy, "\"version\":10", "\"version\":9"))
+  |> should.equal(Ok(initial))
 }
 
 pub fn owned_cancellation_records_require_version_nine_and_preserve_request_state_test() {
@@ -58,7 +130,7 @@ pub fn owned_cancellation_records_require_version_nine_and_preserve_request_stat
       let state = graph.State(..initial, phase: graph.StoppingJob(a, progress))
       let assert Ok(encoded) = record.encode(state)
       record.decode(encoded) |> should.equal(Ok(state))
-      record.decode(string.replace(encoded, "\"version\":9", "\"version\":8"))
+      record.decode(string.replace(encoded, "\"version\":10", "\"version\":8"))
       |> should.be_error
       record.decode(string.replace(encoded, "owned_job", "job"))
       |> should.be_error
@@ -480,7 +552,7 @@ pub fn job_records_require_version_seven_and_cannot_claim_owned_effect_states_te
   waiting.phase |> should.equal(graph.WaitingJob(a))
   let assert Ok(encoded) = record.encode(waiting)
   record.decode(encoded) |> should.equal(Ok(waiting))
-  record.decode(string.replace(encoded, "\"version\":9", "\"version\":6"))
+  record.decode(string.replace(encoded, "\"version\":10", "\"version\":6"))
   |> should.be_error
   let cancelled = next(waiting, graph.Cancel)
   cancelled.phase
@@ -514,9 +586,9 @@ pub fn job_records_require_version_seven_and_cannot_claim_owned_effect_states_te
     fn(state) { record.encode(state) |> should.be_error },
   )
   let assert Ok(encoded) = record.encode(initial)
-  record.decode(string.replace(encoded, "\"version\":9", "\"version\":6"))
+  record.decode(string.replace(encoded, "\"version\":10", "\"version\":6"))
   |> should.equal(Ok(initial))
-  record.decode(string.replace(encoded, "\"version\":9", "\"version\":5"))
+  record.decode(string.replace(encoded, "\"version\":10", "\"version\":5"))
   |> should.equal(Ok(initial))
 }
 
@@ -536,7 +608,7 @@ pub fn scheduled_job_intervals_roundtrip_and_require_version_eight_test() {
     next(ready, graph.Inspected(graph.reference(ready, a), Ok(policy.Allow)))
   let assert Ok(encoded) = record.encode(waiting)
   record.decode(encoded) |> should.equal(Ok(waiting))
-  record.decode(string.replace(encoded, "\"version\":9", "\"version\":7"))
+  record.decode(string.replace(encoded, "\"version\":10", "\"version\":7"))
   |> should.be_error
   record.decode(string.replace(
     encoded,
@@ -571,6 +643,6 @@ pub fn scheduled_job_intervals_roundtrip_and_require_version_eight_test() {
       ),
     )
   let assert Ok(manual_bytes) = record.encode(manual)
-  record.decode(string.replace(manual_bytes, "\"version\":9", "\"version\":7"))
+  record.decode(string.replace(manual_bytes, "\"version\":10", "\"version\":7"))
   |> should.equal(Ok(manual))
 }

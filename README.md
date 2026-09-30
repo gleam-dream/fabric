@@ -26,7 +26,8 @@ local cancellation is retained without routing success.
 Terminal agent uncertainty settlement, complete-family PostgreSQL retention and
 shared work/child/depth budgets are implemented. Registered graph sweeping recovers
 expired work and changed idle dependencies after local wakeups are lost.
-Durable deadlines, parallel composition and real
+Signal deadlines now survive restart and expire through delivery or registered
+recovery. Deadlines for jobs and managed children, parallel composition and real
 decision adapters remain in that implementation program.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
@@ -313,9 +314,8 @@ a VM. Coordination over Erlang distribution is not supported.
 `store.now(runs)` reads UTC Unix milliseconds from the backend's lease and
 discovery clock. Custom `LeasedBackend` implementations must provide `now`;
 PostgreSQL uses database time, and unleased memory/directory stores use host
-system time. Clock failures propagate without a local-time fallback. This is
-the clock foundation for persisted deadlines; graph wait expiration remains
-under development.
+system time. Clock failures propagate without a local-time fallback. Signal
+deadlines use this time domain; clock corrections can advance or delay expiry.
 
 Automatic recovery: register agent roots with
 `fabric.recovery(agent, context_for_run)` and graph roots with `graph.recovery`
@@ -368,12 +368,22 @@ attachments to the correct agent or graph root and recovers expired work
 without taking a live parent's lease. An interrupted effect keeps its recovery
 contract. Registrations are distinct by runtime kind and definition version.
 Free managed waits remain discoverable when their child changes, including
-after local wakeups are lost. Scheduled job waits share this scan. PostgreSQL
-schema version 4 indexes both kinds of wait; refresh existing rows with
+after local wakeups are lost. Scheduled job waits and signal deadlines share
+this scan. PostgreSQL schema version 5 indexes these waits; refresh existing rows with
 `fabric_postgres.refresh_discovery` after migration. Only the backend's clock
 determines when a polling interval is due. Failed observations retry after lease
 expiry. Polls reuse the admitted wait's work grant.
 Signal waits without a deadline require explicit delivery.
+
+For a bounded signal wait, apply `operation.with_deadline(wait, 60_000)` before
+binding it to a node. Approval admits the wait; the runner then saves its due
+time from the backend clock. `snapshot.deadline` exposes that UTC timestamp.
+Late delivery or recovery commits `Failed(DeadlineExpired(due))` without accepting
+an output or routing onward. The sweeper discovers overdue waits on leased
+backends after downtime. Unleased stores require explicit recovery or delivery.
+Each new visit gets its own deadline. Jobs and managed children do not yet
+support this option. Eligibility uses the last backend time sample before the
+revision-checked write; the clock check and write are separate operations.
 
 After cancellation, `fabric.reconcile_stored(store, effect, content)` records
 evidence for an uncertain tool without resuming the agent. Then

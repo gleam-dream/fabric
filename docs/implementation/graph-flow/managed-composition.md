@@ -673,6 +673,41 @@ schedule overdue idle waits after downtime. Owned-job expiration must preserve
 stop-request progress and terminal evidence. Clock support cannot stand in for
 those lifecycle and recovery scenarios.
 
+### Activation-scoped signal deadlines
+
+The first expiration slice applies to signals. It uses the same activation
+identity and revision checks as delivery. Job and child expiration remain later
+slices, because their cleanup can outlive the local deadline.
+
+- **D4 — configuration and admission:** `operation.with_deadline` accepts a
+  positive bounded duration for a signal operation. The duration is part of its
+  saved contract and definition manifest. Approval time does not consume it.
+  Admission retains an arming phase; the runner samples backend time and commits
+  the absolute due time before publishing a deliverable wait. A failed clock
+  read leaves recoverable arming work. Recovery never resets a saved due time.
+- **D5 — expiration outcome:** at or after the saved due time, a signal wait
+  can commit `Failed(DeadlineExpired(due))`. It retains no accepted output and
+  releases no successor. Expiration is distinct from explicit cancellation.
+  Reads remain observational; delivery or recovery records expiration.
+- **D6 — delivery arbitration:** a current delivery checks backend time before
+  decoding/routing and again after a successful acceptance callback. A due wait
+  expires instead of consuming that value. The last time sample determines
+  eligibility; the following revision-checked commit arbitrates with cancellation,
+  other delivery and recovery. This is not a transaction that atomically tests
+  database time with the write: a commit can cross the wall-clock deadline after
+  its sample. Already accepted identical deliveries remain acknowledged later.
+- **D7 — durable scheduling:** the wait projects its absolute due time into
+  backend discovery. Claiming only considers free, current projections, uses
+  backend time and changes neither execution nor retention age. Registered
+  recovery revalidates the definition and time; the projection grants no routing
+  authority. Overdue waits are rediscovered after downtime without a VM timer.
+- **D8 — scope and failure:** every new visit gets a new due time. Prior references
+  cannot expire or consume a later visit. Incompatible definitions, failed clock
+  reads and unconfirmed commits release no successor. Explicit cancellation can
+  finish a signal even when its clock is unavailable. The record reader rejects
+  deadline-bearing states hidden in an older record version and invalid arming,
+  due-time or expiration combinations.
+
 ## Required evidence
 
 Signal scenarios cover store-process loss, correct native decoding, changed

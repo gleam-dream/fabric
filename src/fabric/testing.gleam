@@ -61,6 +61,10 @@ pub fn leased_backend_checks(new: fn() -> LeasedBackend) -> List(Check) {
       clock_reads(new())
     }),
     Check(
+      "absolute deadline claims use backend time and preserve executions",
+      fn() { deadline_claims(new()) },
+    ),
+    Check(
       "scheduled claims are disjoint, keep revisions and retain their interval",
       fn() { scheduled_claims(new()) },
     ),
@@ -116,6 +120,69 @@ fn clock_reads(backend: LeasedBackend) -> Result(Nil, String) {
     "clock read leaves revision, record and lease unchanged",
     backend.get(id),
     Ok(before),
+  )
+}
+
+fn deadline_claims(backend: LeasedBackend) -> Result(Nil, String) {
+  use now <- result.try(backend.now() |> result.map_error(string.inspect))
+  let due = fresh()
+  let future = fresh()
+  use _ <- result.try(
+    list.try_each([#(due, now - 1), #(future, now + long)], fn(entry) {
+      let #(id, at) = entry
+      let assert Ok(#(state, _)) =
+        graph.start(
+          id,
+          graph.Definition(run.Identity("deadline", 1), "v1", 1),
+          "0",
+          graph.Prepared(
+            "signal",
+            run.Identity("signal", 1),
+            "0",
+            operation.RequireReconciliation,
+            operation.Signal,
+            Some(1),
+          ),
+        )
+      let assert graph.Ready(a) = state.phase
+      let waiting =
+        graph.State(
+          ..state,
+          phase: graph.WaitingSignal(graph.Activation(..a, deadline: Some(at))),
+        )
+      let assert Ok(encoded) = graph_record.encode(waiting)
+      backend.insert(id, encoded, Release) |> result.map_error(string.inspect)
+    }),
+  )
+  use before <- result.try(backend.get(due) |> result.map_error(string.inspect))
+  use _ <- result.try(expect(
+    "only overdue wait is eligible",
+    backend.claim_ready("deadline-owner", long, 10),
+    Ok([due]),
+  ))
+  use after <- result.try(backend.get(due) |> result.map_error(string.inspect))
+  use _ <- result.try(
+    expect(
+      "deadline claim preserves execution",
+      #(after.record, after.revision),
+      #(before.record, before.revision),
+    ),
+  )
+  use _ <- result.try(expect(
+    "live deadline claim is disjoint",
+    backend.claim_ready("another-owner", long, 10),
+    Ok([]),
+  ))
+  use _ <- result.try(
+    backend.compare_and_set(due, after.revision, after.record, Release)
+    |> result.map_error(string.inspect),
+  )
+  // A scheduling claim alone does not consume an absolute deadline. A clock
+  // correction can make recovery release it; it must remain discoverable.
+  expect(
+    "released overdue wait remains due",
+    backend.claim_ready("next-owner", long, 10),
+    Ok([due]),
   )
 }
 
@@ -664,6 +731,7 @@ fn idle_pair(
       "0",
       operation.RequireReconciliation,
       operation.Subgraph,
+      None,
     )
   let definition = graph.Definition(run.Identity("parent", 1), "v1", 1)
   let assert Ok(#(state, _)) = graph.start(root, definition, "0", prepared)
@@ -813,6 +881,7 @@ fn scheduled_claims(backend: LeasedBackend) -> Result(Nil, String) {
           "0",
           operation.RequireReconciliation,
           operation.Job(job.Every(60_000)),
+          None,
         )
       let assert Ok(#(state, _)) =
         graph.start(
@@ -1070,6 +1139,7 @@ fn leased_serve(
           case row.lease, wait_for(id, row.record) {
             None, Some(wait) -> {
               let #(revision, ready) = case wait.trigger {
+                discovery.At(due) -> #(None, now >= due)
                 discovery.Changed(dependency) -> {
                   let revision =
                     dict.get(rows, run.id_to_string(dependency))

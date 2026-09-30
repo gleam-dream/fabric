@@ -13,7 +13,7 @@ import fabric/internal/budget/model as budget
 import fabric/policy
 import fabric/run
 import gleam/list
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -24,11 +24,12 @@ pub type Prepared {
     input: String,
     recovery: Recovery,
     kind: operation.Kind,
+    deadline: Option(Int),
   )
 }
 
 pub type Activation {
-  Activation(id: Int, attempt: Int, prepared: Prepared)
+  Activation(id: Int, attempt: Int, prepared: Prepared, deadline: Option(Int))
 }
 
 pub type Reference {
@@ -73,6 +74,7 @@ pub type Fault {
   PolicyFailed(reason: String)
   OperationFailed(reason: String)
   FamilyBudget(quota.Denial)
+  DeadlineExpired(due: Int)
 }
 
 pub type Outcome {
@@ -98,6 +100,7 @@ pub type Phase {
   Running(Activation)
   AwaitingApproval(Activation, Approval)
   WaitingSignal(Activation)
+  ArmingSignal(Activation)
   WaitingJob(Activation)
   StoppingJob(Activation, job.CancellationProgress)
   Joining(Activation, child: String)
@@ -143,6 +146,8 @@ pub type Event {
   JobStopRefused(Reference, reason: String)
   JobConfirmedStopped(Reference)
   Signaled(activation: Int, attempt: Int, output: String, decision: Decision)
+  SignalArmed(Reference, now: Int)
+  ExpireSignal(Reference, now: Int)
   ChildReturned(Reference, child: String, output: String, decision: Decision)
   ChildFailed(Reference, child: String, reason: String)
   ChildUnavailable(Reference, child: String, reason: String)
@@ -161,6 +166,7 @@ pub type Effect {
   ObserveChild(Activation, String)
   CancelChild(Activation, String)
   RequestJobStop(Activation)
+  ArmSignal(Activation)
 }
 
 pub type Rejection {
@@ -184,7 +190,7 @@ pub fn start(
     Ok(_) -> Ok(Nil)
     Error(Nil) -> Error(InvalidDefinition("invalid run identity"))
   })
-  let activation = Activation(1, 1, entry)
+  let activation = Activation(1, 1, entry, None)
   Ok(
     #(
       State(
@@ -216,6 +222,23 @@ pub fn step(
   event: Event,
 ) -> Result(#(State, List(Effect)), Rejection) {
   case event, state.phase {
+    SignalArmed(ref, now), ArmingSignal(a) -> {
+      use _ <- result.try(matches(state, a, ref))
+      use within <- result.try(case a.prepared.deadline, now >= 0 {
+        Some(within), True -> Ok(within)
+        _, _ -> Error(InvalidPrepared("signal deadline has no valid clock"))
+      })
+      let armed = Activation(..a, deadline: Some(now + within))
+      Ok(#(State(..state, phase: WaitingSignal(armed)), []))
+    }
+    ExpireSignal(ref, now), WaitingSignal(a) -> {
+      use _ <- result.try(matches(state, a, ref))
+      case a.deadline {
+        Some(due) if now >= due ->
+          Ok(ended(state, Failed(a, DeadlineExpired(due))))
+        _ -> Error(WrongPhase)
+      }
+    }
     BodyStarted(ref), StoppingJob(a, job.RequestQueued) -> {
       use _ <- result.try(matches(state, a, ref))
       Ok(#(State(..state, phase: StoppingJob(a, job.RequestStarted)), []))
@@ -416,6 +439,7 @@ pub fn step(
     | Cancel, Queued(activation)
     | Cancel, AwaitingApproval(activation, _)
     | Cancel, WaitingSignal(activation)
+    | Cancel, ArmingSignal(activation)
     -> Ok(ended(state, Cancelled(activation, BeforeStart)))
     Cancel, Running(activation) ->
       Ok(#(State(..state, phase: Stopping(activation)), [Stop]))
@@ -477,7 +501,13 @@ fn queue(state: State, activation: Activation) -> #(State, List(Effect)) {
     operation.Activity -> #(State(..state, phase: Queued(activation)), [
       Dispatch(activation),
     ])
-    operation.Signal -> #(State(..state, phase: WaitingSignal(activation)), [])
+    operation.Signal ->
+      case activation.prepared.deadline {
+        None -> #(State(..state, phase: WaitingSignal(activation)), [])
+        Some(_) -> #(State(..state, phase: ArmingSignal(activation)), [
+          ArmSignal(activation),
+        ])
+      }
     operation.Job(_) | operation.OwnedJob(_) -> #(
       State(..state, phase: WaitingJob(activation)),
       [],
@@ -526,7 +556,7 @@ fn complete(
       case state.allocated >= state.definition.max_activations {
         True -> Ok(ended(state, Exhausted(next)))
         False -> {
-          let next = Activation(state.allocated + 1, 1, next)
+          let next = Activation(state.allocated + 1, 1, next, None)
           Ok(
             #(State(..state, allocated: next.id, phase: Ready(next)), [
               Inspect(next),
@@ -558,6 +588,7 @@ fn cancelled_result(
 pub fn recover(state: State) -> Result(#(State, List(Effect)), Rejection) {
   let recovered = State(..state, incarnation: state.incarnation + 1)
   case state.phase {
+    ArmingSignal(a) -> Ok(#(recovered, [ArmSignal(a)]))
     StoppingJob(a, job.RequestQueued) -> Ok(#(recovered, [RequestJobStop(a)]))
     StoppingJob(a, job.RequestStarted) ->
       Ok(
@@ -664,6 +695,11 @@ pub fn check_definition(definition: Definition) -> Result(Nil, Rejection) {
 }
 
 pub fn check_prepared(prepared: Prepared) -> Result(Nil, Rejection) {
+  use _ <- result.try(case prepared.deadline, prepared.kind {
+    None, _ -> Ok(Nil)
+    Some(ms), operation.Signal if ms > 0 && ms <= 4_294_967_295 -> Ok(Nil)
+    _, _ -> Error(InvalidPrepared("invalid signal deadline"))
+  })
   use _ <- result.try(case prepared.kind {
     operation.Job(polling) | operation.OwnedJob(polling) ->
       case job.valid_polling(polling) {
@@ -698,6 +734,7 @@ pub fn needs_runner(state: State) -> Bool {
       True
     StoppingJob(_, _) -> False
     Ready(_)
+    | ArmingSignal(_)
     | Queued(_)
     | Running(_)
     | Stopping(_)

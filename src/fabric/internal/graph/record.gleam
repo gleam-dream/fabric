@@ -18,7 +18,7 @@ import gleam/string
 
 pub const format = "fabric.graph"
 
-pub const version = 9
+pub const version = 10
 
 pub type EncodeError {
   InvalidState(detail: String)
@@ -103,6 +103,11 @@ fn prepared_json(prepared: g.Prepared) -> Json {
     ]
     _ -> []
   }
+  let schedule =
+    list.append(schedule, case prepared.deadline {
+      None -> []
+      Some(ms) -> [#("deadline_after", json.int(ms))]
+    })
   json.object(list.append(
     [
       #("node", json.string(prepared.node)),
@@ -134,6 +139,7 @@ fn activation_json(activation: g.Activation) -> Json {
     #("id", json.int(activation.id)),
     #("attempt", json.int(activation.attempt)),
     #("prepared", prepared_json(activation.prepared)),
+    #("deadline", json.nullable(activation.deadline, json.int)),
   ])
 }
 
@@ -174,6 +180,7 @@ fn problem_json(problem: g.Problem) -> Json {
 
 fn fault_json(fault: g.Fault) -> Json {
   case fault {
+    g.DeadlineExpired(due) -> tag("deadline_expired", [#("due", json.int(due))])
     g.FamilyBudget(reason) ->
       tag("family_budget", [#("denial", budget_config.encode_denial(reason))])
     g.Denied(reason) -> tag("denied", [#("reason", json.string(reason))])
@@ -244,6 +251,8 @@ fn phase_json(phase: g.Phase) -> Json {
     g.Stopping(a) -> tag("stopping", [#("activation", activation_json(a))])
     g.WaitingSignal(a) ->
       tag("waiting_signal", [#("activation", activation_json(a))])
+    g.ArmingSignal(a) ->
+      tag("arming_signal", [#("activation", activation_json(a))])
     g.WaitingJob(a) -> tag("waiting_job", [#("activation", activation_json(a))])
     g.StoppingJob(a, progress) ->
       tag("stopping_job", [
@@ -317,6 +326,14 @@ pub fn decode(text: String) -> Result(g.State, DecodeError) {
         )
         |> result.map_error(Corrupt),
       )
+      use _ <- result.try(
+        require(
+          found >= 10
+            || !list.any(preparations(state), fn(p) { p.deadline != None }),
+          "signal deadlines require graph version 10",
+        )
+        |> result.map_error(Corrupt),
+      )
       Ok(state)
     }
   }
@@ -340,6 +357,11 @@ fn identity_decoder() -> Decoder(run.Identity) {
 }
 
 fn prepared_decoder() -> Decoder(g.Prepared) {
+  use deadline <- decode.optional_field(
+    "deadline_after",
+    None,
+    decode.optional(decode.int),
+  )
   use node <- decode.field("node", decode.string)
   use operation <- decode.field("operation", identity_decoder())
   use input <- decode.field("input", decode.string)
@@ -381,14 +403,19 @@ fn prepared_decoder() -> Decoder(g.Prepared) {
       _ -> Error(Nil)
     }
   })
-  decode.success(g.Prepared(node, operation, input, recovery, kind))
+  decode.success(g.Prepared(node, operation, input, recovery, kind, deadline))
 }
 
 fn activation_decoder() -> Decoder(g.Activation) {
   use id <- decode.field("id", decode.int)
   use attempt <- decode.field("attempt", decode.int)
   use prepared <- decode.field("prepared", prepared_decoder())
-  decode.success(g.Activation(id, attempt, prepared))
+  use deadline <- decode.optional_field(
+    "deadline",
+    None,
+    decode.optional(decode.int),
+  )
+  decode.success(g.Activation(id, attempt, prepared, deadline))
 }
 
 fn approval_decoder() -> Decoder(g.Approval) {
@@ -438,6 +465,11 @@ fn problem_decoder() -> Decoder(g.Problem) {
 fn fault_decoder() -> Decoder(g.Fault) {
   use name <- tagged(g.OperationFailed(""))
   case name {
+    "deadline_expired" ->
+      Ok({
+        use due <- decode.field("due", decode.int)
+        decode.success(g.DeadlineExpired(due))
+      })
     "denied" ->
       Ok(
         decode.field("reason", decode.string, fn(reason) {
@@ -557,6 +589,11 @@ fn phase_decoder() -> Decoder(g.Phase) {
         use activation <- decode.field("activation", activation_decoder())
         decode.success(g.WaitingSignal(activation))
       })
+    "arming_signal" ->
+      Ok({
+        use activation <- decode.field("activation", activation_decoder())
+        decode.success(g.ArmingSignal(activation))
+      })
     "ready" | "queued" | "running" | "stopping" ->
       Ok({
         use activation <- decode.field("activation", activation_decoder())
@@ -659,6 +696,11 @@ fn check_prepared(prepared: g.Prepared) -> Result(Nil, String) {
 
 fn check_activation(activation: g.Activation) -> Result(Nil, String) {
   use _ <- result.try(check_prepared(activation.prepared))
+  use _ <- result.try(case activation.deadline, activation.prepared.deadline {
+    None, _ -> Ok(Nil)
+    Some(due), Some(within) if due >= within -> Ok(Nil)
+    _, _ -> Error("deadline does not match its operation contract")
+  })
   let max = case activation.prepared.recovery {
     operation.RequireReconciliation -> 1
     operation.ReplayInterrupted(max) -> max
@@ -738,7 +780,22 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       ))
       pending(state, count, last, a)
     }
-    g.Ready(a) -> pending(state, count, last, a)
+    g.Ready(a) -> {
+      use _ <- result.try(require(
+        a.deadline == None,
+        "unadmitted work has a deadline",
+      ))
+      pending(state, count, last, a)
+    }
+    g.ArmingSignal(a) -> {
+      use _ <- result.try(require(
+        a.prepared.kind == operation.Signal
+          && a.prepared.deadline != None
+          && a.deadline == None,
+        "arming requires an admitted signal with an unarmed deadline",
+      ))
+      pending(state, count, last, a)
+    }
     g.Queued(a) | g.Running(a) | g.Stopping(a) | g.Blocked(a, _) -> {
       use _ <- result.try(require(
         a.prepared.kind == operation.Activity,
@@ -762,12 +819,20 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
     }
     g.WaitingSignal(a) -> {
       use _ <- result.try(require(
+        { a.prepared.deadline == None } == { a.deadline == None },
+        "a signal wait must retain its configured deadline",
+      ))
+      use _ <- result.try(require(
         a.prepared.kind == operation.Signal,
         "an activity cannot wait for a signal",
       ))
       pending(state, count, last, a)
     }
     g.AwaitingApproval(a, approval) -> {
+      use _ <- result.try(require(
+        a.deadline == None,
+        "unapproved work has a deadline",
+      ))
       use _ <- result.try(pending(state, count, last, a))
       require(
         approval.activation == a.id
@@ -779,7 +844,20 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
         "approval does not identify the current activation and requirement",
       )
     }
-    g.Ended(g.Failed(a, _)) -> pending(state, count, last, a)
+    g.Ended(g.Failed(a, g.DeadlineExpired(due))) -> {
+      use _ <- result.try(require(
+        a.prepared.kind == operation.Signal && a.deadline == Some(due),
+        "expiration must identify an armed signal deadline",
+      ))
+      pending(state, count, last, a)
+    }
+    g.Ended(g.Failed(a, _)) -> {
+      use _ <- result.try(require(
+        a.deadline == None,
+        "armed signal cannot fail before admission",
+      ))
+      pending(state, count, last, a)
+    }
     g.Ended(g.Completed(answer)) -> {
       use _ <- result.try(finished(state, count, last, g.Finished))
       json_value(answer)
@@ -810,6 +888,8 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
     }
     g.Ended(g.Cancelled(a, disposition)) -> {
       use _ <- result.try(case disposition {
+        g.AfterFailure(g.DeadlineExpired(_)) ->
+          Error("signal expiration is not an activity cancellation outcome")
         g.JobDetached ->
           require(
             is_job(a.prepared.kind) && !is_owned_job(a.prepared.kind),
@@ -860,6 +940,11 @@ fn check_receipts(
     [] -> Ok(previous)
     [receipt, ..rest] -> {
       use _ <- result.try(check_activation(receipt.activation))
+      use _ <- result.try(require(
+        { receipt.activation.prepared.deadline == None }
+          == { receipt.activation.deadline == None },
+        "accepted wait must retain its configured deadline",
+      ))
       use _ <- result.try(require(
         receipt.activation.id == ordinal,
         "receipt ordinals are not contiguous",
@@ -933,6 +1018,7 @@ fn preparations(state: g.State) -> List(g.Prepared) {
     | g.Running(a)
     | g.AwaitingApproval(a, _)
     | g.WaitingSignal(a)
+    | g.ArmingSignal(a)
     | g.WaitingJob(a)
     | g.StoppingJob(a, _)
     | g.Joining(a, _)

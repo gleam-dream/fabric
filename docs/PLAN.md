@@ -16,10 +16,11 @@ design. The user has now selected its six-step implementation program; the
 evidence. Step 1 proved typed authoring in a separate experiment. Step 2 now
 provides public serial execution on the persistent store: typed definitions,
 conditional routes, cycles, recovery, approval, reconciliation and cancellation.
-Step 3 now supports typed durable manual signals and an initial managed-subgraph
-API with restart, cancellation settlement and idle/nested wait coverage. Managed
-agents, family budgets/retention, deadlines and jobs, parallel composition, real adapters and the
-agent-recipe evaluation remain in steps 3–6.
+Step 3 now supports typed durable signals with optional deadlines, managed
+subgraphs and agents, shared family budgets/retention, and external-job
+submission, scheduled observation and owned cancellation. Job/child deadlines,
+parallel composition, real adapters and the agent-recipe evaluation remain in
+steps 3–6.
 
 The architecture follows variant A of
 [experiments/workflow_composition/FINDINGS.md](../experiments/workflow_composition/FINDINGS.md):

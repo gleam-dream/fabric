@@ -3,6 +3,7 @@ import fabric/internal/graph/controller as graph
 import fabric/policy
 import fabric/run
 import gleam/list
+import gleam/option.{None}
 import gleeunit/should
 
 fn prepared(node: String) -> graph.Prepared {
@@ -12,6 +13,7 @@ fn prepared(node: String) -> graph.Prepared {
     "{}",
     operation.RequireReconciliation,
     operation.Activity,
+    deadline: None,
   )
 }
 

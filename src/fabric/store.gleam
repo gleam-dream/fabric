@@ -60,6 +60,9 @@
 ////   A scheduled wait is first due immediately, then after its saved interval
 ////   from the last ready claim. Preserve its key/time across same-key writes
 ////   and metadata refresh. Only the backend's clock determines eligibility.
+////   An absolute `At(due)` wait is eligible when backend UTC milliseconds reach
+////   `due`. Claiming it does not consume it: after release it remains eligible
+////   until the execution leaves that wait. Never treat it as a polling interval.
 ////   Claims are disjoint and bounded, change no execution bytes/revisions or
 ////   retention ages, and refuse stale source revisions/projection versions.
 ////   Use `fabric/discovery` to derive metadata from supported records.
@@ -181,7 +184,7 @@ pub type LeasedBackend {
     renew: fn(String, List(String), Int) -> Result(List(String), StoreError),
     /// `claim_expired(owner, ttl, limit)`: returns the runs claimed.
     claim_expired: fn(String, Int, Int) -> Result(List(String), StoreError),
-    /// Claims free runs with a changed dependency or due scheduled observation.
+    /// Claims free runs with a changed dependency, due observation or deadline.
     /// Atomically save the observed key, dependency revision and backend claim
     /// time with its lease. Claims change no execution revision or retention age.
     claim_ready: fn(String, Int, Int) -> Result(List(String), StoreError),

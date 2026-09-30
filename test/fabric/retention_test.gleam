@@ -93,6 +93,7 @@ fn prepared(kind) {
     "0",
     operation.RequireReconciliation,
     kind,
+    deadline: None,
   )
 }
 
@@ -165,8 +166,8 @@ pub fn unreadable_future_or_wrongly_keyed_records_cannot_claim_retention_metadat
     ],
     fn(encoded) {
       retention.inspect(encoded) |> should.equal(Error(Nil))
-      retention.encode("root", encoded) |> should.equal("{\"version\":6}")
+      retention.encode("root", encoded) |> should.equal("{\"version\":7}")
     },
   )
-  retention.encode("different", encoded) |> should.equal("{\"version\":6}")
+  retention.encode("different", encoded) |> should.equal("{\"version\":7}")
 }
