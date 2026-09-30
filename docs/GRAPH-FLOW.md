@@ -2,7 +2,9 @@
 
 2026-09-30. **Serial runtime, durable signals, managed children and external-job
 ownership and typed parallel composition are implemented, including retained
-deadlines and cleanup. Real decision adapters and agent-recipe evaluation remain open.**
+deadlines and cleanup. A structured LLM decision adapter passes protocol tests;
+live provider acceptance, classifier/MCP adapters and agent-recipe evaluation
+remain open.**
 The user has authorized the six-step implementation program. Progress,
 executable contracts and acceptance evidence are retained in the
 [wave tracker](implementation/graph-flow/wave-tracker.md). The API sketches
