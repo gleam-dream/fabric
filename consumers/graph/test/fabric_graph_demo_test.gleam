@@ -18,6 +18,14 @@ pub fn a_native_boolean_result_finishes_the_bounded_review_loop_test() {
   |> should.equal(["1", "false", "2", "false", "3", "true"])
 }
 
+pub fn mapped_review_loops_keep_native_state_private_and_answers_ordered_test() {
+  let done = fabric_graph_demo.execute_batch([0, 2, 3])
+  done.status |> should.equal(graph.Completed([3, 3, 4]))
+  done.value |> should.equal([0, 2, 3])
+  list.length(done.receipts) |> should.equal(1)
+  list.length(done.forks) |> should.equal(1)
+}
+
 pub fn five_activations_stop_before_the_last_review_test() {
   let done = fabric_graph_demo.execute(5)
   done.status |> should.equal(graph.Exhausted)

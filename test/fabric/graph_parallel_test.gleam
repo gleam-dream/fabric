@@ -104,6 +104,206 @@ fn paired_with(
   graph.new(definition, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
+fn mapped(
+  runs: store.Store,
+  child: graph.Runtime(Nil, Int, Int),
+  maximum: Int,
+  concurrency: Int,
+) -> graph.Runtime(Nil, List(Int), List(Int)) {
+  let values = codec.list(codec.int())
+  let assert Ok(map) =
+    graph.map(
+      run.Identity("mapped-work", 1),
+      child,
+      max_members: maximum,
+      concurrency: concurrency,
+    )
+  let node =
+    definition.node(
+      node_id("map"),
+      map,
+      fn(state) { Ok(state) },
+      fn(state, outcome) {
+        case outcome {
+          Ok(output) -> Ok(definition.Finish(state, output))
+          Error(failure) -> Ok(definition.Finish(state, [-failure.member]))
+        }
+      },
+      [],
+    )
+  let assert Ok(definition) =
+    definition.build(definition.Spec(
+      run.Identity("map-parent", 1),
+      node_id("map"),
+      [node],
+      values,
+      values,
+      1,
+    ))
+  graph.new(definition, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+}
+
+// G9, F1–F4: later members start only when a slot settles; results stay ordered.
+pub fn map_limits_concurrency_and_joins_in_input_order_test() {
+  let runs = support.store()
+  let started = process.new_subject()
+  let child =
+    member(runs, "mapped-integer", codec.int(), codec.int(), fn(n) {
+      let release = process.new_subject()
+      process.send(started, #(n, release))
+      let assert Ok(Nil) = process.receive(release, 5000)
+      Ok(n * 10)
+    })
+  let assert Ok(handle) =
+    graph.start(mapped(runs, child, 3, 2), support.id("map-order"), [1, 2, 3])
+  let assert Ok(first) = process.receive(started, 2000)
+  let assert Ok(second) = process.receive(started, 2000)
+  let assert Ok(#(_, release_first)) =
+    list.find([first, second], fn(entry) { entry.0 == 1 })
+  let assert Ok(#(_, release_second)) =
+    list.find([first, second], fn(entry) { entry.0 == 2 })
+  process.receive(started, 20) |> should.be_error
+  process.send(release_second, Nil)
+  let assert Ok(#(3, release_third)) = process.receive(started, 2000)
+  process.send(release_third, Nil)
+  let assert Ok(third) = graph.branch(handle, 1, 3, child)
+  let assert Ok(third_done) = graph.await(third, 5000)
+  third_done.status |> should.equal(graph.Completed(30))
+  process.send(release_first, Nil)
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status |> should.equal(graph.Completed([10, 20, 30]))
+  let assert [scope] = done.forks
+  scope.concurrency |> should.equal(2)
+  list.length(scope.members) |> should.equal(3)
+}
+
+// F1: bounds are checked before authoring; empty and oversized inputs own no child.
+pub fn map_validates_bounds_and_handles_empty_and_oversized_input_test() {
+  let runs = support.store()
+  let started = process.new_subject()
+  let child =
+    member(runs, "mapped-integer", codec.int(), codec.int(), fn(n) {
+      process.send(started, n)
+      Ok(n)
+    })
+  graph.map(run.Identity("map", 1), child, max_members: 0, concurrency: 1)
+  |> should.be_error
+  graph.map(run.Identity("map", 1), child, max_members: 2, concurrency: 0)
+  |> should.be_error
+  let runtime = mapped(runs, child, 2, 1)
+  let assert Ok(empty) = graph.start(runtime, support.id("map-empty"), [])
+  let assert Ok(done) = graph.await(empty, 5000)
+  done.status |> should.equal(graph.Completed([]))
+  graph.branch(empty, 1, 1, child) |> should.be_error
+  let assert Ok(oversized) =
+    graph.start(runtime, support.id("map-oversized"), [1, 2, 3])
+  let assert Ok(failed) = graph.await(oversized, 5000)
+  let assert graph.Failed(_) = failed.status
+  failed.forks |> should.equal([])
+  graph.branch(oversized, 1, 1, child) |> should.be_error
+  process.receive(started, 0) |> should.be_error
+}
+
+// G9: identical input values retain different children and ordered result slots.
+pub fn map_equal_inputs_remain_independently_owned_children_test() {
+  let runs = support.store()
+  let child =
+    member(runs, "mapped-integer", codec.int(), codec.int(), fn(n) { Ok(n + 1) })
+  let assert Ok(handle) =
+    graph.start(mapped(runs, child, 2, 2), support.id("map-equal"), [41, 41])
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status |> should.equal(graph.Completed([42, 42]))
+  let assert Ok(first) = graph.branch(handle, 1, 1, child)
+  let assert Ok(second) = graph.branch(handle, 1, 2, child)
+  { graph.id(first) == graph.id(second) } |> should.be_false
+}
+
+fn map_approval_member(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
+  member_with_policy(
+    runs,
+    "mapped-integer",
+    codec.int(),
+    codec.int(),
+    fn(n) { Ok(n + 10) },
+    fn(_, action) {
+      case action.input_json {
+        "2" -> Ok(policy.RequireApproval(run.Requirement("review", 1)))
+        _ -> Ok(policy.Allow)
+      }
+    },
+  )
+}
+
+// G7, G9, F2, F8: idle members occupy capacity across process loss.
+pub fn map_restart_keeps_completed_waiting_and_pending_members_distinct_test() {
+  let directory = restart.temp_dir()
+  let id = support.id("map-restart")
+  let #(owner, #(runs, handle, child)) =
+    restart.owned(fn() {
+      let runs = support.directory(directory)
+      let child = map_approval_member(runs)
+      let assert Ok(handle) =
+        graph.start(mapped(runs, child, 3, 1), id, [1, 2, 3])
+      #(runs, handle, child)
+    })
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.Fork(scope, _) = waiting.status
+  let assert [
+    fork.Member(_, fork.Admitted(fork.Succeeded("11"))),
+    fork.Member(_, fork.Admitted(fork.Active)),
+    fork.Member(_, fork.Pending),
+  ] = scope.members
+  graph.branch(handle, 1, 3, child) |> should.be_error
+  let assert Ok(second) = graph.branch(handle, 1, 2, child)
+  let assert Ok(second_waiting) = graph.read(second)
+  let assert graph.AwaitingApproval(approval) = second_waiting.status
+  restart.crash(owner, runs)
+  let runs = support.directory(directory)
+  let child = map_approval_member(runs)
+  let handle = graph.attach(mapped(runs, child, 3, 1), id)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.Fork(restored, _) = waiting.status
+  restored.members |> should.equal(scope.members)
+  graph.branch(handle, 1, 3, child) |> should.be_error
+  let assert Ok(second) = graph.branch(handle, 1, 2, child)
+  let assert Ok(_) = graph.approve(second, approval)
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status |> should.equal(graph.Completed([11, 12, 13]))
+  let assert Ok(first) = graph.branch(handle, 1, 1, child)
+  let assert Ok(first_done) = graph.read(first)
+  list.length(first_done.receipts) |> should.equal(1)
+  restart.remove_dir(directory)
+}
+
+// F5: a failed member withdraws later inputs; the parent can route its failure.
+pub fn map_failure_keeps_completed_results_and_does_not_start_pending_members_test() {
+  let runs = support.store()
+  let started = process.new_subject()
+  let child =
+    member(runs, "mapped-integer", codec.int(), codec.int(), fn(n) {
+      process.send(started, n)
+      case n {
+        2 -> Error(operation.DefiniteFailure("unavailable"))
+        _ -> Ok(n + 10)
+      }
+    })
+  let assert Ok(handle) =
+    graph.start(mapped(runs, child, 3, 1), support.id("map-failure"), [1, 2, 3])
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status |> should.equal(graph.Completed([-2]))
+  let assert [scope] = done.forks
+  let assert [
+    fork.Member(_, fork.Admitted(fork.Succeeded("11"))),
+    fork.Member(_, fork.Admitted(fork.Failed(_))),
+    fork.Member(_, fork.Withdrawn),
+  ] = scope.members
+  graph.branch(handle, 1, 3, child) |> should.be_error
+  process.receive(started, 0) |> should.equal(Ok(1))
+  process.receive(started, 0) |> should.equal(Ok(2))
+  process.receive(started, 0) |> should.be_error
+}
+
 // F6, F8: a failed join retains its members; cancellation releases no route.
 pub fn cancel_after_join_failure_keeps_both_completed_members_test() {
   let runs = support.store()

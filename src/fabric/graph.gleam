@@ -1,4 +1,4 @@
-//// Durable serial agentic graphs. Author a definition with native codecs,
+//// Durable agentic graphs. Author a definition with native codecs,
 //// supply an explicit policy and current-context function, and start runs
 //// in the same supervised store used by ordinary Fabric agents.
 ////
@@ -438,20 +438,117 @@ pub fn both(
         codec.encode_json(output, answer) |> result.map_error(string.inspect)
       },
     )
-  let signature =
-    json.array([left_definition, right_definition], fn(definition) {
-      json.array(
-        [
-          json.string(definition.identity.name),
-          json.int(definition.identity.version),
-          json.string(definition.signature),
-          json.int(definition.max_activations),
-        ],
-        fn(value) { value },
-      )
-    })
-    |> json.to_string
+  let signature = fork_signature([left_definition, right_definition])
   Ok(operation.parallel(identity, input, output, 2, 2, signature, driver))
+}
+
+/// Run a bounded list of managed children and join native answers in input order.
+/// Empty input succeeds; oversized input is refused before any child reservation.
+/// Waiting and uncertain members keep their concurrency slots.
+pub fn map(
+  identity: run.Identity,
+  child: Runtime(child_context, child_state, child_answer),
+  max_members maximum: Int,
+  concurrency concurrency: Int,
+) -> Result(
+  operation.Operation(
+    parent_context,
+    List(child_state),
+    Result(List(child_answer), fork.Failure),
+  ),
+  Error,
+) {
+  use _ <- result.try(case maximum > 0 && concurrency > 0 {
+    True -> Ok(Nil)
+    False ->
+      Error(CommandRefused(
+        "map requires positive membership and concurrency bounds",
+      ))
+  })
+  let child_input = definition.state_codec(child.definition)
+  let child_output = definition.answer_codec(child.definition)
+  let input = codec.list(child_input)
+  use output <- result.try(
+    fork.result_codec(codec.list(child_output))
+    |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
+  )
+  use binding <- result.try(
+    operation.child_driver(as_subgraph(child))
+    |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
+  )
+  let child_definition = definition.identity(child.definition)
+  let runs = child.store
+  let driver =
+    fork_driver.Driver(
+      stores: fn() { [store.pid(runs)] },
+      prepare: fn(encoded) {
+        use values <- result.try(
+          codec.decode_json(input, encoded) |> result.map_error(string.inspect),
+        )
+        list.try_map(values, fn(value) {
+          use input <- result.map(
+            codec.encode_json(child_input, value)
+            |> result.map_error(string.inspect),
+          )
+          fork.Request(child_definition.identity, input)
+        })
+      },
+      member: fn(ordinal) {
+        case ordinal > 0 && ordinal <= maximum {
+          True -> Ok(binding)
+          False -> Error("unknown map member")
+        }
+      },
+      check: fn(ordinal, request) {
+        case
+          ordinal > 0
+          && ordinal <= maximum
+          && request.definition == child_definition.identity
+        {
+          True ->
+            codec.decode_json(child_input, request.input)
+            |> result.replace(Nil)
+            |> result.map_error(string.inspect)
+          False -> Error("map member definition changed")
+        }
+      },
+      output: fn(outcome) {
+        use answer <- result.try(case outcome {
+          Error(failure) -> Ok(Error(failure))
+          Ok(outputs) ->
+            list.try_map(outputs, fn(output) {
+              codec.decode_json(child_output, output)
+              |> result.map_error(string.inspect)
+            })
+            |> result.map(Ok)
+        })
+        codec.encode_json(output, answer) |> result.map_error(string.inspect)
+      },
+    )
+  Ok(operation.parallel(
+    identity,
+    input,
+    output,
+    maximum,
+    concurrency,
+    fork_signature([child_definition]),
+    driver,
+  ))
+}
+
+fn fork_signature(definitions: List(control.Definition)) -> String {
+  json.array(definitions, fn(definition) {
+    json.array(
+      [
+        json.string(definition.identity.name),
+        json.int(definition.identity.version),
+        json.string(definition.signature),
+        json.int(definition.max_activations),
+      ],
+      fn(value) { value },
+    )
+  })
+  |> json.to_string
 }
 
 /// Open one admitted fork member with its native runtime. Ordinals start at one.
