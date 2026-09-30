@@ -33,6 +33,7 @@ PACKAGES = (
     "consumers/graph",
     "consumers/decision",
     "consumers/jobs",
+    "consumers/writing",
     "experiments/workflow_composition",
     "experiments/graph_authoring",
     "experiments/graph_authoring/consumer",
@@ -79,6 +80,10 @@ def checks(root: Path, profile: str) -> list[Check]:
             Check(
                 "typesafe-protocol-tests", "integrations/fabric_typesafe",
                 ("python3", "-B", "-m", "unittest", "discover", "-s", "test/support", "-p", "*_test.py"),
+            ),
+            Check(
+                "writing-evaluation-tests", "consumers/writing",
+                ("python3", "-B", "-m", "unittest", "discover", "-p", "test_live.py"),
             ),
             Check(
                 "authoring-contract", ".",

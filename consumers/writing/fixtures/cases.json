@@ -1,0 +1,158 @@
+[
+  {
+    "id": "library_complete",
+    "expected": "approve",
+    "rationale": "All three requested facts are present and supported.",
+    "draft": {
+      "text": {
+        "source": "Riverside Library opens on 12 May 2027. Admission is free. Its address is 8 Willow Lane.",
+        "brief": "State the opening date, price and address in one sentence.",
+        "body": "Riverside Library opens on 12 May 2027 at 8 Willow Lane, with free admission."
+      },
+      "generation": 1
+    }
+  },
+  {
+    "id": "park_complete",
+    "expected": "approve",
+    "rationale": "Count, place and date match the source.",
+    "draft": {
+      "text": {
+        "source": "Oak Park adds 24 bicycle spaces on 3 June 2027. The new spaces are beside the east entrance.",
+        "brief": "State how many bicycle spaces are being added, where and when.",
+        "body": "On 3 June 2027, Oak Park adds 24 bicycle spaces beside the east entrance."
+      },
+      "generation": 1
+    }
+  },
+  {
+    "id": "workshop_complete",
+    "expected": "approve",
+    "rationale": "All requested workshop details match.",
+    "draft": {
+      "text": {
+        "source": "The pottery workshop starts at 10:00 on 6 July 2027. A ticket costs 18 credits and includes materials.",
+        "brief": "Mention the date, starting time, ticket cost and included materials.",
+        "body": "The pottery workshop starts at 10:00 on 6 July 2027; an 18-credit ticket includes materials."
+      },
+      "generation": 1
+    }
+  },
+  {
+    "id": "tram_complete",
+    "expected": "approve",
+    "rationale": "The change and exception are both correct.",
+    "draft": {
+      "text": {
+        "source": "Tram route 6 will run every 12 minutes on Saturdays from 1 August 2027. Weekday service is unchanged.",
+        "brief": "Describe the Saturday change and say whether weekdays change.",
+        "body": "From 1 August 2027, tram route 6 runs every 12 minutes on Saturdays; weekday service is unchanged."
+      },
+      "generation": 1
+    }
+  },
+  {
+    "id": "library_missing_price",
+    "expected": "revise",
+    "rationale": "The source supplies the requested price, but the draft omits it.",
+    "draft": {
+      "text": {
+        "source": "Riverside Library opens on 12 May 2027. Admission is free. Its address is 8 Willow Lane.",
+        "brief": "State the opening date, price and address in one sentence.",
+        "body": "Riverside Library opens on 12 May 2027 at 8 Willow Lane."
+      },
+      "generation": 1
+    }
+  },
+  {
+    "id": "park_wrong_count",
+    "expected": "revise",
+    "rationale": "42 contradicts the supported count of 24.",
+    "draft": {
+      "text": {
+        "source": "Oak Park adds 24 bicycle spaces on 3 June 2027. The new spaces are beside the east entrance.",
+        "brief": "State how many bicycle spaces are being added, where and when.",
+        "body": "On 3 June 2027, Oak Park adds 42 bicycle spaces beside the east entrance."
+      },
+      "generation": 1
+    }
+  },
+  {
+    "id": "workshop_invented_meal",
+    "expected": "revise",
+    "rationale": "Lunch is unsupported; the source otherwise supports the brief.",
+    "draft": {
+      "text": {
+        "source": "The pottery workshop starts at 10:00 on 6 July 2027. A ticket costs 18 credits and includes materials.",
+        "brief": "Mention the date, starting time, ticket cost and included materials.",
+        "body": "The pottery workshop starts at 10:00 on 6 July 2027. Tickets cost 18 credits and include materials and lunch."
+      },
+      "generation": 1
+    }
+  },
+  {
+    "id": "tram_wrong_scope",
+    "expected": "revise",
+    "rationale": "Every day contradicts the Saturday-only change.",
+    "draft": {
+      "text": {
+        "source": "Tram route 6 will run every 12 minutes on Saturdays from 1 August 2027. Weekday service is unchanged.",
+        "brief": "Describe the Saturday change and say whether weekdays change.",
+        "body": "From 1 August 2027, tram route 6 runs every 12 minutes every day."
+      },
+      "generation": 1
+    }
+  },
+  {
+    "id": "library_missing_capacity",
+    "expected": "reject",
+    "rationale": "The requested capacity is absent from the source.",
+    "draft": {
+      "text": {
+        "source": "Riverside Library opens on 12 May 2027. Admission is free. Its address is 8 Willow Lane.",
+        "brief": "State the library opening date and its maximum visitor capacity.",
+        "body": "Riverside Library opens on 12 May 2027 and holds 300 visitors."
+      },
+      "generation": 1
+    }
+  },
+  {
+    "id": "park_wrong_topic",
+    "expected": "reject",
+    "rationale": "The source is about park bicycle spaces, not a workshop.",
+    "draft": {
+      "text": {
+        "source": "Oak Park adds 24 bicycle spaces on 3 June 2027. The new spaces are beside the east entrance.",
+        "brief": "Announce the start date and ticket price of a pottery workshop.",
+        "body": "The pottery workshop starts on 3 June 2027 and is free."
+      },
+      "generation": 1
+    }
+  },
+  {
+    "id": "workshop_missing_access",
+    "expected": "reject",
+    "rationale": "The requested accessibility fact is not supplied.",
+    "draft": {
+      "text": {
+        "source": "The pottery workshop starts at 10:00 on 6 July 2027. A ticket costs 18 credits and includes materials.",
+        "brief": "State the workshop date and confirm whether wheelchair access is available.",
+        "body": "The workshop is on 6 July 2027 with wheelchair access."
+      },
+      "generation": 1
+    }
+  },
+  {
+    "id": "tram_missing_fare",
+    "expected": "reject",
+    "rationale": "The source contains no fare.",
+    "draft": {
+      "text": {
+        "source": "Tram route 6 will run every 12 minutes on Saturdays from 1 August 2027. Weekday service is unchanged.",
+        "brief": "State the Saturday frequency and the exact adult fare.",
+        "body": "The tram runs every 12 minutes on Saturdays and costs 3 credits."
+      },
+      "generation": 1
+    }
+  }
+]

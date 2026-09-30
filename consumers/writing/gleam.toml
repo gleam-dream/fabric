@@ -1,0 +1,16 @@
+name = "fabric_writing"
+version = "0.0.0"
+target = "erlang"
+gleam = ">= 1.18.0"
+
+[dependencies]
+gleam_json = ">= 3.0.0 and < 4.0.0"
+gleam_stdlib = ">= 0.70.0 and < 1.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+fabric = { path = "../.." }
+fabric_typesafe = { path = "../../integrations/fabric_typesafe" }
+json_blueprint = { path = "../../../json_blueprint" }
+llm_wire = { path = "../../../llm_wire" }
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"

@@ -24,12 +24,13 @@ Durable deadlines, typed parallel composition, real LLM/TypeSafe/MCP adapters
 and the agent-recipe evaluation are complete. Ordinary agents remain managed
 graph children to retain their per-tool recovery guarantees.
 
-The current [production-readiness program](implementation/production-readiness/wave-tracker.md)
+The completed [production-readiness program](implementation/production-readiness/wave-tracker.md)
 prepares complete local verification, delivers S7 and exercises a realistic
-application with both decision providers. The user deferred CI activation and
+application with both decision providers. All three waves are accepted locally;
+the user deferred CI activation and
 library publication; those remain explicit later work.
 
-## Next: realistic application evidence
+## Production operations and application evidence
 
 S7 is complete: the [operations runbook](OPERATIONS.md) covers startup,
 readiness, leases and sweeping, shutdown, rolling upgrades, unknown identities,
@@ -44,11 +45,15 @@ accounting is explicit. Existing lease events, sweep counts, forwarder drop
 counts and family-safe pruning remain in place. See the [operations contract](implementation/production-readiness/operations.md)
 and [acceptance evidence](implementation/production-readiness/wave-tracker.md).
 
-The remaining accepted program is the generation/review/revision application:
-actual artifact tools, human approval and restart recovery, then the same corpus
-through real LLM and TypeSafe decisions. Retain measured quality, latency,
-usage/cost evidence and concrete authoring friction. Earlier adapter smoke tests
-do not complete this application comparison.
+The [writing consumer](../consumers/writing/README.md) implements generation,
+review and bounded revision with actual artifact tools, durable approval and
+restart recovery. Both actual reviewers ran the same frozen 12-case corpus and
+completed a full live workflow across separate VMs. The
+[comparison](implementation/production-readiness/writing-comparison.md) retains
+quality, latency, usage, dated cost estimates and concrete authoring friction.
+Approval in the live demonstration is explicitly scripted; its manual entry
+point also accepts a person's answer against the inspected revision. Program
+acceptance is tracked separately from the earlier adapter smoke tests.
 
 ## Later: S8 Grind integration
 
@@ -82,7 +87,7 @@ building the Fabric adapter.
 | Agent time budgets       | Add whole-agent elapsed-time budgets and per-tool deadlines with a trusted clock. Graph signal, job, managed-child and fork deadlines already exist.                                                                                      |
 | Context compaction       | Specify and implement compaction or summarization after the earlier features. Budget exhaustion currently stops the run.                                                                                                                  |
 
-These are retained backlog items, not prerequisites for finishing S7.
+These are retained backlog items, not prerequisites for the completed S7 scope.
 Their detailed acceptance rules still need to be designed before coding.
 
 ## Release and continuous checks
@@ -132,6 +137,10 @@ These require a separate decision; they are not accepted delivery tasks:
   child's completion can precede its parent's start observation; adopting
   a late insert can omit `run_started`. These are documented event-order
   limits, not evidence of a repeated tool effect.
+- Writing-consumer findings: measure and simplify nested Blueprint codec
+  construction; consider state-selection helpers after a second real consumer;
+  evaluate decision producers on a larger independent holdout corpus. These
+  are follow-ups from the retained comparison, not required runtime changes.
 
 ## Excluded from Fabric
 

@@ -207,8 +207,9 @@ an idle run is data in the store with no process holding it.
 ## Production runtime: limits, supervised runners, leases
 
 The [production-readiness program](implementation/production-readiness/wave-tracker.md)
-continues with a complete local verification command, S7 operations and a
-realistic application comparison. The user deferred library publication and
+implements a complete local verification command, S7 operations and a
+realistic [application comparison](implementation/production-readiness/writing-comparison.md).
+The user deferred library publication and
 hosted CI activation; [verification](VERIFICATION.md) records the prepared gate
 and the remaining activation steps.
 
@@ -790,7 +791,7 @@ Acceptance: the complete local gate passed all 41 checks at
 Twelve public shutdown scenarios supplement the readiness/statistics and existing
 recovery suites. No execution record format or runtime dependency changed.
 Hosted CI and publication remain explicitly deferred by the user. The realistic
-application comparison is the next program wave, not a missing S7 requirement.
+application comparison has its own acceptance evidence, separate from S7.
 
 ## Library adoption: caller-owned conversations
 

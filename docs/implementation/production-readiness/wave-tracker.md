@@ -2,12 +2,12 @@
 
 ## Current state
 
-- Last updated: 2026-09-30. Program active; waves 1 and 2 accepted locally.
+- Last updated: 2026-09-30. Program complete; all three waves accepted locally.
 - Approved outcome: the user's three-part goal below, in full. This follows the
   accepted graph program, not a reopening or reduction of that program.
-- Active wave: realistic application and provider comparison.
-- Next: define and build the realistic generation/review/revision application,
-  then run the same corpus through live LLM and TypeSafe reviewers.
+- Active wave: none.
+- Next: library publication and hosted CI remain deferred by the user; retained
+  product features and optional authoring refinements are separate follow-ups.
 - Evidence: the working tree began clean at `000edd9`. Existing CI checks out
   only Fabric and runs only its root suite. Four clean sibling revisions supply
   required path dependencies; their advertised GitHub locations did not serve
@@ -40,8 +40,16 @@
 - Shutdown and runbook: O12–O16 and the [operations runbook](../../OPERATIONS.md)
   are implemented. Twelve public shutdown scenarios and the complete gate pass:
   all 41 checks, 650 core tests and 64 PostgreSQL tests. S7 is accepted locally.
-  The next wave still requires the realistic application and actual provider
-  comparison; earlier live adapter checks are not substituted for it.
+  The realistic application and actual provider comparison are now implemented;
+  earlier live adapter checks are not substituted for this evidence.
+- Application: eight writing scenarios and seven evaluation-runner scenarios
+  pass. Both actual reviewers completed the frozen 12-case corpus and separate-VM
+  approval/save workflows. TypeSafe matched 12/12 labels; GPT-4.1 nano matched
+  6/12. See the [comparison and authoring findings](writing-comparison.md).
+  The initial full gate passed 45 checks. A live-run preflight exposed an empty
+  inherited credential masking `.env.local`; the loader fix and regression pass.
+  The final gate passed all 45 checks; the acceptance audit below closes this
+  program. No core runtime code changed in the application wave.
 
 ## Original objective and authorization
 
@@ -300,3 +308,73 @@ Acceptance audit:
 Wave 2 is accepted. Remaining authorized work is wave 3: the realistic artifact
 workflow, approval/restart evidence and measured live decision comparison.
 Publication, deployment and hosted CI activation remain outside this run.
+
+### Wave 3 — application and comparison accepted 2026-09-30
+
+`consumers/writing` composes the existing graph and decision adapters with real
+source-read and artifact-save operations. Native approve/revise/reject values
+control at most three drafts. Saving requires durable approval and uses a
+stable run/activation key with identical-content acknowledgment and conflicting
+content refusal. The application owns that effect contract; Fabric continues
+to own admission, progress, recovery and policy. No core runtime or sibling
+library implementation changed.
+
+Eight Gleam scenarios cover successful approval/restart, revision/exhaustion,
+review rejection, human-approval rejection, invalid/refused/incomplete output,
+missing source, artifact identity and a saved result lost before graph commit.
+The interrupted-save test initially expected automatic completion after
+recovery; the existing per-attempt policy correctly requires a fresh approval.
+The corrected scenario checks the old reference is refused, the new one
+completes, the artifact is identical, and model calls are not repeated.
+
+Seven Python scenarios validate frozen cases, literal allowlisted dotenv
+loading, environment precedence, measured values and failed-attempt accounting.
+The first live preflight sent no requests because an empty inherited API-key
+variable masked `.env.local`. The loader now falls back for empty values, with
+a regression test. This repair preceded the successful measured run.
+
+The [live comparison](writing-comparison.md) retains every attempt and source
+hash. Both actual providers completed all 12 frozen cases once, without retry
+or fallback: GPT-4.1 nano matched 6/12 expected labels with a 2,698.5 ms median;
+Jev 1.13.0 matched 12/12 with a 465 ms median. All outputs were valid typed
+decisions. The report includes every disagreement, usage and dated public-price
+estimates; measured billing remains unavailable. This small developer-authored
+corpus does not establish general production accuracy.
+
+Both complete live workflows reached approval, exited the VM, restored
+identical snapshots in another VM and saved an artifact after a third VM
+supplied approval. The demonstration operator is explicitly scripted. Saved
+content matches each receipt's SHA-256, and earlier receipts remain unchanged.
+These live examples completed on their first draft; deterministic scenarios
+cover revision paths. Directory storage proves VM/process restart, not
+power-loss durability. The successful live run made 28 provider requests.
+
+Final verification:
+
+- `nix develop -c python3 scripts/check.py full --logs
+/tmp/fabric-writing-final-gate` passed all 45 checks after the loader repair:
+  650 core tests, 64 real PostgreSQL tests, all integration/consumer/service
+  suites, eight writing tests, seven evaluation tests and the typed-authoring
+  positive/negative proof. Command, status, duration and dependency records are
+  retained in that gate directory. No live credentials enter this gate.
+- Retained evidence was recomputed against all 24 corpus/reviewer pairs, source
+  hashes, summaries, restart snapshots and artifact digests. New local document
+  links resolve. Final formatting is checked separately after this acceptance
+  text; no implementation edits followed the successful gate.
+- Authoring review found a useful small `Reviewer(receipt)` boundary and
+  repetitive codec/stage mappings. Follow-up simplification and a larger holdout
+  evaluation are recorded in REMAINING, without expanding this accepted scope.
+
+#### Whole-goal acceptance audit
+
+| Original outcome                      | Evidence and judgment                                                                                                                                                                                                                                                                               |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Reproducible verification and backlog | Shared fast/full/CI profiles, explicit sibling/package preflight, service/database coverage, retained failure logs and reconciled current inventories. Passed locally. Publication, standalone dependency resolution and hosted activation are explicitly deferred by the user's later instruction. |
+| S7 operations                         | O1–O16: bounded readiness, renewal age, run/intervention/unknown counts and ages, per-node leases, expired-lease lag, independent shutdown handoff/exit evidence and runbook. Passed with real PostgreSQL and public lifecycle tests. No deployment drill is claimed.                               |
+| Realistic application                 | W1–W6: actual files, generation, typed review, bounded revisions, approval, VM restart and interrupted-save recovery. Passed; scripted providers cover deterministic failure paths, while actual providers complete the live application.                                                           |
+| Live decision comparison              | W7–W8: identical frozen cases and rubric, both real adapters, all attempts retained, quality/latency/usage/cost assumptions and concrete authoring findings. Passed; no inferred billing or broad accuracy claim.                                                                                   |
+| Boundaries and verification           | Existing public APIs, no Saga/Grind core dependency, no sibling snapshots or hosted workflow change. All 45 local checks pass. Source/evidence consistency and documentation checked. Passed.                                                                                                       |
+
+All three requested outcomes are accepted within the user's clarified local
+scope. No required program work remains. Optional product features, publication,
+deployment and hosted CI are not silently added to this goal.
