@@ -7,6 +7,7 @@ import fabric/agent
 import fabric/graph/child
 import fabric/graph/operation
 import fabric/internal/ancestry
+import fabric/internal/budget/model as budget
 import fabric/internal/controller
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
@@ -115,6 +116,19 @@ pub fn ancestry_follows_mixed_parents_and_checks_both_sides_of_each_link_test() 
     )
   let link = Some(run.AgentParent(support.id(id), action))
   ancestry.read(runs, descendant, link, 64) |> should.equal(Ok(True))
+  ancestry.family(runs, descendant, link, None, 64)
+  |> should.equal(Ok(Some(ancestry.Family(parent.run, 2, None))))
+  // This agent's local depth is zero. Family depth still includes its graph
+  // attachment, and only the root supplies a declaration.
+  let limits = budget.Limits(8, 3, 2)
+  let parent = graph.State(..parent, family_budget: Some(limits))
+  let assert Ok(encoded) = graph_record.encode(parent)
+  let assert Ok(entry) = store.get(runs, parent.run)
+  let assert Ok(_) =
+    store.commit(runs, parent.run, entry.revision, encoded, store.Keep)
+  ancestry.family(runs, descendant, link, None, 64)
+  |> should.equal(Ok(Some(ancestry.Family(parent.run, 2, Some(limits)))))
+  ancestry.family(runs, descendant, link, Some(limits), 64) |> should.be_error
   ancestry.read(runs, id <> "-2", link, 64) |> should.equal(Ok(False))
   ancestry.read(
     runs,

@@ -7,6 +7,7 @@ import fabric/graph/child
 import fabric/graph/operation.{
   type Recovery, ReplayInterrupted, RequireReconciliation,
 }
+import fabric/internal/budget/model as budget
 import fabric/policy
 import fabric/run
 import gleam/list
@@ -113,6 +114,7 @@ pub type State {
     phase: Phase,
     initial: String,
     parent: Option(run.Parent),
+    family_budget: Option(budget.Limits),
   )
 }
 
@@ -171,7 +173,19 @@ pub fn start(
   let activation = Activation(1, 1, entry)
   Ok(
     #(
-      State(run, definition, 1, 1, 0, value, [], Ready(activation), value, None),
+      State(
+        run,
+        definition,
+        1,
+        1,
+        0,
+        value,
+        [],
+        Ready(activation),
+        value,
+        None,
+        None,
+      ),
       [
         Inspect(activation),
       ],

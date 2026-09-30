@@ -213,6 +213,7 @@ fn cancel(
           history: [],
           approvals_issued: 0,
           phase: controller.NeverStarted,
+          family_budget: None,
         )
       use encoded <- result.try(
         store.encode(runtime.store, tombstone)

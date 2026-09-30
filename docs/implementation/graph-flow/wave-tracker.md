@@ -15,8 +15,9 @@
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
 - Open decisions: wave 3's budget admission integration and job/deadline
-  contracts are being refined. The durable reservation contract is implemented
-  internally; runner enforcement remains open. Shared parent identities and manual signal
+  contracts are being refined. Durable reservations, root configuration,
+  mixed-family lookup and ledger retention are implemented internally;
+  runner enforcement remains open. Shared parent identities and manual signal
   contracts are implemented.
   Native authoring, serial lifecycle, compatibility and public control are now
   concrete in the [durable sequential contract](durable-sequential.md).
@@ -25,7 +26,7 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: family reservation storage passes 471 root tests, 40 PostgreSQL tests,
+- Gate status: family budget records pass 477 root tests, 41 PostgreSQL tests,
   four graph consumer tests and 15 existing app consumer tests. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -728,3 +729,43 @@ six-step goal remains active, with wave 3 next.
 - Next: persist immutable root budget configuration, attach ledger retention,
   reserve before dispatch in both runtimes, and prove typed denial with
   cancellation/recovery and mixed children before exposing public configuration.
+
+### Wave 3 — root budget records and inherited family identity
+
+- Status: agent format 7 and graph format 6 retain an optional family-budget
+  declaration on roots. Children cannot override it. No public configuration
+  or admission enforcement is exposed yet; this remains a prerequisite of G7.
+- Compatibility: agent readers accept 1–7 and writers 2–7, defaulting to 7.
+  Older writers refuse configured limits. Graph version 5 remains readable
+  without a budget; versions 1–4 remain refused. Current formats require the
+  nullable budget field. A non-null field hidden in an older version is
+  corrupt, so reading and rewriting it cannot silently reset capacity.
+- Ownership: `ancestry.family` checks existing reciprocal attachments, returning
+  the saved root declaration and actual depth through mixed graph/agent runs.
+  Closed, unreadable or overlong ancestry never becomes an independent root.
+  Existing effect checks use the same traversal and keep their behavior.
+- Retention: projection version 2 includes a root-to-ledger link whose key
+  contains the immutable limits. The ledger repeats it. Missing ledgers,
+  unexpected ledgers and mismatched limits preserve the family; a settled,
+  complete family removes both records. PostgreSQL schema stays at 2 and
+  existing projections refresh through the already bounded backfill API.
+- Evidence: six additional root tests prove codec compatibility, required
+  fields, invalid limits, forbidden child overrides, cancellation/recovery
+  preservation and reciprocal ledger metadata. The existing mixed-ancestry
+  scenario now checks inherited limits and actual depth. A PostgreSQL scenario
+  covers missing/mismatched ledgers, whole-family pruning and rejected late
+  ledger insertion after deletion.
+- Gate: 477 root tests, 41 PostgreSQL tests, four graph consumer tests and 15
+  app consumer tests pass with warning-free builds. Formatting, `nix flake check`
+  and `git diff --check` pass on this host.
+- Conformance: G1–G6 remain green; these are G7 prerequisites. The full six-step
+  goal remains active. Wave 3 still requires admission enforcement, automatic
+  graph recovery scanning, external jobs and durable deadlines; waves 4–6
+  remain unchanged.
+- Next: establish a root ledger after the execution insert and before runner
+  dispatch, repairing it from committed configuration on recovery. Reserve
+  graph attempts, model attempts, tool actions and child starts through the
+  verified family identity. Preserve typed quota refusals, started uncertain
+  effects and never-started child evidence. Expose root configuration only
+  after both runners enforce the shared budget and mixed-family recovery is
+  proved through public APIs.

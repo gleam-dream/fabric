@@ -35,6 +35,7 @@ fn state(id, parent, actions) {
     actions,
     0,
     controller.Ended(run.Cancelled),
+    None,
   )
 }
 

@@ -5,6 +5,8 @@
 
 import fabric/graph/child
 import fabric/graph/operation
+import fabric/internal/budget/model as budget
+import fabric/internal/budget/record as budget_record
 import fabric/internal/controller as agent
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
@@ -17,7 +19,7 @@ import gleam/result
 
 /// Change this version whenever a new record format or state changes the
 /// projection, so storage integrations can refresh their retained indexes.
-pub const version = 1
+pub const version = 2
 
 /// The run at the other end of a link and an opaque attachment key. A child's
 /// parent key must equal the key its parent retained for that child. The key
@@ -35,16 +37,52 @@ pub type Metadata {
   )
 }
 
-/// Reads supported agent or graph records with their actual record decoder.
+/// Reads supported execution and budget records with their actual decoder.
 /// Unknown, corrupt and incompatible formats are not eligible for retention
 /// decisions. No deployed definition is required and nothing executes.
 pub fn inspect(encoded: String) -> Result(Metadata, Nil) {
   case agent_record.decode(encoded) {
     Ok(state) -> Ok(agent_metadata(state))
     Error(_) ->
-      graph_record.decode(encoded)
-      |> result.map(graph_metadata)
-      |> result.replace_error(Nil)
+      case graph_record.decode(encoded) {
+        Ok(state) -> Ok(graph_metadata(state))
+        Error(_) ->
+          budget_record.decode(encoded)
+          |> result.map(fn(record) {
+            Metadata(
+              run.issued(budget_record.id(record.root)),
+              Some(Link(
+                run.issued(record.root),
+                budget_key(budget.limits(record.state)),
+              )),
+              [],
+              True,
+            )
+          })
+          |> result.replace_error(Nil)
+      }
+  }
+}
+
+fn budget_key(limits: budget.Limits) -> String {
+  json.array(
+    [
+      json.string("budget"),
+      json.int(limits.work),
+      json.int(limits.children),
+      json.int(limits.depth),
+    ],
+    fn(value) { value },
+  )
+  |> json.to_string
+}
+
+fn budget_link(root: String, limits: Option(budget.Limits)) -> List(Link) {
+  case limits {
+    None -> []
+    Some(limits) -> [
+      Link(run.issued(budget_record.id(root)), budget_key(limits)),
+    ]
   }
 }
 
@@ -117,7 +155,7 @@ fn agent_metadata(state: agent.State) -> Metadata {
   Metadata(
     run.issued(state.run),
     option.map(state.parent, parent_link),
-    children,
+    list.append(children, budget_link(state.run, state.family_budget)),
     ended && definite,
   )
 }
@@ -188,7 +226,7 @@ fn graph_metadata(state: graph.State) -> Metadata {
   Metadata(
     run.issued(state.run),
     option.map(state.parent, parent_link),
-    children,
+    list.append(children, budget_link(state.run, state.family_budget)),
     settled,
   )
 }

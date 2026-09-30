@@ -30,9 +30,9 @@ encoded payload exactly, including JSON whitespace; acknowledgement uses the
 saved bytes rather than rerunning codecs to normalize historical results.
 
 Record version 2 introduced execution modes and the waiting phase. The current
-version 5 also retains subgraph and agent attachments, initial input and idle child waits. Earlier versions
-are rejected explicitly; no migration or compatibility shim is provided for
-unreleased formats. The mode participates in definition
+version 6 also retains subgraph and agent attachments, initial input, idle child
+waits and optional root budget declarations. Version 5 remains readable without
+a budget declaration; versions 1–4 are rejected. The mode participates in definition
 compatibility, preventing a stored wait from becoming an executable activity.
 
 Consumption commits the output receipt, new state, route and next activation
@@ -180,8 +180,8 @@ After settling the agent root, `graph.recover(parent)` reads its saved outcome
 and changes `ChildUnresolved` to `ChildSettled`, preserving canceled graph state
 and receipts. Observation alone does not implicitly amend either family.
 
-Graph format version 5 adds the `agent` operation kind. Earlier unreleased graph
-formats are refused explicitly. Agent record version 6 adds terminal child
+Graph format version 5 adds the `agent` operation kind. Graph formats 1–4
+are refused explicitly. Agent record version 6 adds terminal child
 settlement; readers accept 1–6, writers 2–5 refuse this new evidence. The
 version-5 parent representation is unchanged. Upgrade readers before changing
 the store's writer setting.
@@ -252,8 +252,9 @@ the waiting-child phase and rejects earlier unreleased graph formats.
 
 ### Family retention
 
-`fabric/retention` derives metadata through the current agent and graph record
-decoders. It retains all immediate child reservations, including historical
+`fabric/retention` derives metadata through the current agent, graph and budget
+record decoders. Projection version 2 also links the ledger to its root with
+matching immutable limits. It retains all immediate child reservations, including historical
 graph receipts and agent actions, with an opaque attachment key that a child
 must repeat. A record is settled only when it is terminal with no unresolved
 effects. Declared run IDs and stored IDs must match. Unsupported or corrupt
@@ -313,12 +314,25 @@ CAS conflicts retry at most five times, then report contention without granting
 capacity. Missing or unreadable ledgers never become unlimited admission.
 
 The internal ledger and its storage tests implement this reservation contract.
-Runtime enforcement remains pending: root records must retain immutable limits,
-creation/recovery must establish the ledger before work, both runners must
+Root records retain limits and the retention projection attaches their ledger.
+Runtime enforcement remains pending: creation/recovery must establish the
+ledger before work, both runners must
 reserve at their admission boundaries, and typed refusals must preserve started
-effects and child tombstones. The retention projection must attach the ledger
-to its root before this becomes a public feature. No public budget API or
+effects and child tombstones. No public budget API or
 runner currently calls the ledger. G7 remains open for those integration proofs.
+
+The record boundary stores an optional `family_budget` only on the
+family's root execution. Descendants inherit through verified saved attachments
+and cannot declare replacement limits. Agent format 7 and graph format 6 require
+the field, with `null` meaning no family budget. Earlier supported records mean
+no family budget and must refuse a non-null budget field rather than silently
+drop it. Older agent writers refuse root budget configuration. Root and ledger
+retain reciprocal bookkeeping links under the retention projection; a missing
+or unexpected ledger therefore prevents pruning, as do mismatched limits.
+The ancestry reader resolves actual family depth and limits across graph and
+agent attachments; a child's local depth counter cannot reset either one.
+These record changes alone
+do not authorize starting budgeted runs until admission enforcement is wired.
 
 ## External jobs and deadlines
 

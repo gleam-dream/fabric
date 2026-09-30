@@ -80,10 +80,11 @@ committed outcome.
 
 ## Record versions
 
-The current runtime reads agent record versions 1–6 and writes version 6 by
-default. Versions 2–5 remain writable for representable states. Assistant
+The current runtime reads agent record versions 1–7 and writes version 7 by
+default. Versions 2–6 remain writable for representable states. Assistant
 provider data requires at least version 4; a graph parent attachment requires
-version 5; settled child evidence requires version 6. For a deployment that must still write version 3:
+version 5; settled child evidence requires version 6; root family-budget
+declarations require version 7. For a deployment that must still write version 3:
 
 ```gleam
 let assert Ok(runs) =
@@ -92,8 +93,8 @@ let assert Ok(runs) = store.with_record_version(runs, 3)
 ```
 
 Configure before starting the store, and use this returned value for all
-run handles and the sweeper. Versions outside 2–6 return
-`UnwritableVersion(requested, oldest, newest)`. Reads still accept 1–6.
+run handles and the sweeper. Versions outside 2–7 return
+`UnwritableVersion(requested, oldest, newest)`. Reads still accept 1–7.
 
 Deploy version-4 readers everywhere before enabling the new llm_wire tool
 turns, then restart with writer 4. Those turns preserve
@@ -113,6 +114,13 @@ settlement retains the child's outcome as `child_settled`, without invoking
 the delegation's result mapper or resuming the parent. Writers 2–5 refuse
 that evidence before changing the parent record. Direct terminal tool
 reconciliation retains the existing `reconciled` representation.
+
+Deploy version-7 readers before selecting writer 7. Version 7 retains optional
+family-budget declarations on roots; children cannot override them. This
+record support prepares admission enforcement, which has no public start API
+yet. Retention projection version 2 attaches a budget ledger to its root with
+matching limits. Run `refresh_retention` for existing rows before they can be
+pruned by the current projection. The PostgreSQL schema remains version 2.
 
 Existing values and runners retain their setting. The setting affects
 future writes only: it neither rewrites rows nor makes an existing

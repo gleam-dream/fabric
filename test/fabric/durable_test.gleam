@@ -767,6 +767,7 @@ pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
   let call = scripted.slow("a", "a")
   let stopping =
     controller.State(
+      family_budget: None,
       run: "run-stopping",
       agent: run.Identity("agent", 1),
       incarnation: 1,

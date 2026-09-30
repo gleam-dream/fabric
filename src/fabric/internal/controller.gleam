@@ -41,6 +41,7 @@
 //// child's end arrives as `ChildEnded`. A delegated action needs no runner:
 //// the child run drives itself.
 
+import fabric/internal/budget/model as budget
 import fabric/internal/invocation
 import fabric/internal/registry.{type Registry}
 import fabric/model.{
@@ -126,6 +127,8 @@ pub type State {
     history: List(ActionRecord),
     approvals_issued: Int,
     phase: Phase,
+    /// Only a root declares limits; children inherit via saved attachments.
+    family_budget: Option(budget.Limits),
   )
 }
 
@@ -233,6 +236,7 @@ pub fn start(
       history: [],
       approvals_issued: 0,
       phase: AwaitingModel(0),
+      family_budget: None,
     )
   call_model(env, state)
 }
@@ -1550,6 +1554,7 @@ pub fn never_started(
     history: [],
     approvals_issued: 0,
     phase: NeverStarted,
+    family_budget: None,
   )
 }
 

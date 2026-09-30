@@ -1,6 +1,7 @@
 //// A family counter has its own CAS record so reservations cannot invalidate
 //// a live workflow runner's revision. It stores data and a fresh write token.
 
+import fabric/internal/budget/config
 import fabric/internal/budget/model as budget
 import fabric/run
 import gleam/dynamic/decode
@@ -31,14 +32,7 @@ pub fn encode(record: Record) -> String {
     #("write", json.string(write_token())),
     #("run", json.string(id(record.root))),
     #("root", json.string(record.root)),
-    #(
-      "limits",
-      json.object([
-        #("work", json.int(limits.work)),
-        #("children", json.int(limits.children)),
-        #("depth", json.int(limits.depth)),
-      ]),
-    ),
+    #("limits", config.encode(limits)),
     #("claims", json.array(budget.claims(record.state), claim_json)),
   ])
   |> json.to_string
@@ -88,12 +82,7 @@ pub fn decode(text: String) -> Result(Record, Error) {
   let decoder = {
     use stored_id <- decode.field("run", decode.string)
     use root <- decode.field("root", decode.string)
-    use limits <- decode.field("limits", {
-      use work <- decode.field("work", decode.int)
-      use children <- decode.field("children", decode.int)
-      use depth <- decode.field("depth", decode.int)
-      decode.success(budget.Limits(work, children, depth))
-    })
+    use limits <- decode.field("limits", config.limits_decoder())
     use claims <- decode.field("claims", decode.list(claim_decoder()))
     decode.success(#(stored_id, root, limits, claims))
   }
