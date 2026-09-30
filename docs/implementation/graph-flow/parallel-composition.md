@@ -127,6 +127,13 @@ typed initial states and returns a typed pair or settled `fork.Failure`. Its
 constructor returns `Result`; both managed runtimes must use the parent's store.
 `graph.branch` opens a retained member by activation and one-based ordinal.
 
+The map authoring surface is `graph.map(identity, child, max_members:,
+concurrency:)`. Its input and successful output are native lists of the child's
+state and answer types. Both bounds must be positive; empty input succeeds,
+oversized input fails before reserving any child, and equal inputs still have
+separate ordinal identities. A waiting or uncertain child continues to occupy
+its concurrency slot. This uses the same typed failure and join rules as pairs.
+
 The pure scope tests cover F1–F8's transition and restoration cases. Public pair
 scenarios now prove overlapping execution, declared result order, typed fallback,
 partial directory-backend restart, join failure, cancellation during uncertain
@@ -134,8 +141,13 @@ sibling cleanup, and refusal of changed membership or fabricated join results.
 Graph records write version 13 and read 5–13; new scopes and branch attachments
 cannot be downgraded. Retention projection 10 includes every owned member.
 
-Wave 4 remains active. Public map, persistent discovery across every unsettled
-member, nested idle scopes, fork deadlines, repeated visits and sibling scopes,
+Map scenarios prove bounded overlap, ordered answers, distinct equal inputs,
+empty and oversized inputs, failure withdrawal, and directory-backend restart
+with completed, waiting and pending members. The separate graph consumer maps
+full generation/review loops with private child state.
+
+Wave 4 remains active. Persistent discovery across every unsettled member,
+nested idle scopes, fork deadlines, repeated visits and sibling scopes,
 shared-budget scenarios, and persistent parallel contention still require
 runtime evidence. Local wakeups and explicit recovery do not establish recovery
 after a missed notification across backend restart. Discovery projection 8

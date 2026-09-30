@@ -26,3 +26,10 @@ wrapper. The model is scripted here; real provider adapters remain a later wave.
 The example uses an in-memory store and scripted/manual decisions. Real restart
 coverage lives in `test/fabric/graph_runtime_test.gleam` and the PostgreSQL
 integration tests. The package has no Saga or Grind dependency.
+
+`execute_batch([0, 2, 3])` maps the same six-activation review loop over three
+private child states and joins `[3, 3, 4]` in input order. The map admits at most
+three unsettled children and at most sixteen members. Empty input produces an
+empty answer; oversized input is refused before any child starts. Public
+directory-backend restart coverage for mapped work lives in
+`test/fabric/graph_parallel_test.gleam`.

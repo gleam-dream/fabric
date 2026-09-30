@@ -24,17 +24,72 @@ fn infallible(_error: Nil) -> operation.Failure {
 }
 
 pub fn execute(limit: Int) -> graph.Snapshot(Int, Int) {
-  let reviewer =
-    operation.new(
-      run.Identity("scripted-reviewer", 1),
-      codec.int(),
-      codec.bool(),
-      fn(_, _, revision) { Ok(revision >= 3) },
-      infallible,
-    )
-  let handle = start_with_reviewer(limit, reviewer)
+  let handle = start_with_reviewer(limit, scripted_reviewer())
   let assert Ok(snapshot) = graph.await(handle, 5000)
   snapshot
+}
+
+fn scripted_reviewer() -> operation.Operation(Nil, Int, Bool) {
+  operation.new(
+    run.Identity("scripted-reviewer", 1),
+    codec.int(),
+    codec.bool(),
+    fn(_, _, revision) { Ok(revision >= 3) },
+    infallible,
+  )
+}
+
+/// Each revision enters its own bounded review loop. The batch keeps only the
+/// joined answers; members own their private state and policy-gated operations.
+pub fn execute_batch(
+  initial: List(Int),
+) -> graph.Snapshot(List(Int), List(Int)) {
+  let runs = store.in_memory(process.new_name("batch-review-demo"))
+  let assert Ok(Nil) = store.start(runs)
+  let child = review_runtime(runs, 6, scripted_reviewer())
+  let assert Ok(review) =
+    graph.map(
+      run.Identity("batch-review", 1),
+      child,
+      max_members: 16,
+      concurrency: 3,
+    )
+  let assert Ok(batch) = definition.node_id("batch")
+  let node =
+    definition.node(
+      batch,
+      review,
+      fn(state) { Ok(state) },
+      fn(state, outcome) {
+        case outcome {
+          Ok(answers) -> Ok(definition.Finish(state, answers))
+          Error(failure) ->
+            Error(
+              "review "
+              <> int.to_string(failure.member)
+              <> ": "
+              <> failure.reason,
+            )
+        }
+      },
+      [],
+    )
+  let values = codec.list(codec.int())
+  let assert Ok(spec) =
+    definition.build(definition.Spec(
+      run.Identity("review-batch", 1),
+      batch,
+      [node],
+      values,
+      values,
+      1,
+    ))
+  let runtime =
+    graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+  let assert Ok(id) = run.parse_id("batch-demo")
+  let assert Ok(handle) = graph.start(runtime, id, initial)
+  let assert Ok(done) = graph.await(handle, 5000)
+  done
 }
 
 /// The graph's state, routes and bounds are identical; only the source of
@@ -106,6 +161,17 @@ fn start_on(
   limit: Int,
   reviewer: operation.Operation(Nil, Int, Bool),
 ) -> graph.Handle(Nil, Int, Int) {
+  let runtime = review_runtime(runs, limit, reviewer)
+  let assert Ok(id) = run.parse_id("demo")
+  let assert Ok(handle) = graph.start(runtime, id, 0)
+  handle
+}
+
+fn review_runtime(
+  runs: store.Store,
+  limit: Int,
+  reviewer: operation.Operation(Nil, Int, Bool),
+) -> graph.Runtime(Nil, Int, Int) {
   let assert Ok(generate) = definition.node_id("generate")
   let assert Ok(review) = definition.node_id("review")
   let generator =
@@ -146,11 +212,7 @@ fn start_on(
       codec.int(),
       limit,
     ))
-  let runtime =
-    graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
-  let assert Ok(id) = run.parse_id("demo")
-  let assert Ok(handle) = graph.start(runtime, id, 0)
-  handle
+  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 pub fn main() -> Nil {
