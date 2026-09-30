@@ -23,8 +23,8 @@
   preserves completed, waiting and pending members across restart, with one
   private child per input and ordered answers. Multi-child discovery now follows
   every unsettled member; nested idle scopes converge and retain cancellation
-  cleanup after lost notifications. Fork deadlines, repeated visits and shared
-  family-budget scenarios remain open.
+  cleanup after lost notifications. Repeated visits, sibling isolation and shared
+  family-budget scenarios are verified. Fork deadlines remain open.
   Submission, receipt recovery, retained read-only
   job waits and scheduled observation are proven against an independently
   retained service. An explicit cancellation workflow now proves stop admission,
@@ -49,12 +49,13 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: 596 root tests, five graph consumer tests, 15 app consumer tests,
+- Gate status: 601 root tests, five graph consumer tests, 15 app consumer tests,
   19 external-job scenarios, five independent service tests and 56 PostgreSQL
   tests pass. Builds use warnings as errors. Source formatting, `nix fmt`,
   `nix flake check` and `git diff --check` pass on this host. One existing lease
-  scenario timed out in the initial full run; its isolated check and the full
-  rerun passed without source changes.
+  scenario timed out in the discovery checkpoint's initial full run; its isolated
+  check and the full rerun passed without source changes. The subsequent
+  family-scenario checkpoint passed its full root gate on the first run.
 - Current evidence: typed native operations and commands run through public
   start/read/await/recover/approval/reconciliation/cancellation APIs. Directory
   and PostgreSQL scenarios retain work over store-process loss. Terminal tool
@@ -62,9 +63,9 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: prove shared
-  budgets, deadlines, repeated visits and sibling isolation before accepting
-  stage 4. Existing pair/map evidence does not close the full parallel contract.
+- Next action: implement fork deadlines and exercise nested cleanup on
+  PostgreSQL before accepting stage 4. Existing pair/map evidence does not
+  close the full parallel contract.
 - Resume note: the user requested another checkpoint commit and continued
   implementation on 2026-09-30. The app goal is confirmed active with all six
   stages preserved. The initial runtime checkpoint
@@ -1486,3 +1487,30 @@ six-step goal remains active, with wave 3 next.
   contract. Nested cleanup evidence uses the shared leased backend; the new
   PostgreSQL contention scenario covers a flat map. This checkpoint does not
   claim stage-4 acceptance or completion of the six-stage goal.
+
+### Wave 4 — fork identity and family limits
+
+- Status: five additional public scenarios on the recovery runtime (`3d3fb4c`).
+  The existing implementation passes them without production changes. Stage 4
+  remains active; stages 5–6 remain open.
+- Evidence: a two-visit map retains four distinct children with identical
+  inputs, survives directory-store loss under an exact shared work/child budget,
+  and rejects earlier-visit signal references. Duplicate delivery to the old
+  child preserves its prior result and cannot satisfy a later join.
+- Composition: two sibling maps share the same definition and equal inputs
+  under one root work/child/depth budget. Finishing one leaves the other waiting
+  with no receipt. Cross-sibling signals are refused and the root joins in
+  member order. Exhausted child capacity produces a rejected member, settled
+  admitted siblings and withdrawn pending inputs. Nested maps cannot reset
+  family depth, and children cannot start waits after the parent uses the final
+  work grant.
+- Gate: root warnings-as-errors build and all 601 tests pass. Source formatting,
+  `nix fmt`, `nix flake check` and `git diff --check` pass. The graph/app/job/
+  PostgreSQL gates from the preceding checkpoint still apply to their unchanged
+  production and integration inputs: five/15/19 scenarios, five independent
+  service tests and 56 database tests. This checkpoint changes tests and
+  evidence documentation only; record and projection versions are unchanged.
+- Remaining: implement fork deadlines through the existing backend-clock and
+  retained-cleanup contracts, exercise nested cleanup against PostgreSQL, then
+  assess the full parallel contract before accepting stage 4. Real adapters
+  and the agent-recipe evaluation remain required afterward.
