@@ -19,9 +19,10 @@
   Its offline protocol gate passes; the live command stopped before I/O because
   no non-empty OpenAI key was available. Anthropic and TypeSafe keys are also
   absent or empty. The user has been asked to identify an existing provider setup.
-  The optional MCP package now has a native stdio connection proven against a
-  real SQLite service. Live LLM acceptance, a classifier producer and the typed
-  MCP graph binding remain open. No new paid infrastructure is selected.
+  The optional MCP package now has a native stdio connection and typed graph
+  binding proven against a real SQLite service, including approval, schema drift,
+  cancellation and offline restart. Live LLM acceptance and the classifier
+  producer remain open. No new paid infrastructure is selected.
   Stage 4 now includes typed pairs and bounded maps, isolated results, cyclic
   and sibling identity, shared budgets, persistent discovery and retained
   cancellation/expiration through nested cleanup. Its acceptance evidence is
@@ -30,19 +31,18 @@
   [managed composition contract](managed-composition.md) own stages 2–3.
 - Temporary substitutions: scripted decisions remain in tests and the earlier
   graph example. The new decision consumer has a real llm_wire entry point;
-  live acceptance is still pending. The MCP transport has real local evidence;
-  its typed graph binding and the classifier adapter are still required.
+  live acceptance is still pending. The MCP transport and graph binding have
+  real local evidence. The classifier adapter is still required.
   The synchronous authoring driver has been replaced by the persistent runner.
-- Gate status: the MCP package passes 11 client scenarios and four independent
-  service tests. The current root gate passes 616 tests. Earlier consumer gates
-  pass one decision consumer test, five graph consumer
-  tests, 15 app consumer tests, 19 external-job scenarios and five independent
-  service tests pass on the current adapter source. Builds use warnings as
-  errors. The 57-test PostgreSQL gate passed for the stage-4 checkpoint;
-  this adapter changes no backend or graph record format. Source formatting,
-  `nix fmt`, `nix flake check` and `git diff --check` pass on this host. The first
-  adapter implementation failed timed scenarios because of excessive codec
-  closure copying; the retained correction and evidence are recorded below.
+- Gate status: the MCP package passes 22 scenarios and four independent service
+  tests with warnings as errors. The root gate passed 616 tests in the transport
+  checkpoint; the typed MCP slice changes no core/backend source. Earlier gates
+  passed one decision consumer test, five graph consumer tests, 15 app consumer
+  tests, 19 external-job scenarios and five independent job-service tests.
+  The 57-test PostgreSQL gate passed for stage 4. Graph/backend formats are
+  unchanged. Source formatting, `nix fmt`, `nix flake check` and
+  `git diff --check` pass on this host. The earlier LLM codec-copying correction
+  and evidence are retained below.
 - Current evidence: typed native operations and commands run through public
   start/read/await/recover/approval/reconciliation/cancellation APIs. Directory
   and PostgreSQL scenarios retain work over store-process loss. Terminal tool
@@ -50,13 +50,11 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: bind native inputs/results and retained tool schemas to the
-  tested MCP connection, then prove policy and graph recovery against its real
-  local service. The published client candidate was inspected and rejected for
-  the schema, correlation and lifecycle gaps documented in [the MCP contract](mcp-adapter.md).
-  Classifier protocol work can proceed independently of missing live credentials. Retry the LLM live consumer only when usable provider
-  configuration is supplied. Stages 5–6 remain open; stage-4 acceptance does not
-  complete the full goal.
+- Next action: implement and exercise the classifier producer using current
+  primary protocol documentation. Retry the LLM live consumer only when usable
+  provider configuration is supplied. Then evaluate the ordinary agent-loop
+  graph recipe against its retained parity requirements. Stages 5–6 remain open;
+  completion of the optional MCP binding does not complete the full goal.
 - Resume note: the user requested another checkpoint commit and continued
   implementation on 2026-09-30. The app goal is confirmed active with all six
   stages preserved. The stage-4 deadline checkpoint is committed as `ea21454`;
@@ -1631,3 +1629,46 @@ six-step goal remains active, with wave 3 next.
   No design-ledger entry is cleared. This is a checkpoint toward stage 5, which
   remains active. Typed MCP graph binding, classifier/live LLM acceptance and
   stage 6 remain required; the full six-stage unbounded goal is confirmed active.
+
+### Wave 5: typed MCP graph binding and offline descriptor recovery
+
+- Governing rules: G6/G10 and [the MCP adapter contract](mcp-adapter.md).
+  `fabric_mcp.discover` pins a bounded catalog entry and its supported Blueprint
+  contracts. `bind` creates an ordinary policy-gated operation with separately
+  named application identity, server and remote tool. Each invocation rediscovers
+  and checks contracts before calling the tool; changed/unsupported schemas and
+  server mismatches are definite pre-call failures. Post-call errors, malformed
+  outputs, interrupted replies and conversion failures retain uncertainty.
+- Native boundary: Blueprint checks native input against the remote contract.
+  A pure application conversion consumes retained content and optional structured
+  content. Output requires a persistence codec, not a provider schema. Tool
+  annotations cannot authorize effects or opt in to replay. Content is retained
+  without executing resource links or embedded data.
+- Recovery: `fabric.mcp.tool.v1` saves the descriptor in application configuration.
+  `fabric.mcp.receipt.v1` retains server/tool identities, schemas and original
+  response. Both restore without a live connection. A receipt's native value
+  must agree with its original response, and its saved contract must match the
+  deployed binding. Application meaning changes still require an operation
+  version change. Fabric graph writer 14/readers 5–14 and all backend formats
+  remain unchanged.
+- Evidence: the first public graph scenario failed at unimplemented discovery.
+  Eleven graph/descriptor scenarios now cover native results, approval, drift,
+  identity, supported/unsupported schemas, bounded catalog discovery, optional
+  structured output, text-only output, complete-result compatibility, content
+  preservation, conversion errors, corruption and offline restart. Cancellation
+  sends the remote stop request and retains the graph's unresolved effect.
+  Invalid/lost post-effect results never route or repeat the actual counter.
+  Store-loss recovery reconstructs a saved descriptor with the connection closed
+  and recovers its completed receipt; a new server observes one retained effect.
+- Gate: `gleam build --warnings-as-errors`, all 22 package scenarios and four
+  independent service tests pass (`/tmp/fabric-mcp-binding-final.log`). The root
+  source is unchanged since its 616-test transport gate. `nix fmt`,
+  `nix flake check` and `git diff --check` pass at the binding checkpoint.
+- Acceptance: requested selected behavior, package boundaries, typed/persistence
+  contracts and public behavioral evidence pass. No design-ledger entry is
+  cleared. The MCP slice is accepted for modern stdio and the supported closed
+  schema subset. HTTP, legacy initialization, arbitrary schema resolution and
+  multi-round-trip interactions are not claimed.
+- Remaining goal: the classifier producer and live LLM acceptance, followed by
+  the agent-loop recipe/parity evaluation. The full unbounded six-stage goal
+  remains active. No credential failure prevents independent classifier work.
