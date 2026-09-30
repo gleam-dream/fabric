@@ -45,7 +45,7 @@ pub fn refresh(
           <> table
           <> " SET discovery = $3::jsonb, discovery_revision = revision, observed_key = CASE WHEN "
           <> same_poll
-          <> " THEN observed_key ELSE NULL END, observed_revision = NULL, discovery_checked_at = CASE WHEN "
+          <> " THEN observed_key ELSE NULL END, observed_dependencies = NULL, discovery_checked_at = CASE WHEN "
           <> same_poll
           <> " THEN discovery_checked_at ELSE '-infinity' END WHERE run_id = $1 AND revision = $2",
         )

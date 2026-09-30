@@ -58,7 +58,7 @@ pub fn idle_graph_and_agent_attachments_have_stable_discovery_keys_test() {
     wait.run |> should.equal(support.id("root"))
     wait.trigger
     |> should.equal(discovery.Changed(
-      support.id(child.reserved_id("root", 1)),
+      [support.id(child.reserved_id("root", 1))],
       None,
     ))
     project(graph.State(..state, incarnation: 8)) |> should.equal(wait)
@@ -142,16 +142,19 @@ pub fn free_states_without_an_idle_child_are_not_scheduled_test() {
 pub fn unknown_corrupt_and_misfiled_records_have_no_usable_discovery_index_test() {
   let assert Ok(encoded) = record.encode(waiting(operation.Subgraph))
   let indexed = discovery.encode("root", encoded)
-  json.parse(indexed, decode.at(["wait", "dependency"], decode.string))
-  |> should.equal(Ok(child.reserved_id("root", 1)))
+  json.parse(
+    indexed,
+    decode.at(["wait", "dependencies"], decode.list(decode.string)),
+  )
+  |> should.equal(Ok([child.reserved_id("root", 1)]))
   list.each(
     ["invalid", string.replace(encoded, "\"version\":13", "\"version\":1199")],
     fn(encoded) {
       discovery.inspect(encoded) |> should.be_error
-      discovery.encode("root", encoded) |> should.equal("{\"version\":8}")
+      discovery.encode("root", encoded) |> should.equal("{\"version\":9}")
     },
   )
-  discovery.encode("wrong", encoded) |> should.equal("{\"version\":8}")
+  discovery.encode("wrong", encoded) |> should.equal("{\"version\":9}")
 }
 
 pub fn completed_and_settled_child_attachments_stop_dependency_discovery_test() {

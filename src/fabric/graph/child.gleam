@@ -1,6 +1,7 @@
 //// Observable data for a managed graph attachment. Open the referenced child
 //// to answer its approvals or signals; the child owns its own progress.
 
+import fabric/graph/fork
 import fabric/run
 
 pub type Parent {
@@ -32,6 +33,8 @@ pub type Progress {
   )
   Signal(run.Identity)
   Job(run.Identity)
+  /// An idle structured scope. Open its graph and branches to resolve inputs.
+  Fork(fork.Snapshot)
   Uncertain(String)
   FinishedUncertain(String)
   InvalidOutput(output: String, reason: String)

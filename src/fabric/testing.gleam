@@ -952,7 +952,7 @@ type Row {
     revision: Int,
     record: String,
     lease: Option(#(String, Int)),
-    observed: Option(#(String, Option(Int))),
+    observed: Option(#(String, List(#(String, Option(Int))))),
     checked: Int,
   )
 }
@@ -1139,21 +1139,26 @@ fn leased_serve(
           case row.lease, wait_for(id, row.record) {
             None, Some(wait) -> {
               let #(revision, ready) = case wait.trigger {
-                discovery.At(due) -> #(None, now >= due)
-                discovery.Changed(dependency, due) -> {
-                  let revision =
-                    dict.get(rows, run.id_to_string(dependency))
-                    |> result.map(fn(row) { row.revision })
-                    |> option.from_result
+                discovery.At(due) -> #([], now >= due)
+                discovery.Changed(dependencies, due) -> {
+                  let revisions =
+                    list.map(dependencies, fn(dependency) {
+                      let id = run.id_to_string(dependency)
+                      let revision =
+                        dict.get(rows, id)
+                        |> result.map(fn(row) { row.revision })
+                        |> option.from_result
+                      #(id, revision)
+                    })
                   #(
-                    revision,
-                    row.observed != Some(#(wait.key, revision))
+                    revisions,
+                    row.observed != Some(#(wait.key, revisions))
                       || deadline_due(due, now),
                   )
                 }
                 discovery.Poll(every, due) -> #(
-                  None,
-                  row.observed != Some(#(wait.key, None))
+                  [],
+                  row.observed != Some(#(wait.key, []))
                     || row.checked + every <= now
                     || deadline_due(due, now),
                 )

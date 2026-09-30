@@ -92,6 +92,12 @@ pub fn version_thirteen_retains_fork_scopes_and_rejects_legacy_downgrades_test()
     },
   )
   graph.step(complete, graph.ForkWaiting(ref)) |> should.be_error
+  graph.step(fixed, graph.ForkWaiting(ref)) |> should.be_error
+  graph.step(reserved, graph.ForkWaiting(ref)) |> should.be_error
+  record.encode(
+    graph.State(..fixed, phase: graph.WaitingFork(a, graph.JoiningFork)),
+  )
+  |> should.be_error
   graph.step(partial, graph.ForkMappingFailed(ref, "", "early join"))
   |> should.be_error
   record.encode(graph.State(..fixed, phase: graph.Ready(a))) |> should.be_error

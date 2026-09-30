@@ -133,14 +133,15 @@ enforce work, child and depth reservations across restarts. Initialization
 creates/adopts the ledger and commits a root marker before any dispatch; an
 initialized root with a missing ledger refuses recovery. Retention projection
 version 3 introduced marker validation and attaches the ledger with matching
-limits. The current retention projection is version 9; it also understands graph
-job waits, owned cancellation and signal/job/child deadlines. Run `refresh_retention` for existing
+limits. The current retention projection is version 10; it also understands graph
+job waits, owned cancellation, signal/job/child deadlines and every retained
+fork member. Run `refresh_retention` for existing
 rows before they can be pruned by the current projection.
 
-Graph records now write version 12 and read versions 5–12. Version 7 adds a retained
+Graph records now write version 13 and read versions 5–13. Version 7 adds a retained
 read-only job wait. Explicit `graph.poll_job` records its checked outcome;
 canceling the wait detaches observation without canceling remote work. Deploy
-version-12 graph readers before writing new records. Version 8 retains optional
+version-13 graph readers before writing new records. Version 8 retains optional
 polling intervals, including completed activation history. Missing intervals in
 older records mean manual observation. Scheduled intervals cannot be hidden in
 older record versions. PostgreSQL schema version 4 indexes scheduled polls along
@@ -151,9 +152,12 @@ a new schema migration. Version 10 retains signal deadline configuration,
 arming, absolute due times and expiration outcomes. Version 11 adds job deadlines
 and records expiration separately from stop progress and terminal evidence.
 Version 12 adds managed-child deadlines and retains expiration through uncertain
-child settlement. The current discovery projection is version 7; schema migration 5 adds absolute due waits to the ready
-index. Run `refresh_discovery` to refresh existing metadata. Deadline contracts
-and due times cannot be hidden in older record versions.
+child settlement. Version 13 adds retained fork scopes, ordered member results
+and reciprocal branch attachments. These cannot be hidden in older record
+versions. The current discovery projection is version 9 and schema version is 6.
+Schema migration 5 adds absolute due waits; migration 6 indexes every unfinished
+fork member. Run `refresh_discovery` to refresh existing metadata. Deadline
+contracts and due times cannot be hidden in older record versions.
 
 Existing values and runners retain their setting. The setting affects
 future writes only: it neither rewrites rows nor makes an existing
@@ -219,8 +223,8 @@ CREATE TABLE fabric_runs (
   parent_id text GENERATED ALWAYS AS (retention ->> 'parent') STORED
     REFERENCES fabric_runs(run_id) DEFERRABLE INITIALLY IMMEDIATE,
   discovery jsonb, discovery_revision bigint,
-  dependency_id text GENERATED ALWAYS AS (discovery #>> '{wait,dependency}') STORED,
-  observed_key text, observed_revision bigint,
+  dependency_ids jsonb GENERATED ALWAYS AS (discovery #> '{wait,dependencies}') STORED,
+  observed_key text, observed_dependencies jsonb,
   discovery_checked_at timestamptz NOT NULL DEFAULT '-infinity',
   lease_owner text, lease_until timestamptz,
   updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
@@ -298,9 +302,9 @@ Erlang VM killed with SIGKILL to verify automatic recovery without tool replay.
 
 ## Idle dependency, scheduled-job and deadline discovery
 
-Schema version 3 stores Fabric's validated discovery projection beside each
-execution and maintains it atomically on normal writes. `claim_ready` leases
-a free wait and records its dependency revision in one statement. Child changes
+Schema version 3 introduced Fabric's validated discovery projection beside each
+execution, maintained atomically on normal writes. `claim_ready` leases
+a free wait and records its dependency revisions in one statement. Child changes
 during recovery remain eligible for a later scan. These claims change neither
 execution revisions nor retention ages. Concurrent scans skip locked rows and
 check the least recently inspected waits first.
@@ -343,6 +347,22 @@ expiration switches to dependency-only settlement; reconciliation makes the
 parent eligible again. Registered discovery follows retained nested cleanup,
 without recreating missing children or reopening parent routes. Retention
 projection 9 preserves child links and refuses to prune unresolved expiration.
+
+Discovery projection 9 and schema version 6 extend dependency waits to every
+unfinished fork member. A claim records a map from child identity to revision;
+a missing child has a null revision, so creation, change or disappearance can
+make the parent eligible. A claim does not authorize recreating a missing
+acknowledged child. Unchanged waits stop being eligible until a dependency or
+deadline changes. Nested recovery preserves live foreign parent leases while
+following independently expired descendants.
+
+Stop older backend writers before applying migration 6: it replaces the scalar
+`dependency_id` and `observed_revision` columns with `dependency_ids` and
+`observed_dependencies`. Migrate, deploy the compatible backend, then run
+`refresh_discovery` in bounded batches before relying on idle discovery.
+The migration leaves record bytes, revisions, leases, retention ages and
+scheduled-poll observation times intact. Stale projections remain ineligible
+until refreshed; dependency waits receive a fresh baseline observation.
 
 Register the graph with the shared sweeper. Only a claimed job is observed;
 recovery does not poll unclaimed relatives. Pending reads release their lease.

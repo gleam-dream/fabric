@@ -307,9 +307,9 @@ pub fn step(
     ForkWaiting(ref), Forking(a, mode) -> {
       use _ <- result.try(matches(state, a, ref))
       use fork <- result.try(current_fork(state, a.id))
-      use _ <- result.try(case scope.join(fork) {
-        scope.Ready(_) -> Error(WrongPhase)
-        scope.Waiting | scope.Unresolved(_) -> Ok(Nil)
+      use _ <- result.try(case scope.can_wait(fork) {
+        False -> Error(WrongPhase)
+        True -> Ok(Nil)
       })
       Ok(#(State(..state, phase: WaitingFork(a, mode)), []))
     }

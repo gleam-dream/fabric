@@ -18,6 +18,7 @@ import fabric/internal/budget/model as reservations
 import fabric/internal/graph/agent_child
 import fabric/internal/graph/child_driver
 import fabric/internal/graph/controller as control
+import fabric/internal/graph/fork as scope
 import fabric/internal/graph/fork_driver
 import fabric/internal/graph/live
 import fabric/internal/graph/record
@@ -628,16 +629,21 @@ fn reserved_child(
       })
       case reservation, state.phase {
         child_driver.Cancel, control.Ended(_) -> Ok(Nil)
+        child_driver.Cancel, control.Forking(_, control.ClosingFork(_))
+        | child_driver.Cancel, control.WaitingFork(_, control.ClosingFork(_))
+        ->
+          // Intent already committed: follow cleanup without restarting waits.
+          runner.discover(runtime.store, runtime.work, runtime.options, id, 3)
+          |> result.replace(Nil)
+          |> result.map_error(from_runner)
         child_driver.Cancel, _ ->
           runner.cancel(runtime.store, runtime.work, runtime.options, id, 3)
           |> result.replace(Nil)
           |> result.map_error(from_runner)
-        child_driver.Discover, _ ->
+        child_driver.Discover, _ | child_driver.Start, _ ->
+          // An acknowledged child may be idle inside a nested fork. Inspect
+          // it without resetting unchanged waits on every parent observation.
           runner.discover(runtime.store, runtime.work, runtime.options, id, 3)
-          |> result.replace(Nil)
-          |> result.map_error(from_runner)
-        child_driver.Start, _ ->
-          runner.recover(runtime.store, runtime.work, runtime.options, id, 3)
           |> result.replace(Nil)
           |> result.map_error(from_runner)
       }
@@ -713,6 +719,7 @@ fn child_progress(
     Ok(#(_, state)) -> {
       use _ <- result.try(check_attachment(state, parent))
       use nested <- result.try(case state.phase {
+        control.WaitingFork(a, _) -> nested_fork_progress(runs, state, a, left)
         control.Joining(a, child) | control.WaitingChild(a, child) ->
           case a.prepared.kind {
             operation.Agent ->
@@ -756,12 +763,48 @@ fn child_progress(
             | child.AgentInput(..)
             | child.Signal(_)
             | child.Job(_)
+            | child.Fork(_)
             | child.Uncertain(_) -> nested
             child.FinishedUncertain(reason) -> child.Uncertain(reason)
             _ -> child.Working
           }
       })
     }
+  }
+}
+
+fn nested_fork_progress(
+  runs: store.Store,
+  state: control.State,
+  a: control.Activation,
+  left: Int,
+) -> Result(child.Progress, Error) {
+  use members <- result.try(
+    control.current_fork(state, a.id)
+    |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
+  )
+  use active <- result.try(
+    list.try_map(scope.unsettled(members), fn(ref) {
+      use member <- result.try(
+        scope.member(members, ref)
+        |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
+      )
+      let id = child.branch_id(state.run, a.id, ref.member)
+      // A parked scope has acknowledged children; absence is not fresh work.
+      use _ <- result.try(store.get(runs, id) |> result.map_error(StoreFailed))
+      use progress <- result.map(child_progress(
+        runs,
+        child.Branch(state.run, a.id, ref.member),
+        id,
+        left - 1,
+      ))
+      progress == child.Working
+      || member.status != fork.Admitted(fork_driver.progress(progress))
+    }),
+  )
+  case list.any(active, fn(value) { value }) {
+    True -> Ok(child.Working)
+    False -> Ok(child.Fork(scope.snapshot(members)))
   }
 }
 

@@ -21,8 +21,10 @@
   pairs now run actual concurrent managed children, retain ordered results and
   recover after a partial directory-backend restart. Bounded typed map now
   preserves completed, waiting and pending members across restart, with one
-  private child per input and ordered answers. Persistent multi-child discovery,
-  nested idle scopes and fork deadlines remain open.
+  private child per input and ordered answers. Multi-child discovery now follows
+  every unsettled member; nested idle scopes converge and retain cancellation
+  cleanup after lost notifications. Fork deadlines, repeated visits and shared
+  family-budget scenarios remain open.
   Submission, receipt recovery, retained read-only
   job waits and scheduled observation are proven against an independently
   retained service. An explicit cancellation workflow now proves stop admission,
@@ -47,12 +49,12 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: 592 root tests, five graph consumer tests, 15 app consumer tests,
-  19 external-job consumer scenarios and five independent service tests pass.
-  The PostgreSQL gate passes 54 tests, including overdue signal/job/child recovery, database time, owned cancellation, scheduled job recovery and pruning,
-  migration and concurrent index refresh. Builds use
-  warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
-  and `git diff --check` pass on this host.
+- Gate status: 596 root tests, five graph consumer tests, 15 app consumer tests,
+  19 external-job scenarios, five independent service tests and 56 PostgreSQL
+  tests pass. Builds use warnings as errors. Source formatting, `nix fmt`,
+  `nix flake check` and `git diff --check` pass on this host. One existing lease
+  scenario timed out in the initial full run; its isolated check and the full
+  rerun passed without source changes.
 - Current evidence: typed native operations and commands run through public
   start/read/await/recover/approval/reconciliation/cancellation APIs. Directory
   and PostgreSQL scenarios retain work over store-process loss. Terminal tool
@@ -60,9 +62,8 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: close persistent multi-child discovery and nested-scope
-  recovery for both typed pair and map. Prove shared
-  budgets, deadlines, repeated visits and persistent contention before accepting
+- Next action: prove shared
+  budgets, deadlines, repeated visits and sibling isolation before accepting
   stage 4. Existing pair/map evidence does not close the full parallel contract.
 - Resume note: the user requested another checkpoint commit and continued
   implementation on 2026-09-30. The app goal is confirmed active with all six
@@ -96,19 +97,19 @@ The full objective includes all six waves below, not merely that first path.
 These identifiers project the selected graph design into executable evidence.
 They clarify the proposed examples for the authorized implementation program.
 
-| Rule | Contract                                                                                                                                                                              | First evidence owner                                                    |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| G1   | A graph binds heterogeneous native operation types without unchecked casts; codecs are required for durable values, provider schema is not.                                           | Wave 1 authoring consumer and codec tests                               |
-| G2   | Construction validates identity, positive bounds, unique nodes and destination references before any work runs. A runtime destination must be allowed by its source node.             | Wave 1 construction/routing tests                                       |
-| G3   | Every visit gets a fresh activation identity, including pure cycles; the limit stops the next activation before its body runs.                                                        | Wave 1 loop trace and bound tests; wave 2 recovery tests                |
-| G4   | Input selection, operation failure, codec failure and transition failure remain distinct; invalid or uncertain results release no successor work.                                     | Wave 1 failure tests; wave 2 fenced effects                             |
-| G5   | Result, state, route, activation identities and per-run bounds commit together before dispatch. Family capacity is reserved separately before admission; stored decisions are reused. | Wave 2 persistent restart and lost-ack tests                            |
-| G6   | An effect starts only after validated admission and a committed start fence. Lost results remain uncertain; approval uses fresh context after recovery.                               | Wave 2 effect/policy tests                                              |
-| G7   | Child identity and shared family capacity are reserved before start; recovery adopts saved children and grants. Signals are correlated, consumed once and retained durably.           | Wave 3 child/signal tests                                               |
-| G8   | External submission, accepted receipt and business completion are distinct; attachment/cancellation ownership is explicit.                                                            | Wave 3 real local job integration                                       |
-| G9   | A structured fork retains private branch results, joins only its own members in defined order, and preserves failure/uncertainty.                                                     | Wave 4 fork lifecycle and public pair/map tests; discovery remains open |
-| G10  | Changing a typed decision producer does not change routes or recovery. Provider adapters preserve their real protocol and effect semantics.                                           | Wave 5 adapter tests and live/local protocol exercises                  |
-| G11  | An agent recipe is evaluated against current transcript, policy, approval, recovery, cancellation and version guarantees.                                                             | Wave 6 parity report and scenarios                                      |
+| Rule | Contract                                                                                                                                                                              | First evidence owner                                                  |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| G1   | A graph binds heterogeneous native operation types without unchecked casts; codecs are required for durable values, provider schema is not.                                           | Wave 1 authoring consumer and codec tests                             |
+| G2   | Construction validates identity, positive bounds, unique nodes and destination references before any work runs. A runtime destination must be allowed by its source node.             | Wave 1 construction/routing tests                                     |
+| G3   | Every visit gets a fresh activation identity, including pure cycles; the limit stops the next activation before its body runs.                                                        | Wave 1 loop trace and bound tests; wave 2 recovery tests              |
+| G4   | Input selection, operation failure, codec failure and transition failure remain distinct; invalid or uncertain results release no successor work.                                     | Wave 1 failure tests; wave 2 fenced effects                           |
+| G5   | Result, state, route, activation identities and per-run bounds commit together before dispatch. Family capacity is reserved separately before admission; stored decisions are reused. | Wave 2 persistent restart and lost-ack tests                          |
+| G6   | An effect starts only after validated admission and a committed start fence. Lost results remain uncertain; approval uses fresh context after recovery.                               | Wave 2 effect/policy tests                                            |
+| G7   | Child identity and shared family capacity are reserved before start; recovery adopts saved children and grants. Signals are correlated, consumed once and retained durably.           | Wave 3 child/signal tests                                             |
+| G8   | External submission, accepted receipt and business completion are distinct; attachment/cancellation ownership is explicit.                                                            | Wave 3 real local job integration                                     |
+| G9   | A structured fork retains private branch results, joins only its own members in defined order, and preserves failure/uncertainty.                                                     | Wave 4 pair/map, nested recovery and PostgreSQL competing-claim tests |
+| G10  | Changing a typed decision producer does not change routes or recovery. Provider adapters preserve their real protocol and effect semantics.                                           | Wave 5 adapter tests and live/local protocol exercises                |
+| G11  | An agent recipe is evaluated against current transcript, policy, approval, recovery, cancellation and version guarantees.                                                             | Wave 6 parity report and scenarios                                    |
 
 Canonical design anchors: GRAPH-FLOW sections “Four concepts at the authoring
 boundary”, “One control decision per activation”, “Parallel composition
@@ -1442,3 +1443,46 @@ six-step goal remains active, with wave 3 next.
   scopes, shared family-budget scenarios, and PostgreSQL parallel contention.
   Stages 5–6 remain open. The next implementation reduces the discovery gap;
   explicit recovery and local wakeups do not close it.
+
+### Wave 4 — multi-child discovery and nested recovery
+
+- Status: checkpoint extending the bounded map runtime (`b1b899d`). Wave 4
+  remains active and stages 5–6 remain open. The full goal is active.
+- Delivery: idle fork discovery records every unfinished branch identity and
+  its observed revision, including absence. PostgreSQL claims a changed parent
+  atomically with these observations. Competing scanners cannot both claim the
+  same free wait. A changed nonfirst member is sufficient; unchanged waits
+  converge instead of repeatedly claiming their ancestors.
+- Nested lifecycle: `child.Fork` exposes idle structured progress. Starting an
+  existing child follows its saved state; repeated cancellation follows saved
+  cleanup. Unclaimed unchanged ancestors remain read-only. Independently
+  expired branches can recover beneath a live foreign parent lease without
+  taking that parent's ownership. Parking requires all starts acknowledged,
+  no ready admission and no ready join.
+- Evidence: four shared leased-backend scenarios cover lost local watches,
+  nested maps under a serial parent, canceled scopes with uncertain leaf
+  effects, and independent descendant expiration. They verify unchanged idle
+  revisions, ordered results, eventual settlement, suppressed business routing
+  and no repeated effects. The nested polling and cancellation cases exposed
+  restart loops before the fixes. Record checks rejected invalid parking only
+  after the new shared guard.
+- Database evidence: a real PostgreSQL map survives store-owner loss, detects
+  changes to each branch, arbitrates concurrent claims, completes through
+  registered sweeping and prunes its four-row settled family. A schema-5
+  upgrade preserves exact execution bytes, revisions, ages and the existing
+  scheduled-poll key and timestamp through migration and metadata refresh.
+- Compatibility: graph records remain writer 13/readers 5–13, agent records 7
+  and retention projection 10. Discovery is version 9 and PostgreSQL is schema 6. Stop older backend writers before migrating the replaced scalar dependency
+  columns, then refresh stale discovery metadata in bounded batches. No new
+  dependency or infrastructure was introduced.
+- Gate: root warnings-as-errors build and all 596 tests pass. One existing
+  held-runner lease test timed out in the first full run; its focused check and
+  a full rerun passed unchanged. Graph/app consumer builds and five/15 tests
+  pass. External jobs pass 19 Gleam scenarios and five service tests. PostgreSQL
+  passes 56 tests. Source formatting, `nix fmt`, `nix flake check` and
+  `git diff --check` pass on this host.
+- Remaining: fork deadlines, repeated visits and sibling-scope isolation,
+  shared family-budget scenarios, and acceptance of the complete parallel
+  contract. Nested cleanup evidence uses the shared leased backend; the new
+  PostgreSQL contention scenario covers a flat map. This checkpoint does not
+  claim stage-4 acceptance or completion of the six-stage goal.

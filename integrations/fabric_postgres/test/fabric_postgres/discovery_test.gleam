@@ -1,5 +1,6 @@
 //// G7: migrated discovery is derived metadata; it never changes executions.
 
+import fabric/discovery
 import fabric/graph
 import fabric/graph/child
 import fabric/graph/job
@@ -193,4 +194,70 @@ pub fn refreshing_a_scheduled_wait_preserves_its_last_claim_time_test() {
   fabric_postgres.refresh_discovery(settings, 10) |> should.equal(Ok(1))
   executions(connection, table) |> should.equal(before)
   backend.claim_ready("poller-again", 60_000, 1) |> should.equal(Ok([]))
+}
+
+pub fn upgrading_schema_five_preserves_execution_and_scheduled_observation_test() {
+  let connection = support.pool(4)
+  let schema = support.schema()
+  let assert Ok(settings) =
+    fabric_postgres.settings(connection, "upgrade")
+    |> fabric_postgres.with_schema(schema)
+  let assert Ok(_) =
+    pog.transaction(connection, fn(connection) {
+      use _ <- result.try(
+        pog.query("CREATE SCHEMA \"" <> schema <> "\"")
+        |> pog.execute(connection),
+      )
+      use _ <- result.try(
+        pog.query("SET LOCAL search_path TO \"" <> schema <> "\"")
+        |> pog.execute(connection),
+      )
+      list.try_each(list.take(migrations.all(), 5), fn(migration) {
+        list.try_each(migration.statements, fn(sql) {
+          pog.query(sql) |> pog.execute(connection) |> result.replace(Nil)
+        })
+      })
+    })
+  let runs = store.in_memory(process.new_name("upgrade-fixture"))
+  let assert Ok(Nil) = store.start(runs)
+  let runtime =
+    graph_run_test.scheduled_job(runs, 60_000, fn(_) { Ok(job.Pending) })
+  let assert Ok(id) = run.parse_id("upgrade-poll")
+  let assert Ok(handle) = graph.start(runtime, id, "receipt")
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.AwaitingJob(_) = waiting.status
+  let row = await_parked(runs, "upgrade-poll", 200)
+  let table = table(schema)
+  // Projection 8 used the same scheduled-poll key before multi-child discovery.
+  let assert Ok(_) =
+    pog.query(
+      "INSERT INTO "
+      <> table
+      <> " (run_id,revision,record,discovery,discovery_revision,observed_key,observed_revision,discovery_checked_at) VALUES ('upgrade-poll',7,$1,jsonb_set($2::jsonb,'{version}','8'),7,$2::jsonb #>> '{wait,key}',NULL,clock_timestamp())",
+    )
+    |> pog.parameter(pog.text(row.record))
+    |> pog.parameter(pog.text(discovery.encode("upgrade-poll", row.record)))
+    |> pog.execute(connection)
+  let observed = fn() {
+    let assert Ok(rows) =
+      pog.query(
+        "SELECT json_build_array(observed_key,discovery_checked_at)::text FROM "
+        <> table,
+      )
+      |> pog.returning(decode.field(0, decode.string, decode.success))
+      |> pog.execute(connection)
+    rows.rows
+  }
+  let before = executions(connection, table)
+  let last_observation = observed()
+  fabric_postgres.migrate(settings) |> should.equal(Ok(Nil))
+  executions(connection, table) |> should.equal(before)
+  observed() |> should.equal(last_observation)
+  let backend = fabric_postgres.backend(settings)
+  backend.claim_ready("scanner", 60_000, 10) |> should.equal(Ok([]))
+  fabric_postgres.refresh_discovery(settings, 10) |> should.equal(Ok(1))
+  fabric_postgres.refresh_discovery(settings, 10) |> should.equal(Ok(0))
+  executions(connection, table) |> should.equal(before)
+  observed() |> should.equal(last_observation)
+  backend.claim_ready("scanner", 60_000, 10) |> should.equal(Ok([]))
 }
