@@ -44,6 +44,15 @@ An interrupted request stays uncertain and is resolved through observation,
 without automatically repeating the request. The consumer exercises saved and
 lost acknowledgments across Fabric restart against the real service.
 
+`fabric_jobs_demo.deadline_runtime` bounds that owned wait with
+`operation.with_deadline`. A restarted sweeper records expiration and requests
+a stop using the existing ownership grant. It reports
+`Expired(due, JobStopped(reference))` only after the service confirms cancellation.
+A lost stop acknowledgment remains uncertain until observation settles it;
+the request is not repeated. The retained cause distinguishes expiration from
+caller-requested cancellation. The controlled test clock advances deadline and
+lease eligibility; the separate HTTP service uses its own real clock and journal.
+
 Run from the repository root:
 
 ```sh
@@ -114,6 +123,7 @@ transaction lock. Cancellation removes any unpublished residue before recording
 its terminal outcome. These guarantees belong to this example service; they
 are not a general exactly-once effect guarantee.
 
-Durable deadlines remain open. Manual observation
-works with any store; scheduled observation needs a leased backend and sweeper.
+Manual observation works with any store; scheduled observation and automatic
+deadline recovery need a leased backend and sweeper. Unleased deadlines require
+explicit recovery or polling.
 Saga and Grind remain optional consumer integrations.

@@ -30,12 +30,13 @@ encoded payload exactly, including JSON whitespace; acknowledgement uses the
 saved bytes rather than rerunning codecs to normalize historical results.
 
 Record version 2 introduced execution modes and the waiting phase. The current
-version 9 also retains subgraph and agent attachments, initial input, idle child
+version 11 also retains subgraph and agent attachments, initial input, idle child
 waits, optional root budget declarations and job observations with explicit
-cancellation ownership. Versions 5–8 remain readable for states they can represent;
+cancellation ownership and deadlines. Versions 5–10 remain readable for states they can represent;
 versions 1–4 are rejected.
 Job observations require version 7; scheduled observations require version 8.
-Owned cancellation requires version 9.
+Owned cancellation requires version 9, signal deadlines version 10 and job
+deadlines version 11.
 The mode participates in definition
 compatibility, preventing a stored wait from becoming an executable activity.
 
@@ -327,7 +328,7 @@ writes. `refresh_discovery` projects old rows in bounded, concurrent batches
 without changing execution data, leases or ages. Unknown records are examined
 once per projection version. End-to-end tests cover missed wakeups, cancellation
 settlement, unchanged nested waits, concurrent claims and old-writer invalidation.
-Durable due-time selection remains open until deadline states are implemented.
+The deadline contracts below add absolute due-time selection to this discovery path.
 
 ### Family retention
 
@@ -487,8 +488,8 @@ Python's standard library, already provided by the development environment.
 These are example-service implementation choices, not Fabric dependencies.
 Acceptance requires real HTTP submission, stored receipts, actual artifact
 creation, concurrent duplicate submission and Fabric process loss across the
-acceptance/receipt boundary. The next section adds a retained observation wait;
-owned remote cancellation and general deadline outcomes remain open.
+acceptance/receipt boundary. The following sections add retained observation,
+owned cancellation and job deadline outcomes.
 
 ### Retained job observation
 
@@ -497,7 +498,7 @@ receipt and business-output codec to a bounded, repeatable, read-only observatio
 `operation.await_job` makes that binding a managed wait. Its first lifetime
 contract is explicitly observation-only: canceling it detaches local observation
 and grants no authority to cancel the external job. Scheduled observation is
-described below; an owned-cancellation binding remains subsequent work.
+described below, followed by the owned-cancellation binding.
 
 - **J6 — admission and retention:** policy and shared work budget admit the job
   wait before any observation. The committed activation input is the accepted
@@ -524,14 +525,13 @@ described below; an owned-cancellation binding remains subsequent work.
 The first vertical path used explicit polling of retained job waits against the
 real service in `consumers/jobs`. Polling is a bounded command, not an opaque
 blocking operation or a permanent runner. Scheduled observation adds the
-automatic path below. External cancellation requests/confirmation and deadline
-outcomes remain unbuilt, so this cannot close managed external-job acceptance
-or wave 3.
+automatic path below. Cancellation and deadline contracts follow; this first
+observation slice alone does not establish managed external-job acceptance.
 
 An optional due time is durable data. Timers are wakeup hints only; a due-wait
 scan or index plus an explicit wakeup owner must recover overdue waits after
 downtime. Scheduled job observation implements this for its interval. General
-deadlines remain later wave 3 work, separate from manual signal delivery.
+deadlines use the same discovery owner, separately from manual signal delivery.
 
 ### Scheduled job observation
 
@@ -641,7 +641,7 @@ not assert that its stop request is repeatable. These rules add graph record 9,
 retention projection 6 and discovery projection 4; PostgreSQL schema stays 4.
 Acceptance covers public API restart, fences, refusals, cancellation/completion
 races, managed ancestry, scheduled discovery, family retention and the real HTTP
-service. Deadlines remain the next contract.
+service. Deadline contracts follow.
 
 ### Durable deadline clock
 
@@ -676,8 +676,8 @@ those lifecycle and recovery scenarios.
 ### Activation-scoped signal deadlines
 
 The first expiration slice applies to signals. It uses the same activation
-identity and revision checks as delivery. Job and child expiration remain later
-slices, because their cleanup can outlive the local deadline.
+identity and revision checks as delivery. Job expiration extends it below;
+child expiration remains a later slice because cleanup can outlive the deadline.
 
 - **D4 — configuration and admission:** `operation.with_deadline` accepts a
   positive bounded duration for a signal operation. The duration is part of its
@@ -707,6 +707,45 @@ slices, because their cleanup can outlive the local deadline.
   finish a signal even when its clock is unavailable. The record reader rejects
   deadline-bearing states hidden in an older record version and invalid arming,
   due-time or expiration combinations.
+
+### Job deadline contract
+
+- **D9 — admitted lifetime:** `with_deadline` also applies to read-only and
+  owned job waits. The same retained arming boundary starts backend time after
+  admission; recovery does not reset it. Submission remains a separate activity.
+- **D10 — cause and cleanup:** expiration commits its cause before requesting
+  any remote stop. Read-only waits finish expired and detached. Owned waits keep
+  the deadline cause alongside queued, started, accepted, refused or uncertain
+  stop progress, reusing their admitted cancellation authority and work grant.
+  Explicit cancellation cannot replace an already committed expiration cause.
+  Clock failures after that commit cannot prevent cleanup observation.
+  Admission grants ownership even if arming subsequently loses its clock;
+  explicit cancellation still requests a stop, with no invented due time.
+- **D11 — terminal evidence:** an expired job retains confirmed remote stop,
+  completion or failure as its disposition. Completion retains checked output
+  with a stopped route and never invokes business routing after expiry. Stop
+  acknowledgment alone does not finish expiration; unresolved cleanup keeps
+  its family retained. The graph exposes `Expired(due, disposition)` after
+  settlement and includes the reason in pending `CancellingJob` status.
+- **D12 — observation arbitration:** observation checks time before reading and
+  after reading/acceptance. A result observed after the deadline retains terminal
+  evidence without routing; a pending or failed read still permits expiration.
+  Revision checks arbitrate with a concurrent result or cancellation. As with
+  signals, the final clock sample and commit are separate operations. A failed
+  or lost stop request follows the existing owned-job recovery contract.
+- **D13 — combined discovery:** a scheduled job can become eligible either for
+  its next observation or for its absolute deadline. Manual jobs remain eligible
+  for deadline discovery without becoming periodically observed. After expiration
+  commits, only the configured cleanup poll interval schedules observation; the
+  expired timestamp must not create an endless immediately-due polling loop.
+  Store loss, metadata refresh and backward clock corrections preserve these
+  distinctions. Managed-child deadlines remain the following slice.
+
+Job records write version 11 and require a stop cause; older supported stop
+records default to caller-requested cancellation. Job deadline states cannot
+decode as older formats. Retention projection 8 keeps pending cleanup unsettled;
+discovery projection 6 combines polling and absolute eligibility. PostgreSQL's
+existing schema-5 index supports that combination without another migration.
 
 ## Required evidence
 

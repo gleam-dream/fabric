@@ -306,7 +306,11 @@ pub fn owned_job_cancellation_survives_postgres_restart_and_sweeps_before_prunin
       graph.cancel(handle) |> should.equal(Ok(Nil))
       let assert Ok(pending) = graph.await(handle, 5000)
       pending.status
-      |> should.equal(graph.CancellingJob(reference, job.RequestAccepted))
+      |> should.equal(graph.CancellingJob(
+        reference,
+        job.RequestAccepted,
+        operation.CancellationRequested,
+      ))
       reference
     })
   released(settings, id, 200) |> should.be_true
@@ -324,7 +328,11 @@ pub fn owned_job_cancellation_survives_postgres_restart_and_sweeps_before_prunin
   let handle = graph.attach(build(runs), id)
   let assert Ok(pending) = graph.read(handle)
   pending.status
-  |> should.equal(graph.CancellingJob(reference, job.RequestAccepted))
+  |> should.equal(graph.CancellingJob(
+    reference,
+    job.RequestAccepted,
+    operation.CancellationRequested,
+  ))
   let assert Ok(spec) =
     fabric.sweeper(
       runs,

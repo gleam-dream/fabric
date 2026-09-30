@@ -90,14 +90,14 @@ pub fn graph_roots_retain_limits_without_reinterpreting_version_five_test() {
   let assert Error(graph_record.Corrupt(_)) =
     graph_record.decode(string.replace(
       encoded,
-      "\"version\":10",
+      "\"version\":11",
       "\"version\":5",
     ))
   let without = graph.State(..state, family_budget: None)
   let assert Ok(old) = graph_record.encode(without)
   let old =
     old
-    |> string.replace("\"version\":10", "\"version\":5")
+    |> string.replace("\"version\":11", "\"version\":5")
     |> string.replace(",\"family_budget\":null", "")
   graph_record.decode(old) |> should.equal(Ok(without))
 }
@@ -197,7 +197,7 @@ pub fn quota_outcomes_roundtrip_but_cannot_be_hidden_in_older_formats_test() {
         graph_record.decode(encoded) |> should.equal(Ok(state))
         graph_record.decode(string.replace(
           encoded,
-          "\"version\":10",
+          "\"version\":11",
           "\"version\":5",
         ))
         |> should.be_error

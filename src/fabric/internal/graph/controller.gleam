@@ -82,6 +82,7 @@ pub type Outcome {
   Failed(Activation, Fault)
   Exhausted(next: Prepared)
   Cancelled(Activation, Cancellation)
+  Expired(Activation, Cancellation)
 }
 
 pub type Cancellation {
@@ -100,9 +101,9 @@ pub type Phase {
   Running(Activation)
   AwaitingApproval(Activation, Approval)
   WaitingSignal(Activation)
-  ArmingSignal(Activation)
+  ArmingWait(Activation)
   WaitingJob(Activation)
-  StoppingJob(Activation, job.CancellationProgress)
+  StoppingJob(Activation, job.CancellationProgress, operation.StopReason)
   Joining(Activation, child: String)
   WaitingChild(Activation, child: String)
   ChildBlocked(Activation, child: String, reason: String)
@@ -146,8 +147,9 @@ pub type Event {
   JobStopRefused(Reference, reason: String)
   JobConfirmedStopped(Reference)
   Signaled(activation: Int, attempt: Int, output: String, decision: Decision)
-  SignalArmed(Reference, now: Int)
-  ExpireSignal(Reference, now: Int)
+  WaitArmed(Reference, now: Int)
+  ExpireWait(Reference, now: Int)
+  JobExpired(Reference, now: Int, progress: job.Progress(String))
   ChildReturned(Reference, child: String, output: String, decision: Decision)
   ChildFailed(Reference, child: String, reason: String)
   ChildUnavailable(Reference, child: String, reason: String)
@@ -166,7 +168,7 @@ pub type Effect {
   ObserveChild(Activation, String)
   CancelChild(Activation, String)
   RequestJobStop(Activation)
-  ArmSignal(Activation)
+  ArmWait(Activation)
 }
 
 pub type Rejection {
@@ -222,16 +224,16 @@ pub fn step(
   event: Event,
 ) -> Result(#(State, List(Effect)), Rejection) {
   case event, state.phase {
-    SignalArmed(ref, now), ArmingSignal(a) -> {
+    WaitArmed(ref, now), ArmingWait(a) -> {
       use _ <- result.try(matches(state, a, ref))
       use within <- result.try(case a.prepared.deadline, now >= 0 {
         Some(within), True -> Ok(within)
-        _, _ -> Error(InvalidPrepared("signal deadline has no valid clock"))
+        _, _ -> Error(InvalidPrepared("wait deadline has no valid clock"))
       })
       let armed = Activation(..a, deadline: Some(now + within))
-      Ok(#(State(..state, phase: WaitingSignal(armed)), []))
+      Ok(waiting(state, armed))
     }
-    ExpireSignal(ref, now), WaitingSignal(a) -> {
+    ExpireWait(ref, now), WaitingSignal(a) -> {
       use _ <- result.try(matches(state, a, ref))
       case a.deadline {
         Some(due) if now >= due ->
@@ -239,21 +241,39 @@ pub fn step(
         _ -> Error(WrongPhase)
       }
     }
-    BodyStarted(ref), StoppingJob(a, job.RequestQueued) -> {
+    ExpireWait(ref, now), WaitingJob(a) -> {
       use _ <- result.try(matches(state, a, ref))
-      Ok(#(State(..state, phase: StoppingJob(a, job.RequestStarted)), []))
+      expire_job(state, a, now, job.Pending)
     }
-    JobStopRequested(ref), StoppingJob(a, job.RequestStarted) -> {
+    JobExpired(ref, now, progress), WaitingJob(a) -> {
       use _ <- result.try(matches(state, a, ref))
-      Ok(#(State(..state, phase: StoppingJob(a, job.RequestAccepted)), []))
+      expire_job(state, a, now, progress)
     }
-    JobStopRefused(ref, reason), StoppingJob(a, job.RequestStarted) -> {
+    BodyStarted(ref), StoppingJob(a, job.RequestQueued, cause) -> {
       use _ <- result.try(matches(state, a, ref))
       Ok(
-        #(State(..state, phase: StoppingJob(a, job.RequestRefused(reason))), []),
+        #(State(..state, phase: StoppingJob(a, job.RequestStarted, cause)), []),
       )
     }
-    Unresolved(ref, problem), StoppingJob(a, job.RequestStarted) -> {
+    JobStopRequested(ref), StoppingJob(a, job.RequestStarted, cause) -> {
+      use _ <- result.try(matches(state, a, ref))
+      Ok(
+        #(State(..state, phase: StoppingJob(a, job.RequestAccepted, cause)), []),
+      )
+    }
+    JobStopRefused(ref, reason), StoppingJob(a, job.RequestStarted, cause) -> {
+      use _ <- result.try(matches(state, a, ref))
+      Ok(
+        #(
+          State(
+            ..state,
+            phase: StoppingJob(a, job.RequestRefused(reason), cause),
+          ),
+          [],
+        ),
+      )
+    }
+    Unresolved(ref, problem), StoppingJob(a, job.RequestStarted, cause) -> {
       use _ <- result.try(matches(state, a, ref))
       let evidence = case problem {
         Uncertain(reason) -> reason
@@ -261,25 +281,28 @@ pub fn step(
       }
       Ok(
         #(
-          State(..state, phase: StoppingJob(a, job.RequestUncertain(evidence))),
+          State(
+            ..state,
+            phase: StoppingJob(a, job.RequestUncertain(evidence), cause),
+          ),
           [],
         ),
       )
     }
-    JobConfirmedStopped(ref), StoppingJob(a, progress) -> {
+    JobConfirmedStopped(ref), StoppingJob(a, progress, cause) -> {
       use _ <- result.try(matches(state, a, ref))
       use _ <- result.try(stoppable(progress))
-      Ok(ended(state, Cancelled(a, JobStopped)))
+      Ok(stopped_job(state, a, cause, JobStopped))
     }
-    CancelledResult(ref, output), StoppingJob(a, progress) -> {
+    CancelledResult(ref, output), StoppingJob(a, progress, cause) -> {
       use _ <- result.try(matches(state, a, ref))
       use _ <- result.try(stoppable(progress))
-      Ok(cancelled_result(state, a, output))
+      Ok(stopped_result(state, a, output, cause))
     }
-    JobFailed(ref, reason), StoppingJob(a, progress) -> {
+    JobFailed(ref, reason), StoppingJob(a, progress, cause) -> {
       use _ <- result.try(matches(state, a, ref))
       use _ <- result.try(stoppable(progress))
-      Ok(ended(state, Cancelled(a, AfterFailure(OperationFailed(reason)))))
+      Ok(stopped_job(state, a, cause, AfterFailure(OperationFailed(reason))))
     }
     ChildWaiting(ref, id), Joining(a, current) if id == current -> {
       use _ <- result.try(matches(state, a, ref))
@@ -418,17 +441,28 @@ pub fn step(
       use _ <- result.try(matches_activation(activation, id, attempt))
       Ok(cancelled_result(state, activation, output))
     }
-    Cancel, WaitingJob(a) ->
+    Cancel, WaitingJob(a) | Cancel, ArmingWait(a) ->
       case a.prepared.kind {
         operation.OwnedJob(_) ->
           Ok(
-            #(State(..state, phase: StoppingJob(a, job.RequestQueued)), [
-              RequestJobStop(a),
-            ]),
+            #(
+              State(
+                ..state,
+                phase: StoppingJob(
+                  a,
+                  job.RequestQueued,
+                  operation.CancellationRequested,
+                ),
+              ),
+              [
+                RequestJobStop(a),
+              ],
+            ),
           )
-        _ -> Ok(ended(state, Cancelled(a, JobDetached)))
+        operation.Job(_) -> Ok(ended(state, Cancelled(a, JobDetached)))
+        _ -> Ok(ended(state, Cancelled(a, BeforeStart)))
       }
-    Cancel, StoppingJob(_, _) -> Ok(#(state, []))
+    Cancel, StoppingJob(_, _, _) -> Ok(#(state, []))
     Cancel, Ended(_) -> Error(AlreadyEnded)
     Cancel, Joining(a, id)
     | Cancel, WaitingChild(a, id)
@@ -439,7 +473,6 @@ pub fn step(
     | Cancel, Queued(activation)
     | Cancel, AwaitingApproval(activation, _)
     | Cancel, WaitingSignal(activation)
-    | Cancel, ArmingSignal(activation)
     -> Ok(ended(state, Cancelled(activation, BeforeStart)))
     Cancel, Running(activation) ->
       Ok(#(State(..state, phase: Stopping(activation)), [Stop]))
@@ -501,17 +534,13 @@ fn queue(state: State, activation: Activation) -> #(State, List(Effect)) {
     operation.Activity -> #(State(..state, phase: Queued(activation)), [
       Dispatch(activation),
     ])
-    operation.Signal ->
+    operation.Signal | operation.Job(_) | operation.OwnedJob(_) ->
       case activation.prepared.deadline {
-        None -> #(State(..state, phase: WaitingSignal(activation)), [])
-        Some(_) -> #(State(..state, phase: ArmingSignal(activation)), [
-          ArmSignal(activation),
+        None -> waiting(state, activation)
+        Some(_) -> #(State(..state, phase: ArmingWait(activation)), [
+          ArmWait(activation),
         ])
       }
-    operation.Job(_) | operation.OwnedJob(_) -> #(
-      State(..state, phase: WaitingJob(activation)),
-      [],
-    )
     operation.Subgraph | operation.Agent -> {
       let id = child.reserved_id(state.run, activation.id)
       #(State(..state, phase: Joining(activation, id)), [
@@ -519,6 +548,74 @@ fn queue(state: State, activation: Activation) -> #(State, List(Effect)) {
       ])
     }
   }
+}
+
+fn waiting(state: State, a: Activation) -> #(State, List(Effect)) {
+  #(
+    State(..state, phase: case a.prepared.kind {
+      operation.Signal -> WaitingSignal(a)
+      _ -> WaitingJob(a)
+    }),
+    [],
+  )
+}
+
+fn stopped_job(
+  state: State,
+  a: Activation,
+  cause: operation.StopReason,
+  disposition: Cancellation,
+) -> #(State, List(Effect)) {
+  ended(state, case cause {
+    operation.CancellationRequested -> Cancelled(a, disposition)
+    operation.DeadlineReached(_) -> Expired(a, disposition)
+  })
+}
+
+fn stopped_result(
+  state: State,
+  a: Activation,
+  output: String,
+  cause: operation.StopReason,
+) -> #(State, List(Effect)) {
+  stopped_job(
+    State(
+      ..state,
+      receipts: list.append(state.receipts, [
+        Receipt(a, output, state.value, Canceled),
+      ]),
+    ),
+    a,
+    cause,
+    AfterResult,
+  )
+}
+
+fn expire_job(
+  state: State,
+  a: Activation,
+  now: Int,
+  progress: job.Progress(String),
+) -> Result(#(State, List(Effect)), Rejection) {
+  use due <- result.try(case a.deadline {
+    Some(due) if now >= due -> Ok(due)
+    _ -> Error(WrongPhase)
+  })
+  let cause = operation.DeadlineReached(due)
+  Ok(case progress {
+    job.Completed(output) -> stopped_result(state, a, output, cause)
+    job.Failed(reason) ->
+      stopped_job(state, a, cause, AfterFailure(OperationFailed(reason)))
+    job.Cancelled -> stopped_job(state, a, cause, JobStopped)
+    job.Pending ->
+      case a.prepared.kind {
+        operation.OwnedJob(_) -> #(
+          State(..state, phase: StoppingJob(a, job.RequestQueued, cause)),
+          [RequestJobStop(a)],
+        )
+        _ -> stopped_job(state, a, cause, JobDetached)
+      }
+  })
 }
 
 fn ended(state: State, outcome: Outcome) -> #(State, List(Effect)) {
@@ -588,9 +685,10 @@ fn cancelled_result(
 pub fn recover(state: State) -> Result(#(State, List(Effect)), Rejection) {
   let recovered = State(..state, incarnation: state.incarnation + 1)
   case state.phase {
-    ArmingSignal(a) -> Ok(#(recovered, [ArmSignal(a)]))
-    StoppingJob(a, job.RequestQueued) -> Ok(#(recovered, [RequestJobStop(a)]))
-    StoppingJob(a, job.RequestStarted) ->
+    ArmingWait(a) -> Ok(#(recovered, [ArmWait(a)]))
+    StoppingJob(a, job.RequestQueued, _) ->
+      Ok(#(recovered, [RequestJobStop(a)]))
+    StoppingJob(a, job.RequestStarted, cause) ->
       Ok(
         #(
           State(
@@ -598,12 +696,13 @@ pub fn recover(state: State) -> Result(#(State, List(Effect)), Rejection) {
             phase: StoppingJob(
               a,
               job.RequestUncertain("runner lost after stop request started"),
+              cause,
             ),
           ),
           [],
         ),
       )
-    StoppingJob(_, _) -> Ok(#(recovered, []))
+    StoppingJob(_, _, _) -> Ok(#(recovered, []))
     Ended(_) -> Error(AlreadyEnded)
     Joining(a, id) | WaitingChild(a, id) | ChildBlocked(a, id, _) ->
       Ok(#(State(..recovered, phase: Joining(a, id)), [ObserveChild(a, id)]))
@@ -697,8 +796,12 @@ pub fn check_definition(definition: Definition) -> Result(Nil, Rejection) {
 pub fn check_prepared(prepared: Prepared) -> Result(Nil, Rejection) {
   use _ <- result.try(case prepared.deadline, prepared.kind {
     None, _ -> Ok(Nil)
-    Some(ms), operation.Signal if ms > 0 && ms <= 4_294_967_295 -> Ok(Nil)
-    _, _ -> Error(InvalidPrepared("invalid signal deadline"))
+    Some(ms), operation.Signal
+    | Some(ms), operation.Job(_)
+    | Some(ms), operation.OwnedJob(_)
+      if ms > 0 && ms <= 4_294_967_295
+    -> Ok(Nil)
+    _, _ -> Error(InvalidPrepared("invalid wait deadline"))
   })
   use _ <- result.try(case prepared.kind {
     operation.Job(polling) | operation.OwnedJob(polling) ->
@@ -730,11 +833,11 @@ pub fn check_prepared(prepared: Prepared) -> Result(Nil, Rejection) {
 
 pub fn needs_runner(state: State) -> Bool {
   case state.phase {
-    StoppingJob(_, job.RequestQueued) | StoppingJob(_, job.RequestStarted) ->
-      True
-    StoppingJob(_, _) -> False
+    StoppingJob(_, job.RequestQueued, _)
+    | StoppingJob(_, job.RequestStarted, _) -> True
+    StoppingJob(_, _, _) -> False
     Ready(_)
-    | ArmingSignal(_)
+    | ArmingWait(_)
     | Queued(_)
     | Running(_)
     | Stopping(_)
@@ -765,7 +868,7 @@ pub fn cancel_abandoned(
   use #(state, effects) <- result.try(step(state, Cancel))
   case state.phase {
     Stopping(_) -> step(state, Stopped)
-    StoppingJob(a, job.RequestStarted) ->
+    StoppingJob(a, job.RequestStarted, _) ->
       step(
         state,
         Unresolved(
@@ -773,7 +876,7 @@ pub fn cancel_abandoned(
           Uncertain("owner lost after stop request started"),
         ),
       )
-    StoppingJob(a, job.RequestQueued) -> Ok(#(state, [RequestJobStop(a)]))
+    StoppingJob(a, job.RequestQueued, _) -> Ok(#(state, [RequestJobStop(a)]))
     _ -> Ok(#(state, effects))
   }
 }

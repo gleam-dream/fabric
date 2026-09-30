@@ -14,7 +14,7 @@
 - Last closed wave: 2, public durable serial graph runtime.
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's job/child deadline outcome contracts remain to be refined.
+- Open decisions: wave 3's managed-child deadline outcome contract remains to be refined.
   Submission, receipt recovery, retained read-only
   job waits and scheduled observation are proven against an independently
   retained service. An explicit cancellation workflow now proves stop admission,
@@ -23,8 +23,10 @@
   resolves accepted, refused and uncertain requests through terminal observation.
   Backend-owned due intervals survive store loss. The public backend clock now
   supplies UTC Unix milliseconds for persisted signal deadlines. Signal arming,
-  expiration arbitration and automatic overdue discovery are implemented;
-  job/child expiration and its cleanup remain open.
+  expiration arbitration and automatic overdue discovery are implemented.
+  Job expiration retains its cause separately from owned cleanup and terminal
+  evidence; combined polling/deadline discovery survives restart. Managed-child
+  expiration and cleanup remain open.
   Idle dependency discovery is implemented. Public shared work/child/depth budgets, mixed-family admission,
   root initialization and ledger retention are implemented. Registered graph
   sweeping recovers expired work and changed idle dependencies through mixed attachments. Shared parent
@@ -36,9 +38,9 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: 548 root tests, four graph consumer tests, 15 app consumer tests,
-  17 external-job consumer scenarios and five independent service tests pass.
-  The PostgreSQL gate passes 52 tests, including overdue signal recovery, database time, owned cancellation, scheduled job recovery and pruning,
+- Gate status: 555 root tests, four graph consumer tests, 15 app consumer tests,
+  19 external-job consumer scenarios and five independent service tests pass.
+  The PostgreSQL gate passes 53 tests, including overdue signal/job recovery, database time, owned cancellation, scheduled job recovery and pruning,
   migration and concurrent index refresh. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -49,7 +51,7 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: extend deadline outcomes to jobs and managed children under the
+- Next action: extend deadline outcomes to managed children under the
   [managed composition contract](managed-composition.md).
   Keep deadline expiration distinct from remote cancellation and terminal evidence.
 - Resume note: the user requested another checkpoint commit and continued
@@ -1198,3 +1200,52 @@ six-step goal remains active, with wave 3 next.
 - Next: separate deadline intent from cancellation evidence for owned jobs,
   retain cleanup through restart, and combine due discovery with job observation.
   Apply the same distinction to child execution deadlines before closing stage 3.
+
+### Wave 3 — durable job deadlines and retained cleanup
+
+- Status: `operation.with_deadline` now bounds both read-only and owned job
+  waits. Admission precedes clock arming; saved due times survive restart and
+  do not reset. Submission remains a separate activation. Ownership permits
+  explicit cancellation even if arming cannot read backend time.
+- Outcome: read-only expiration detaches. Owned expiration saves
+  `DeadlineReached(due)` separately from its fenced stop-request progress.
+  Caller cancellation retains `CancellationRequested`; neither can overwrite
+  the other's committed cause. Pending cleanup retains the family and uses its
+  original admission even after ancestor closure or work-budget exhaustion.
+  Cleanup observation needs no functioning deadline clock.
+- Evidence: terminal remote cancellation, completion or failure settles
+  `Expired(due, disposition)`. Checked completion retains a canceled receipt
+  without business routing or an unnecessary stop request. A failed read that
+  crosses the deadline still permits expiration. The bound applies to Fabric's
+  observation/acceptance, not the service's completion timestamp. Clock samples
+  and revision-checked writes remain separate operations.
+- Discovery: jobs are eligible when either polling or their absolute deadline
+  is due. Manual jobs can expire without periodic observation. Owned cleanup
+  switches to its separate polling key without a deadline, avoiding immediate
+  repeated polls. A manual binding still requires manual cleanup observation.
+  PostgreSQL's existing schema-5 ready index supports the combined eligibility.
+- Validation: six public deadline scenarios cover restart, terminal evidence,
+  failed clocks/reads, exhausted budgets, scheduled polling and detachment. A
+  record scenario covers all new phases, invalid cause/deadline combinations,
+  downgrade refusal and legacy stop records. PostgreSQL proves expiration before
+  a longer poll interval, cleanup across restart and final family pruning. Two
+  real HTTP-service scenarios cover deadline cancellation and loss of the stop
+  acknowledgment without repeating the request. The checks exposed and fixed
+  an early claim release that otherwise prevented nested scheduled observation.
+- Compatibility: graph records write 11/read 5–11; agent records remain 7.
+  Version-11 stopping records require a cause; older stop records default to
+  caller cancellation. Retention projection 8 and discovery projection 6 require
+  metadata refresh. PostgreSQL schema remains 5. The public `CancellingJob`
+  constructor adds a stop reason; discovery triggers add an optional deadline.
+  No new dependency is introduced.
+- Gate: warnings-as-errors builds and all 555 root tests pass. Graph/app
+  consumers pass four/15 tests; the real job service passes 19 Gleam scenarios
+  and five Python tests. The temporary PostgreSQL gate passes 53 tests. Source
+  formatting, `nix fmt`, `nix flake check` and `git diff --check` pass.
+- Conformance: the full six-stage goal is confirmed active. This closes job
+  deadline support; stage 3 remains open for managed-child deadlines. Stages
+  4–6 retain their scope and acceptance requirements.
+- Next: retain the deadline cause across child start, observation, cancellation
+  and uncertain settlement. Prove both managed agents and subgraphs, including
+  lost start acknowledgment, nested cleanup and completion racing expiration,
+  before closing stage 3.

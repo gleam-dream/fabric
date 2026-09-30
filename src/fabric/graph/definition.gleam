@@ -490,9 +490,9 @@ pub fn validate(
     | control.Running(a)
     | control.AwaitingApproval(a, _)
     | control.WaitingSignal(a)
-    | control.ArmingSignal(a)
+    | control.ArmingWait(a)
     | control.WaitingJob(a)
-    | control.StoppingJob(a, _)
+    | control.StoppingJob(a, _, _)
     | control.Joining(a, _)
     | control.WaitingChild(a, _)
     | control.ChildBlocked(a, _, _)
@@ -500,6 +500,7 @@ pub fn validate(
     | control.Blocked(a, _)
     | control.Stopping(a)
     | control.Ended(control.Failed(a, _))
+    | control.Ended(control.Expired(a, _))
     | control.Ended(control.Cancelled(a, _)) -> [a.prepared]
     control.Ended(control.Exhausted(next)) -> [next]
     control.Ended(control.Completed(_)) -> []

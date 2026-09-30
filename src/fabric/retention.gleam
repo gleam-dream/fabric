@@ -21,7 +21,7 @@ import gleam/result
 
 /// Change this version whenever a new record format or state changes the
 /// projection, so storage integrations can refresh their retained indexes.
-pub const version = 7
+pub const version = 8
 
 /// The run at the other end of a link and an opaque attachment key. A child's
 /// parent key must equal the key its parent retained for that child. The key
@@ -189,7 +189,7 @@ fn graph_metadata(state: graph.State) -> Metadata {
     | graph.Ended(graph.Cancelled(a, graph.UnresolvedCancellation(_))) ->
       graph_child(state, a)
     graph.Ready(_)
-    | graph.ArmingSignal(_)
+    | graph.ArmingWait(_)
     | graph.Queued(_)
     | graph.Running(_)
     | graph.AwaitingApproval(..)
@@ -199,6 +199,7 @@ fn graph_metadata(state: graph.State) -> Metadata {
     | graph.Stopping(_)
     | graph.Ended(graph.Completed(_))
     | graph.Ended(graph.Exhausted(_))
+    | graph.Ended(graph.Expired(_, _))
     | graph.Ended(graph.Failed(_, graph.Denied(_)))
     | graph.Ended(graph.Failed(_, graph.PolicyFailed(_)))
     | graph.Ended(graph.Failed(_, graph.FamilyBudget(_)))
@@ -219,6 +220,7 @@ fn graph_metadata(state: graph.State) -> Metadata {
     graph.Ended(graph.Completed(_))
     | graph.Ended(graph.Failed(..))
     | graph.Ended(graph.Exhausted(_))
+    | graph.Ended(graph.Expired(_, _))
     | graph.Ended(graph.Cancelled(_, graph.BeforeStart))
     | graph.Ended(graph.Cancelled(_, graph.JobDetached))
     | graph.Ended(graph.Cancelled(_, graph.JobStopped))
@@ -226,7 +228,7 @@ fn graph_metadata(state: graph.State) -> Metadata {
     | graph.Ended(graph.Cancelled(_, graph.AfterFailure(_)))
     | graph.Ended(graph.Cancelled(_, graph.AfterChild(_))) -> True
     graph.Ready(_)
-    | graph.ArmingSignal(_)
+    | graph.ArmingWait(_)
     | graph.Queued(_)
     | graph.Running(_)
     | graph.AwaitingApproval(..)

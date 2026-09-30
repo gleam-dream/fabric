@@ -18,7 +18,7 @@ import gleam/string
 
 pub const format = "fabric.graph"
 
-pub const version = 10
+pub const version = 11
 
 pub type EncodeError {
   InvalidState(detail: String)
@@ -219,6 +219,11 @@ fn outcome_json(outcome: g.Outcome) -> Json {
         #("activation", activation_json(activation)),
         #("disposition", cancellation_json(disposition)),
       ])
+    g.Expired(activation, disposition) ->
+      tag("expired", [
+        #("activation", activation_json(activation)),
+        #("disposition", cancellation_json(disposition)),
+      ])
   }
 }
 
@@ -251,13 +256,20 @@ fn phase_json(phase: g.Phase) -> Json {
     g.Stopping(a) -> tag("stopping", [#("activation", activation_json(a))])
     g.WaitingSignal(a) ->
       tag("waiting_signal", [#("activation", activation_json(a))])
-    g.ArmingSignal(a) ->
-      tag("arming_signal", [#("activation", activation_json(a))])
+    g.ArmingWait(a) ->
+      tag(
+        case a.prepared.kind {
+          operation.Signal -> "arming_signal"
+          _ -> "arming_job"
+        },
+        [#("activation", activation_json(a))],
+      )
     g.WaitingJob(a) -> tag("waiting_job", [#("activation", activation_json(a))])
-    g.StoppingJob(a, progress) ->
+    g.StoppingJob(a, progress, cause) ->
       tag("stopping_job", [
         #("activation", activation_json(a)),
         #("request", stop_progress_json(progress)),
+        #("cause", stop_reason_json(cause)),
       ])
     g.AwaitingApproval(a, approval) ->
       tag("awaiting_approval", [
@@ -331,6 +343,16 @@ pub fn decode(text: String) -> Result(g.State, DecodeError) {
           found >= 10
             || !list.any(preparations(state), fn(p) { p.deadline != None }),
           "signal deadlines require graph version 10",
+        )
+        |> result.map_error(Corrupt),
+      )
+      use _ <- result.try(
+        require(
+          found >= 11
+            || !list.any(preparations(state), fn(p) {
+            p.deadline != None && p.kind != operation.Signal
+          }),
+          "job deadlines require graph version 11",
         )
         |> result.map_error(Corrupt),
       )
@@ -543,17 +565,20 @@ fn outcome_decoder() -> Decoder(g.Outcome) {
         use next <- decode.field("next", prepared_decoder())
         decode.success(g.Exhausted(next))
       })
-    "cancelled" ->
+    "cancelled" | "expired" ->
       Ok({
         use activation <- decode.field("activation", activation_decoder())
         use disposition <- decode.field("disposition", cancellation_decoder())
-        decode.success(g.Cancelled(activation, disposition))
+        decode.success(case name {
+          "expired" -> g.Expired(activation, disposition)
+          _ -> g.Cancelled(activation, disposition)
+        })
       })
     _ -> Error(Nil)
   }
 }
 
-fn phase_decoder() -> Decoder(g.Phase) {
+fn phase_decoder(found: Int) -> Decoder(g.Phase) {
   use name <- tagged(g.Ended(g.Completed("")))
   case name {
     "child_blocked" ->
@@ -577,7 +602,8 @@ fn phase_decoder() -> Decoder(g.Phase) {
       Ok({
         use a <- decode.field("activation", activation_decoder())
         use progress <- decode.field("request", stop_progress_decoder())
-        decode.success(g.StoppingJob(a, progress))
+        use cause <- stop_reason_field(found)
+        decode.success(g.StoppingJob(a, progress, cause))
       })
     "waiting_job" ->
       Ok({
@@ -589,10 +615,20 @@ fn phase_decoder() -> Decoder(g.Phase) {
         use activation <- decode.field("activation", activation_decoder())
         decode.success(g.WaitingSignal(activation))
       })
-    "arming_signal" ->
+    "arming_signal" | "arming_job" ->
       Ok({
         use activation <- decode.field("activation", activation_decoder())
-        decode.success(g.ArmingSignal(activation))
+        case
+          { name == "arming_signal" }
+          == { activation.prepared.kind == operation.Signal }
+        {
+          True -> decode.success(g.ArmingWait(activation))
+          False ->
+            decode.failure(
+              g.ArmingWait(activation),
+              "arming tag matching the operation kind",
+            )
+        }
       })
     "ready" | "queued" | "running" | "stopping" ->
       Ok({
@@ -656,7 +692,7 @@ fn state_decoder(found: Int) -> Decoder(g.State) {
       decode.success(g.Receipt(activation, output, state, route))
     }),
   )
-  use phase <- decode.field("phase", phase_decoder())
+  use phase <- decode.field("phase", phase_decoder(found))
   use family_budget <- decode.then(budget_config.field(found >= 6))
   decode.success(g.State(
     run,
@@ -787,12 +823,12 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       ))
       pending(state, count, last, a)
     }
-    g.ArmingSignal(a) -> {
+    g.ArmingWait(a) -> {
       use _ <- result.try(require(
-        a.prepared.kind == operation.Signal
+        { a.prepared.kind == operation.Signal || is_job(a.prepared.kind) }
           && a.prepared.deadline != None
           && a.deadline == None,
-        "arming requires an admitted signal with an unarmed deadline",
+        "arming requires an admitted wait with an unarmed deadline",
       ))
       pending(state, count, last, a)
     }
@@ -805,12 +841,24 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
     }
     g.WaitingJob(a) -> {
       use _ <- result.try(require(
+        { a.prepared.deadline == None } == { a.deadline == None },
+        "a job wait must retain its configured deadline",
+      ))
+      use _ <- result.try(require(
         is_job(a.prepared.kind),
         "job wait requires a job observer",
       ))
       pending(state, count, last, a)
     }
-    g.StoppingJob(a, _) -> {
+    g.StoppingJob(a, _, cause) -> {
+      use _ <- result.try(case cause {
+        operation.CancellationRequested -> Ok(Nil)
+        operation.DeadlineReached(due) ->
+          require(
+            a.deadline == Some(due),
+            "stop cause must match the expired deadline",
+          )
+      })
       use _ <- result.try(require(
         is_owned_job(a.prepared.kind),
         "stop request requires an owned job",
@@ -853,11 +901,13 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
     }
     g.Ended(g.Failed(a, _)) -> {
       use _ <- result.try(require(
-        a.deadline == None,
+        a.deadline == None || is_job(a.prepared.kind),
         "armed signal cannot fail before admission",
       ))
       pending(state, count, last, a)
     }
+    g.Ended(g.Expired(a, disposition)) ->
+      check_expired(state, count, last, a, disposition)
     g.Ended(g.Completed(answer)) -> {
       use _ <- result.try(finished(state, count, last, g.Finished))
       json_value(answer)
@@ -942,7 +992,9 @@ fn check_receipts(
       use _ <- result.try(check_activation(receipt.activation))
       use _ <- result.try(require(
         { receipt.activation.prepared.deadline == None }
-          == { receipt.activation.deadline == None },
+          == { receipt.activation.deadline == None }
+          || receipt.route == g.Canceled
+          && is_owned_job(receipt.activation.prepared.kind),
         "accepted wait must retain its configured deadline",
       ))
       use _ <- result.try(require(
@@ -962,6 +1014,79 @@ fn check_receipts(
       use _ <- result.try(json_value(receipt.state))
       check_receipts(rest, ordinal + 1, Some(receipt))
     }
+  }
+}
+
+fn check_expired(
+  state: g.State,
+  count: Int,
+  last: Option(g.Receipt),
+  a: g.Activation,
+  disposition: g.Cancellation,
+) -> Result(Nil, String) {
+  use _ <- result.try(check_activation(a))
+  use _ <- result.try(require(
+    is_job(a.prepared.kind) && a.deadline != None,
+    "expired outcome requires an armed job wait",
+  ))
+  case disposition {
+    g.AfterResult -> {
+      use _ <- result.try(finished(state, count, last, g.Canceled))
+      case last {
+        Some(receipt) ->
+          require(
+            receipt.activation == a,
+            "expired result belongs to a different activation",
+          )
+        None -> Error("expired result has no receipt")
+      }
+    }
+    g.JobDetached -> {
+      use _ <- result.try(require(
+        !is_owned_job(a.prepared.kind),
+        "owned expiration cannot detach cleanup",
+      ))
+      pending(state, count, last, a)
+    }
+    g.JobStopped | g.AfterFailure(g.OperationFailed(_)) ->
+      pending(state, count, last, a)
+    _ -> Error("invalid expired job disposition")
+  }
+}
+
+fn stop_reason_json(cause: operation.StopReason) -> Json {
+  case cause {
+    operation.CancellationRequested -> tag("requested", [])
+    operation.DeadlineReached(due) -> tag("deadline", [#("due", json.int(due))])
+  }
+}
+
+fn stop_reason_field(
+  found: Int,
+  next: fn(operation.StopReason) -> Decoder(a),
+) -> Decoder(a) {
+  case found >= 11 {
+    True -> decode.field("cause", stop_reason_decoder(), next)
+    False ->
+      decode.optional_field(
+        "cause",
+        operation.CancellationRequested,
+        stop_reason_decoder(),
+        next,
+      )
+  }
+}
+
+fn stop_reason_decoder() -> Decoder(operation.StopReason) {
+  use name <- tagged(operation.CancellationRequested)
+  case name {
+    "requested" -> Ok(decode.success(operation.CancellationRequested))
+    "deadline" ->
+      Ok({
+        use due <- decode.field("due", decode.int)
+        decode.success(operation.DeadlineReached(due))
+      })
+    _ -> Error(Nil)
   }
 }
 
@@ -1018,9 +1143,9 @@ fn preparations(state: g.State) -> List(g.Prepared) {
     | g.Running(a)
     | g.AwaitingApproval(a, _)
     | g.WaitingSignal(a)
-    | g.ArmingSignal(a)
+    | g.ArmingWait(a)
     | g.WaitingJob(a)
-    | g.StoppingJob(a, _)
+    | g.StoppingJob(a, _, _)
     | g.Joining(a, _)
     | g.WaitingChild(a, _)
     | g.ChildBlocked(a, _, _)
@@ -1028,6 +1153,7 @@ fn preparations(state: g.State) -> List(g.Prepared) {
     | g.Blocked(a, _)
     | g.Stopping(a)
     | g.Ended(g.Failed(a, _))
+    | g.Ended(g.Expired(a, _))
     | g.Ended(g.Cancelled(a, _)) -> [a.prepared]
     g.Ended(g.Exhausted(next)) -> [next]
     g.Ended(g.Completed(_)) -> []
