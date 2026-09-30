@@ -162,3 +162,15 @@ parent's tool worker. Anti-oracle B1 (BeamWeaver stringifies a child's
 interrupt into the `task` result and the parent completes, probe S3 in
 research/beamweaver-oracle.md) is not captured as a fixture; Fabric's test
 asserts the opposite behaviour.
+
+## Agent-recipe evaluation, 2026-09-30
+
+Two additional tests execute the evaluation-only model-turn/tool-batch graph
+against `two_tool_calls`, `tool_error_visible` and `model_call_limit`, using the
+same normalizer and exclusions above. Supported round trips match; the last
+case retains Fabric's deliberate turn-limit divergence. These tests do not
+recapture BeamWeaver or extend parity to approval, delegation or interrupted
+batches. The eight existing ordinary-runtime comparisons remain unchanged.
+The [evaluation report](implementation/graph-flow/agent-recipe-evaluation.md)
+records the lifecycle counterexample and decision to retain ordinary agents as
+managed graph children. Ten oracle tests pass at this checkpoint.

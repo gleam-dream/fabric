@@ -4,8 +4,9 @@
 ownership and typed parallel composition are implemented, including retained
 deadlines and cleanup. A structured LLM decision adapter passes protocol tests,
 and the optional MCP graph binding is proven against a real local service.
-Live LLM acceptance, the classifier adapter and agent-recipe evaluation remain
-open.**
+The optional TypeSafe classifier and shared decision routing pass protocol tests.
+The agent-recipe evaluation retains ordinary agents as managed graph children;
+actual LLM and TypeSafe inference acceptance remains open.**
 The user has authorized the six-step implementation program. Progress,
 executable contracts and acceptance evidence are retained in the
 [wave tracker](implementation/graph-flow/wave-tracker.md). The API sketches
@@ -400,10 +401,11 @@ protocol subset; the graph interface does not imply full MCP support.
 
 ## Implementation impact in Fabric
 
-Fabric has valuable execution mechanisms, but they are not a generic graph
-kernel today:
+The initial exploration identified the following reusable mechanisms and
+agent-specific responsibilities. The runtime waves now share execution
+mechanisms while retaining distinct agent and graph controllers:
 
-| Current code                                          | Reusable mechanism                                           | Coupling to remove or keep separate                                |
+| Initial code                                          | Reusable mechanism                                           | Coupling to remove or keep separate                                |
 | ----------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------ |
 | [Controller](../src/fabric/internal/controller.gleam) | Pure transitions describing effects                          | Chat phases, transcript, turn batches and model replies.           |
 | [Runner](../src/fabric/internal/runner.gleam)         | Commit before effects, drain, result delivery                | Agent setup, chat events and tool-call dispatch.                   |
@@ -413,15 +415,17 @@ kernel today:
 | [Policy](../src/fabric/policy.gleam)                  | Decode before admission, fail closed, fresh approval context | Action identity is turn/tool-call based; targets are tools/agents. |
 
 Prefer a **new graph controller and record over narrow shared execution
-mechanisms**. Initially, an existing agent can be a managed child. Eventually
-the ordinary agent builder could produce a graph recipe, if doing so removes
-duplication and preserves all current guarantees.
+mechanisms**. An existing agent is a managed child. The
+[executed recipe evaluation](implementation/graph-flow/agent-recipe-evaluation.md)
+retains that boundary: a model-turn/tool-batch recipe matches simple round trips
+but loses per-tool durable outcomes within an interrupted batch. A finer recipe
+would still need the ordinary action lifecycle and a deliberate compatibility
+plan; it has not demonstrated a simplifying replacement.
 
-Two alternatives are less attractive: a separate maintained graph runtime
-would duplicate recovery/policy semantics; immediately rewriting the entire
-agent loop would combine too many changes before graph semantics are proven.
-Extraction must be driven by both concrete controllers, not a speculative
-framework of extension hooks.
+Both controllers share store ownership, execution fencing, supervision and
+family lifecycle mechanisms. Agent-specific action transitions remain in the
+ordinary controller. Further extraction needs evidence that it removes a
+responsibility from both implementations while preserving their public behavior.
 
 Core already has no Saga/Grind dependency. Keep that property. Jev and MCP
 clients can be optional integration packages. Moving the existing llm_wire
@@ -484,13 +488,16 @@ not been decided.
   continuation data when an agent is a child or a future graph recipe.
 - Build and run the graph consumer without Saga or Grind installed.
 
-## Choices still open
+## Remaining acceptance and later choices
 
-The recommendation is typed state, explicit control commands and isolated
-parallel branches. Before implementation, validate the exact operation
-lifecycle, serialized receipt/error representation, child result mapping,
-definition compatibility rules and shared resource accounting in the small
-authoring experiment. Public module names and eventual agent-as-graph
-convergence remain open. Full LangGraph API compatibility, global channels,
-arbitrary runtime code generation and automatic compensation are not needed
-to prove this design.
+The six-stage program validated the typed authoring and implemented routing,
+receipts, child lifecycles, compatibility checks, shared budgets and structured
+forks. The selected public APIs and executable contracts are retained in the
+[wave tracker](implementation/graph-flow/wave-tracker.md). Stage 6 evaluated an
+agent recipe and retained ordinary agents as managed children with their own
+controller; no record migration or controller replacement is selected.
+
+Stage 5 still needs actual LLM and TypeSafe inference with existing credentials.
+Full LangGraph API compatibility, global channels, arbitrary runtime code
+generation, quorum/streaming joins and automatic compensation remain outside
+this implementation program.

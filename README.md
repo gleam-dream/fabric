@@ -40,7 +40,9 @@ binding are exercised against a real local service.
 The optional [TypeSafe package](integrations/fabric_typesafe/README.md) provides
 non-generative yes/no, enum and rubric-score decisions with durable typed receipts.
 Its protocol tests and shared routing consumer pass; live LLM/classifier
-acceptance and the agent-recipe evaluation remain open.
+acceptance remains open. The [agent-recipe evaluation](docs/implementation/graph-flow/agent-recipe-evaluation.md)
+retains ordinary agents as managed graph nodes, preserving per-tool approval,
+recovery and cancellation while sharing execution mechanisms.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
 
