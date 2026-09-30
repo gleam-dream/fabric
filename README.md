@@ -313,11 +313,11 @@ history and effects; llm_wire validates and interprets the provider data.
 Application models return `model.ToolRequest(turn, usage)` and use
 `model.AssistantTurn(text, calls, None)` when they have no provider data.
 
-Rolling upgrades: the default writer is version 4; readers accept versions
-1–4. `store.with_record_version(runs, 2)` or `3` remains available for
-states without assistant provider data. Current llm_wire tool turns require
-version 4, so deploy compatible readers before enabling them. An older
-writer refuses the turn before any tool runs. Configure the store before
+Rolling upgrades: the default agent-record writer is version 5; readers accept
+versions 1–5. Writers 2–4 remain available for representable states.
+Assistant provider data requires at least version 4; graph parent attachments
+require version 5. Older writers refuse unrepresentable records before
+dispatching work. Configure the store before
 starting it and use the returned value for every handle and sweeper.
 Existing values and runners keep their setting; this does not migrate rows.
 See the [rollout procedure](integrations/fabric_postgres/README.md#record-versions)

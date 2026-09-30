@@ -63,9 +63,26 @@ replies require an explicit business-result adapter. Mapping a child outcome
 must not obscure uncertain effects. The parent cannot finish while it owns
 unsettled child work. Cancellation intent, pre-start tombstones, ancestral
 admission checks, depth and child-count bounds must cover both runtime kinds.
-The concrete shared parent-reference and family-retention representation is
-still to be settled against the existing agent controller and PostgreSQL
-family metadata; graph activations must not masquerade as chat action IDs.
+The shared parent reference is `run.Parent`: `AgentParent(run, ActionId)` or
+`GraphParent(run, activation)`. Graph activations never become chat action IDs.
+Family retention and shared budgets still need a contract against PostgreSQL's
+existing agent-family metadata.
+
+Both controllers retain this parent sum. Agent record version 5 writes tagged
+parent variants; older agent records decode to `AgentParent`. Writers 2–4 keep
+their historical shape for ordinary agents and refuse graph attachments before
+writing or releasing work. Graph records keep their current wire shape and
+accept graph parents only; graph-as-agent-tool authoring is not implemented.
+The public agent snapshot now exposes `Option(run.Parent)`; uncertain effects
+continue to use `ActionRef`.
+
+Shared ancestry checks read each saved parent and require its active reservation
+to name the exact descendant and action/activation. A stopped, unrelated,
+unreadable or excessively deep chain admits no new work. Agent model attempts
+(including retries), tool fences, child starts and approval commands use this
+contract, as do graph admission and effect fences. The existing agent sweeper
+stops at a graph parent: graph recovery owns that boundary. This does not yet
+provide a public managed-agent operation or automatic graph recovery.
 
 The first managed-child implementation is a subgraph in the same store. Its
 typed operation is constructed from a child graph runtime, with the child

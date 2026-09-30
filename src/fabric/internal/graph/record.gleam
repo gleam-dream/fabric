@@ -51,9 +51,11 @@ pub fn encode(state: g.State) -> Result(String, EncodeError) {
       #(
         "parent",
         json.nullable(state.parent, fn(parent) {
+          // validate rejects agent attachments until graph-as-agent-tool exists.
+          let assert run.GraphParent(id, activation) = parent
           json.object([
-            #("run", json.string(parent.run)),
-            #("activation", json.int(parent.activation)),
+            #("run", json.string(run.id_to_string(id))),
+            #("activation", json.int(activation)),
           ])
         }),
       ),
@@ -493,7 +495,7 @@ fn state_decoder() -> Decoder(g.State) {
     decode.optional({
       use run <- decode.field("run", decode.string)
       use activation <- decode.field("activation", decode.int)
-      decode.success(child.Parent(run, activation))
+      decode.success(run.GraphParent(run.issued(run), activation))
     }),
   )
   use receipts <- decode.field(
@@ -575,13 +577,15 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
   use _ <- result.try(json_value(state.initial))
   use _ <- result.try(case state.parent {
     None -> Ok(Nil)
-    Some(parent) -> {
+    Some(run.AgentParent(..)) ->
+      Error("graph runs do not accept agent-action parents")
+    Some(run.GraphParent(parent, activation)) -> {
+      let parent = run.id_to_string(parent)
       use _ <- result.try(
-        run.parse_id(parent.run) |> result.replace_error("invalid parent run"),
+        run.parse_id(parent) |> result.replace_error("invalid parent run"),
       )
       require(
-        parent.activation > 0
-          && state.run == child.reserved_id(parent.run, parent.activation),
+        activation > 0 && state.run == child.reserved_id(parent, activation),
         "child record does not match its parent reservation",
       )
     }

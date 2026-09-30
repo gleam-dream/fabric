@@ -222,7 +222,11 @@ fn root(
       )
       case state.parent {
         None -> Ok(#(id, state.agent))
-        Some(parent) -> root(store, run.id_to_string(parent.run), left - 1)
+        Some(run.AgentParent(parent, _)) ->
+          root(store, run.id_to_string(parent), left - 1)
+        // This registry binds agent roots only. A graph-owned family is
+        // reattached by graph recovery, never recovered as an agent root.
+        Some(run.GraphParent(..)) -> Error(Nil)
       }
     }
   }
@@ -237,12 +241,13 @@ fn release_acknowledged(store: Store, state: controller.State) -> Bool {
   }
   let acknowledged = case state.parent {
     None -> terminal
-    Some(parent) ->
-      case runner.load(store, run.id_to_string(parent.run)) {
+    Some(run.GraphParent(..)) -> False
+    Some(run.AgentParent(id, action)) ->
+      case runner.load(store, run.id_to_string(id)) {
         Error(_) -> False
         Ok(#(_, above)) ->
           !list.any(controller.active_children(above), fn(child) {
-            child.0 == parent.id
+            child.0 == action
           })
       }
   }

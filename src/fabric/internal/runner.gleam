@@ -30,6 +30,7 @@
 //// end of its drain window leaves its record as a lost runner does.
 
 import fabric/agent
+import fabric/internal/ancestry
 import fabric/internal/bounded
 import fabric/internal/claim
 import fabric/internal/controller.{type Effect, type Event, type State}
@@ -298,7 +299,7 @@ pub fn child_state(
     setup.identity,
     controller.Limits(..setup.limits, max_depth:),
     prompt,
-    Some(run.ActionRef(run.issued(parent.run), action)),
+    Some(run.AgentParent(run.issued(parent.run), action)),
     depth,
   )
 }
@@ -740,7 +741,13 @@ fn receive_next(runner: Runner(context)) -> Nil {
       Ok(runner)
     }
     live.Fence(id, reply) ->
-      case ancestors_open(runner.setup.store, runner.state.parent) {
+      case
+        ancestors_open(
+          runner.setup.store,
+          runner.state.run,
+          runner.state.parent,
+        )
+      {
         False -> {
           process.send(reply, False)
           apply(runner, controller.Cancel)
@@ -760,7 +767,11 @@ fn receive_next(runner: Runner(context)) -> Nil {
                 let start = case answer {
                   live.Applied(_) -> {
                     let open =
-                      ancestors_open(runner.setup.store, runner.state.parent)
+                      ancestors_open(
+                        runner.setup.store,
+                        runner.state.run,
+                        runner.state.parent,
+                      )
                     process.send(open_after, open)
                     open
                   }
@@ -1032,6 +1043,9 @@ fn perform(
     controller.CallModel(turn, request) -> {
       let self = runner.self
       let model = runner.setup.model
+      let runs = runner.setup.store
+      let parent = runner.state.parent
+      let id = runner.state.run
       let delay =
         retry_delay(runner.setup.model_retry_delay, runner.model_failures)
       let issue = claim.new()
@@ -1046,9 +1060,10 @@ fn perform(
             True -> process.sleep(delay)
             False -> Nil
           }
-          case claim.accept(issue) {
-            False -> Nil
-            True -> {
+          case ancestors_open(runs, id, parent), claim.accept(issue) {
+            _, False -> Nil
+            False, True -> process.send(self, live.Apply(controller.Cancel))
+            True, True -> {
               let result = case
                 executor.rescue(fn() { model.call(model, request) })
               {
@@ -1138,7 +1153,7 @@ fn start_child(
   let rejected = fn(detail) {
     controller.ToolReported(id, invocation.ArgumentsRejected(detail))
   }
-  case ancestors_open(setup.store, parent.parent) {
+  case ancestors_open(setup.store, parent.run, parent.parent) {
     // An ancestor stopped: the run cancels itself, and with it this start.
     False -> controller.Cancel
     True ->
@@ -1537,8 +1552,12 @@ fn notify_parent_tries(
 /// accepts its work: `False` once one is stopping or has ended. A chain
 /// that cannot be read after the store's bounded retries counts as closed:
 /// nothing starts that the ancestors may have stopped.
-pub fn ancestors_open(store: Store, parent: Option(run.ActionRef)) -> Bool {
-  case read_ancestors(store, parent, max_links, 0) {
+pub fn ancestors_open(
+  store: Store,
+  id: String,
+  parent: Option(run.Parent),
+) -> Bool {
+  case read_ancestors(store, id, parent, max_links, 0) {
     Ok(open) -> open
     Error(_) -> False
   }
@@ -1551,31 +1570,22 @@ const max_links = 64
 /// work. A failed read is tried again after the runner's bounded backoff.
 pub fn read_ancestors(
   store: Store,
-  parent: Option(run.ActionRef),
+  id: String,
+  parent: Option(run.Parent),
   links: Int,
   attempt: Int,
 ) -> Result(Bool, ReadError) {
-  case parent, links {
-    None, _ -> Ok(True)
-    Some(_), 0 -> Error(Corrupt("the chain of parent runs is too long"))
-    Some(link), _ ->
-      case load(store, run.id_to_string(link.run)) {
-        Error(StoreFailed(_)) if attempt < unavailable_retries -> {
-          process.sleep(
-            unavailable_backoff * int.bitwise_shift_left(1, attempt),
-          )
-          read_ancestors(store, parent, links, attempt + 1)
-        }
-        Error(problem) -> Error(problem)
-        Ok(#(_, above)) ->
-          case above.phase {
-            controller.Stopping(..)
-            | controller.Ended(_)
-            | controller.NeverStarted -> Ok(False)
-            controller.Acting(..) | controller.AwaitingModel(_) ->
-              read_ancestors(store, above.parent, links - 1, 0)
-          }
-      }
+  case ancestry.read(store, id, parent, links) {
+    Error(ancestry.StoreFailed(store.NotFound)) -> Error(NotFound)
+    Error(ancestry.StoreFailed(_)) if attempt < unavailable_retries -> {
+      process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
+      read_ancestors(store, id, parent, links, attempt + 1)
+    }
+    Error(ancestry.StoreFailed(problem)) -> Error(StoreFailed(problem))
+    Error(ancestry.UnsupportedVersion(version)) ->
+      Error(UnsupportedVersion(version))
+    Error(ancestry.Corrupt(detail)) -> Error(Corrupt(detail))
+    Ok(open) -> Ok(open)
   }
 }
 
@@ -1935,7 +1945,7 @@ fn read_children(runner: Runner(context)) -> Runner(context) {
               )
               case
                 state.parent
-                == Some(run.ActionRef(run.issued(runner.state.run), action))
+                == Some(run.AgentParent(run.issued(runner.state.run), action))
               {
                 False -> Error(Nil)
                 True ->

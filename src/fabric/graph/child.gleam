@@ -7,6 +7,11 @@ pub type Parent {
   Parent(run: String, activation: Int)
 }
 
+@internal
+pub fn attachment(parent: Parent) -> run.Parent {
+  run.GraphParent(run.issued(parent.run), parent.activation)
+}
+
 pub type Reference {
   Reference(run: run.RunId, activation: Int, child: run.RunId)
 }

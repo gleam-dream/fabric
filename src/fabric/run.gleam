@@ -53,6 +53,13 @@ pub type ActionRef {
   ActionRef(run: RunId, id: ActionId)
 }
 
+/// The durable attachment that owns a run. Graph visits and chat actions
+/// have different identities; neither is encoded as the other.
+pub type Parent {
+  AgentParent(run: RunId, id: ActionId)
+  GraphParent(run: RunId, activation: Int)
+}
+
 /// Which approval an action needs. `version` lets an application change the
 /// requirement for an action and have stale approvals refused.
 pub type Requirement {
@@ -227,8 +234,8 @@ pub type Snapshot {
     /// Increases by one each time recovery takes over work that no live
     /// runner owned.
     incarnation: Int,
-    /// The delegation that started a sub-agent run; `None` for a root run.
-    parent: Option(ActionRef),
+    /// The action or graph activation that owns this run; `None` for a root.
+    parent: Option(Parent),
     status: Status,
     turns_used: Int,
     max_turns: Int,

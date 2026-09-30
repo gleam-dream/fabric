@@ -5,6 +5,7 @@
 import fabric/graph/child
 import fabric/graph/definition
 import fabric/graph/operation
+import fabric/internal/ancestry
 import fabric/internal/bounded
 import fabric/internal/claim
 import fabric/internal/executor
@@ -89,30 +90,10 @@ pub fn admit(
 }
 
 pub fn check_ancestry(runs: store.Store, state: g.State) -> Result(Nil, Error) {
-  check_parent(runs, state.run, state.parent, 64)
-}
-
-fn check_parent(
-  runs: store.Store,
-  id: String,
-  parent: Option(child.Parent),
-  left: Int,
-) -> Result(Nil, Error) {
-  case parent {
-    None -> Ok(Nil)
-    Some(_) if left <= 0 -> Error(CallbackFailed("child nesting limit reached"))
-    Some(link) -> {
-      use #(_, state) <- result.try(load_raw(runs, link.run))
-      use _ <- result.try(case state.phase {
-        g.Joining(a, reserved)
-          | g.WaitingChild(a, reserved)
-          | g.ChildBlocked(a, reserved, _)
-          if a.id == link.activation && reserved == id
-        -> Ok(Nil)
-        _ -> Error(CallbackFailed("parent no longer accepts child work"))
-      })
-      check_parent(runs, state.run, state.parent, left - 1)
-    }
+  case ancestry.read(runs, state.run, state.parent, 64) {
+    Ok(True) -> Ok(Nil)
+    Ok(False) -> Error(CallbackFailed("parent no longer accepts child work"))
+    Error(error) -> Error(CallbackFailed(string.inspect(error)))
   }
 }
 
