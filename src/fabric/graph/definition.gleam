@@ -439,6 +439,7 @@ pub fn validate(
     | control.AwaitingApproval(a, _)
     | control.WaitingSignal(a)
     | control.Joining(a, _)
+    | control.WaitingChild(a, _)
     | control.ChildBlocked(a, _, _)
     | control.StoppingChild(a, _)
     | control.Blocked(a, _)

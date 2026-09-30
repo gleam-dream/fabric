@@ -30,7 +30,7 @@ encoded payload exactly, including JSON whitespace; acknowledgement uses the
 saved bytes rather than rerunning codecs to normalize historical results.
 
 Record version 2 introduced execution modes and the waiting phase. The current
-version 3 also retains subgraph attachments and initial input. Earlier versions
+version 4 also retains subgraph attachments, initial input and idle child waits. Earlier versions
 are rejected explicitly; no migration or compatibility shim is provided for
 unreleased formats. The mode participates in definition
 compatibility, preventing a stored wait from becoming an executable activity.
@@ -94,11 +94,10 @@ this wave rather than being inferred from a passing subgraph scenario.
 The first subgraph checkpoint proves creation, lost acknowledgements,
 recovery, child approval, child reconciliation and cancellation races through
 public APIs, including a PostgreSQL restart. It does not complete managed
-composition. Parents still poll while children await approval or signals;
-releasing those idle parents and repairing lost wakeups remains work. Nested
-wait propagation, managed agents, family retention and shared budgets also
-remain unaccepted. The subsequent cancellation-settlement checkpoint implements
-the contract below, including nested cancellation across restart.
+composition. Subsequent checkpoints implement idle child waits, local wakeups,
+nested approval/signal propagation and cancellation settlement, including nested
+cancellation across restart. Managed agents, family retention, shared budgets,
+jobs and deadlines remain unaccepted.
 
 ### Cancellation settlement
 
@@ -132,6 +131,37 @@ selection and route callbacks carry only the parent's native contracts; they
 do not capture managed children. This matters on the BEAM, where passing work
 to a process copies closure environments. Nested composition must not multiply
 copies of the complete descendant graph at every callback boundary.
+
+### Idle child waits and wakeups
+
+When an owned child awaits approval or a signal, its parent commits
+`WaitingChild(activation, child)` and releases its runner and lease. The parent
+still exposes the child's reference and current wait. A chain of subgraphs
+propagates a descendant's approval, signal or uncertainty through its immediate
+child attachments; a descendant's result never bypasses intermediate routing.
+
+The confirmed parent wait installs a transient, store-owned dependency wakeup.
+It retains deployed recovery code, without a process per waiting parent. Child
+commits through that store trigger a bounded worker. Concurrent notifications
+coalesce; a notification during recovery requests one additional check. A
+parent write invalidates the previous registration. Recovery always reads the
+stored parent and child before committing anything. A check immediately after
+registration closes the race between observing the child and parking the
+parent. While the child still waits, the check performs no parent write.
+
+The wait and reciprocal attachment are durable; the notification is only a
+local hint. Store loss, a failed wakeup or a child write through another store
+can lose that hint. `graph.recover(parent)` restores the registration and
+checks the child, without requiring another child notification. It can recover
+nested attachments through their deployed runtimes. `read` and `await` remain
+observation APIs and do not start recovery. Automatic graph-wide scanning is
+separate work; these local wakeups do not claim distributed notification.
+
+Cancellation closes the waiting attachment through the same committed intent
+as a working child. A stale notification or competing recovery cannot reopen
+it. Store shutdown starts no wakeup work after draining begins; any lost wakeup
+remains repairable from the retained wait. Graph record version 4 introduces
+the waiting-child phase and rejects earlier unreleased graph formats.
 
 ## External jobs and deadlines
 

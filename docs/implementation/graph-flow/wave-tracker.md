@@ -23,7 +23,7 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: the cancellation-settlement checkpoint passes 422 root tests, 32 PostgreSQL tests,
+- Gate status: the idle-child checkpoint passes 428 root tests, 32 PostgreSQL tests,
   three graph consumer tests and 15 existing app consumer tests. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -31,10 +31,10 @@
   start/read/await/recover/approval/reconciliation/cancellation APIs. Directory
   and PostgreSQL scenarios retain work over store-process loss. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: finish idle and nested child waits
-  under the [managed composition contract](managed-composition.md), then managed
-  agents, family budgeting/retention, jobs and deadlines. These remain runtime
-  states rather than blocking operation wrappers.
+- Next action: generalize the parent/family contract across graph and agent
+  records, then implement managed agent nodes, family budgeting/retention, jobs
+  and deadlines under the [managed composition contract](managed-composition.md).
+  These remain runtime states rather than blocking operation wrappers.
 - Resume note: the user requested a checkpoint commit and resumed implementation
   on 2026-09-29. The app goal is confirmed active. The initial runtime checkpoint
   is committed as `04ae481`. Initial subgraphs do not establish
@@ -499,3 +499,43 @@ six-step goal remains active, with wave 3 next.
   limits/retention or external jobs. G8–G11 and the full goal remain open.
 - Next: durable idle child waits with recoverable wakeups, followed by nested
   wait propagation and the remaining managed-composition contracts.
+
+### Wave 3 — idle child waits and nested notifications
+
+- Status: idle and nested subgraph approval/signal waits now implement their
+  G7 contract. The parent commits `WaitingChild`, releases its runner and lease,
+  and retains the same child reference. A descendant's terminal answer must
+  still pass through each intermediate graph's own acceptance callback.
+- Wakeups: a confirmed parked write installs a store-owned local dependency
+  registration. It starts no process per idle run. Changes trigger bounded,
+  coalesced recovery checks; unchanged waits are not rewritten. An immediate
+  check closes the observation/registration race, and a later parent write
+  invalidates the previous registration. Store draining admits no new wakeup
+  workers. The callback never treats a notification as a saved child outcome.
+- Recovery: local hints can be lost with a store or skipped by a write through
+  another store. Explicit parent recovery restores nested child attachments
+  and the local registration, then checks saved outcomes. Observation APIs do
+  not recover implicitly. A stored wait never recreates a missing child record.
+- Compatibility: graph format version 4 adds `WaitingChild`; earlier unreleased
+  graph formats are explicitly refused. Agent writer versions and the external
+  backend interface are unchanged. The store's internal ownership contract now
+  includes parked dependency observation.
+- Evidence: five additional public child tests cover idle runner release,
+  nested approval followed by a signal (all runners idle, all routes applied),
+  store loss before completion notification, child completion before wakeup
+  registration, and cancellation winning over a delayed wakeup commit. Record
+  tests roundtrip the wait and reject foreign reservations and operation kinds.
+  PostgreSQL now checks that parent and child leases are free before restart,
+  then recovers the same attachment and completes it through public APIs.
+- Gate: warning-free builds; 428 root tests, 32 PostgreSQL tests, three graph
+  consumer tests and 15 existing app consumer tests pass. `nix fmt`, explicit
+  Gleam formatting, `nix flake check` and `git diff --check` pass on this host.
+  Other platforms were not tested.
+- Conformance: this advances G7 and preserves G1–G6. It does not establish
+  distributed notifications, automatic graph scanning, managed agents,
+  family-wide budgets/retention, external jobs or durable deadlines. Wave 3 and
+  the full six-step goal remain active; waves 4–6 are unchanged.
+- Next: inspect the existing agent parent/action references and PostgreSQL
+  family metadata, settle the shared graph/agent attachment representation,
+  and exercise a real managed ordinary agent from a graph. Preserve the
+  existing agent suite and avoid treating graph activations as chat action IDs.

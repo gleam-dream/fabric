@@ -16,7 +16,7 @@ import gleam/string
 
 pub const format = "fabric.graph"
 
-pub const version = 3
+pub const version = 4
 
 pub type EncodeError {
   InvalidState(detail: String)
@@ -200,6 +200,11 @@ fn phase_json(phase: g.Phase) -> Json {
       ])
     g.Joining(a, id) ->
       tag("joining", [
+        #("activation", activation_json(a)),
+        #("child", json.string(id)),
+      ])
+    g.WaitingChild(a, id) ->
+      tag("waiting_child", [
         #("activation", activation_json(a)),
         #("child", json.string(id)),
       ])
@@ -424,12 +429,13 @@ fn phase_decoder() -> Decoder(g.Phase) {
         use reason <- decode.field("reason", decode.string)
         decode.success(g.ChildBlocked(a, id, reason))
       })
-    "joining" | "stopping_child" ->
+    "joining" | "stopping_child" | "waiting_child" ->
       Ok({
         use a <- decode.field("activation", activation_decoder())
         use id <- decode.field("child", decode.string)
         decode.success(case name {
           "joining" -> g.Joining(a, id)
+          "waiting_child" -> g.WaitingChild(a, id)
           _ -> g.StoppingChild(a, id)
         })
       })
@@ -594,7 +600,10 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
     g.Blocked(a, g.InvalidResult(_, _))
       if a.prepared.kind == operation.Subgraph
     -> pending(state, count, last, a)
-    g.Joining(a, id) | g.StoppingChild(a, id) | g.ChildBlocked(a, id, _) -> {
+    g.Joining(a, id)
+    | g.WaitingChild(a, id)
+    | g.StoppingChild(a, id)
+    | g.ChildBlocked(a, id, _) -> {
       use _ <- result.try(require(
         a.prepared.kind == operation.Subgraph
           && id == child.reserved_id(state.run, a.id),

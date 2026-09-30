@@ -259,6 +259,8 @@ pub opaque type Message {
   )
   Watch(run: String, watcher: Subject(Nil), reply: Subject(Nil))
   Unwatch(run: String, watcher: Subject(Nil))
+  Wake(run: String, token: String)
+  Awoke(run: String, token: String, disposition: WakeupDisposition)
   Down(pid: Pid)
   /// A worker finished the backend call of the run's current request.
   Finished(run: String, done: Done)
@@ -720,6 +722,10 @@ pub type Ownership {
   /// watcher woken by this commit already sees no runner; nothing is left
   /// in flight (`Release`).
   Leave(Pid)
+  /// A confirmed idle record releases its runner/lease and registers deployed
+  /// recovery code for changes to one dependency. The registration is local;
+  /// the durable record remains authoritative after any missed notification.
+  Park(dependency: String, wake: fn() -> WakeupDisposition)
   /// The committing runner `Pid` hands the run off with work in flight: the
   /// lease is released as already expired.
   HandOff(Pid)
@@ -730,6 +736,12 @@ pub type Ownership {
   /// lease is claimed, or seized, as already expired) or of none (the
   /// lease is released).
   Detached(in_flight: Bool, seize: Bool)
+}
+
+@internal
+pub type WakeupDisposition {
+  KeepWatching
+  StopWatching
 }
 
 /// The store's process: the one registered under its name, or for a
@@ -926,6 +938,7 @@ type Loop {
     /// The runner factory process that reported it is shutting down.
     draining: Option(Pid),
     watchers: Dict(String, List(#(Pid, Subject(Nil)))),
+    wakeups: Dict(String, Wakeup),
     monitored: List(Pid),
     /// Per run: the request whose backend call is in flight, and the
     /// requests waiting behind it, oldest first.
@@ -935,6 +948,20 @@ type Loop {
     /// when it exits.
     starter: Option(Pid),
   )
+}
+
+type Wakeup {
+  Wakeup(
+    dependency: String,
+    token: String,
+    callback: fn() -> WakeupDisposition,
+    status: WakeStatus,
+  )
+}
+
+type WakeStatus {
+  Dormant
+  Waking(again: Bool)
 }
 
 /// Whether a renewal of a leased store is in flight.
@@ -992,6 +1019,7 @@ fn run(
       factory: factory_name(store.name),
       draining: None,
       watchers: dict.new(),
+      wakeups: dict.new(),
       monitored: [],
       busy: dict.new(),
       timeout: default_backend_timeout,
@@ -1052,6 +1080,31 @@ fn call(
 /// the backend timeout, so a slow or hung call holds up only its own run.
 fn serve(state: Loop, message: Message) -> Loop {
   case message {
+    Wake(run, token) -> wake(state, run, token)
+    Awoke(run, token, disposition) -> {
+      case dict.get(state.wakeups, run) {
+        Ok(Wakeup(token: current, ..))
+          if token == current && disposition == StopWatching
+        -> Loop(..state, wakeups: dict.delete(state.wakeups, run))
+        Ok(Wakeup(token: current, status: Waking(again), ..) as wakeup)
+          if token == current
+        -> {
+          case again {
+            True -> process.send(state.subject, Wake(run, token))
+            False -> Nil
+          }
+          Loop(
+            ..state,
+            wakeups: dict.insert(
+              state.wakeups,
+              run,
+              Wakeup(..wakeup, status: Dormant),
+            ),
+          )
+        }
+        _ -> state
+      }
+    }
     SetTimeout(milliseconds) -> Loop(..state, timeout: milliseconds)
     Runners(reply) -> {
       process.send(reply, case process.named(state.factory) {
@@ -1215,7 +1268,7 @@ fn lease_for(lessee: Option(Lessee), ownership: Ownership) -> Lease {
     Some(Lessee(owner:, ttl:)) ->
       case ownership {
         Keep -> Hold(owner)
-        Leave(_) | Detached(in_flight: False, ..) -> Release
+        Leave(_) | Park(..) | Detached(in_flight: False, ..) -> Release
         HandOff(_) | Detached(in_flight: True, seize: False) -> Claim(owner, 0)
         Detached(in_flight: True, seize: True) -> Seize(owner, 0)
         Launch(seize: False, ..) -> Claim(owner, ttl)
@@ -1347,7 +1400,24 @@ fn confirm(
 /// Applies a committed write's ownership. A write sent at `sent` that
 /// claimed a lease holds it until `valid_until(sent)`.
 fn own(state: Loop, run: String, ownership: Ownership, sent: Int) -> Loop {
+  let state = Loop(..state, wakeups: dict.delete(state.wakeups, run))
   case ownership {
+    Park(dependency, callback) -> {
+      let token = random_id()
+      // Read after registration, even if the dependency changed before the
+      // parent parked. This message is handled after the confirmed write.
+      process.send(state.subject, Wake(run, token))
+      Loop(
+        ..state,
+        live: dict.delete(state.live, run),
+        valid: dict.delete(state.valid, run),
+        wakeups: dict.insert(
+          state.wakeups,
+          run,
+          Wakeup(dependency, token, callback, Dormant),
+        ),
+      )
+    }
     Keep | Detached(..) -> state
     Leave(pid) | HandOff(pid) ->
       case dict.get(state.live, run) {
@@ -1566,6 +1636,41 @@ fn notify(state: Loop, run: String) -> Nil {
   dict.get(state.watchers, run)
   |> result.unwrap([])
   |> list.each(fn(entry) { process.send(entry.1, Nil) })
+  dict.each(state.wakeups, fn(parent, wakeup) {
+    case wakeup.dependency == run {
+      True -> process.send(state.subject, Wake(parent, wakeup.token))
+      False -> Nil
+    }
+  })
+}
+
+/// Each dependency registration runs at most one bounded check at a time.
+/// The worker is linked to the store, while bounded catches callback crashes
+/// and kills its callback if either the worker or store disappears.
+fn wake(state: Loop, run: String, token: String) -> Loop {
+  case dict.get(state.wakeups, run), state.draining {
+    Ok(wakeup), None if wakeup.token == token -> {
+      let status = case wakeup.status {
+        Waking(_) -> Waking(True)
+        Dormant -> {
+          let subject = state.subject
+          let timeout = state.timeout
+          let callback = wakeup.callback
+          process.spawn(fn() {
+            let disposition =
+              bounded.call(timeout, callback) |> result.unwrap(KeepWatching)
+            process.send(subject, Awoke(run, token, disposition))
+          })
+          Waking(False)
+        }
+      }
+      Loop(
+        ..state,
+        wakeups: dict.insert(state.wakeups, run, Wakeup(..wakeup, status:)),
+      )
+    }
+    _, _ -> state
+  }
 }
 
 // --- in memory ---------------------------------------------------------------
