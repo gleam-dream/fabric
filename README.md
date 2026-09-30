@@ -33,11 +33,11 @@ private member results and join them in input order, including after restart.
 retaining typed answers, raw JSON and usage without a chat continuation. See the
 [decision consumer](consumers/decision/README.md) and
 [adapter contract](docs/implementation/graph-flow/decision-adapters.md).
-Live provider acceptance, classifier/MCP adapters and the agent-recipe
-evaluation remain open in the implementation program.
-The optional [MCP package](integrations/fabric_mcp/README.md) now has a bounded
-stdio connection proven against a real local service; its typed graph binding
-is the next adapter slice.
+The optional [MCP package](integrations/fabric_mcp/README.md) binds discovered
+tool schemas and native values to policy-gated operations, retaining original
+responses and restoring saved results without replay. Its stdio client and graph
+binding are exercised against a real local service. Live LLM acceptance, the
+classifier adapter and the agent-recipe evaluation remain open.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
 

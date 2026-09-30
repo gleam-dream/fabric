@@ -2,8 +2,9 @@
 
 This optional package implements the MCP boundary selected by
 [GRAPH-FLOW](../../GRAPH-FLOW.md#mcp-stays-an-adapter-boundary) and G10. Fabric
-core acquires no MCP, Saga or Grind dependency. The complete stage-5 acceptance
-still requires a typed graph binding and a real local-server exercise.
+core acquires no MCP, Saga or Grind dependency. The selected stdio binding is
+implemented and exercised against a real local service. Stage 5 remains open
+for classifier implementation and live LLM acceptance.
 
 ## Client selection
 
@@ -79,10 +80,10 @@ both before another request can run. Response parsing counts against the request
 deadline. Process aliases discard late request acknowledgments after a caller
 stops waiting. No backend or graph record format changes in this checkpoint.
 
-This accepts the connection boundary only. It does not accept the typed MCP
-graph adapter or stage 5.
+These scenarios accept the connection boundary. The graph binding has the
+additional acceptance evidence below; stage 5 remains open.
 
-## Typed binding to follow the connection gate
+## Typed graph binding
 
 The binding retains separate application operation identity, server identity
 and remote tool name. Discovery retains its input contract and optional output
@@ -97,6 +98,60 @@ tool. Cancellation and restart use the ordinary graph activity fence and
 reconciliation contract. Tests must cover typed success, optional output schema,
 schema drift, scoped names, tool/protocol errors, canceled or lost replies and
 restart with a retained receipt against an independently running local server.
+
+The first typed surface discovers one tool and binds its retained descriptor
+to a separately versioned application operation. Discovery probes protocol and
+tool capability, follows at most 16 catalog pages, rejects duplicate names and
+uses Blueprint's closed Draft 2020-12 subset. Omitted schema dialect defaults to
+2020-12; an unsupported dialect or schema is a refusal, not a relaxed validator.
+The native input codec must describe the same validation shape as the tool.
+Descriptions may change without changing that shape. The application supplies
+a pure conversion from retained content/structured content to its native output;
+that output needs a persistence codec, not necessarily a provider schema.
+
+Each admitted invocation obtains the connection from fresh context, checks its
+configured server identity, rediscovers the tool and compares the complete
+input/optional output validation contracts before `tools/call`. Pre-call
+refusals are definite tool failures; interrupted or invalid post-call results,
+remote errors and `isError` results remain uncertain. They are not converted to
+successful native values. The first binding accepts only complete responses;
+absent `resultType` means complete as specified by MCP. Other result forms fail
+explicitly. Tool descriptions and annotations never authorize effects.
+
+The `fabric.mcp.receipt.v1` envelope retains the configured server, remote tool,
+input and optional output schemas, and original RPC response. Restoration
+checks those contracts against the deployed binding, validates the original
+result and redoes only the pure conversion. Encoding a receipt checks that its
+native value agrees with that conversion. No live client is captured by the
+receipt codec or contacted during restoration.
+
+Applications can persist a discovered descriptor with `tool_codec`'s
+`fabric.mcp.tool.v1` format and restore it without a live server. This keeps
+definition reconstruction independent of remote availability after a complete
+application restart. Descriptors, prompt/conversion meaning and server routing
+belong to the application's deployment configuration; changes to operation
+meaning require a new application operation version. Revalidation detects
+observed schema drift; it cannot lock a remote deployment between discovery
+and invocation. Invalid post-call results still remain uncertain.
+
+## Graph binding evidence
+
+Eleven public graph/descriptor scenarios prove native results and matching
+receipt roundtrips, policy approval before the counter effect, schema/server
+refusal before invocation, optional output contracts, description changes,
+paged catalogs, text-only conversion, the absent complete discriminator,
+post-effect failures without routing or retry, cancellation with a retained
+uncertain effect, pure conversion failure, content preservation, invalid
+receipts and invalid descriptor formats/identities/dialects. The restart
+scenario kills the store's owner and closes the MCP connection, restores the
+pinned descriptor from JSON, then recovers the saved graph outcome. A fresh
+server process reads the original counter effect exactly once.
+
+The first graph scenario failed at unimplemented discovery. The current gate
+passes 22 Gleam tests (11 connection, 11 graph/descriptor) and four independent
+Python service tests, with warnings as errors. No graph/backend record format
+changes were needed. This accepts the selected optional stdio adapter under
+G6/G10, not every MCP transport, extension or JSON Schema form.
 
 ## Gate
 
