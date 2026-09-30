@@ -53,6 +53,13 @@
 //// - `claim_expired(owner, ttl, limit)` claims for `owner` up to `limit`
 ////   runs whose lease is held and expired, and returns them. It changes
 ////   no revision, and concurrent calls never return the same run.
+//// - `claim_ready(owner, ttl, limit)` claims free runs whose validated idle
+////   dependency is unseen or changed. Save the observation key and dependency
+////   revision together with the lease; a concurrent child write remains
+////   discoverable. Preserve observations across same-key record writes.
+////   Claims are disjoint and bounded, change no execution bytes/revisions or
+////   retention ages, and refuse stale source revisions/projection versions.
+////   Use `fabric/discovery` to derive metadata from supported records.
 ////
 //// `fabric/testing.leased_backend_checks` checks a backend against this
 //// contract; `fabric/testing.leased_memory` is one kept in memory, for
@@ -165,6 +172,10 @@ pub type LeasedBackend {
     renew: fn(String, List(String), Int) -> Result(List(String), StoreError),
     /// `claim_expired(owner, ttl, limit)`: returns the runs claimed.
     claim_expired: fn(String, Int, Int) -> Result(List(String), StoreError),
+    /// Claims free runs with an unseen or changed validated dependency.
+    /// Atomically save the observed key/dependency revision and acquire its
+    /// lease. Claims never change execution revisions or retention ages.
+    claim_ready: fn(String, Int, Int) -> Result(List(String), StoreError),
   )
 }
 
@@ -292,6 +303,7 @@ pub opaque type Message {
   /// Kill the runners whose lease could have expired.
   Fence
   ClaimExpired(limit: Int, reply: Subject(Result(List(String), StoreError)))
+  ClaimReady(limit: Int, reply: Subject(Result(List(String), StoreError)))
 }
 
 /// A store over application-supplied backend functions (for example a
@@ -906,6 +918,7 @@ fn unleased(backend: Backend) -> LeasedBackend {
     },
     renew: fn(_, _, _) { Ok([]) },
     claim_expired: fn(_, _, _) { Ok([]) },
+    claim_ready: fn(_, _, _) { Ok([]) },
   )
 }
 
@@ -1121,14 +1134,19 @@ fn serve(state: Loop, message: Message) -> Loop {
       state
     }
     Draining(pid) -> Loop(..state, draining: Some(pid))
-    ClaimExpired(limit, reply) -> {
+    ClaimExpired(limit, reply) as request
+    | ClaimReady(limit, reply) as request -> {
       case state.lessee, state.draining {
         Some(lessee), None -> {
+          let claim = case request {
+            ClaimExpired(..) -> state.backend.claim_expired
+            _ -> state.backend.claim_ready
+          }
           process.spawn(fn() {
             process.send(
               reply,
               bounded_backend(state.timeout, fn() {
-                state.backend.claim_expired(lessee.owner, lessee.ttl, limit)
+                claim(lessee.owner, lessee.ttl, limit)
               }),
             )
           })
@@ -1785,4 +1803,13 @@ pub fn claim_expired(
   limit: Int,
 ) -> Result(List(String), StoreError) {
   call(store, ClaimExpired(limit, _)) |> result.flatten
+}
+
+/// Claims idle dependencies through this pinned store's current owner.
+@internal
+pub fn claim_ready(
+  store: Store,
+  limit: Int,
+) -> Result(List(String), StoreError) {
+  call(store, ClaimReady(limit, _)) |> result.flatten
 }

@@ -2,7 +2,13 @@
 //// the checks a leased store backend must pass. Production code needs
 //// nothing here.
 
+import fabric/discovery
+import fabric/graph/child
+import fabric/graph/operation
+import fabric/internal/graph/controller as graph
+import fabric/internal/graph/record as graph_record
 import fabric/model.{type ToolCall}
+import fabric/run
 import fabric/store.{
   type Current, type Lease, type LeasedBackend, type StoreError, AlreadyExists,
   Claim, Conflict, Current, Free, Held, Hold, LeaseRefused, LeasedBackend,
@@ -50,6 +56,17 @@ pub type Check {
 /// in a test and fail it on `Error`.
 pub fn leased_backend_checks(new: fn() -> LeasedBackend) -> List(Check) {
   [
+    Check(
+      "idle claims preserve revisions and suppress unchanged dependencies",
+      fn() { unchanged_dependencies(new()) },
+    ),
+    Check("child changes during a claim remain discoverable", fn() {
+      changed_dependencies(new())
+    }),
+    Check(
+      "concurrent idle claims are disjoint and failed claims remain recoverable",
+      fn() { disjoint_dependencies(new()) },
+    ),
     Check("insert stores revision 1 with its lease", fn() { inserts(new()) }),
     Check("compare_and_set advances one revision at a time", fn() {
       advances(new())
@@ -610,6 +627,155 @@ fn hold_races_claim(backend: LeasedBackend) -> Result(Nil, String) {
   })
 }
 
+// A retained graph attachment with a real reciprocal child record. Backend
+// conformance needs encoded states, without running application callbacks.
+fn idle_pair(
+  backend: LeasedBackend,
+) -> Result(#(String, String, String, String), String) {
+  let root = fresh()
+  let prepared =
+    graph.Prepared(
+      "child",
+      run.Identity("child", 1),
+      "0",
+      operation.RequireReconciliation,
+      operation.Subgraph,
+    )
+  let definition = graph.Definition(run.Identity("parent", 1), "v1", 1)
+  let assert Ok(#(state, _)) = graph.start(root, definition, "0", prepared)
+  let assert graph.Ready(a) = state.phase
+  let child_id = child.reserved_id(root, 1)
+  let parent = graph.State(..state, phase: graph.WaitingChild(a, child_id))
+  let assert Ok(parent_record) = graph_record.encode(parent)
+  let assert Ok(#(child_state, _)) =
+    graph.start(
+      child_id,
+      definition,
+      "0",
+      graph.Prepared(..prepared, kind: operation.Activity),
+    )
+  let assert graph.Ready(c) = child_state.phase
+  let child_state =
+    graph.State(
+      ..child_state,
+      parent: Some(run.GraphParent(run.issued(root), 1)),
+      phase: graph.Ended(graph.Cancelled(c, graph.BeforeStart)),
+    )
+  let assert Ok(child_record) = graph_record.encode(child_state)
+  use _ <- result.try(expect(
+    "parent insert",
+    backend.insert(root, parent_record, Release),
+    Ok(Nil),
+  ))
+  use _ <- result.map(expect(
+    "child insert",
+    backend.insert(child_id, child_record, Release),
+    Ok(Nil),
+  ))
+  #(root, parent_record, child_id, child_record)
+}
+
+fn unchanged_dependencies(backend: LeasedBackend) -> Result(Nil, String) {
+  use #(root, encoded, _, _) <- result.try(idle_pair(backend))
+  use _ <- result.try(expect(
+    "zero limit",
+    backend.claim_ready("a", long, 0),
+    Ok([]),
+  ))
+  use _ <- result.try(expect(
+    "first observation",
+    backend.claim_ready("a", long, 1),
+    Ok([root]),
+  ))
+  use _ <- result.try(expect(
+    "claim preserves bytes and revision",
+    backend.get(root),
+    Ok(Current(1, encoded, Held("a", True))),
+  ))
+  use _ <- result.try(expect(
+    "no foreign live claim",
+    backend.claim_ready("b", long, 1),
+    Ok([]),
+  ))
+  use _ <- result.try(expect(
+    "release observed wait",
+    backend.compare_and_set(root, 1, encoded, Release),
+    Ok(Nil),
+  ))
+  expect("unchanged dependency", backend.claim_ready("b", long, 1), Ok([]))
+}
+
+fn changed_dependencies(backend: LeasedBackend) -> Result(Nil, String) {
+  use #(root, encoded, child, child_record) <- result.try(idle_pair(backend))
+  use _ <- result.try(expect(
+    "first observation",
+    backend.claim_ready("a", long, 1),
+    Ok([root]),
+  ))
+  use _ <- result.try(expect(
+    "child changed while parent claimed",
+    backend.compare_and_set(child, 1, child_record, Release),
+    Ok(Nil),
+  ))
+  use _ <- result.try(expect(
+    "release observed wait",
+    backend.compare_and_set(root, 1, encoded, Release),
+    Ok(Nil),
+  ))
+  use _ <- result.try(expect(
+    "changed dependency",
+    backend.claim_ready("b", long, 1),
+    Ok([root]),
+  ))
+  expect(
+    "second claim preserves parent revision",
+    backend.get(root),
+    Ok(Current(2, encoded, Held("b", True))),
+  )
+}
+
+fn disjoint_dependencies(backend: LeasedBackend) -> Result(Nil, String) {
+  use roots <- result.try(
+    list.try_map(list.repeat(Nil, 8), fn(_) {
+      idle_pair(backend) |> result.map(fn(pair) { pair.0 })
+    }),
+  )
+  let claimed =
+    together(8, fn(n) {
+      backend.claim_ready("claimer-" <> int.to_string(n), 0, 1)
+    })
+  use groups <- result.try(
+    list.try_map(claimed, fn(result) {
+      result |> result.map_error(string.inspect)
+    }),
+  )
+  let ids = list.flatten(groups)
+  use _ <- result.try(expect(
+    "disjoint claims",
+    list.length(list.unique(ids)),
+    8,
+  ))
+  use _ <- result.try(expect(
+    "all waits found",
+    list.all(roots, list.contains(ids, _)),
+    True,
+  ))
+  use _ <- result.try(expect(
+    "expired claims are not free claims",
+    backend.claim_ready("next", long, 8),
+    Ok([]),
+  ))
+  use recovered <- result.try(
+    backend.claim_expired("recovery", long, 8)
+    |> result.map_error(string.inspect),
+  )
+  expect(
+    "failed observation remains recoverable",
+    list.all(roots, list.contains(recovered, _)),
+    True,
+  )
+}
+
 // --- a leased backend in memory ---------------------------------------------------
 
 /// A leased backend kept in memory by one process, shared by every store
@@ -623,7 +789,13 @@ pub type LeasedMemory {
 }
 
 type Row {
-  Row(revision: Int, record: String, lease: Option(#(String, Int)))
+  Row(
+    revision: Int,
+    record: String,
+    lease: Option(#(String, Int)),
+    observed: Option(#(String, Option(Int))),
+    checked: Int,
+  )
 }
 
 type LeasedRequest {
@@ -637,6 +809,7 @@ type LeasedRequest {
   )
   LeasedRenew(String, List(String), Int, Subject(List(String)))
   LeasedClaimExpired(String, Int, Int, Subject(List(String)))
+  LeasedClaimReady(String, Int, Int, Subject(List(String)))
   Advance(Int, Subject(Nil))
 }
 
@@ -677,6 +850,11 @@ pub fn leased_memory() -> LeasedMemory {
       },
       renew: fn(owner, runs, ttl) {
         Ok(process.call_forever(subject, LeasedRenew(owner, runs, ttl, _)))
+      },
+      claim_ready: fn(owner, ttl, limit) {
+        Ok(
+          process.call_forever(subject, LeasedClaimReady(owner, ttl, limit, _)),
+        )
       },
       claim_expired: fn(owner, ttl, limit) {
         Ok(
@@ -734,17 +912,21 @@ fn leased_serve(
       let outcome = case expected, dict.get(rows, run) {
         None, Ok(_) -> Error(AlreadyExists)
         None, Error(Nil) ->
-          Ok(
-            Row(1, record, case lease {
+          Ok(Row(
+            1,
+            record,
+            case lease {
               Claim(owner, ttl) | Seize(owner, ttl) -> Some(#(owner, now + ttl))
               Hold(_) | Release -> None
-            }),
-          )
+            },
+            None,
+            now,
+          ))
         Some(_), Error(Nil) -> Error(NotFound)
         Some(expected), Ok(row) if row.revision != expected ->
           Error(Conflict(row.revision))
         Some(_), Ok(row) -> {
-          let next = Row(row.revision + 1, record, row.lease)
+          let next = Row(..row, revision: row.revision + 1, record: record)
           case lease, holder(row) {
             Hold(owner), Held(holding, _) if holding == owner -> Ok(next)
             Claim(owner, ttl), Free
@@ -784,6 +966,45 @@ fn leased_serve(
         offset,
       )
     }
+    LeasedClaimReady(owner, ttl, limit, reply) -> {
+      let candidates =
+        dict.to_list(rows)
+        |> list.filter_map(fn(entry) {
+          let #(id, row) = entry
+          case row.lease, wait_for(id, row.record) {
+            None, Some(wait) -> {
+              let revision =
+                dict.get(rows, run.id_to_string(wait.dependency))
+                |> result.map(fn(row) { row.revision })
+                |> option.from_result
+              case row.observed == Some(#(wait.key, revision)) {
+                True -> Error(Nil)
+                False -> Ok(#(id, wait.key, revision, row.checked))
+              }
+            }
+            _, _ -> Error(Nil)
+          }
+        })
+        |> list.sort(fn(a, b) { int.compare(a.3, b.3) })
+        |> list.take(int.max(limit, 0))
+      process.send(reply, list.map(candidates, fn(candidate) { candidate.0 }))
+      #(
+        list.fold(candidates, rows, fn(rows, candidate) {
+          let assert Ok(row) = dict.get(rows, candidate.0)
+          dict.insert(
+            rows,
+            candidate.0,
+            Row(
+              ..row,
+              lease: Some(#(owner, now + ttl)),
+              observed: Some(#(candidate.1, candidate.2)),
+              checked: now,
+            ),
+          )
+        }),
+        offset,
+      )
+    }
     LeasedClaimExpired(owner, ttl, limit, reply) -> {
       let claimed =
         dict.to_list(rows)
@@ -815,3 +1036,14 @@ fn now_ms() -> Int
 
 @external(erlang, "fabric_ffi", "random_id")
 fn random_id() -> String
+
+fn wait_for(id: String, encoded: String) -> Option(discovery.Dependency) {
+  case discovery.inspect(encoded) {
+    Ok(Some(wait)) ->
+      case run.id_to_string(wait.run) == id {
+        True -> Some(wait)
+        False -> None
+      }
+    _ -> None
+  }
+}

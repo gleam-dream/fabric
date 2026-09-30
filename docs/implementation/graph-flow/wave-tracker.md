@@ -14,10 +14,10 @@
 - Last closed wave: 2, public durable serial graph runtime.
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's free-wait discovery and job/deadline contracts are
-  being refined. Public shared work/child/depth budgets, mixed-family admission,
+- Open decisions: wave 3's external-job and deadline contracts are being
+  refined. Idle dependency discovery is implemented. Public shared work/child/depth budgets, mixed-family admission,
   root initialization and ledger retention are implemented. Registered graph
-  sweeping recovers expired work through mixed attachments. Shared parent
+  sweeping recovers expired work and changed idle dependencies through mixed attachments. Shared parent
   identities and manual signal contracts are implemented.
   Native authoring, serial lifecycle, compatibility and public control are now
   concrete in the [durable sequential contract](durable-sequential.md).
@@ -26,8 +26,8 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: idle dependency projection passes 508 root tests; the last
-  PostgreSQL gate passed 43 tests and its adapter is unchanged. The current gate includes
+- Gate status: automatic idle discovery passes 510 root tests and 46 PostgreSQL
+  tests, including migration and concurrent index refresh. The current gate includes
   four graph consumer tests and 15 existing app consumer tests. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -38,12 +38,13 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: persist idle-dependency observations and atomically claim changed
-  free waits through the shared sweeper, then external jobs
-  and deadlines under the [managed composition contract](managed-composition.md).
+- Next action: define the retained external-job submission/receipt contract and
+  prove attachment to an independently running local job, then durable deadlines
+  under the [managed composition contract](managed-composition.md).
   These remain runtime states rather than blocking operation wrappers.
-- Resume note: the user requested a checkpoint commit and resumed implementation
-  on 2026-09-29. The app goal is confirmed active. The initial runtime checkpoint
+- Resume note: the user requested another checkpoint commit and continued
+  implementation on 2026-09-30. The app goal is confirmed active with all six
+  stages preserved. The initial runtime checkpoint
   is committed as `04ae481`. Initial subgraphs do not establish
   complete managed composition, parallel joins or real adapter support.
 
@@ -874,3 +875,38 @@ six-step goal remains active, with wave 3 next.
   leases and retention ages. Exercise store loss, cross-store child completion,
   unchanged waits, contention, old writes and missed cancellation settlement
   through registered recovery on the real backend before accepting discovery.
+
+### Wave 3 — automatic idle dependency discovery
+
+- Status: leased backends atomically claim free waits with unseen or changed
+  child revisions. The shared sweeper reserves 50 candidates for expired work
+  and 50 for idle dependencies, retaining independent per-run ownership and
+  the existing registered-root checks. Failed recovery retains a lease retry cue.
+- Persistence: PostgreSQL schema version 3 adds a validated discovery projection,
+  source revision, observed key/revision and fair inspection order. Normal writes
+  maintain metadata. `refresh_discovery` upgrades existing rows in bounded,
+  concurrent batches without changing execution bytes, revisions, leases or ages.
+  Unknown records are examined once per projection version. Old-writer revision
+  changes invalidate metadata until refresh. Agent/graph record formats are unchanged.
+- Recovery: discovery inspects unchanged, unclaimed relatives without rewriting
+  them. Public nested-signal and nested-uncertainty regressions first reproduced
+  repeated revision churn, then proved convergence across two stores and completion
+  after external delivery or reconciliation without replaying an uncertain effect.
+  Explicit recovery retains its local-wakeup behavior; discovery never recreates
+  a child whose retained wait proves it previously existed.
+- Evidence: a public PostgreSQL regression first reproduced a missed child outcome
+  after store loss, then passed through registered scanning. Cancellation settlement
+  now completes automatically without routing or replaying effects. Shared backend
+  checks cover unchanged dependencies, changes during a claim, concurrent disjoint
+  claims, bounded selection, and an interrupted claim's expired-lease retry path.
+  PostgreSQL tests cover migration from schema 2, metadata-only refresh, stale
+  old-writer indexes and concurrent refresh batches.
+- Gate: 510 root tests, 46 PostgreSQL tests, four graph consumer tests and 15 app
+  consumer tests pass with warnings as errors. Source formatting, `nix fmt`,
+  `nix flake check` and `git diff --check` pass on this host.
+- Conformance: this closes the free managed-wait discovery gap under G7. It does
+  not deliver external jobs, durable deadlines, parallel joins or real decision
+  adapters. Wave 3 remains open; waves 4–6 and the active six-stage goal are unchanged.
+- Next: retain distinct submission intent, accepted job receipt and completion;
+  prove lost-acknowledgement recovery against an independently running local job.
+  Saga/Grind remain consumer-owned optional integrations outside the core.

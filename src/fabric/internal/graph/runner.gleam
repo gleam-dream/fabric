@@ -775,6 +775,111 @@ pub fn completion_event(
   }
 }
 
+/// A sweep may reach free ancestors or descendants of its claimed candidate.
+/// Inspect those waits without rewriting them: a rewrite would itself make the
+/// next ancestor scan eligible again, even though no business work changed.
+pub fn discover(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  id: String,
+  tries: Int,
+) -> Result(g.State, Error) {
+  use #(entry, state) <- result.try(load(runs, work, options, id))
+  let inspect_child =
+    driven(entry, state)
+    || case state.phase {
+      g.WaitingChild(..) | g.ChildBlocked(..) -> True
+      _ -> False
+    }
+  let outcome = case state.phase {
+    g.Joining(a, child)
+      | g.WaitingChild(a, child)
+      | g.ChildBlocked(a, child, _)
+      | g.StoppingChild(a, child)
+      if inspect_child
+    -> {
+      use progress <- result.try(
+        bounded.call(options.callback_timeout, fn() {
+          use _ <- result.try(
+            store.get(runs, child) |> result.map_error(string.inspect),
+          )
+          use driver <- result.try(checked_child(runs, work, a))
+          let mode = case state.phase {
+            g.StoppingChild(..) -> child_driver.Cancel
+            _ -> child_driver.Discover
+          }
+          use _ <- result.try(driver.reserve(
+            child.Parent(state.run, a.id),
+            child,
+            a.prepared.input,
+            mode,
+          ))
+          driver.read(
+            child.Parent(state.run, a.id),
+            child,
+            child_driver.Observe,
+          )
+        })
+        |> result.map_error(string.inspect)
+        |> result.flatten
+        |> result.map_error(CallbackFailed),
+      )
+      case driven(entry, state) {
+        True -> Ok(state)
+        False ->
+          case resting_child(state.phase, progress), entry.holding {
+            Some(_), store.Unheld -> Ok(state)
+            Some(phase), _ ->
+              commit_recovery(
+                runs,
+                work,
+                options,
+                entry,
+                g.State(
+                  ..state,
+                  phase: phase,
+                  incarnation: state.incarnation + 1,
+                ),
+                [],
+                1,
+              )
+            None, _ -> recover_work(runs, work, options, entry, state, 1)
+          }
+      }
+    }
+    g.Ended(g.Cancelled(a, g.UnresolvedCancellation(_)))
+      if {
+        a.prepared.kind == operation.Subgraph
+        || a.prepared.kind == operation.Agent
+      }
+    -> recover_cancelled_child(runs, work, options, entry, state, a, 1)
+    _ -> recover_work(runs, work, options, entry, state, 1)
+  }
+  case outcome {
+    Error(StoreFailed(store.Conflict(_))) if tries > 1 ->
+      discover(runs, work, options, id, tries - 1)
+    other -> other
+  }
+}
+
+/// Retained idle states need no new child command. Keep changed uncertainty
+/// evidence when acknowledging a claimed wait, without restarting observation.
+fn resting_child(phase: g.Phase, progress: child.Progress) -> Option(g.Phase) {
+  case phase, progress {
+    g.WaitingChild(..), child.Approval(_)
+    | g.WaitingChild(..), child.AgentInput(..)
+    | g.WaitingChild(..), child.Signal(_)
+    -> Some(phase)
+    g.ChildBlocked(a, id, _), child.Uncertain(reason)
+    | g.ChildBlocked(a, id, _), child.FinishedUncertain(reason)
+    -> Some(g.ChildBlocked(a, id, reason))
+    g.ChildBlocked(a, id, _), child.Cancelled(True) ->
+      Some(g.ChildBlocked(a, id, "child cancellation retains uncertain effects"))
+    _, _ -> None
+  }
+}
+
 pub fn recover(
   runs: store.Store,
   work: live.Work,

@@ -167,6 +167,12 @@ fn reserve(
   case reservation {
     child_driver.Cancel -> cancel(runtime, parent, id, tries)
     child_driver.Start -> start(runtime, parent, id, encoded, tries)
+    child_driver.Discover -> {
+      use _ <- result.try(
+        runner.load(runtime.store, id) |> result.map_error(string.inspect),
+      )
+      start(runtime, parent, id, encoded, tries)
+    }
   }
 }
 

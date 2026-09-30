@@ -71,17 +71,17 @@ the sweeper before runners drain and keeps the pool available until their
 handoffs are committed. Apply migrations before enabling recovery; a scan
 against an unmigrated database reports a failure and retries next interval.
 
-A scan runs at boot, then after each interval. It claims at most 100 expired
-leases and never overlaps the next scan. Each root's recovery has 30 seconds,
+A scan runs at boot, then after each interval. It claims at most 50 expired
+leases and 50 free waits with changed dependencies and never overlaps the next scan. Each root's recovery has 30 seconds,
 including at most 5 seconds to rebuild context. Invalid intervals, duplicate
 registrations, and unleased stores are rejected before startup. Unknown
 identities and failed recoveries leave their claims to expire; observe
 `fabric/observation.sweep()` for counts. No run context is stored by Fabric.
 
-Free idle graph waits with lost local wakeups still require explicit
-`graph.recover`; this scan does not discover every retained wait.
-Only expired leases are discoverable, so an automatic scan waits for expiry
-even after this store restarts. Explicit `fabric.recover` with a known run id
+Free managed waits remain discoverable after losing local wakeups, including
+blocked children and unresolved child cancellation. An unchanged wait does
+not repeatedly rewrite its descendants. Signal waits without a deadline need
+explicit delivery. Held work still waits for lease expiry after a restart. Explicit `fabric.recover` with a known run id
 can take over a prior local store process's lease immediately. Running tools
 become uncertain after a crash and are never replayed; reconcile their
 outcomes before the run continues. Family members have independent leases:
@@ -132,7 +132,7 @@ enforce work, child and depth reservations across restarts. Initialization
 creates/adopts the ledger and commits a root marker before any dispatch; an
 initialized root with a missing ledger refuses recovery. Retention projection
 version 3 validates that marker and attaches the ledger with matching limits. Run `refresh_retention` for existing rows before they can be
-pruned by the current projection. The PostgreSQL schema remains version 2.
+pruned by the current projection. The PostgreSQL schema is version 3; execution record versions are unchanged.
 
 Existing values and runners retain their setting. The setting affects
 future writes only: it neither rewrites rows nor makes an existing
@@ -189,10 +189,14 @@ CREATE TABLE fabric_runs (
   retention_revision bigint,     -- source revision of that projection
   parent_id text GENERATED ALWAYS AS (retention ->> 'parent') STORED
     REFERENCES fabric_runs(run_id) DEFERRABLE INITIALLY IMMEDIATE,
+  discovery jsonb, discovery_revision bigint,
+  dependency_id text GENERATED ALWAYS AS (discovery #>> '{wait,dependency}') STORED,
+  observed_key text, observed_revision bigint,
+  discovery_checked_at timestamptz NOT NULL DEFAULT '-infinity',
   lease_owner text, lease_until timestamptz,
   updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   CHECK ((lease_owner IS NULL) = (lease_until IS NULL)));
--- indexes: expired leases, settled roots by age, immediate parents
+-- indexes: expired leases, settled roots by age, immediate parents, idle dependencies
 ```
 
 Every write is one conditional statement, committed on its own: an insert
@@ -262,3 +266,23 @@ Run without the script, `gleam test` fails, since `FABRIC_TEST_DATABASE_URL`
 is unset. Fabric's own gate (the root package, `nix flake check`, CI) does
 not run these tests and needs no PostgreSQL. The suite includes an isolated
 Erlang VM killed with SIGKILL to verify automatic recovery without tool replay.
+
+## Idle dependency discovery
+
+Schema version 3 stores Fabric's validated discovery projection beside each
+execution and maintains it atomically on normal writes. `claim_ready` leases
+a free wait and records its dependency revision in one statement. Child changes
+during recovery remain eligible for a later scan. These claims change neither
+execution revisions nor retention ages. Concurrent scans skip locked rows and
+check the least recently inspected waits first.
+
+After migration, call `refresh_discovery(settings, limit: 100)` in bounded
+batches until it returns zero. This refresh preserves record bytes, revisions,
+leases and ages. Unknown or corrupt records are examined once per projection
+version and never become scheduling candidates. Old backend writes invalidate
+the source revision; refresh those rows before relying on automatic discovery.
+Concurrent refreshers skip rows locked by others, so zero is local to that call.
+
+Discovery provides a reason to inspect a run. Registered recovery still checks
+the saved attachments, compatible definitions, effect policy and ownership
+before it can execute any work.

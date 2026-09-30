@@ -1,4 +1,5 @@
-//// Bounded scans of expired leases. A candidate identifies a registered root;
+//// Bounded scans of expired leases and changed idle dependencies.
+//// A candidate identifies a registered root;
 //// recovery of that root preserves each member's independent lease.
 
 import fabric/agent.{type Agent}
@@ -160,56 +161,55 @@ fn empty() -> o.Sweep {
 }
 
 fn scan(store: Store, recoveries: Dict(record.Key, Recovery)) -> o.Sweep {
-  case store.claim_expired(store, batch_size) {
-    Error(_) -> o.Sweep(..empty(), failed: 1)
-    Ok(ids) -> {
-      let #(roots, failures) =
-        list.fold(ids, #(dict.new(), 0), fn(acc, id) {
-          case record.root(store, id, 128) {
-            Error(_) -> #(acc.0, acc.1 + 1)
-            Ok(#(root, identity)) -> #(
-              dict.upsert(acc.0, #(root, identity), fn(existing) {
-                [id, ..option.unwrap(existing, [])]
-              }),
-              acc.1,
-            )
-          }
-        })
-      dict.fold(
-        roots,
-        o.Sweep(..empty(), claimed: list.length(ids), failed: failures),
-        fn(summary, key, candidates) {
-          let #(root, identity) = key
-          case dict.get(recoveries, identity) {
-            Error(_) -> o.Sweep(..summary, unmatched: summary.unmatched + 1)
-            Ok(recovery) -> {
-              let before =
-                list.filter_map(candidates, fn(id) {
-                  record.load(store, id)
-                  |> result.map(fn(loaded) { #(id, record.incarnation(loaded)) })
+  // Reserve half the batch for each source so neither a stream of expired
+  // runners nor changing dependencies can starve the other.
+  let expired = store.claim_expired(store, batch_size / 2)
+  let ready = store.claim_ready(store, batch_size / 2)
+  let failures = list.count([expired, ready], result.is_error)
+  let ids = list.append(result.unwrap(expired, []), result.unwrap(ready, []))
+  let #(roots, failures) =
+    list.fold(ids, #(dict.new(), failures), fn(acc, id) {
+      case record.root(store, id, 128) {
+        Error(_) -> #(acc.0, acc.1 + 1)
+        Ok(#(root, identity)) -> #(
+          dict.upsert(acc.0, #(root, identity), fn(existing) {
+            [id, ..option.unwrap(existing, [])]
+          }),
+          acc.1,
+        )
+      }
+    })
+  dict.fold(
+    roots,
+    o.Sweep(..empty(), claimed: list.length(ids), failed: failures),
+    fn(summary, key, candidates) {
+      let #(root, identity) = key
+      case dict.get(recoveries, identity) {
+        Error(_) -> o.Sweep(..summary, unmatched: summary.unmatched + 1)
+        Ok(recovery) -> {
+          let before =
+            list.filter_map(candidates, fn(id) {
+              record.load(store, id)
+              |> result.map(fn(loaded) { #(id, record.incarnation(loaded)) })
+            })
+          case bounded.call(30_000, fn() { recovery.restore(store, root) }) {
+            Ok(Ok(Nil)) -> {
+              let recovered =
+                list.count(before, fn(candidate) {
+                  let #(id, incarnation) = candidate
+                  case record.load(store, id) {
+                    Ok(state) ->
+                      record.incarnation(state) > incarnation
+                      || record.release_acknowledged(store, state)
+                    Error(_) -> False
+                  }
                 })
-              case
-                bounded.call(30_000, fn() { recovery.restore(store, root) })
-              {
-                Ok(Ok(Nil)) -> {
-                  let recovered =
-                    list.count(before, fn(candidate) {
-                      let #(id, incarnation) = candidate
-                      case record.load(store, id) {
-                        Ok(state) ->
-                          record.incarnation(state) > incarnation
-                          || record.release_acknowledged(store, state)
-                        Error(_) -> False
-                      }
-                    })
-                  o.Sweep(..summary, recovered: summary.recovered + recovered)
-                }
-                _ -> o.Sweep(..summary, failed: summary.failed + 1)
-              }
+              o.Sweep(..summary, recovered: summary.recovered + recovered)
             }
+            _ -> o.Sweep(..summary, failed: summary.failed + 1)
           }
-        },
-      )
-    }
-  }
+        }
+      }
+    },
+  )
 }

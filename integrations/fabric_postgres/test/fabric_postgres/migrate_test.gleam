@@ -32,11 +32,11 @@ pub fn migrate_creates_the_schema_once_and_again_changes_nothing_test() {
     fabric_postgres.settings(connection, node: "a")
     |> fabric_postgres.with_schema(schema)
   fabric_postgres.migrate(settings) |> should.equal(Ok(Nil))
-  versions(connection, schema) |> should.equal([1, 2])
+  versions(connection, schema) |> should.equal([1, 2, 3])
   let backend = fabric_postgres.backend(settings)
   backend.insert("run-a1", "{}", store.Release) |> should.equal(Ok(Nil))
   fabric_postgres.migrate(settings) |> should.equal(Ok(Nil))
-  versions(connection, schema) |> should.equal([1, 2])
+  versions(connection, schema) |> should.equal([1, 2, 3])
   backend.get("run-a1") |> should.equal(Ok(store.Current(1, "{}", store.Free)))
 }
 
@@ -60,7 +60,7 @@ pub fn concurrent_migrations_all_succeed_and_apply_once_test() {
   })
   |> list.unique
   |> should.equal([Ok(Nil)])
-  versions(connection, schema) |> should.equal([1, 2])
+  versions(connection, schema) |> should.equal([1, 2, 3])
 }
 
 /// A database a newer version of this package migrated further is left
@@ -77,7 +77,7 @@ pub fn migrate_leaves_a_newer_schema_alone_test() {
     )
     |> pog.execute(connection)
   fabric_postgres.migrate(settings) |> should.equal(Ok(Nil))
-  versions(connection, schema) |> should.equal([1, 2, 99])
+  versions(connection, schema) |> should.equal([1, 2, 3, 99])
 }
 
 pub fn migrate_reports_an_unreachable_database_test() {

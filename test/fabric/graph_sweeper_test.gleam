@@ -7,6 +7,7 @@ import fabric/graph/agent as agent_node
 import fabric/graph/child
 import fabric/graph/definition
 import fabric/graph/operation
+import fabric/graph/signal
 import fabric/internal/graph/controller as control
 import fabric/internal/graph/record
 import fabric/model
@@ -339,4 +340,136 @@ pub fn expired_graph_work_recovers_without_repeating_its_started_effect_test() {
   probe.count(calls, "effect") |> should.equal(1)
   nodes.holder(memory.backend, graph.id(handle)) |> should.equal(store.Free)
   stop(sweeper, attachment)
+}
+
+fn signal_leaf(runs) {
+  wrap(runs, operation.await_signal(codec.int(), response()))
+}
+
+fn response() {
+  signal.new(run.Identity("sweep-response", 1), codec.int())
+}
+
+fn nested(runs) {
+  wrap(
+    runs,
+    graph.as_subgraph(wrap(runs, graph.as_subgraph(signal_leaf(runs)))),
+  )
+}
+
+fn scan_once(runs) {
+  scan_runtime(runs, nested)
+}
+
+fn scan_runtime(runs, build) {
+  let #(events, attachment) = capture()
+  let sweeper = start(runs, graph.recovery(identity(), build))
+  let assert Ok(summary) = process.receive(events, 5000)
+  stop(sweeper, attachment)
+  summary
+}
+
+fn await_free(backend, ids, tries) {
+  case list.all(ids, fn(id) { nodes.holder(backend, id) == store.Free }) {
+    True -> Nil
+    False if tries > 0 -> {
+      process.sleep(10)
+      await_free(backend, ids, tries - 1)
+    }
+    False -> panic as "family did not release its leases"
+  }
+}
+
+pub fn nested_idle_discovery_converges_and_later_observes_an_external_signal_test() {
+  let memory = testing.leased_memory()
+  let #(owner, original) =
+    restart.owned(fn() {
+      let original = nodes.node(memory.backend, "original", nodes.long)
+      let assert Ok(handle) =
+        graph.start(nested(original), support.id("idle-root"), 41)
+      let assert Ok(waiting) = graph.await(handle, 5000)
+      let assert graph.Child(_, child.Signal(_)) = waiting.status
+      original
+    })
+  let root = support.id("idle-root")
+  let middle = support.id(child.reserved_id("idle-root", 1))
+  let leaf = support.id(child.reserved_id(run.id_to_string(middle), 1))
+  let ids = [root, middle, leaf]
+  await_free(memory.backend, ids, 200)
+  restart.crash(owner, original)
+  let a = nodes.node(memory.backend, "a", nodes.long)
+  let b = nodes.node(memory.backend, "b", nodes.long)
+  let _ = scan_once(a)
+  await_free(memory.backend, ids, 200)
+  let _ = scan_once(b)
+  await_free(memory.backend, ids, 200)
+  let _ = scan_once(a)
+  await_free(memory.backend, ids, 200)
+  let revisions = list.map(ids, nodes.revision(memory.backend, _))
+  scan_once(b).claimed |> should.equal(0)
+  list.map(ids, nodes.revision(memory.backend, _)) |> should.equal(revisions)
+  let handle = graph.attach(signal_leaf(b), leaf)
+  let assert Ok(waiting) = graph.read(handle)
+  let assert graph.AwaitingSignal(reference) = waiting.status
+  let assert Ok(_) = graph.deliver(handle, reference, response(), 42)
+  let _ = scan_once(a)
+  let assert Ok(done) = graph.await(graph.attach(nested(a), root), 5000)
+  done.status |> should.equal(graph.Completed(42))
+}
+
+fn uncertain_leaf(runs, calls) {
+  wrap(
+    runs,
+    operation.new(
+      run.Identity("uncertain", 1),
+      codec.int(),
+      codec.int(),
+      fn(_, _, _) {
+        probe.record(calls, "effect")
+        Error("external outcome unknown")
+      },
+      operation.UncertainEffect,
+    ),
+  )
+}
+
+fn nested_uncertain(runs, calls) {
+  wrap(
+    runs,
+    graph.as_subgraph(wrap(runs, graph.as_subgraph(uncertain_leaf(runs, calls)))),
+  )
+}
+
+pub fn nested_blocked_discovery_converges_without_replaying_uncertain_effects_test() {
+  let memory = testing.leased_memory()
+  let a = nodes.node(memory.backend, "a", nodes.long)
+  let b = nodes.node(memory.backend, "b", nodes.long)
+  let calls = probe.new()
+  let build = fn(runs) { nested_uncertain(runs, calls) }
+  let root = support.id("blocked-root")
+  let middle = support.id(child.reserved_id("blocked-root", 1))
+  let leaf = support.id(child.reserved_id(run.id_to_string(middle), 1))
+  let ids = [root, middle, leaf]
+  let assert Ok(handle) = graph.start(build(a), root, 41)
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.Child(_, child.Uncertain(_)) = waiting.status
+  await_free(memory.backend, ids, 200)
+  let _ = scan_runtime(b, build)
+  await_free(memory.backend, ids, 200)
+  let _ = scan_runtime(a, build)
+  await_free(memory.backend, ids, 200)
+  let _ = scan_runtime(b, build)
+  await_free(memory.backend, ids, 200)
+  let revisions = list.map(ids, nodes.revision(memory.backend, _))
+  scan_runtime(a, build).claimed |> should.equal(0)
+  list.map(ids, nodes.revision(memory.backend, _)) |> should.equal(revisions)
+  probe.count(calls, "effect") |> should.equal(1)
+  let leaf_handle = graph.attach(uncertain_leaf(b, calls), leaf)
+  let assert Ok(waiting) = graph.read(leaf_handle)
+  let assert graph.Blocked(reference, _) = waiting.status
+  let assert Ok(_) = graph.reconcile(leaf_handle, reference, "42")
+  let _ = scan_runtime(a, build)
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status |> should.equal(graph.Completed(42))
+  probe.count(calls, "effect") |> should.equal(1)
 }
