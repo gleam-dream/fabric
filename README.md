@@ -26,9 +26,9 @@ local cancellation is retained without routing success.
 Terminal agent uncertainty settlement, complete-family PostgreSQL retention and
 shared work/child/depth budgets are implemented. Registered graph sweeping recovers
 expired work and changed idle dependencies after local wakeups are lost.
-Signal and job deadlines survive restart and retain expiration separately from
-owned cleanup. Deadlines for managed children, parallel composition and real
-decision adapters remain in that implementation program.
+Signal, job and managed-child deadlines survive restart and retain expiration
+separately from owned cleanup. Parallel composition, real decision adapters and
+the agent-recipe evaluation remain in that implementation program.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
 
@@ -394,7 +394,16 @@ The deadline bounds Fabric's observation and acceptance, not the remote
 service's completion timestamp. Scheduled jobs are discovered when either their
 poll interval or deadline is due; cleanup then uses only the poll interval.
 Manual jobs expire automatically on leased stores but require manual cleanup
-observation. Managed children do not yet support this option.
+observation.
+
+For a managed agent or subgraph, apply the same option to its operation binding.
+The parent saves the deadline before creating the child. Expiration records
+`CancellingChild(reference, DeadlineReached(due))`, then
+`Expired(due, ChildSettled(reference))` when cleanup settles. The child retains
+its actual result. Uncertain effects remain `ChildUnresolved` until reconciled;
+the family stays retained and the sweeper follows nested cleanup. Neither late
+completion nor reconciliation reopens parent routing. The deadline governs
+parent acceptance; committed stop intent closes further descendant admission.
 
 After cancellation, `fabric.reconcile_stored(store, effect, content)` records
 evidence for an uncertain tool without resuming the agent. Then

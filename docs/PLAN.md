@@ -18,9 +18,9 @@ provides public serial execution on the persistent store: typed definitions,
 conditional routes, cycles, recovery, approval, reconciliation and cancellation.
 Step 3 now supports typed durable signals with optional deadlines, managed
 subgraphs and agents, shared family budgets/retention, and external-job
-submission, scheduled observation, owned cancellation and job deadlines. Child deadlines,
-parallel composition, real adapters and the agent-recipe evaluation remain in
-steps 3–6.
+submission, scheduled observation, owned cancellation and job/child deadlines.
+Parallel composition, real adapters and the agent-recipe evaluation remain in
+steps 4–6.
 
 The architecture follows variant A of
 [experiments/workflow_composition/FINDINGS.md](../experiments/workflow_composition/FINDINGS.md):

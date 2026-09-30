@@ -17,7 +17,7 @@ import gleam/result
 
 /// Bump when a record format or state changes discovery eligibility or keys.
 /// Backends must refresh older projections before using them for scheduling.
-pub const version = 6
+pub const version = 7
 
 pub type Trigger {
   Changed(dependency: run.RunId, deadline: Option(Int))
@@ -120,8 +120,21 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
         }
         graph.WaitingChild(activation, id)
         | graph.ChildBlocked(activation, id, _) ->
-          Some(dependency(state, activation, id, "observe"))
-        graph.Ended(graph.Cancelled(activation, graph.UnresolvedCancellation(_))) ->
+          Some(dependency(state, activation, id, "observe", activation.deadline))
+        graph.Blocked(a, graph.InvalidResult(_, _)) ->
+          case a.prepared.kind, a.deadline {
+            operation.Agent, Some(_) | operation.Subgraph, Some(_) ->
+              Some(dependency(
+                state,
+                a,
+                child.reserved_id(state.run, a.id),
+                "observe",
+                a.deadline,
+              ))
+            _, _ -> None
+          }
+        graph.Ended(graph.Cancelled(activation, graph.UnresolvedCancellation(_)))
+        | graph.Ended(graph.Expired(activation, graph.UnresolvedCancellation(_))) ->
           case activation.prepared.kind {
             operation.Agent | operation.Subgraph ->
               Some(dependency(
@@ -129,6 +142,7 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
                 activation,
                 child.reserved_id(state.run, activation.id),
                 "settle",
+                None,
               ))
             _ -> None
           }
@@ -144,6 +158,7 @@ fn dependency(
   activation: graph.Activation,
   id: String,
   mode: String,
+  deadline: Option(Int),
 ) -> Wait {
   let key =
     json.array(
@@ -156,7 +171,7 @@ fn dependency(
       fn(value) { value },
     )
     |> json.to_string
-  Wait(run.issued(state.run), key, Changed(run.issued(id), None))
+  Wait(run.issued(state.run), key, Changed(run.issued(id), deadline))
 }
 
 /// Metadata for a backend index. Check its version and source revision before

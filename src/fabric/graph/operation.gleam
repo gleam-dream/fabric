@@ -224,19 +224,26 @@ pub fn identity(operation: Operation(context, input, output)) -> run.Identity {
   operation.identity
 }
 
-/// Bound an admitted signal or job wait in milliseconds. The backend clock
+/// Bound an admitted signal, job or managed-child wait in milliseconds. The backend clock
 /// starts the duration after policy approval; the due time survives restart.
-/// Owned jobs retain cancellation progress after expiration. Managed-child
-/// deadlines are not supported by this binding yet.
+/// Owned jobs and children retain cleanup progress after expiration.
 pub fn with_deadline(
   operation: Operation(context, input, output),
   within: Int,
 ) -> Result(Operation(context, input, output), ConfigurationError) {
   case kind(operation), within > 0 && within <= 4_294_967_295 {
-    Signal, True | Job(_), True | OwnedJob(_), True ->
-      Ok(Operation(..operation, deadline: Some(within)))
-    Signal, False | Job(_), False | OwnedJob(_), False ->
-      Error(InvalidDeadline(within))
+    Signal, True
+    | Job(_), True
+    | OwnedJob(_), True
+    | Subgraph, True
+    | Agent, True
+    -> Ok(Operation(..operation, deadline: Some(within)))
+    Signal, False
+    | Job(_), False
+    | OwnedJob(_), False
+    | Subgraph, False
+    | Agent, False
+    -> Error(InvalidDeadline(within))
     _, _ -> Error(DeadlineRequiresWait)
   }
 }

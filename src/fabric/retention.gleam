@@ -21,7 +21,7 @@ import gleam/result
 
 /// Change this version whenever a new record format or state changes the
 /// projection, so storage integrations can refresh their retained indexes.
-pub const version = 8
+pub const version = 9
 
 /// The run at the other end of a link and an opaque attachment key. A child's
 /// parent key must equal the key its parent retained for that child. The key
@@ -182,11 +182,13 @@ fn graph_metadata(state: graph.State) -> Metadata {
     graph.Joining(a, _)
     | graph.WaitingChild(a, _)
     | graph.ChildBlocked(a, _, _)
-    | graph.StoppingChild(a, _)
+    | graph.StoppingChild(a, _, _)
     | graph.Blocked(a, _)
     | graph.Ended(graph.Failed(a, graph.OperationFailed(_)))
     | graph.Ended(graph.Cancelled(a, graph.AfterChild(_)))
-    | graph.Ended(graph.Cancelled(a, graph.UnresolvedCancellation(_))) ->
+    | graph.Ended(graph.Cancelled(a, graph.UnresolvedCancellation(_)))
+    | graph.Ended(graph.Expired(a, graph.AfterChild(_)))
+    | graph.Ended(graph.Expired(a, graph.UnresolvedCancellation(_))) ->
       graph_child(state, a)
     graph.Ready(_)
     | graph.ArmingWait(_)
@@ -216,7 +218,8 @@ fn graph_metadata(state: graph.State) -> Metadata {
     })
     |> list.append(current)
   let settled = case state.phase {
-    graph.Ended(graph.Cancelled(_, graph.UnresolvedCancellation(_))) -> False
+    graph.Ended(graph.Cancelled(_, graph.UnresolvedCancellation(_)))
+    | graph.Ended(graph.Expired(_, graph.UnresolvedCancellation(_))) -> False
     graph.Ended(graph.Completed(_))
     | graph.Ended(graph.Failed(..))
     | graph.Ended(graph.Exhausted(_))

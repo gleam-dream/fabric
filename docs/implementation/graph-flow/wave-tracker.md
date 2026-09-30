@@ -11,10 +11,11 @@
   stops at its activation limit. This is evidence for step 1, not completion
   of the full runtime objective.
 - Plan revision: 3, 2026-09-29; preserves the six requested steps.
-- Last closed wave: 2, public durable serial graph runtime.
-- Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
-- Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's managed-child deadline outcome contract remains to be refined.
+- Last closed wave: 3, managed agents/subgraphs, durable signals and external jobs.
+- Active wave: 4, typed fork/map/join with explicit failure handling.
+- Next wave: 5, real classifier, LLM and MCP adapters.
+- Open decisions: wave 4's typed fork scopes, member outcomes and failure/join
+  interfaces need concrete contracts under G9 before implementation.
   Submission, receipt recovery, retained read-only
   job waits and scheduled observation are proven against an independently
   retained service. An explicit cancellation workflow now proves stop admission,
@@ -26,7 +27,8 @@
   expiration arbitration and automatic overdue discovery are implemented.
   Job expiration retains its cause separately from owned cleanup and terminal
   evidence; combined polling/deadline discovery survives restart. Managed-child
-  expiration and cleanup remain open.
+  deadlines now retain stop causes, child results and unresolved effects. Registered
+  discovery follows nested cleanup without restarting parent business routing.
   Idle dependency discovery is implemented. Public shared work/child/depth budgets, mixed-family admission,
   root initialization and ledger retention are implemented. Registered graph
   sweeping recovers expired work and changed idle dependencies through mixed attachments. Shared parent
@@ -38,9 +40,9 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: 555 root tests, four graph consumer tests, 15 app consumer tests,
+- Gate status: 564 root tests, four graph consumer tests, 15 app consumer tests,
   19 external-job consumer scenarios and five independent service tests pass.
-  The PostgreSQL gate passes 53 tests, including overdue signal/job recovery, database time, owned cancellation, scheduled job recovery and pruning,
+  The PostgreSQL gate passes 54 tests, including overdue signal/job/child recovery, database time, owned cancellation, scheduled job recovery and pruning,
   migration and concurrent index refresh. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -51,9 +53,9 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: extend deadline outcomes to managed children under the
-  [managed composition contract](managed-composition.md).
-  Keep deadline expiration distinct from remote cancellation and terminal evidence.
+- Next action: refine G9 into typed pair/map scopes with bounded membership,
+  retained ordered outcomes and explicit failure handling. Reuse the verified
+  child identity, ownership, budget, discovery and retention mechanisms.
 - Resume note: the user requested another checkpoint commit and continued
   implementation on 2026-09-30. The app goal is confirmed active with all six
   stages preserved. The initial runtime checkpoint
@@ -1249,3 +1251,54 @@ six-step goal remains active, with wave 3 next.
   and uncertain settlement. Prove both managed agents and subgraphs, including
   lost start acknowledgment, nested cleanup and completion racing expiration,
   before closing stage 3.
+
+### Wave 3 — managed-child deadlines and acceptance
+
+- Status: `operation.with_deadline` now accepts managed agents and subgraphs.
+  Admission retains arming before child creation; cancellation during unarmed
+  admission starts no child. An armed deadline survives restart and gates child
+  start, observation, result mapping and public reconciliation. Expiration saves
+  its cause before stopping the reserved child; an uncreated child gets the
+  existing never-started cancellation record.
+- Outcome: `CancellingChild(reference, cause)` retains the distinction between
+  explicit cancellation and expiration. `Expired(due, ChildSettled(reference))`
+  keeps the actual child result in its child record. Uncertain effects remain
+  `ChildUnresolved`, prevent family pruning and can later settle without parent
+  routing. Deadline time is no longer needed for that cleanup. The cutoff governs
+  parent acceptance; clock sampling and record commits remain separate operations.
+- Discovery: child dependency changes and absolute due times share the existing
+  backend index. Expired uncertainty switches to dependency-only settlement.
+  A new nested scenario exposed a gap where a finished parent only read its direct
+  child and never drove deeper job cleanup. Registered discovery now follows the
+  retained chain; manual recovery keeps its existing selected-child semantics.
+  Missing children refuse discovery instead of authorizing fresh creation.
+- Evidence: eight public deadline scenarios cover graph restart, managed-agent
+  uncertainty, arming-clock failure, expiration before child creation, successful
+  mapping crossing the deadline, expired reconciliation, and nested job cleanup
+  with an unavailable clock. A retained wait whose child is missing refuses
+  expiration without changing its record. The record scenario covers all child deadline phases,
+  legacy cause defaults, invalid combinations, cause preservation and downgrade
+  refusal. PostgreSQL proves unchanged-child expiry after restart, retention of
+  unresolved effects, later dependency-triggered settlement, no due-time spin,
+  and pruning of the complete root/child/budget family.
+- Compatibility: graph records write 12/read 5–12; agent records remain 7.
+  Stopping-child records require a cause in format 12; older records decode as
+  caller cancellation. The public `CancellingChild` constructor adds that cause.
+  Retention projection 9 and discovery projection 7 require metadata refresh.
+  PostgreSQL schema remains 5. No dependency was added.
+- Gate: root warnings-as-errors build and all 564 tests pass; graph/app consumer
+  builds and four/15 tests pass. The real job consumer passes 19 Gleam scenarios
+  and five Python service tests. The temporary PostgreSQL gate passes 54 tests.
+  Explicit source formatting, `nix fmt`, `nix flake check` and `git diff --check`
+  pass on this host.
+- Acceptance: G7–G8 and wave 3's exit criteria are satisfied by the retained
+  public child/signal scenarios, actual database recovery and the independently
+  running HTTP/SQLite job service. Lost start/result acknowledgments, nested
+  approval, uncertainty, stale/duplicate/canceled signals, submission receipts,
+  remote acceptance followed by receipt loss, lifetime ownership, family budgets
+  and retention, and overdue recovery have executable evidence. Wave 3 is closed.
+  The full six-stage goal remains active; stages 4–6 are still required.
+- Next: implement typed fork/map/join as retained managed scopes, with member
+  identity, deterministic result order, bounded admission and explicit failure,
+  cancellation and uncertainty handling. Hidden blocking parallel operations do
+  not satisfy that next wave.

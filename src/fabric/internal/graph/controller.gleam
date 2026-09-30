@@ -107,7 +107,7 @@ pub type Phase {
   Joining(Activation, child: String)
   WaitingChild(Activation, child: String)
   ChildBlocked(Activation, child: String, reason: String)
-  StoppingChild(Activation, child: String)
+  StoppingChild(Activation, child: String, cause: operation.StopReason)
   Blocked(Activation, Problem)
   Stopping(Activation)
   Ended(Outcome)
@@ -245,6 +245,17 @@ pub fn step(
       use _ <- result.try(matches(state, a, ref))
       expire_job(state, a, now, job.Pending)
     }
+    ExpireWait(ref, now), Joining(a, id)
+    | ExpireWait(ref, now), WaitingChild(a, id)
+    | ExpireWait(ref, now), ChildBlocked(a, id, _)
+    -> {
+      use _ <- result.try(matches(state, a, ref))
+      expire_child(state, a, id, now)
+    }
+    ExpireWait(ref, now), Blocked(a, InvalidResult(_, _)) -> {
+      use _ <- result.try(matches(state, a, ref))
+      expire_child(state, a, child.reserved_id(state.run, a.id), now)
+    }
     JobExpired(ref, now, progress), WaitingJob(a) -> {
       use _ <- result.try(matches(state, a, ref))
       expire_job(state, a, now, progress)
@@ -292,7 +303,7 @@ pub fn step(
     JobConfirmedStopped(ref), StoppingJob(a, progress, cause) -> {
       use _ <- result.try(matches(state, a, ref))
       use _ <- result.try(stoppable(progress))
-      Ok(stopped_job(state, a, cause, JobStopped))
+      Ok(stopped_operation(state, a, cause, JobStopped))
     }
     CancelledResult(ref, output), StoppingJob(a, progress, cause) -> {
       use _ <- result.try(matches(state, a, ref))
@@ -302,7 +313,12 @@ pub fn step(
     JobFailed(ref, reason), StoppingJob(a, progress, cause) -> {
       use _ <- result.try(matches(state, a, ref))
       use _ <- result.try(stoppable(progress))
-      Ok(stopped_job(state, a, cause, AfterFailure(OperationFailed(reason))))
+      Ok(stopped_operation(
+        state,
+        a,
+        cause,
+        AfterFailure(OperationFailed(reason)),
+      ))
     }
     ChildWaiting(ref, id), Joining(a, current) if id == current -> {
       use _ <- result.try(matches(state, a, ref))
@@ -310,6 +326,8 @@ pub fn step(
     }
     ChildCancellationSettled(ref, id),
       Ended(Cancelled(a, UnresolvedCancellation(_)))
+    | ChildCancellationSettled(ref, id),
+      Ended(Expired(a, UnresolvedCancellation(_)))
       if {
         a.prepared.kind == operation.Subgraph
         || a.prepared.kind == operation.Agent
@@ -320,7 +338,7 @@ pub fn step(
         True -> Ok(Nil)
         False -> Error(StaleInvocation)
       })
-      Ok(ended(state, Cancelled(a, AfterChild(id))))
+      Ok(stopped_operation(state, a, stop_reason(state), AfterChild(id)))
     }
     ChildUnavailable(ref, id, reason), Joining(a, current) if id == current -> {
       use _ <- result.try(matches(state, a, ref))
@@ -344,20 +362,19 @@ pub fn step(
       use _ <- result.try(matches(state, a, ref))
       Ok(ended(state, Failed(a, OperationFailed(reason))))
     }
-    ChildStopped(ref, id, uncertain), StoppingChild(a, current)
+    ChildStopped(ref, id, uncertain), StoppingChild(a, current, cause)
       if id == current
     -> {
       use _ <- result.try(matches(state, a, ref))
-      Ok(ended(
-        state,
-        Cancelled(a, case uncertain {
+      Ok(
+        stopped_operation(state, a, cause, case uncertain {
           True ->
             UnresolvedCancellation(Uncertain(
               "child cancellation retains uncertain effects",
             ))
           False -> AfterChild(id)
         }),
-      ))
+      )
     }
     JobCompleted(ref, output, decision), WaitingJob(activation) -> {
       use _ <- result.try(matches(state, activation, ref))
@@ -467,8 +484,17 @@ pub fn step(
     Cancel, Joining(a, id)
     | Cancel, WaitingChild(a, id)
     | Cancel, ChildBlocked(a, id, _)
-    -> Ok(#(State(..state, phase: StoppingChild(a, id)), [CancelChild(a, id)]))
-    Cancel, StoppingChild(a, id) -> Ok(#(state, [CancelChild(a, id)]))
+    ->
+      Ok(
+        #(
+          State(
+            ..state,
+            phase: StoppingChild(a, id, operation.CancellationRequested),
+          ),
+          [CancelChild(a, id)],
+        ),
+      )
+    Cancel, StoppingChild(a, id, _) -> Ok(#(state, [CancelChild(a, id)]))
     Cancel, Ready(activation)
     | Cancel, Queued(activation)
     | Cancel, AwaitingApproval(activation, _)
@@ -534,33 +560,37 @@ fn queue(state: State, activation: Activation) -> #(State, List(Effect)) {
     operation.Activity -> #(State(..state, phase: Queued(activation)), [
       Dispatch(activation),
     ])
-    operation.Signal | operation.Job(_) | operation.OwnedJob(_) ->
+    operation.Signal
+    | operation.Job(_)
+    | operation.OwnedJob(_)
+    | operation.Subgraph
+    | operation.Agent ->
       case activation.prepared.deadline {
         None -> waiting(state, activation)
         Some(_) -> #(State(..state, phase: ArmingWait(activation)), [
           ArmWait(activation),
         ])
       }
-    operation.Subgraph | operation.Agent -> {
-      let id = child.reserved_id(state.run, activation.id)
-      #(State(..state, phase: Joining(activation, id)), [
-        ObserveChild(activation, id),
-      ])
-    }
   }
 }
 
 fn waiting(state: State, a: Activation) -> #(State, List(Effect)) {
-  #(
-    State(..state, phase: case a.prepared.kind {
-      operation.Signal -> WaitingSignal(a)
-      _ -> WaitingJob(a)
-    }),
-    [],
-  )
+  case a.prepared.kind {
+    operation.Subgraph | operation.Agent -> {
+      let id = child.reserved_id(state.run, a.id)
+      #(State(..state, phase: Joining(a, id)), [ObserveChild(a, id)])
+    }
+    _ -> #(
+      State(..state, phase: case a.prepared.kind {
+        operation.Signal -> WaitingSignal(a)
+        _ -> WaitingJob(a)
+      }),
+      [],
+    )
+  }
 }
 
-fn stopped_job(
+fn stopped_operation(
   state: State,
   a: Activation,
   cause: operation.StopReason,
@@ -578,7 +608,7 @@ fn stopped_result(
   output: String,
   cause: operation.StopReason,
 ) -> #(State, List(Effect)) {
-  stopped_job(
+  stopped_operation(
     State(
       ..state,
       receipts: list.append(state.receipts, [
@@ -605,17 +635,48 @@ fn expire_job(
   Ok(case progress {
     job.Completed(output) -> stopped_result(state, a, output, cause)
     job.Failed(reason) ->
-      stopped_job(state, a, cause, AfterFailure(OperationFailed(reason)))
-    job.Cancelled -> stopped_job(state, a, cause, JobStopped)
+      stopped_operation(state, a, cause, AfterFailure(OperationFailed(reason)))
+    job.Cancelled -> stopped_operation(state, a, cause, JobStopped)
     job.Pending ->
       case a.prepared.kind {
         operation.OwnedJob(_) -> #(
           State(..state, phase: StoppingJob(a, job.RequestQueued, cause)),
           [RequestJobStop(a)],
         )
-        _ -> stopped_job(state, a, cause, JobDetached)
+        _ -> stopped_operation(state, a, cause, JobDetached)
       }
   })
+}
+
+fn expire_child(
+  state: State,
+  a: Activation,
+  id: String,
+  now: Int,
+) -> Result(#(State, List(Effect)), Rejection) {
+  case a.deadline, a.prepared.kind {
+    Some(due), operation.Subgraph | Some(due), operation.Agent if now >= due ->
+      Ok(
+        #(
+          State(
+            ..state,
+            phase: StoppingChild(a, id, operation.DeadlineReached(due)),
+          ),
+          [CancelChild(a, id)],
+        ),
+      )
+    _, _ -> Error(WrongPhase)
+  }
+}
+
+fn stop_reason(state: State) -> operation.StopReason {
+  case state.phase {
+    Ended(Expired(a, _)) -> {
+      let assert Some(due) = a.deadline
+      operation.DeadlineReached(due)
+    }
+    _ -> operation.CancellationRequested
+  }
 }
 
 fn ended(state: State, outcome: Outcome) -> #(State, List(Effect)) {
@@ -706,7 +767,7 @@ pub fn recover(state: State) -> Result(#(State, List(Effect)), Rejection) {
     Ended(_) -> Error(AlreadyEnded)
     Joining(a, id) | WaitingChild(a, id) | ChildBlocked(a, id, _) ->
       Ok(#(State(..recovered, phase: Joining(a, id)), [ObserveChild(a, id)]))
-    StoppingChild(a, id) -> Ok(#(recovered, [CancelChild(a, id)]))
+    StoppingChild(a, id, _) -> Ok(#(recovered, [CancelChild(a, id)]))
     Ready(activation) | Queued(activation) ->
       Ok(#(State(..recovered, phase: Ready(activation)), [Inspect(activation)]))
     Running(activation) ->
@@ -799,6 +860,8 @@ pub fn check_prepared(prepared: Prepared) -> Result(Nil, Rejection) {
     Some(ms), operation.Signal
     | Some(ms), operation.Job(_)
     | Some(ms), operation.OwnedJob(_)
+    | Some(ms), operation.Subgraph
+    | Some(ms), operation.Agent
       if ms > 0 && ms <= 4_294_967_295
     -> Ok(Nil)
     _, _ -> Error(InvalidPrepared("invalid wait deadline"))
@@ -842,7 +905,7 @@ pub fn needs_runner(state: State) -> Bool {
     | Running(_)
     | Stopping(_)
     | Joining(_, _)
-    | StoppingChild(_, _) -> True
+    | StoppingChild(_, _, _) -> True
     AwaitingApproval(_, _)
     | WaitingSignal(_)
     | WaitingJob(_)

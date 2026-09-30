@@ -132,7 +132,7 @@ pub type Cancellation {
   AfterResult
   AfterFailure(Failure)
   ChildSettled(child.Reference)
-  /// Reconcile the child's operation, then recover this canceled parent.
+  /// Reconcile the child's operation, then recover its canceled or expired parent.
   ChildUnresolved(child.Reference, problem: Problem)
   Unresolved(reference: Reconciliation, problem: Problem)
 }
@@ -146,8 +146,8 @@ pub type Status(answer) {
   AwaitingJob(job.Reference)
   CancellingJob(job.Reference, job.CancellationProgress, operation.StopReason)
   Child(child.Reference, child.Progress)
-  /// Cancellation is committed; the owned child has not settled yet.
-  CancellingChild(child.Reference)
+  /// The stop cause is committed; the owned child has not settled yet.
+  CancellingChild(child.Reference, operation.StopReason)
   Blocked(Reconciliation, problem: Problem)
   Completed(answer)
   Failed(Failure)
@@ -497,8 +497,10 @@ fn child_progress(
         control.Ended(control.Completed(output)) -> child.Succeeded(output)
         control.Ended(control.Failed(_, fault)) ->
           child.Failed(string.inspect(fault))
+        control.Ended(control.Expired(_, control.UnresolvedCancellation(_))) ->
+          child.Cancelled(True)
         control.Ended(control.Expired(_, _)) ->
-          child.Failed("child job deadline expired")
+          child.Failed("child deadline expired")
         control.Ended(control.Exhausted(_)) ->
           child.Failed("child activation limit reached")
         control.Ended(control.Cancelled(_, control.UnresolvedCancellation(_))) ->
@@ -655,7 +657,7 @@ fn attend(
     Working, True
     | CancellingJob(_, job.RequestQueued, _), True
     | CancellingJob(_, job.RequestStarted, _), True
-    | CancellingChild(_), True
+    | CancellingChild(_, _), True
     | Child(_, child.Working), True
     | Child(_, child.Succeeded(_)), True
     | Child(_, child.InvalidOutput(..)), True
@@ -1019,7 +1021,8 @@ fn reconcile_with(
   )
   use #(activation, cancelled) <- result.try(case state.phase {
     control.Blocked(a, _) -> Ok(#(a, False))
-    control.Ended(control.Cancelled(a, control.UnresolvedCancellation(_))) ->
+    control.Ended(control.Cancelled(a, control.UnresolvedCancellation(_)))
+    | control.Ended(control.Expired(a, control.UnresolvedCancellation(_))) ->
       Ok(#(a, True))
     _ -> Error(CommandRefused("no unresolved result"))
   })
@@ -1053,31 +1056,57 @@ fn reconcile_with(
       False -> Error(CommandRefused("reconciliation is not current"))
     },
   )
-  use event <- result.try(
-    bounded.call(runtime.options.callback_timeout, fn() {
-      case cancelled {
-        True -> {
-          use _ <- result.map(runtime.work.check_output(activation, output))
-          control.CancelledResult(control.reference(state, activation), output)
-        }
-        False -> {
-          use decision <- result.map(runtime.work.accept(
-            state,
-            activation,
-            output,
-          ))
-          control.Reconciled(
-            activation.id,
-            activation.attempt,
-            output,
-            decision,
-          )
-        }
+  let due = fn() {
+    case cancelled {
+      True -> Ok(None)
+      False ->
+        runner.child_due(runtime.store, state)
+        |> result.map(fn(due) { option.map(due, fn(entry) { entry.1 }) })
+        |> result.map_error(from_runner)
+    }
+  }
+  use before <- result.try(due())
+  use event <- result.try(case before {
+    Some(now) ->
+      Ok(control.ExpireWait(control.reference(state, activation), now))
+    None -> {
+      let accepted =
+        bounded.call(runtime.options.callback_timeout, fn() {
+          case cancelled {
+            True -> {
+              use _ <- result.map(runtime.work.check_output(activation, output))
+              control.CancelledResult(
+                control.reference(state, activation),
+                output,
+              )
+            }
+            False -> {
+              use decision <- result.map(runtime.work.accept(
+                state,
+                activation,
+                output,
+              ))
+              control.Reconciled(
+                activation.id,
+                activation.attempt,
+                output,
+                decision,
+              )
+            }
+          }
+        })
+        |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) })
+        |> result.try(fn(event) {
+          event |> result.map_error(DefinitionRejected)
+        })
+      use after <- result.try(due())
+      case after {
+        Some(now) ->
+          Ok(control.ExpireWait(control.reference(state, activation), now))
+        None -> accepted
       }
-    })
-    |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
-  )
-  use event <- result.try(event |> result.map_error(DefinitionRejected))
+    }
+  })
   use #(next, effects) <- result.try(
     control.step(state, event)
     |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
@@ -1131,15 +1160,14 @@ fn snapshot(
         progress,
       ))
     }
-    control.StoppingChild(a, id) ->
+    control.StoppingChild(a, id, cause) ->
       Ok(case runner.driven(entry, state) {
         False -> Unattended
         True ->
-          CancellingChild(child.Reference(
-            run.issued(state.run),
-            a.id,
-            run.issued(id),
-          ))
+          CancellingChild(
+            child.Reference(run.issued(state.run), a.id, run.issued(id)),
+            cause,
+          )
       })
     control.Joining(a, id) ->
       Ok(case runner.driven(entry, state) {
@@ -1249,6 +1277,11 @@ fn snapshot(
         control.WaitingSignal(a)
         | control.WaitingJob(a)
         | control.StoppingJob(a, _, _)
+        | control.Joining(a, _)
+        | control.WaitingChild(a, _)
+        | control.ChildBlocked(a, _, _)
+        | control.StoppingChild(a, _, _)
+        | control.Blocked(a, _)
         | control.Ended(control.Failed(a, control.DeadlineExpired(_)))
         | control.Ended(control.Expired(a, _)) -> a.deadline
         _ -> None
@@ -1317,7 +1350,7 @@ fn current_action(state: control.State) -> option.Option(Action) {
     | control.Joining(a, _)
     | control.WaitingChild(a, _)
     | control.ChildBlocked(a, _, _)
-    | control.StoppingChild(a, _)
+    | control.StoppingChild(a, _, _)
     | control.Blocked(a, _)
     | control.Stopping(a)
     | control.Ended(control.Failed(a, _))

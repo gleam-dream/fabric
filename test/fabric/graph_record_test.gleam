@@ -74,7 +74,7 @@ pub fn deadlines_retain_arming_due_time_and_expiration_without_legacy_downgrades
   list.each([ready, arming, waiting, expired, accepted], fn(state) {
     let assert Ok(encoded) = record.encode(state)
     record.decode(encoded) |> should.equal(Ok(state))
-    record.decode(string.replace(encoded, "\"version\":11", "\"version\":9"))
+    record.decode(string.replace(encoded, "\"version\":12", "\"version\":9"))
     |> should.be_error
   })
   list.each(
@@ -100,7 +100,7 @@ pub fn deadlines_retain_arming_due_time_and_expiration_without_legacy_downgrades
   record.decode(string.replace(bytes, "\"deadline\":11000", "\"deadline\":null"))
   |> should.be_error
   let assert Ok(legacy) = record.encode(initial)
-  record.decode(string.replace(legacy, "\"version\":11", "\"version\":9"))
+  record.decode(string.replace(legacy, "\"version\":12", "\"version\":9"))
   |> should.equal(Ok(initial))
 }
 
@@ -145,7 +145,7 @@ pub fn job_deadlines_keep_expiration_distinct_from_legacy_cancellation_test() {
     fn(state) {
       let bytes = encoded(state)
       record.decode(bytes) |> should.equal(Ok(state))
-      record.decode(string.replace(bytes, "\"version\":11", "\"version\":10"))
+      record.decode(string.replace(bytes, "\"version\":12", "\"version\":10"))
       |> should.be_error
     },
   )
@@ -193,7 +193,87 @@ pub fn job_deadlines_keep_expiration_distinct_from_legacy_cancellation_test() {
     encoded(legacy)
     |> string.replace(",\"cause\":{\"tag\":\"requested\"}", "")
   record.decode(without_cause) |> should.be_error
-  record.decode(string.replace(without_cause, "\"version\":11", "\"version\":9"))
+  record.decode(string.replace(without_cause, "\"version\":12", "\"version\":9"))
+  |> should.equal(Ok(legacy))
+}
+
+pub fn child_deadlines_retain_causes_and_uncertainty_without_legacy_downgrades_test() {
+  let initial = initial()
+  let assert graph.Ready(a) = initial.phase
+  let a =
+    graph.Activation(
+      ..a,
+      prepared: graph.Prepared(
+        ..a.prepared,
+        kind: operation.Subgraph,
+        deadline: Some(1000),
+      ),
+    )
+  let ready = graph.State(..initial, phase: graph.Ready(a))
+  let arming =
+    next(ready, graph.Inspected(graph.reference(ready, a), Ok(policy.Allow)))
+  let joining =
+    next(arming, graph.WaitArmed(graph.reference(arming, a), 10_000))
+  let assert graph.Joining(armed, id) = joining.phase
+  let ref = graph.reference(joining, armed)
+  let waiting = next(joining, graph.ChildWaiting(ref, id))
+  let stopping = next(waiting, graph.ExpireWait(ref, 11_000))
+  next(stopping, graph.Cancel) |> should.equal(stopping)
+  let unresolved = next(stopping, graph.ChildStopped(ref, id, True))
+  let settled = next(unresolved, graph.ChildCancellationSettled(ref, id))
+  settled.phase
+  |> should.equal(graph.Ended(graph.Expired(armed, graph.AfterChild(id))))
+  list.each(
+    [ready, arming, joining, waiting, stopping, unresolved, settled],
+    fn(state) {
+      let bytes = encoded(state)
+      record.decode(bytes) |> should.equal(Ok(state))
+      record.decode(string.replace(bytes, "\"version\":12", "\"version\":11"))
+      |> should.be_error
+    },
+  )
+  record.decode(string.replace(
+    encoded(stopping),
+    "\"due\":11000",
+    "\"due\":12000",
+  ))
+  |> should.be_error
+  list.each(
+    [
+      graph.State(..initial, phase: graph.WaitingChild(a, id)),
+      graph.State(
+        ..initial,
+        phase: graph.Blocked(a, graph.InvalidResult("1", "mapping")),
+      ),
+      graph.State(
+        ..initial,
+        phase: graph.Ended(graph.Expired(armed, graph.JobDetached)),
+      ),
+      graph.State(
+        ..initial,
+        phase: graph.Ended(graph.Expired(armed, graph.AfterChild("wrong"))),
+      ),
+    ],
+    fn(state) { record.encode(state) |> should.be_error },
+  )
+  let legacy_a =
+    graph.Activation(
+      ..a,
+      prepared: graph.Prepared(..a.prepared, deadline: None),
+    )
+  let legacy =
+    graph.State(
+      ..initial,
+      phase: graph.StoppingChild(legacy_a, id, operation.CancellationRequested),
+    )
+  let without_cause =
+    encoded(legacy) |> string.replace(",\"cause\":{\"tag\":\"requested\"}", "")
+  record.decode(without_cause) |> should.be_error
+  record.decode(string.replace(
+    without_cause,
+    "\"version\":12",
+    "\"version\":11",
+  ))
   |> should.equal(Ok(legacy))
 }
 
@@ -224,7 +304,7 @@ pub fn owned_cancellation_records_require_version_nine_and_preserve_request_stat
         )
       let assert Ok(encoded) = record.encode(state)
       record.decode(encoded) |> should.equal(Ok(state))
-      record.decode(string.replace(encoded, "\"version\":11", "\"version\":8"))
+      record.decode(string.replace(encoded, "\"version\":12", "\"version\":8"))
       |> should.be_error
       record.decode(string.replace(encoded, "owned_job", "job"))
       |> should.be_error
@@ -646,7 +726,7 @@ pub fn job_records_require_version_seven_and_cannot_claim_owned_effect_states_te
   waiting.phase |> should.equal(graph.WaitingJob(a))
   let assert Ok(encoded) = record.encode(waiting)
   record.decode(encoded) |> should.equal(Ok(waiting))
-  record.decode(string.replace(encoded, "\"version\":11", "\"version\":6"))
+  record.decode(string.replace(encoded, "\"version\":12", "\"version\":6"))
   |> should.be_error
   let cancelled = next(waiting, graph.Cancel)
   cancelled.phase
@@ -680,9 +760,9 @@ pub fn job_records_require_version_seven_and_cannot_claim_owned_effect_states_te
     fn(state) { record.encode(state) |> should.be_error },
   )
   let assert Ok(encoded) = record.encode(initial)
-  record.decode(string.replace(encoded, "\"version\":11", "\"version\":6"))
+  record.decode(string.replace(encoded, "\"version\":12", "\"version\":6"))
   |> should.equal(Ok(initial))
-  record.decode(string.replace(encoded, "\"version\":11", "\"version\":5"))
+  record.decode(string.replace(encoded, "\"version\":12", "\"version\":5"))
   |> should.equal(Ok(initial))
 }
 
@@ -702,7 +782,7 @@ pub fn scheduled_job_intervals_roundtrip_and_require_version_eight_test() {
     next(ready, graph.Inspected(graph.reference(ready, a), Ok(policy.Allow)))
   let assert Ok(encoded) = record.encode(waiting)
   record.decode(encoded) |> should.equal(Ok(waiting))
-  record.decode(string.replace(encoded, "\"version\":11", "\"version\":7"))
+  record.decode(string.replace(encoded, "\"version\":12", "\"version\":7"))
   |> should.be_error
   record.decode(string.replace(
     encoded,
@@ -737,6 +817,6 @@ pub fn scheduled_job_intervals_roundtrip_and_require_version_eight_test() {
       ),
     )
   let assert Ok(manual_bytes) = record.encode(manual)
-  record.decode(string.replace(manual_bytes, "\"version\":11", "\"version\":7"))
+  record.decode(string.replace(manual_bytes, "\"version\":12", "\"version\":7"))
   |> should.equal(Ok(manual))
 }

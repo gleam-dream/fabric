@@ -131,8 +131,9 @@ fn awaits(record: Record, child: String) -> Bool {
         graph.Joining(_, id)
         | graph.WaitingChild(_, id)
         | graph.ChildBlocked(_, id, _)
-        | graph.StoppingChild(_, id) -> id == child
-        graph.Ended(graph.Cancelled(a, graph.UnresolvedCancellation(_))) ->
+        | graph.StoppingChild(_, id, _) -> id == child
+        graph.Ended(graph.Cancelled(a, graph.UnresolvedCancellation(_)))
+        | graph.Ended(graph.Expired(a, graph.UnresolvedCancellation(_))) ->
           child.reserved_id(state.run, a.id) == child
         _ -> False
       }
