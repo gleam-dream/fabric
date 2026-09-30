@@ -3,6 +3,12 @@
 //// Child observations are authoritative data supplied by the fenced runner;
 //// this model neither executes effects nor establishes ownership by itself.
 
+import fabric/graph/fork.{
+  type Cause, type Member, type Occurrence, type Progress, type Reference,
+  type Request, type Snapshot, type Status, Active, Admitted, Cancelled,
+  CancelledByCaller, DeadlineElapsed, Failed, Member, MemberFailed, Pending,
+  Reference, Rejected, Reserved, Snapshot, Succeeded, Uncertain, Withdrawn,
+}
 import fabric/run
 import gleam/dynamic/decode
 import gleam/json
@@ -10,56 +16,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-
-pub type Occurrence {
-  Occurrence(run: run.RunId, activation: Int)
-}
-
-pub type Reference {
-  Reference(occurrence: Occurrence, member: Int)
-}
-
-pub type Request {
-  Request(definition: run.Identity, input: String)
-}
-
-pub type Progress {
-  Active
-  Uncertain(evidence: String)
-  Succeeded(output: String)
-  Failed(reason: String)
-  /// Only use after the child has no unresolved effects.
-  Cancelled
-}
-
-pub type Status {
-  Pending
-  Withdrawn
-  Rejected(reason: String)
-  Admitted(Progress)
-}
-
-pub type Member {
-  Member(request: Request, status: Status)
-}
-
-pub type Cause {
-  MemberFailed(Reference)
-  CancelledByCaller
-  DeadlineElapsed(due: Int)
-}
-
-/// Data for the owning graph record. List position is the member ordinal;
-/// there is no second set of indices that can disagree with that order.
-pub type Snapshot {
-  Snapshot(
-    occurrence: Occurrence,
-    max_members: Int,
-    concurrency: Int,
-    members: List(Member),
-    stop: Option(Cause),
-  )
-}
 
 pub opaque type Scope {
   Scope(Snapshot)
@@ -152,7 +108,8 @@ fn validate_member(member: Member, ordinal: Int) -> Result(Nil, Rejection) {
   )
   case member.status {
     Admitted(Succeeded(output)) -> check_output(output)
-    Pending
+    Reserved
+    | Pending
     | Withdrawn
     | Rejected(_)
     | Admitted(Active)
@@ -176,12 +133,15 @@ fn validate_order(
     [] -> Ok(Nil)
     [member, ..rest] ->
       case member.status, closed {
-        Admitted(_), True | Rejected(_), True ->
+        Admitted(_), True | Reserved, True | Rejected(_), True ->
           Error(InvalidSnapshot("admission skipped an earlier member"))
         Admitted(_), False
+        | Reserved, False
         | Rejected(_), False
           if unsettled_before >= concurrency
         -> Error(InvalidSnapshot("admission exceeded concurrency"))
+        Reserved, False ->
+          validate_order(rest, False, unsettled_before + 1, concurrency)
         Admitted(progress), False -> {
           let still_open = case terminal(progress) {
             True -> 0
@@ -211,7 +171,8 @@ fn validate_stop(scope: Scope) -> Result(Nil, Rejection) {
             | Rejected(_)
             | Admitted(Failed(_))
             | Admitted(Cancelled) -> True
-            Pending
+            Reserved
+            | Pending
             | Admitted(Active)
             | Admitted(Uncertain(_))
             | Admitted(Succeeded(_)) -> False
@@ -233,7 +194,7 @@ fn validate_stop(scope: Scope) -> Result(Nil, Rejection) {
         select(scope, fn(status) {
           case status {
             Rejected(_) -> True
-            Pending | Withdrawn | Admitted(_) -> False
+            Pending | Withdrawn | Reserved | Admitted(_) -> False
           }
         })
       use _ <- result.try(case rejected, cause {
@@ -248,7 +209,8 @@ fn validate_stop(scope: Scope) -> Result(Nil, Rejection) {
           use member <- result.try(member(scope, reference))
           case member.status {
             Rejected(_) | Admitted(Failed(_)) | Admitted(Cancelled) -> Ok(Nil)
-            Pending
+            Reserved
+            | Pending
             | Withdrawn
             | Admitted(Active)
             | Admitted(Uncertain(_))
@@ -281,7 +243,7 @@ pub fn next(scope: Scope) -> Option(Reference) {
 
 pub fn admit(scope: Scope, reference: Reference) -> Result(Scope, Rejection) {
   use _ <- result.try(check_next(scope, reference))
-  Ok(replace(scope, reference, Admitted(Active)))
+  Ok(replace(scope, reference, Reserved))
 }
 
 /// A definite refusal before admission owns no child, unlike a child failure.
@@ -313,6 +275,7 @@ pub fn observe(
 ) -> Result(Scope, Rejection) {
   use member <- result.try(member(scope, reference))
   use previous <- result.try(case member.status {
+    Reserved -> Ok(Active)
     Admitted(previous) -> Ok(previous)
     Pending | Withdrawn | Rejected(_) -> Error(NotAdmitted)
   })
@@ -359,7 +322,7 @@ fn close(scope: Scope, cause: Cause) -> Scope {
           members: list.map(saved.members, fn(member) {
             case member.status {
               Pending -> Member(..member, status: Withdrawn)
-              Withdrawn | Rejected(_) | Admitted(_) -> member
+              Withdrawn | Rejected(_) | Reserved | Admitted(_) -> member
             }
           }),
         ),
@@ -372,6 +335,7 @@ fn close(scope: Scope, cause: Cause) -> Scope {
 pub fn unsettled(scope: Scope) -> List(Reference) {
   select(scope, fn(status) {
     case status {
+      Reserved -> True
       Admitted(progress) -> !terminal(progress)
       Pending | Withdrawn | Rejected(_) -> False
     }
@@ -382,7 +346,7 @@ pub fn unsettled(scope: Scope) -> List(Reference) {
 pub fn owned(scope: Scope) -> List(Reference) {
   select(scope, fn(status) {
     case status {
-      Admitted(_) -> True
+      Reserved | Admitted(_) -> True
       Pending | Withdrawn | Rejected(_) -> False
     }
   })
@@ -392,7 +356,8 @@ fn uncertain(scope: Scope) -> List(Reference) {
   select(scope, fn(status) {
     case status {
       Admitted(Uncertain(_)) -> True
-      Pending
+      Reserved
+      | Pending
       | Withdrawn
       | Rejected(_)
       | Admitted(Active)
@@ -416,7 +381,8 @@ pub fn join(scope: Scope) -> Join {
             list.try_map(saved.members, fn(member) {
               case member.status {
                 Admitted(Succeeded(output)) -> Ok(output)
-                Pending
+                Reserved
+                | Pending
                 | Withdrawn
                 | Rejected(_)
                 | Admitted(Active)

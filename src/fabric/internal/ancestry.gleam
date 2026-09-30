@@ -3,10 +3,13 @@
 
 import fabric/budget as quota
 
+import fabric/graph/child
+import fabric/graph/fork
 import fabric/internal/budget/config
 import fabric/internal/budget/model as budget
 import fabric/internal/controller as agent
 import fabric/internal/graph/controller as graph
+import fabric/internal/graph/fork as scope
 import fabric/internal/graph/record as graph_record
 import fabric/internal/record as agent_record
 import fabric/run
@@ -77,6 +80,39 @@ fn walk(
         store.get(runs, id) |> result.map_error(StoreFailed),
       )
       use #(stored_id, above, limits, accepts) <- result.try(case link {
+        run.GraphBranch(_, activation, ordinal) -> {
+          use state <- result.try(
+            graph_record.decode(entry.record)
+            |> result.map_error(fn(error) {
+              case error {
+                graph_record.UnsupportedVersion(v) -> UnsupportedVersion(v)
+                graph_record.Corrupt(detail) -> Corrupt(detail)
+              }
+            }),
+          )
+          let accepts = case
+            state.phase,
+            graph.current_fork(state, activation)
+          {
+            graph.Forking(a, graph.JoiningFork), Ok(members)
+            | graph.WaitingFork(a, graph.JoiningFork), Ok(members)
+              if a.id == activation
+            -> {
+              let snapshot = scope.snapshot(members)
+              let ref = fork.Reference(snapshot.occurrence, ordinal)
+              snapshot.stop == None
+              && descendant == child.branch_id(state.run, activation, ordinal)
+              && case scope.member(members, ref) {
+                Ok(fork.Member(_, fork.Reserved))
+                | Ok(fork.Member(_, fork.Admitted(fork.Active)))
+                | Ok(fork.Member(_, fork.Admitted(fork.Uncertain(_)))) -> True
+                _ -> False
+              }
+            }
+            _, _ -> False
+          }
+          Ok(#(state.run, state.parent, state.family_budget, accepts))
+        }
         run.AgentParent(_, action) -> {
           use state <- result.map(
             agent_record.decode(entry.record)

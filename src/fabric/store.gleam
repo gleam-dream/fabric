@@ -756,9 +756,9 @@ pub type Ownership {
   /// in flight (`Release`).
   Leave(Pid)
   /// A confirmed idle record releases its runner/lease and registers deployed
-  /// recovery code for changes to one dependency. The registration is local;
+  /// recovery code for changes to any dependency. The registration is local;
   /// the durable record remains authoritative after any missed notification.
-  Park(dependency: String, wake: fn() -> WakeupDisposition)
+  Park(dependencies: List(String), wake: fn() -> WakeupDisposition)
   /// The committing runner `Pid` hands the run off with work in flight: the
   /// lease is released as already expired.
   HandOff(Pid)
@@ -987,7 +987,7 @@ type Loop {
 
 type Wakeup {
   Wakeup(
-    dependency: String,
+    dependencies: List(String),
     token: String,
     callback: fn() -> WakeupDisposition,
     status: WakeStatus,
@@ -1448,7 +1448,7 @@ fn confirm(
 fn own(state: Loop, run: String, ownership: Ownership, sent: Int) -> Loop {
   let state = Loop(..state, wakeups: dict.delete(state.wakeups, run))
   case ownership {
-    Park(dependency, callback) -> {
+    Park(dependencies, callback) -> {
       let token = random_id()
       // Read after registration, even if the dependency changed before the
       // parent parked. This message is handled after the confirmed write.
@@ -1460,7 +1460,7 @@ fn own(state: Loop, run: String, ownership: Ownership, sent: Int) -> Loop {
         wakeups: dict.insert(
           state.wakeups,
           run,
-          Wakeup(dependency, token, callback, Dormant),
+          Wakeup(dependencies, token, callback, Dormant),
         ),
       )
     }
@@ -1683,7 +1683,7 @@ fn notify(state: Loop, run: String) -> Nil {
   |> result.unwrap([])
   |> list.each(fn(entry) { process.send(entry.1, Nil) })
   dict.each(state.wakeups, fn(parent, wakeup) {
-    case wakeup.dependency == run {
+    case list.contains(wakeup.dependencies, run) {
       True -> process.send(state.subject, Wake(parent, wakeup.token))
       False -> Nil
     }

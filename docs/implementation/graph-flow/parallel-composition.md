@@ -15,7 +15,7 @@ at one; equal inputs still produce different members. Repeating a node creates
 another activation and another occurrence. Incarnations and observation attempts
 do not change the occurrence or member identity.
 
-Each admitted member owns a managed graph child with private state. Ordinary
+Each reserved or acknowledged member owns a managed graph child with private state. Ordinary
 operations and agents can participate through graph definitions. Pair composition
 retains two independently typed answers; map composition retains one answer per
 input position. Both use this same scope lifecycle. The parent commits one join
@@ -31,19 +31,22 @@ that remains unsettled could not have freed its slot for a later member.
 
 ## Member lifecycle
 
-| State                         | Meaning                                               |
-| ----------------------------- | ----------------------------------------------------- |
-| Pending                       | No child has been admitted.                           |
-| Withdrawn                     | A stop prevented admission; no child is owned.        |
-| Rejected(reason)              | Admission failed definitely; no child is owned.       |
-| Admitted(Active)              | The scope owns a child whose result is not yet known. |
-| Admitted(Uncertain(evidence)) | Child effects or its result need resolution.          |
-| Admitted(Succeeded(output))   | A validated encoded result is retained.               |
-| Admitted(Failed(reason))      | A definite child failure is retained.                 |
-| Admitted(Cancelled)           | The child is canceled with no unresolved effects.     |
+| State                         | Meaning                                                |
+| ----------------------------- | ------------------------------------------------------ |
+| Pending                       | No child has been admitted.                            |
+| Withdrawn                     | A stop prevented admission; no child is owned.         |
+| Rejected(reason)              | Admission failed definitely; no child is owned.        |
+| Reserved                      | Child identity is owned; creation is not acknowledged. |
+| Admitted(Active)              | The scope owns a child whose result is not yet known.  |
+| Admitted(Uncertain(evidence)) | Child effects or its result need resolution.           |
+| Admitted(Succeeded(output))   | A validated encoded result is retained.                |
+| Admitted(Failed(reason))      | A definite child failure is retained.                  |
+| Admitted(Cancelled)           | The child is canceled with no unresolved effects.      |
 
-Admission is a retained ownership fact, not proof that child start was
-acknowledged. Recovery must adopt the same child identity. A rejected admission
+Admission first retains a reservation. An observed child record changes it to
+acknowledged progress. Both states consume concurrency and retain ownership.
+Recovery may create a missing reserved child using the same identity; a missing
+acknowledged child is data loss and cannot be recreated. A rejected admission
 and a failed admitted child remain different because only the latter has a
 child to retain and settle. Child records own detailed approval, signal, job
 and effect evidence; the scope owns membership and join eligibility.
@@ -54,6 +57,9 @@ unexpected child cancellation closes admission and withdraws pending members.
 Every admitted unsettled child must then receive cancellation and be observed
 until settled. Later successes remain evidence and cannot turn the stopped
 scope into a successful join. Later stop requests do not replace its cause.
+The parent retains its own cancellation or expiration intent separately from
+the scope's first failure. Canceling during sibling cleanup must suppress the
+business fallback even when member failure remains the scope's first cause.
 An admission rejection must itself be the saved stop cause: once another stop
 has committed, admission can no longer be attempted or rejected.
 
@@ -83,7 +89,10 @@ acceptance callback, so the application can route to a fallback. Its failed
 member reference and all saved member outcomes remain inspectable. Explicit
 parent cancellation and expiration bypass business acceptance, as they do for
 serial managed children. A failed join callback retains the settled scope and
-encoded output for reconciliation; it never repeats children.
+encoded output for reconciliation; it never repeats children. Reconciliation
+may retry acceptance, but its output must agree with the retained member
+results. Recovery checks fixed membership against the saved activation input
+and the deployed typed binding before any member can run.
 
 Readiness is derived from the saved scope. It is not another terminal flag.
 A scope with unsettled admitted members cannot join, including after a stop.
@@ -113,11 +122,21 @@ remain outside this wave.
 
 ## Evidence and remaining integration
 
-The pure scope tests own F1–F8's transition and restoration cases. They do not
-establish runtime durability. Wave 4 also requires public typed pair/map tests,
-actual overlapping child execution, partial restart, missed notifications,
-failure during another member's effect, cancellation and uncertain cleanup,
-join failure, repeated visits and sibling scopes, shared budgets, and persistent
-concurrency scenarios. Existing graph record versions must explicitly reject
-the new scope state when it is integrated; no format change is claimed by the
-standalone lifecycle model.
+The public `graph.both(identity, left, right)` operation accepts independently
+typed initial states and returns a typed pair or settled `fork.Failure`. Its
+constructor returns `Result`; both managed runtimes must use the parent's store.
+`graph.branch` opens a retained member by activation and one-based ordinal.
+
+The pure scope tests cover F1–F8's transition and restoration cases. Public pair
+scenarios now prove overlapping execution, declared result order, typed fallback,
+partial directory-backend restart, join failure, cancellation during uncertain
+sibling cleanup, and refusal of changed membership or fabricated join results.
+Graph records write version 13 and read 5–13; new scopes and branch attachments
+cannot be downgraded. Retention projection 10 includes every owned member.
+
+Wave 4 remains active. Public map, persistent discovery across every unsettled
+member, nested idle scopes, fork deadlines, repeated visits and sibling scopes,
+shared-budget scenarios, and persistent parallel contention still require
+runtime evidence. Local wakeups and explicit recovery do not establish recovery
+after a missed notification across backend restart. Discovery projection 8
+recognizes the record format but does not yet schedule multi-member waits.

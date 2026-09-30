@@ -18,7 +18,9 @@
   captured in the [parallel composition contract](parallel-composition.md).
   The pure scope model now has checked restoration, ordered results, bounded
   admission, retained first stop cause and explicit uncertainty. Public typed
-  pair/map operations and durable multi-child execution remain to be connected.
+  pairs now run actual concurrent managed children, retain ordered results and
+  recover after a partial directory-backend restart. Typed map, persistent
+  multi-child discovery, nested idle scopes and fork deadlines remain open.
   Submission, receipt recovery, retained read-only
   job waits and scheduled observation are proven against an independently
   retained service. An explicit cancellation workflow now proves stop admission,
@@ -43,7 +45,7 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: 579 root tests, four graph consumer tests, 15 app consumer tests,
+- Gate status: 587 root tests, four graph consumer tests, 15 app consumer tests,
   19 external-job consumer scenarios and five independent service tests pass.
   The PostgreSQL gate passes 54 tests, including overdue signal/job/child recovery, database time, owned cancellation, scheduled job recovery and pruning,
   migration and concurrent index refresh. Builds use
@@ -56,11 +58,10 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: connect the scope model to the smallest public typed pair path
-  using actual managed graph children. Add explicit branch attachments and
-  retained scope history, then multi-child discovery and map composition. Reuse
-  the verified child ownership, budget and retention mechanisms. Do not treat
-  the standalone lifecycle model as stage-4 acceptance.
+- Next action: extend the retained pair runtime to bounded typed map, then
+  close persistent multi-child discovery and nested-scope recovery. Prove shared
+  budgets, deadlines, repeated visits and persistent contention before accepting
+  stage 4. Existing pair evidence does not close the full parallel contract.
 - Resume note: the user requested another checkpoint commit and continued
   implementation on 2026-09-30. The app goal is confirmed active with all six
   stages preserved. The initial runtime checkpoint
@@ -93,19 +94,19 @@ The full objective includes all six waves below, not merely that first path.
 These identifiers project the selected graph design into executable evidence.
 They clarify the proposed examples for the authorized implementation program.
 
-| Rule | Contract                                                                                                                                                                              | First evidence owner                                                |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| G1   | A graph binds heterogeneous native operation types without unchecked casts; codecs are required for durable values, provider schema is not.                                           | Wave 1 authoring consumer and codec tests                           |
-| G2   | Construction validates identity, positive bounds, unique nodes and destination references before any work runs. A runtime destination must be allowed by its source node.             | Wave 1 construction/routing tests                                   |
-| G3   | Every visit gets a fresh activation identity, including pure cycles; the limit stops the next activation before its body runs.                                                        | Wave 1 loop trace and bound tests; wave 2 recovery tests            |
-| G4   | Input selection, operation failure, codec failure and transition failure remain distinct; invalid or uncertain results release no successor work.                                     | Wave 1 failure tests; wave 2 fenced effects                         |
-| G5   | Result, state, route, activation identities and per-run bounds commit together before dispatch. Family capacity is reserved separately before admission; stored decisions are reused. | Wave 2 persistent restart and lost-ack tests                        |
-| G6   | An effect starts only after validated admission and a committed start fence. Lost results remain uncertain; approval uses fresh context after recovery.                               | Wave 2 effect/policy tests                                          |
-| G7   | Child identity and shared family capacity are reserved before start; recovery adopts saved children and grants. Signals are correlated, consumed once and retained durably.           | Wave 3 child/signal tests                                           |
-| G8   | External submission, accepted receipt and business completion are distinct; attachment/cancellation ownership is explicit.                                                            | Wave 3 real local job integration                                   |
-| G9   | A structured fork retains private branch results, joins only its own members in defined order, and preserves failure/uncertainty.                                                     | Wave 4 fork lifecycle tests; public pair/map/join tests remain open |
-| G10  | Changing a typed decision producer does not change routes or recovery. Provider adapters preserve their real protocol and effect semantics.                                           | Wave 5 adapter tests and live/local protocol exercises              |
-| G11  | An agent recipe is evaluated against current transcript, policy, approval, recovery, cancellation and version guarantees.                                                             | Wave 6 parity report and scenarios                                  |
+| Rule | Contract                                                                                                                                                                              | First evidence owner                                                   |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| G1   | A graph binds heterogeneous native operation types without unchecked casts; codecs are required for durable values, provider schema is not.                                           | Wave 1 authoring consumer and codec tests                              |
+| G2   | Construction validates identity, positive bounds, unique nodes and destination references before any work runs. A runtime destination must be allowed by its source node.             | Wave 1 construction/routing tests                                      |
+| G3   | Every visit gets a fresh activation identity, including pure cycles; the limit stops the next activation before its body runs.                                                        | Wave 1 loop trace and bound tests; wave 2 recovery tests               |
+| G4   | Input selection, operation failure, codec failure and transition failure remain distinct; invalid or uncertain results release no successor work.                                     | Wave 1 failure tests; wave 2 fenced effects                            |
+| G5   | Result, state, route, activation identities and per-run bounds commit together before dispatch. Family capacity is reserved separately before admission; stored decisions are reused. | Wave 2 persistent restart and lost-ack tests                           |
+| G6   | An effect starts only after validated admission and a committed start fence. Lost results remain uncertain; approval uses fresh context after recovery.                               | Wave 2 effect/policy tests                                             |
+| G7   | Child identity and shared family capacity are reserved before start; recovery adopts saved children and grants. Signals are correlated, consumed once and retained durably.           | Wave 3 child/signal tests                                              |
+| G8   | External submission, accepted receipt and business completion are distinct; attachment/cancellation ownership is explicit.                                                            | Wave 3 real local job integration                                      |
+| G9   | A structured fork retains private branch results, joins only its own members in defined order, and preserves failure/uncertainty.                                                     | Wave 4 fork lifecycle and public pair tests; map/discovery remain open |
+| G10  | Changing a typed decision producer does not change routes or recovery. Provider adapters preserve their real protocol and effect semantics.                                           | Wave 5 adapter tests and live/local protocol exercises                 |
+| G11  | An agent recipe is evaluated against current transcript, policy, approval, recovery, cancellation and version guarantees.                                                             | Wave 6 parity report and scenarios                                     |
 
 Canonical design anchors: GRAPH-FLOW sections “Four concepts at the authoring
 boundary”, “One control decision per activation”, “Parallel composition
@@ -1353,3 +1354,55 @@ six-step goal remains active, with wave 3 next.
   child for discovery and pruning. Then extend that runtime path to typed map,
   persistent restart and join-failure scenarios. Do not build another detached
   horizontal layer or count these pure tests as wave-4 runtime acceptance.
+
+### Wave 4 — concurrent typed pairs and retained joins
+
+- Status: public pair checkpoint under G1, G7, G9 and F1–F8. Wave 4 remains
+  active; stages 5–6 remain open. The user authorized the checkpoint commit and
+  continued implementation. The app goal was confirmed active with all six
+  stages preserved.
+- Delivery: `graph.both(identity, left, right)` binds independently typed child
+  states and answers to one policy-gated operation. Its result is a typed pair
+  or `fork.Failure`, which the application may route to a fallback. Each branch
+  is an actual managed graph run with a stable parent/activation/member identity.
+  `graph.branch` opens it with its native runtime. Both bindings must share the
+  parent's store. No new dependency is introduced.
+- Persistence: the parent retains fixed membership, reserved identities,
+  acknowledged progress, ordered outcomes, and scope history. A lost start
+  acknowledgment may reconnect to the same reservation; an acknowledged child
+  record that disappears cannot be recreated. Child quota admission precedes
+  reservation, and ancestry checks fence branch effects after parent stop.
+  Local wakeups watch every unsettled member.
+- Joining: a definite member failure closes admission and retains sibling
+  cleanup. The parent's explicit stop intent is separate from the scope's first
+  failure, so cancellation during cleanup suppresses the business fallback.
+  Failed acceptance keeps settled child results without replaying children.
+  Reconciliation and restored receipts must agree with those results. Fixed
+  requests must match the typed binding and saved activation input.
+- Evidence: six public scenarios prove overlapping execution and reverse-order
+  completion, typed fallback, partial directory-backend restart with the same
+  children, failed-join cancellation, cancellation during an uncertain sibling
+  effect, and refusal of changed membership or saved outcomes. Two record
+  scenarios cover every fork lifecycle phase, branch attachment identity,
+  corruption, required fields and legacy downgrade refusal. Fifteen pure scope
+  tests remain, extended to include reserved-member capacity. Forged join
+  reconciliation, unowned scope phases and excess reservations failed before
+  their corresponding fixes.
+- Compatibility: graph records write 13/read 5–13. Scopes, fork operations and
+  branch attachments require 13; agent records remain 7 and direct agent branch
+  attachments are refused. Retention projection 10 retains reciprocal links for
+  every reserved or acknowledged member. Discovery projection 8 recognizes the
+  new record format; persistent multi-member waits are still unimplemented.
+  PostgreSQL remains schema 5.
+- Gate: the root warnings-as-errors build and all 587 tests pass. Graph/app
+  consumer builds and four/15 tests pass. The external-job consumer passes 19
+  Gleam scenarios and five independent Python service tests. The temporary
+  PostgreSQL gate passes 54 tests. Source formatting, `nix fmt`,
+  `nix flake check` and `git diff --check` pass on this host.
+- Remaining scope: bounded typed map, nested idle/uncertain fork composition,
+  persistent discovery after missed notifications, fork deadlines, repeated
+  visits and sibling scopes, family-budget scenarios and PostgreSQL parallel
+  contention. The existing database regression gate does not prove those new
+  parallel paths. No wave-4 acceptance or full-goal completion is claimed.
+- Next: implement bounded typed map on this same scope and managed-child path,
+  including ordered outputs, empty input, oversized input and concurrency.

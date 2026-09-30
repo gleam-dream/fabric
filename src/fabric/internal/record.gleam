@@ -108,6 +108,14 @@ pub fn encode_as(
   state: State,
   target: WriteVersion,
 ) -> Result(String, EncodeError) {
+  use Nil <- result.try(case state.parent {
+    Some(run.GraphBranch(..)) ->
+      Error(Unrepresentable(
+        writer_number(target),
+        "fork members must be graph runs",
+      ))
+    _ -> Ok(Nil)
+  })
   use Nil <- result.try(
     budget_config.validate(state.parent == None, state.family_budget)
     |> result.map_error(Unrepresentable(writer_number(target), _)),
@@ -241,6 +249,12 @@ fn encode_version(state: State, version: Int, phase: Phase) -> String {
             tag("graph", [
               #("run", json.string(run.id_to_string(id))),
               #("activation", json.int(activation)),
+            ])
+          run.GraphBranch(id, activation, member) ->
+            tag("graph_branch", [
+              #("run", json.string(run.id_to_string(id))),
+              #("activation", json.int(activation)),
+              #("member", json.int(member)),
             ])
         }
       }),
@@ -548,6 +562,7 @@ fn linked(state: State) -> Result(State, DecodeError) {
     |> result.map_error(Corrupt),
   )
   let parent = case state.parent {
+    Some(run.GraphBranch(..)) -> False
     Some(run.AgentParent(parent, _)) ->
       extends(state.run, run.id_to_string(parent))
     Some(run.GraphParent(parent, activation)) ->

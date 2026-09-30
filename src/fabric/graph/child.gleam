@@ -5,11 +5,16 @@ import fabric/run
 
 pub type Parent {
   Parent(run: String, activation: Int)
+  Branch(run: String, activation: Int, member: Int)
 }
 
 @internal
 pub fn attachment(parent: Parent) -> run.Parent {
-  run.GraphParent(run.issued(parent.run), parent.activation)
+  case parent {
+    Parent(id, activation) -> run.GraphParent(run.issued(id), activation)
+    Branch(id, activation, member) ->
+      run.GraphBranch(run.issued(id), activation, member)
+  }
 }
 
 pub type Reference {
@@ -38,3 +43,7 @@ pub type Progress {
 @external(erlang, "fabric_ffi", "graph_child_id")
 @internal
 pub fn reserved_id(parent: String, activation: Int) -> String
+
+@external(erlang, "fabric_ffi", "graph_branch_id")
+@internal
+pub fn branch_id(parent: String, activation: Int, member: Int) -> String

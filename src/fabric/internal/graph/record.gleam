@@ -4,10 +4,13 @@
 //// Encode once per write and reuse those bytes for acknowledgement recovery.
 
 import fabric/graph/child
+import fabric/graph/fork
 import fabric/graph/job
 import fabric/graph/operation
 import fabric/internal/budget/config as budget_config
 import fabric/internal/graph/controller as g
+import fabric/internal/graph/fork as scope
+import fabric/internal/graph/fork_record
 import fabric/run
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
@@ -18,7 +21,7 @@ import gleam/string
 
 pub const format = "fabric.graph"
 
-pub const version = 12
+pub const version = 13
 
 pub type EncodeError {
   InvalidState(detail: String)
@@ -53,12 +56,20 @@ pub fn encode(state: g.State) -> Result(String, EncodeError) {
       #(
         "parent",
         json.nullable(state.parent, fn(parent) {
-          // validate rejects agent attachments until graph-as-agent-tool exists.
-          let assert run.GraphParent(id, activation) = parent
-          json.object([
-            #("run", json.string(run.id_to_string(id))),
-            #("activation", json.int(activation)),
-          ])
+          case parent {
+            run.GraphParent(id, activation) ->
+              json.object([
+                #("run", json.string(run.id_to_string(id))),
+                #("activation", json.int(activation)),
+              ])
+            run.GraphBranch(id, activation, member) ->
+              json.object([
+                #("run", json.string(run.id_to_string(id))),
+                #("activation", json.int(activation)),
+                #("member", json.int(member)),
+              ])
+            run.AgentParent(..) -> json.null()
+          }
         }),
       ),
       #(
@@ -73,6 +84,7 @@ pub fn encode(state: g.State) -> Result(String, EncodeError) {
         }),
       ),
       #("phase", phase_json(state.phase)),
+      #("forks", json.array(state.forks, fork_record.encode)),
       #(
         "family_budget",
         json.nullable(state.family_budget, budget_config.encode_declaration),
@@ -104,6 +116,15 @@ fn prepared_json(prepared: g.Prepared) -> Json {
     _ -> []
   }
   let schedule =
+    list.append(schedule, case prepared.kind {
+      operation.Fork(maximum, concurrency, signature) -> [
+        #("max_members", json.int(maximum)),
+        #("concurrency", json.int(concurrency)),
+        #("fork_signature", json.string(signature)),
+      ]
+      _ -> []
+    })
+  let schedule =
     list.append(schedule, case prepared.deadline {
       None -> []
       Some(ms) -> [#("deadline_after", json.int(ms))]
@@ -122,6 +143,7 @@ fn prepared_json(prepared: g.Prepared) -> Json {
           operation.OwnedJob(_) -> "owned_job"
           operation.Subgraph -> "subgraph"
           operation.Agent -> "agent"
+          operation.Fork(..) -> "fork"
         }),
       ),
       #("recovery", case prepared.recovery {
@@ -193,6 +215,7 @@ fn fault_json(fault: g.Fault) -> Json {
 
 fn cancellation_json(cancellation: g.Cancellation) -> Json {
   case cancellation {
+    g.AfterFork -> tag("after_fork", [])
     g.BeforeStart -> tag("before_start", [])
     g.JobDetached -> tag("job_detached", [])
     g.JobStopped -> tag("job_stopped", [])
@@ -229,6 +252,18 @@ fn outcome_json(outcome: g.Outcome) -> Json {
 
 fn phase_json(phase: g.Phase) -> Json {
   case phase {
+    g.PreparingFork(a) ->
+      tag("preparing_fork", [#("activation", activation_json(a))])
+    g.Forking(a, mode) ->
+      tag("forking", [
+        #("activation", activation_json(a)),
+        #("mode", fork_mode_json(mode)),
+      ])
+    g.WaitingFork(a, mode) ->
+      tag("waiting_fork", [
+        #("activation", activation_json(a)),
+        #("mode", fork_mode_json(mode)),
+      ])
     g.ChildBlocked(a, id, reason) ->
       tag("child_blocked", [
         #("activation", activation_json(a)),
@@ -368,6 +403,21 @@ pub fn decode(text: String) -> Result(g.State, DecodeError) {
         )
         |> result.map_error(Corrupt),
       )
+      use _ <- result.try(
+        require(
+          found >= 13
+            || {
+            state.forks == []
+            && !list.any(preparations(state), fn(p) { is_fork(p.kind) })
+            && case state.parent {
+              Some(run.GraphBranch(..)) -> False
+              _ -> True
+            }
+          },
+          "fork scopes require graph version 13",
+        )
+        |> result.map_error(Corrupt),
+      )
       Ok(state)
     }
   }
@@ -408,17 +458,21 @@ fn prepared_decoder() -> Decoder(g.Prepared) {
     None -> job.Manual
     Some(ms) -> job.Every(ms)
   }
-  use kind <- decode.field("kind", {
-    use name <- decode.then(decode.string)
-    case name {
-      "activity" -> decode.success(operation.Activity)
-      "signal" -> decode.success(operation.Signal)
-      "job" -> decode.success(operation.Job(polling))
-      "owned_job" -> decode.success(operation.OwnedJob(polling))
-      "subgraph" -> decode.success(operation.Subgraph)
-      "agent" -> decode.success(operation.Agent)
-      _ -> decode.failure(operation.Activity, "a known operation kind")
+  use kind_name <- decode.field("kind", decode.string)
+  use kind <- decode.then(case kind_name {
+    "activity" -> decode.success(operation.Activity)
+    "signal" -> decode.success(operation.Signal)
+    "job" -> decode.success(operation.Job(polling))
+    "owned_job" -> decode.success(operation.OwnedJob(polling))
+    "subgraph" -> decode.success(operation.Subgraph)
+    "agent" -> decode.success(operation.Agent)
+    "fork" -> {
+      use maximum <- decode.field("max_members", decode.int)
+      use concurrency <- decode.field("concurrency", decode.int)
+      use signature <- decode.field("fork_signature", decode.string)
+      decode.success(operation.Fork(maximum, concurrency, signature))
     }
+    _ -> decode.failure(operation.Activity, "a known operation kind")
   })
   use _ <- decode.then(case poll_every, kind {
     Some(_), operation.Job(_) | Some(_), operation.OwnedJob(_) | None, _ ->
@@ -535,6 +589,7 @@ fn fault_decoder() -> Decoder(g.Fault) {
 fn cancellation_decoder() -> Decoder(g.Cancellation) {
   use name <- tagged(g.BeforeStart)
   case name {
+    "after_fork" -> Ok(decode.success(g.AfterFork))
     "before_start" -> Ok(decode.success(g.BeforeStart))
     "job_detached" -> Ok(decode.success(g.JobDetached))
     "job_stopped" -> Ok(decode.success(g.JobStopped))
@@ -593,6 +648,20 @@ fn outcome_decoder() -> Decoder(g.Outcome) {
 fn phase_decoder(found: Int) -> Decoder(g.Phase) {
   use name <- tagged(g.Ended(g.Completed("")))
   case name {
+    "preparing_fork" | "forking" | "waiting_fork" ->
+      Ok({
+        use a <- decode.field("activation", activation_decoder())
+        case name {
+          "preparing_fork" -> decode.success(g.PreparingFork(a))
+          _ -> {
+            use mode <- decode.field("mode", fork_mode_decoder())
+            decode.success(case name {
+              "forking" -> g.Forking(a, mode)
+              _ -> g.WaitingFork(a, mode)
+            })
+          }
+        }
+      })
     "child_blocked" ->
       Ok({
         use a <- decode.field("activation", activation_decoder())
@@ -699,7 +768,15 @@ fn state_decoder(found: Int) -> Decoder(g.State) {
     decode.optional({
       use run <- decode.field("run", decode.string)
       use activation <- decode.field("activation", decode.int)
-      decode.success(run.GraphParent(run.issued(run), activation))
+      use member <- decode.optional_field(
+        "member",
+        None,
+        decode.optional(decode.int),
+      )
+      decode.success(case member {
+        None -> run.GraphParent(run.issued(run), activation)
+        Some(member) -> run.GraphBranch(run.issued(run), activation, member)
+      })
     }),
   )
   use receipts <- decode.field(
@@ -713,6 +790,17 @@ fn state_decoder(found: Int) -> Decoder(g.State) {
     }),
   )
   use phase <- decode.field("phase", phase_decoder(found))
+  use forks <- decode.then(case found >= 13 {
+    True ->
+      decode.field("forks", decode.list(fork_record.decoder()), decode.success)
+    False ->
+      decode.optional_field(
+        "forks",
+        [],
+        decode.list(fork_record.decoder()),
+        decode.success,
+      )
+  })
   use family_budget <- decode.then(budget_config.field(found >= 6))
   decode.success(g.State(
     run,
@@ -726,6 +814,7 @@ fn state_decoder(found: Int) -> Decoder(g.State) {
     initial,
     parent,
     family_budget,
+    forks,
   ))
 }
 
@@ -794,6 +883,19 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
     None -> Ok(Nil)
     Some(run.AgentParent(..)) ->
       Error("graph runs do not accept agent-action parents")
+    Some(run.GraphBranch(parent, activation, member)) -> {
+      use _ <- result.try(
+        run.parse_id(run.id_to_string(parent))
+        |> result.replace_error("invalid parent run"),
+      )
+      require(
+        activation > 0
+          && member > 0
+          && state.run
+          == child.branch_id(run.id_to_string(parent), activation, member),
+        "branch record does not match its parent reservation",
+      )
+    }
     Some(run.GraphParent(parent, activation)) -> {
       let parent = run.id_to_string(parent)
       use _ <- result.try(
@@ -805,6 +907,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       )
     }
   })
+  use _ <- result.try(validate_forks(state))
   use last <- result.try(check_receipts(state.receipts, 1, None))
   use _ <- result.try(case last {
     None -> Ok(Nil)
@@ -816,6 +919,38 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
   })
   let count = list.length(state.receipts)
   case state.phase {
+    g.PreparingFork(a) -> {
+      use _ <- result.try(require(
+        is_fork(a.prepared.kind)
+          && g.current_fork(state, a.id) == Error(g.WrongPhase),
+        "fork preparation already has membership",
+      ))
+      pending(state, count, last, a)
+    }
+    g.Forking(a, mode) | g.WaitingFork(a, mode) -> {
+      use fork <- result.try(
+        g.current_fork(state, a.id)
+        |> result.replace_error("missing fork membership"),
+      )
+      use _ <- result.try(case mode {
+        g.JoiningFork ->
+          require(
+            case scope.snapshot(fork).stop {
+              None | Some(fork.MemberFailed(_)) -> True
+              _ -> False
+            },
+            "ordinary fork has parent stop intent",
+          )
+        g.ClosingFork(cause) -> {
+          use _ <- result.try(check_stop_reason(a, cause))
+          require(
+            scope.snapshot(fork).stop != None,
+            "closing fork has no stop intent",
+          )
+        }
+      })
+      pending(state, count, last, a)
+    }
     g.Blocked(a, g.InvalidResult(_, _))
       if {
         a.prepared.kind == operation.Subgraph
@@ -866,7 +1001,28 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       ))
       pending(state, count, last, a)
     }
-    g.Queued(a) | g.Running(a) | g.Stopping(a) | g.Blocked(a, _) -> {
+    g.Blocked(a, problem) -> {
+      use _ <- result.try(case a.prepared.kind, problem {
+        operation.Activity, _ -> Ok(Nil)
+        operation.Fork(..), g.InvalidResult(_, _) -> {
+          use fork <- result.try(
+            g.current_fork(state, a.id)
+            |> result.replace_error("missing blocked fork"),
+          )
+          require(
+            case scope.join(fork) {
+              scope.Ready(Ok(_)) | scope.Ready(Error(fork.MemberFailed(_))) ->
+                True
+              _ -> False
+            },
+            "a blocked join must retain settled member outcomes",
+          )
+        }
+        _, _ -> Error("operation does not support an activity blockage")
+      })
+      pending(state, count, last, a)
+    }
+    g.Queued(a) | g.Running(a) | g.Stopping(a) -> {
       use _ <- result.try(require(
         a.prepared.kind == operation.Activity,
         "a signal wait cannot enter an activity phase",
@@ -988,6 +1144,19 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
             is_owned_job(a.prepared.kind),
             "stopped outcome requires an owned job",
           )
+        g.AfterFork -> {
+          use fork <- result.try(
+            g.current_fork(state, a.id)
+            |> result.replace_error("missing canceled fork"),
+          )
+          require(
+            case scope.join(fork) {
+              scope.Ready(Error(_)) -> True
+              _ -> False
+            },
+            "fork cancellation retains unsettled work",
+          )
+        }
         g.AfterChild(id) -> {
           use _ <- result.try(check_armed_child(a))
           require(
@@ -1129,6 +1298,80 @@ fn is_child(kind: operation.Kind) -> Bool {
   kind == operation.Subgraph || kind == operation.Agent
 }
 
+fn is_fork(kind: operation.Kind) -> Bool {
+  case kind {
+    operation.Fork(..) -> True
+    _ -> False
+  }
+}
+
+fn validate_forks(state: g.State) -> Result(Nil, String) {
+  use _ <- result.try(
+    list.try_fold(state.forks, 0, fn(previous, saved) {
+      use restored <- result.try(
+        scope.restore(saved) |> result.map_error(string.inspect),
+      )
+      use _ <- result.try(require(
+        saved.occurrence.run == run.issued(state.run)
+          && saved.occurrence.activation > previous,
+        "fork scopes have invalid occurrence order",
+      ))
+      use activation <- result.try(
+        g.activation(state, saved.occurrence.activation)
+        |> result.replace_error("fork does not belong to a retained activation"),
+      )
+      use _ <- result.try(case activation.prepared.kind {
+        operation.Fork(maximum, concurrency, signature) ->
+          require(
+            maximum == saved.max_members
+              && concurrency == saved.concurrency
+              && signature != "",
+            "fork bounds differ from its operation",
+          )
+        _ -> Error("scope belongs to an ordinary activation")
+      })
+      use _ <- result.try(
+        case
+          list.find(state.receipts, fn(receipt) {
+            receipt.activation.id == activation.id
+          })
+        {
+          Ok(_) ->
+            case scope.join(restored) {
+              scope.Ready(Ok(_)) | scope.Ready(Error(fork.MemberFailed(_))) ->
+                Ok(Nil)
+              _ -> Error("joined fork has unsettled members or stop intent")
+            }
+          Error(_) ->
+            case state.phase {
+              g.Forking(_, _)
+              | g.Blocked(_, _)
+              | g.Ended(g.Cancelled(_, g.AfterFork))
+              | g.Ended(g.Expired(_, g.AfterFork)) -> Ok(Nil)
+              g.WaitingFork(_, _) ->
+                require(
+                  case scope.join(restored) {
+                    scope.Waiting | scope.Unresolved(_) -> True
+                    scope.Ready(_) -> False
+                  },
+                  "settled fork cannot remain parked",
+                )
+              _ -> Error("fork scope has no owning execution phase")
+            }
+        },
+      )
+      Ok(saved.occurrence.activation)
+    }),
+  )
+  list.try_each(state.receipts, fn(receipt) {
+    require(
+      !is_fork(receipt.activation.prepared.kind)
+        || result.is_ok(g.current_fork(state, receipt.activation.id)),
+      "fork receipt lost its members",
+    )
+  })
+}
+
 fn check_stop_reason(
   a: g.Activation,
   cause: operation.StopReason,
@@ -1147,6 +1390,26 @@ fn stop_reason_json(cause: operation.StopReason) -> Json {
   case cause {
     operation.CancellationRequested -> tag("requested", [])
     operation.DeadlineReached(due) -> tag("deadline", [#("due", json.int(due))])
+  }
+}
+
+fn fork_mode_json(mode: g.ForkMode) -> Json {
+  case mode {
+    g.JoiningFork -> tag("join", [])
+    g.ClosingFork(cause) -> tag("stop", [#("cause", stop_reason_json(cause))])
+  }
+}
+
+fn fork_mode_decoder() -> Decoder(g.ForkMode) {
+  use name <- tagged(g.JoiningFork)
+  case name {
+    "join" -> Ok(decode.success(g.JoiningFork))
+    "stop" ->
+      Ok({
+        use cause <- decode.field("cause", stop_reason_decoder())
+        decode.success(g.ClosingFork(cause))
+      })
+    _ -> Error(Nil)
   }
 }
 
@@ -1236,6 +1499,9 @@ fn preparations(state: g.State) -> List(g.Prepared) {
     | g.ArmingWait(a)
     | g.WaitingJob(a)
     | g.StoppingJob(a, _, _)
+    | g.PreparingFork(a)
+    | g.Forking(a, _)
+    | g.WaitingFork(a, _)
     | g.Joining(a, _)
     | g.WaitingChild(a, _)
     | g.ChildBlocked(a, _, _)

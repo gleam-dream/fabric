@@ -7,6 +7,7 @@ import fabric/internal/claim
 import fabric/internal/executor
 import fabric/internal/graph/child_driver
 import fabric/internal/graph/controller as g
+import fabric/internal/graph/fork_driver
 import fabric/policy
 import gleam/erlang/process.{type Pid, type Subject}
 
@@ -28,6 +29,7 @@ pub type Work {
     cancel_job: fn(String, g.Activation) -> Body,
     validate: fn(g.State) -> Result(Nil, definition.Error),
     child: fn(g.Activation) -> Result(child_driver.Driver, definition.Error),
+    fork: fn(g.Activation) -> Result(fork_driver.Driver, definition.Error),
   )
 }
 
@@ -38,6 +40,7 @@ pub type Execution {
 
 pub type Message {
   PollChild
+  PollFork
   Fence(g.Reference, Subject(Bool))
   Executed(executor.Report(g.Reference, Execution))
   Cancel(claim.Claim, Subject(Reply))

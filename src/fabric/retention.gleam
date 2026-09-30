@@ -6,11 +6,13 @@
 import fabric/budget as quota
 
 import fabric/graph/child
+import fabric/graph/fork
 import fabric/graph/operation
 import fabric/internal/budget/model as budget
 import fabric/internal/budget/record as budget_record
 import fabric/internal/controller as agent
 import fabric/internal/graph/controller as graph
+import fabric/internal/graph/fork as scope
 import fabric/internal/graph/record as graph_record
 import fabric/internal/record as agent_record
 import fabric/run
@@ -21,7 +23,7 @@ import gleam/result
 
 /// Change this version whenever a new record format or state changes the
 /// projection, so storage integrations can refresh their retained indexes.
-pub const version = 9
+pub const version = 10
 
 /// The run at the other end of a link and an opaque attachment key. A child's
 /// parent key must equal the key its parent retained for that child. The key
@@ -90,6 +92,15 @@ fn budget_link(root: String, limits: Option(budget.Declaration)) -> List(Link) {
 
 fn key(parent: run.Parent) -> String {
   case parent {
+    run.GraphBranch(_, activation, member) ->
+      json.array(
+        [
+          json.string("graph_branch"),
+          json.int(activation),
+          json.int(member),
+        ],
+        fn(value) { value },
+      )
     run.AgentParent(_, action) ->
       json.array(
         [
@@ -173,7 +184,8 @@ fn graph_child(state: graph.State, activation: graph.Activation) -> List(Link) {
     operation.Activity
     | operation.Signal
     | operation.Job(_)
-    | operation.OwnedJob(_) -> []
+    | operation.OwnedJob(_)
+    | operation.Fork(..) -> []
   }
 }
 
@@ -190,7 +202,10 @@ fn graph_metadata(state: graph.State) -> Metadata {
     | graph.Ended(graph.Expired(a, graph.AfterChild(_)))
     | graph.Ended(graph.Expired(a, graph.UnresolvedCancellation(_))) ->
       graph_child(state, a)
-    graph.Ready(_)
+    graph.PreparingFork(_)
+    | graph.Forking(..)
+    | graph.WaitingFork(..)
+    | graph.Ready(_)
     | graph.ArmingWait(_)
     | graph.Queued(_)
     | graph.Running(_)
@@ -210,13 +225,38 @@ fn graph_metadata(state: graph.State) -> Metadata {
     | graph.Ended(graph.Cancelled(_, graph.JobDetached))
     | graph.Ended(graph.Cancelled(_, graph.JobStopped))
     | graph.Ended(graph.Cancelled(_, graph.AfterResult))
-    | graph.Ended(graph.Cancelled(_, graph.AfterFailure(_))) -> []
+    | graph.Ended(graph.Cancelled(_, graph.AfterFailure(_)))
+    | graph.Ended(graph.Cancelled(_, graph.AfterFork)) -> []
   }
   let children =
     list.flat_map(state.receipts, fn(receipt) {
       graph_child(state, receipt.activation)
     })
     |> list.append(current)
+    |> list.append(
+      list.flat_map(state.forks, fn(saved) {
+        saved.members
+        |> list.index_map(fn(member, index) { #(member, index + 1) })
+        |> list.filter_map(fn(item) {
+          case item.0.status {
+            fork.Reserved | fork.Admitted(_) ->
+              Ok(Link(
+                run.issued(child.branch_id(
+                  state.run,
+                  saved.occurrence.activation,
+                  item.1,
+                )),
+                key(run.GraphBranch(
+                  run.issued(state.run),
+                  saved.occurrence.activation,
+                  item.1,
+                )),
+              ))
+            _ -> Error(Nil)
+          }
+        })
+      }),
+    )
   let settled = case state.phase {
     graph.Ended(graph.Cancelled(_, graph.UnresolvedCancellation(_)))
     | graph.Ended(graph.Expired(_, graph.UnresolvedCancellation(_))) -> False
@@ -229,8 +269,12 @@ fn graph_metadata(state: graph.State) -> Metadata {
     | graph.Ended(graph.Cancelled(_, graph.JobStopped))
     | graph.Ended(graph.Cancelled(_, graph.AfterResult))
     | graph.Ended(graph.Cancelled(_, graph.AfterFailure(_)))
-    | graph.Ended(graph.Cancelled(_, graph.AfterChild(_))) -> True
-    graph.Ready(_)
+    | graph.Ended(graph.Cancelled(_, graph.AfterChild(_)))
+    | graph.Ended(graph.Cancelled(_, graph.AfterFork)) -> True
+    graph.PreparingFork(_)
+    | graph.Forking(..)
+    | graph.WaitingFork(..)
+    | graph.Ready(_)
     | graph.ArmingWait(_)
     | graph.Queued(_)
     | graph.Running(_)
@@ -249,7 +293,17 @@ fn graph_metadata(state: graph.State) -> Metadata {
     run.issued(state.run),
     option.map(state.parent, parent_link),
     list.append(children, budget_link(state.run, state.family_budget)),
-    settled,
+    settled
+      && list.all(state.forks, fn(saved) {
+      case scope.restore(saved) {
+        Ok(scope) ->
+          case scope.join(scope) {
+            scope.Ready(_) -> True
+            _ -> False
+          }
+        Error(_) -> False
+      }
+    }),
   )
 }
 

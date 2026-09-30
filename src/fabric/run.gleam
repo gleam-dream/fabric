@@ -59,6 +59,7 @@ pub type ActionRef {
 pub type Parent {
   AgentParent(run: RunId, id: ActionId)
   GraphParent(run: RunId, activation: Int)
+  GraphBranch(run: RunId, activation: Int, member: Int)
 }
 
 /// Which approval an action needs. `version` lets an application change the

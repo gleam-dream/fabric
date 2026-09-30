@@ -5,11 +5,13 @@
 
 import fabric/budget as quota
 import fabric/graph/child
+import fabric/graph/fork
 import fabric/graph/job
 import fabric/graph/operation.{
   type Recovery, ReplayInterrupted, RequireReconciliation,
 }
 import fabric/internal/budget/model as budget
+import fabric/internal/graph/fork as scope
 import fabric/policy
 import fabric/run
 import gleam/list
@@ -92,7 +94,13 @@ pub type Cancellation {
   AfterResult
   AfterFailure(Fault)
   AfterChild(child: String)
+  AfterFork
   UnresolvedCancellation(Problem)
+}
+
+pub type ForkMode {
+  JoiningFork
+  ClosingFork(operation.StopReason)
 }
 
 pub type Phase {
@@ -108,6 +116,9 @@ pub type Phase {
   WaitingChild(Activation, child: String)
   ChildBlocked(Activation, child: String, reason: String)
   StoppingChild(Activation, child: String, cause: operation.StopReason)
+  PreparingFork(Activation)
+  Forking(Activation, ForkMode)
+  WaitingFork(Activation, ForkMode)
   Blocked(Activation, Problem)
   Stopping(Activation)
   Ended(Outcome)
@@ -126,6 +137,7 @@ pub type State {
     initial: String,
     parent: Option(run.Parent),
     family_budget: Option(budget.Declaration),
+    forks: List(fork.Snapshot),
   )
 }
 
@@ -157,6 +169,14 @@ pub type Event {
   ChildStopped(Reference, child: String, uncertain: Bool)
   ChildWaiting(Reference, child: String)
   ChildCancellationSettled(Reference, child: String)
+  ForkPrepared(Reference, Result(List(fork.Request), String))
+  ForkAdmitted(Reference, fork.Reference)
+  ForkRejected(Reference, fork.Reference, reason: String)
+  ForkObserved(Reference, fork.Reference, fork.Progress)
+  ForkWaiting(Reference)
+  ForkReturned(Reference, output: String, decision: Decision)
+  ForkMappingFailed(Reference, output: String, reason: String)
+  ForkStopped(Reference)
   Cancel
   Stopped
 }
@@ -169,6 +189,8 @@ pub type Effect {
   CancelChild(Activation, String)
   RequestJobStop(Activation)
   ArmWait(Activation)
+  PrepareFork(Activation)
+  ObserveFork(Activation)
 }
 
 pub type Rejection {
@@ -207,6 +229,7 @@ pub fn start(
         value,
         None,
         None,
+        [],
       ),
       [
         Inspect(activation),
@@ -224,6 +247,114 @@ pub fn step(
   event: Event,
 ) -> Result(#(State, List(Effect)), Rejection) {
   case event, state.phase {
+    ForkPrepared(ref, prepared), PreparingFork(a) -> {
+      use _ <- result.try(matches(state, a, ref))
+      let made = {
+        use members <- result.try(prepared)
+        use #(maximum, concurrency) <- result.try(case a.prepared.kind {
+          operation.Fork(maximum, concurrency, _) -> Ok(#(maximum, concurrency))
+          _ -> Error("activation is not a fork")
+        })
+        scope.new(
+          fork.Occurrence(run.issued(state.run), a.id),
+          members,
+          maximum,
+          concurrency,
+        )
+        |> result.map_error(string.inspect)
+      }
+      case made {
+        Error(reason) -> Ok(ended(state, Failed(a, OperationFailed(reason))))
+        Ok(fork) ->
+          Ok(
+            #(
+              State(
+                ..state,
+                forks: list.append(state.forks, [scope.snapshot(fork)]),
+                phase: Forking(a, JoiningFork),
+              ),
+              [ObserveFork(a)],
+            ),
+          )
+      }
+    }
+    ForkAdmitted(ref, member), Forking(a, JoiningFork) -> {
+      use _ <- result.try(matches(state, a, ref))
+      use fork <- result.try(current_fork(state, a.id))
+      use fork <- result.try(
+        scope.admit(fork, member) |> result.map_error(fn(_) { WrongPhase }),
+      )
+      Ok(#(save_fork(state, fork), []))
+    }
+    ForkRejected(ref, member, reason), Forking(a, JoiningFork) -> {
+      use _ <- result.try(matches(state, a, ref))
+      use fork <- result.try(current_fork(state, a.id))
+      use fork <- result.try(
+        scope.reject(fork, member, reason)
+        |> result.map_error(fn(_) { WrongPhase }),
+      )
+      Ok(#(save_fork(state, fork), []))
+    }
+    ForkObserved(ref, member, progress), Forking(a, _) -> {
+      use _ <- result.try(matches(state, a, ref))
+      use fork <- result.try(current_fork(state, a.id))
+      use fork <- result.try(
+        scope.observe(fork, member, progress)
+        |> result.map_error(fn(_) { WrongPhase }),
+      )
+      Ok(#(save_fork(state, fork), []))
+    }
+    ForkWaiting(ref), Forking(a, mode) -> {
+      use _ <- result.try(matches(state, a, ref))
+      use fork <- result.try(current_fork(state, a.id))
+      use _ <- result.try(case scope.join(fork) {
+        scope.Ready(_) -> Error(WrongPhase)
+        scope.Waiting | scope.Unresolved(_) -> Ok(Nil)
+      })
+      Ok(#(State(..state, phase: WaitingFork(a, mode)), []))
+    }
+    ForkReturned(ref, output, decision), Forking(a, JoiningFork) -> {
+      use _ <- result.try(matches(state, a, ref))
+      use fork <- result.try(current_fork(state, a.id))
+      use _ <- result.try(case scope.join(fork) {
+        scope.Ready(Ok(_)) | scope.Ready(Error(fork.MemberFailed(_))) -> Ok(Nil)
+        _ -> Error(WrongPhase)
+      })
+      complete(state, a, output, decision)
+    }
+    ForkMappingFailed(ref, output, reason), Forking(a, JoiningFork) -> {
+      use _ <- result.try(matches(state, a, ref))
+      use fork <- result.try(current_fork(state, a.id))
+      use _ <- result.try(case scope.join(fork) {
+        scope.Ready(Ok(_)) | scope.Ready(Error(fork.MemberFailed(_))) -> Ok(Nil)
+        _ -> Error(WrongPhase)
+      })
+      Ok(
+        #(State(..state, phase: Blocked(a, InvalidResult(output, reason))), []),
+      )
+    }
+    ForkStopped(ref), Forking(a, ClosingFork(cause)) -> {
+      use _ <- result.try(matches(state, a, ref))
+      use fork <- result.try(current_fork(state, a.id))
+      case scope.join(fork) {
+        scope.Ready(_) -> Ok(stopped_operation(state, a, cause, AfterFork))
+        _ -> Error(WrongPhase)
+      }
+    }
+    Cancel, PreparingFork(a) -> Ok(ended(state, Cancelled(a, BeforeStart)))
+    Cancel, Forking(a, mode) | Cancel, WaitingFork(a, mode) -> {
+      use fork <- result.try(current_fork(state, a.id))
+      let state = save_fork(state, scope.cancel(fork))
+      let cause = case mode {
+        JoiningFork -> operation.CancellationRequested
+        ClosingFork(cause) -> cause
+      }
+      Ok(
+        #(State(..state, phase: Forking(a, ClosingFork(cause))), [
+          ObserveFork(a),
+        ]),
+      )
+    }
     WaitArmed(ref, now), ArmingWait(a) -> {
       use _ <- result.try(matches(state, a, ref))
       use within <- result.try(case a.prepared.deadline, now >= 0 {
@@ -504,7 +635,29 @@ pub fn step(
       Ok(#(State(..state, phase: Stopping(activation)), [Stop]))
     Cancel, Stopping(_) -> Ok(#(state, []))
     Cancel, Blocked(activation, problem) ->
-      Ok(ended(state, Cancelled(activation, UnresolvedCancellation(problem))))
+      case activation.prepared.kind {
+        operation.Fork(..) -> {
+          use fork <- result.try(current_fork(state, activation.id))
+          let state = save_fork(state, scope.cancel(fork))
+          Ok(
+            #(
+              State(
+                ..state,
+                phase: Forking(
+                  activation,
+                  ClosingFork(operation.CancellationRequested),
+                ),
+              ),
+              [ObserveFork(activation)],
+            ),
+          )
+        }
+        _ ->
+          Ok(ended(
+            state,
+            Cancelled(activation, UnresolvedCancellation(problem)),
+          ))
+      }
     Stopped, Stopping(activation) ->
       Ok(ended(
         state,
@@ -557,6 +710,9 @@ fn inspect(
 
 fn queue(state: State, activation: Activation) -> #(State, List(Effect)) {
   case activation.prepared.kind {
+    operation.Fork(..) -> #(State(..state, phase: PreparingFork(activation)), [
+      PrepareFork(activation),
+    ])
     operation.Activity -> #(State(..state, phase: Queued(activation)), [
       Dispatch(activation),
     ])
@@ -746,6 +902,9 @@ fn cancelled_result(
 pub fn recover(state: State) -> Result(#(State, List(Effect)), Rejection) {
   let recovered = State(..state, incarnation: state.incarnation + 1)
   case state.phase {
+    PreparingFork(a) -> Ok(#(recovered, [PrepareFork(a)]))
+    Forking(a, mode) | WaitingFork(a, mode) ->
+      Ok(#(State(..recovered, phase: Forking(a, mode)), [ObserveFork(a)]))
     ArmingWait(a) -> Ok(#(recovered, [ArmWait(a)]))
     StoppingJob(a, job.RequestQueued, _) ->
       Ok(#(recovered, [RequestJobStop(a)]))
@@ -805,6 +964,68 @@ pub fn recover(state: State) -> Result(#(State, List(Effect)), Rejection) {
         ),
       ))
   }
+}
+
+pub fn current_fork(
+  state: State,
+  activation: Int,
+) -> Result(scope.Scope, Rejection) {
+  use saved <- result.try(
+    list.find(state.forks, fn(fork) { fork.occurrence.activation == activation })
+    |> result.map_error(fn(_) { WrongPhase }),
+  )
+  scope.restore(saved)
+  |> result.map_error(fn(error) { InvalidPrepared(string.inspect(error)) })
+}
+
+pub fn activation(state: State, ordinal: Int) -> Result(Activation, Nil) {
+  case
+    list.find(state.receipts, fn(receipt) { receipt.activation.id == ordinal })
+  {
+    Ok(receipt) -> Ok(receipt.activation)
+    Error(_) -> {
+      let pending = case state.phase {
+        Ready(a)
+        | Queued(a)
+        | Running(a)
+        | AwaitingApproval(a, _)
+        | WaitingSignal(a)
+        | ArmingWait(a)
+        | WaitingJob(a)
+        | StoppingJob(a, _, _)
+        | Joining(a, _)
+        | WaitingChild(a, _)
+        | ChildBlocked(a, _, _)
+        | StoppingChild(a, _, _)
+        | PreparingFork(a)
+        | Forking(a, _)
+        | WaitingFork(a, _)
+        | Blocked(a, _)
+        | Stopping(a)
+        | Ended(Failed(a, _))
+        | Ended(Cancelled(a, _))
+        | Ended(Expired(a, _)) -> Some(a)
+        Ended(Completed(_)) | Ended(Exhausted(_)) -> None
+      }
+      case pending {
+        Some(a) if a.id == ordinal -> Ok(a)
+        _ -> Error(Nil)
+      }
+    }
+  }
+}
+
+fn save_fork(state: State, updated: scope.Scope) -> State {
+  let occurrence = scope.snapshot(updated).occurrence
+  State(
+    ..state,
+    forks: list.map(state.forks, fn(saved) {
+      case saved.occurrence == occurrence {
+        True -> scope.snapshot(updated)
+        False -> saved
+      }
+    }),
+  )
 }
 
 fn matches(
@@ -867,6 +1088,12 @@ pub fn check_prepared(prepared: Prepared) -> Result(Nil, Rejection) {
     _, _ -> Error(InvalidPrepared("invalid wait deadline"))
   })
   use _ <- result.try(case prepared.kind {
+    operation.Fork(maximum, concurrency, signature) ->
+      case maximum > 0 && concurrency > 0 && string.trim(signature) != "" {
+        True -> Ok(Nil)
+        False ->
+          Error(InvalidPrepared("invalid fork membership bounds or signature"))
+      }
     operation.Job(polling) | operation.OwnedJob(polling) ->
       case job.valid_polling(polling) {
         True -> Ok(Nil)
@@ -896,6 +1123,8 @@ pub fn check_prepared(prepared: Prepared) -> Result(Nil, Rejection) {
 
 pub fn needs_runner(state: State) -> Bool {
   case state.phase {
+    PreparingFork(_) | Forking(_, _) -> True
+    WaitingFork(_, _) -> False
     StoppingJob(_, job.RequestQueued, _)
     | StoppingJob(_, job.RequestStarted, _) -> True
     StoppingJob(_, _, _) -> False
