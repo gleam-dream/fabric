@@ -191,3 +191,73 @@ pub fn concurrent_submissions_share_one_receipt_and_reject_different_input_test(
   list.contains(receipts, next_visit) |> should.be_false
   client.count(support.url()) |> should.equal(Ok(before + 2))
 }
+
+fn poll_attachment(handle, reference, tries) {
+  let assert Ok(snapshot) = graph.poll_job(handle, reference)
+  case snapshot.status {
+    graph.Completed(_) -> snapshot
+    graph.AwaitingJob(_) if tries > 0 -> {
+      process.sleep(20)
+      poll_attachment(handle, reference, tries - 1)
+    }
+    _ -> panic as "job attachment did not complete"
+  }
+}
+
+pub fn a_retained_job_attachment_survives_restart_without_resubmitting_test() {
+  let directory = support.temp_dir()
+  let #(owner, #(runs, handle)) =
+    support.owned(fn() {
+      let runs = support.directory(directory)
+      let assert Ok(handle) =
+        graph.start(
+          demo.waiting_runtime(runs, send, support.url()),
+          id("attached-job"),
+          demo.Submitting(client.Request("attached output", 1000)),
+        )
+      #(runs, handle)
+    })
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert demo.Accepted(receipt) = waiting.value
+  client.read(support.url(), receipt) |> should.equal(Ok(client.Queued))
+  list.length(waiting.receipts) |> should.equal(1)
+  support.crash(owner, runs)
+  let restored =
+    demo.waiting_runtime(
+      support.directory(directory),
+      fn(_, _) { panic as "attachment must reuse accepted receipt" },
+      support.url(),
+    )
+  let handle = graph.attach(restored, id("attached-job"))
+  let assert Ok(recovered) = graph.recover(handle)
+  recovered.status |> should.equal(waiting.status)
+  let done = poll_attachment(handle, reference, 150)
+  done.status
+  |> should.equal(graph.Completed(support.sha256("ATTACHED OUTPUT")))
+  list.length(done.receipts) |> should.equal(2)
+  graph.poll_job(handle, reference) |> should.equal(Ok(done))
+  support.remove_dir(directory)
+}
+
+pub fn canceling_a_read_only_attachment_leaves_the_real_remote_job_running_test() {
+  let assert Ok(handle) =
+    graph.start(
+      demo.waiting_runtime(memory(), send, support.url()),
+      id("detached-job"),
+      demo.Submitting(client.Request("still external", 1000)),
+    )
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert demo.Accepted(receipt) = waiting.value
+  graph.cancel(handle) |> should.equal(Ok(Nil))
+  let assert Ok(cancelled) = graph.read(handle)
+  cancelled.status
+  |> should.equal(graph.Cancelled(graph.JobDetached(reference)))
+  list.length(cancelled.receipts) |> should.equal(1)
+  graph.poll_job(handle, reference) |> should.be_error
+  await_job(receipt, 150)
+  |> should.equal(client.Complete(support.sha256("STILL EXTERNAL")))
+  client.artifact(support.url(), receipt) |> should.equal(Ok("STILL EXTERNAL"))
+  graph.read(handle) |> should.equal(Ok(cancelled))
+}

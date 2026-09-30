@@ -131,8 +131,17 @@ override the root limits. Public agent and graph `start_with_budget` calls
 enforce work, child and depth reservations across restarts. Initialization
 creates/adopts the ledger and commits a root marker before any dispatch; an
 initialized root with a missing ledger refuses recovery. Retention projection
-version 3 validates that marker and attaches the ledger with matching limits. Run `refresh_retention` for existing rows before they can be
-pruned by the current projection. The PostgreSQL schema is version 3; execution record versions are unchanged.
+version 3 introduced marker validation and attaches the ledger with matching
+limits. The current retention projection is version 4; it also understands graph
+job waits and their detached cancellation. Run `refresh_retention` for existing
+rows before they can be pruned by the current projection.
+
+Graph records now write version 7 and read versions 5–7. Version 7 adds a retained
+read-only job wait. Explicit `graph.poll_job` records its checked outcome;
+canceling the wait detaches observation without canceling remote work. Deploy
+version-7 graph readers before using these records. The PostgreSQL schema remains
+version 3. Discovery projection version 2 recognizes these waits but does not yet
+schedule them; run `refresh_discovery` to refresh existing dependency metadata.
 
 Existing values and runners retain their setting. The setting affects
 future writes only: it neither rewrites rows nor makes an existing

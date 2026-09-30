@@ -14,7 +14,7 @@ import gleam/result
 
 /// Bump when a record format or state changes discovery eligibility or keys.
 /// Backends must refresh older projections before using them for scheduling.
-pub const version = 1
+pub const version = 2
 
 /// `key` identifies one observation scope. It excludes run incarnation and
 /// execution revision so recovering an unchanged wait cannot make it new work.

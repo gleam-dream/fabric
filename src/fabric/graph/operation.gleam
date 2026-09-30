@@ -2,6 +2,7 @@
 //// interrupted-effect contract. Adapters for tools, models and classifiers
 //// implement this same boundary; it has no workflow-runtime dependency.
 
+import fabric/graph/job
 import fabric/graph/signal
 import fabric/internal/graph/child_driver
 import fabric/run
@@ -32,6 +33,7 @@ pub type Failure {
 pub type Kind {
   Activity
   Signal
+  Job
   Subgraph
   Agent
 }
@@ -39,6 +41,7 @@ pub type Kind {
 type Implementation(context, input, output) {
   Perform(fn(context, Invocation, input) -> Result(output, Failure))
   WaitForSignal
+  WaitForJob(fn(context, String) -> Result(job.Progress(String), String))
   Managed(Kind, child_driver.Driver)
 }
 
@@ -59,6 +62,7 @@ pub type ConfigurationError {
 
 pub type Error {
   NotExecutable
+  ObservationFailed(String)
   InputEncodingFailed(codec.EncodeError)
   InputDecodingFailed(String)
   BodyFailed(Failure)
@@ -104,10 +108,35 @@ pub fn await_signal(
   )
 }
 
+/// Retain a typed external receipt and wait for a checked business outcome.
+/// Observation is read-only; cancellation detaches without canceling remote work.
+pub fn await_job(
+  observer: job.Observer(context, receipt, output),
+) -> Operation(context, receipt, output) {
+  Operation(
+    job.identity(observer),
+    job.receipt_codec(observer),
+    job.output_codec(observer),
+    RequireReconciliation,
+    WaitForJob(job.reader(observer)),
+  )
+}
+
+@internal
+pub fn job_reader(
+  operation: Operation(context, input, output),
+) -> fn(context, String) -> Result(job.Progress(String), String) {
+  case operation.implementation {
+    WaitForJob(read) -> read
+    _ -> fn(_, _) { Error("operation is not a job observer") }
+  }
+}
+
 pub fn kind(operation: Operation(context, input, output)) -> Kind {
   case operation.implementation {
     Perform(_) -> Activity
     WaitForSignal -> Signal
+    WaitForJob(_) -> Job
     Managed(kind, _) -> kind
   }
 }
@@ -117,7 +146,7 @@ pub fn with_replay(
   max_attempts: Int,
 ) -> Result(Operation(context, input, output), ConfigurationError) {
   case kind(operation), max_attempts >= 1 {
-    Signal, _ | Subgraph, _ | Agent, _ -> Error(ReplayRequiresActivity)
+    Signal, _ | Job, _ | Subgraph, _ | Agent, _ -> Error(ReplayRequiresActivity)
     Activity, True ->
       Ok(Operation(..operation, recovery: ReplayInterrupted(max_attempts)))
     Activity, False -> Error(InvalidAttemptBound(max_attempts))
@@ -198,7 +227,9 @@ pub fn invoker(
     Perform(_) -> fn(context, invocation, text) {
       invoke(operation, context, invocation, text)
     }
-    WaitForSignal | Managed(..) -> fn(_, _, _) { Error(NotExecutable) }
+    WaitForSignal | WaitForJob(_) | Managed(..) -> fn(_, _, _) {
+      Error(NotExecutable)
+    }
   }
 }
 
@@ -250,7 +281,7 @@ pub fn invoke(
 ) -> Result(String, Error) {
   use perform <- result.try(case operation.implementation {
     Perform(perform) -> Ok(perform)
-    WaitForSignal | Managed(..) -> Error(NotExecutable)
+    WaitForSignal | WaitForJob(_) | Managed(..) -> Error(NotExecutable)
   })
   use input <- result.try(decode_input(operation, text))
   use output <- result.try(

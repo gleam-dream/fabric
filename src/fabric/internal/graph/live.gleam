@@ -2,6 +2,7 @@
 //// can retain its endpoint without depending on execution code.
 
 import fabric/graph/definition
+import fabric/graph/job
 import fabric/internal/claim
 import fabric/internal/executor
 import fabric/internal/graph/child_driver
@@ -22,6 +23,8 @@ pub type Work {
     accept: fn(g.State, g.Activation, String) ->
       Result(g.Decision, definition.Error),
     check_output: fn(g.Activation, String) -> Result(Nil, definition.Error),
+    observe_job: fn(g.Activation) ->
+      Result(job.Progress(String), definition.Error),
     validate: fn(g.State) -> Result(Nil, definition.Error),
     child: fn(g.Activation) -> Result(child_driver.Driver, definition.Error),
   )

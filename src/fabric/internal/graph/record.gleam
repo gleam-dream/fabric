@@ -17,7 +17,7 @@ import gleam/string
 
 pub const format = "fabric.graph"
 
-pub const version = 6
+pub const version = 7
 
 pub type EncodeError {
   InvalidState(detail: String)
@@ -105,6 +105,7 @@ fn prepared_json(prepared: g.Prepared) -> Json {
       json.string(case prepared.kind {
         operation.Activity -> "activity"
         operation.Signal -> "signal"
+        operation.Job -> "job"
         operation.Subgraph -> "subgraph"
         operation.Agent -> "agent"
       }),
@@ -175,6 +176,7 @@ fn fault_json(fault: g.Fault) -> Json {
 fn cancellation_json(cancellation: g.Cancellation) -> Json {
   case cancellation {
     g.BeforeStart -> tag("before_start", [])
+    g.JobDetached -> tag("job_detached", [])
     g.AfterResult -> tag("after_result", [])
     g.AfterFailure(fault) ->
       tag("after_failure", [#("fault", fault_json(fault))])
@@ -230,6 +232,7 @@ fn phase_json(phase: g.Phase) -> Json {
     g.Stopping(a) -> tag("stopping", [#("activation", activation_json(a))])
     g.WaitingSignal(a) ->
       tag("waiting_signal", [#("activation", activation_json(a))])
+    g.WaitingJob(a) -> tag("waiting_job", [#("activation", activation_json(a))])
     g.AwaitingApproval(a, approval) ->
       tag("awaiting_approval", [
         #("activation", activation_json(a)),
@@ -268,6 +271,13 @@ pub fn decode(text: String) -> Result(g.State, DecodeError) {
         -> Error(Corrupt("family budget refusals require graph version 6"))
         _, _ -> Ok(Nil)
       })
+      use _ <- result.try(
+        require(
+          found >= 7 || !has_job(state),
+          "job observations require graph version 7",
+        )
+        |> result.map_error(Corrupt),
+      )
       Ok(state)
     }
   }
@@ -299,6 +309,7 @@ fn prepared_decoder() -> Decoder(g.Prepared) {
     case name {
       "activity" -> decode.success(operation.Activity)
       "signal" -> decode.success(operation.Signal)
+      "job" -> decode.success(operation.Job)
       "subgraph" -> decode.success(operation.Subgraph)
       "agent" -> decode.success(operation.Agent)
       _ -> decode.failure(operation.Activity, "a known operation kind")
@@ -405,6 +416,7 @@ fn cancellation_decoder() -> Decoder(g.Cancellation) {
   use name <- tagged(g.BeforeStart)
   case name {
     "before_start" -> Ok(decode.success(g.BeforeStart))
+    "job_detached" -> Ok(decode.success(g.JobDetached))
     "after_child" ->
       Ok({
         use id <- decode.field("child", decode.string)
@@ -473,6 +485,11 @@ fn phase_decoder() -> Decoder(g.Phase) {
           "waiting_child" -> g.WaitingChild(a, id)
           _ -> g.StoppingChild(a, id)
         })
+      })
+    "waiting_job" ->
+      Ok({
+        use a <- decode.field("activation", activation_decoder())
+        decode.success(g.WaitingJob(a))
       })
     "waiting_signal" ->
       Ok({
@@ -668,6 +685,13 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       ))
       pending(state, count, last, a)
     }
+    g.WaitingJob(a) -> {
+      use _ <- result.try(require(
+        a.prepared.kind == operation.Job,
+        "job wait requires a job observer",
+      ))
+      pending(state, count, last, a)
+    }
     g.WaitingSignal(a) -> {
       use _ <- result.try(require(
         a.prepared.kind == operation.Signal,
@@ -718,6 +742,11 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
     }
     g.Ended(g.Cancelled(a, disposition)) -> {
       use _ <- result.try(case disposition {
+        g.JobDetached ->
+          require(
+            a.prepared.kind == operation.Job,
+            "detachment requires a job observer",
+          )
         g.AfterChild(id) ->
           require(
             {
@@ -732,6 +761,12 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       use _ <- result.try(require(
         a.prepared.kind != operation.Signal || disposition == g.BeforeStart,
         "a canceled signal cannot have an activity disposition",
+      ))
+      use _ <- result.try(require(
+        a.prepared.kind != operation.Job
+          || disposition == g.BeforeStart
+          || disposition == g.JobDetached,
+        "a job observation can only detach or be canceled before admission",
       ))
       pending(state, count, last, a)
     }
@@ -811,4 +846,32 @@ fn finished(
       )
     None -> Error("terminal outcome has no receipt")
   }
+}
+
+fn has_job(state: g.State) -> Bool {
+  let current = case state.phase {
+    g.Ready(a)
+    | g.Queued(a)
+    | g.Running(a)
+    | g.AwaitingApproval(a, _)
+    | g.WaitingSignal(a)
+    | g.WaitingJob(a)
+    | g.Joining(a, _)
+    | g.WaitingChild(a, _)
+    | g.ChildBlocked(a, _, _)
+    | g.StoppingChild(a, _)
+    | g.Blocked(a, _)
+    | g.Stopping(a)
+    | g.Ended(g.Failed(a, _))
+    | g.Ended(g.Cancelled(a, _)) -> [a.prepared]
+    g.Ended(g.Exhausted(next)) -> [next]
+    g.Ended(g.Completed(_)) -> []
+  }
+  list.any(
+    list.append(
+      current,
+      list.map(state.receipts, fn(receipt) { receipt.activation.prepared }),
+    ),
+    fn(prepared) { prepared.kind == operation.Job },
+  )
 }

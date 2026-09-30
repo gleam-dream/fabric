@@ -9,6 +9,7 @@
 import fabric/budget
 import fabric/graph/child
 import fabric/graph/definition
+import fabric/graph/job
 import fabric/graph/operation
 import fabric/graph/signal
 import fabric/internal/bounded
@@ -125,6 +126,7 @@ pub type Failure {
 
 pub type Cancellation {
   BeforeStart
+  JobDetached(job.Reference)
   AfterResult
   AfterFailure(Failure)
   ChildSettled(child.Reference)
@@ -139,6 +141,7 @@ pub type Status(answer) {
   Unattended
   AwaitingApproval(Approval)
   AwaitingSignal(SignalReference)
+  AwaitingJob(job.Reference)
   Child(child.Reference, child.Progress)
   /// Cancellation is committed; the owned child has not settled yet.
   CancellingChild(child.Reference)
@@ -237,6 +240,9 @@ pub fn new(
       },
       check_output: fn(activation, output) {
         definition.check_output(definition, activation.prepared, output)
+      },
+      observe_job: fn(activation) {
+        definition.observe_job(definition, context(), activation.prepared)
       },
       validate: fn(state) { definition.validate(definition, state) },
       child: fn(activation) { child(activation.prepared) },
@@ -460,6 +466,7 @@ fn child_progress(
         control.AwaitingApproval(_, approval) ->
           child.Approval(approval.requirement)
         control.WaitingSignal(a) -> child.Signal(a.prepared.operation)
+        control.WaitingJob(a) -> child.Job(a.prepared.operation)
         control.Blocked(_, problem) -> child.Uncertain(string.inspect(problem))
         control.ChildBlocked(_, _, reason) -> child.Uncertain(reason)
         control.Ended(control.Completed(output)) -> child.Succeeded(output)
@@ -475,6 +482,7 @@ fn child_progress(
             child.Approval(_)
             | child.AgentInput(..)
             | child.Signal(_)
+            | child.Job(_)
             | child.Uncertain(_) -> nested
             child.FinishedUncertain(reason) -> child.Uncertain(reason)
             _ -> child.Working
@@ -652,6 +660,31 @@ pub fn recover(
       runtime.work,
       runtime.options,
       run.id_to_string(handle.id),
+      3,
+    )
+    |> result.map_error(from_runner),
+  )
+  read(handle)
+}
+
+/// Inspect an admitted job wait once. Pending progress leaves its record
+/// unchanged; a checked outcome commits its route before successor work starts.
+/// Repeating an accepted reference reuses the saved result without another read.
+pub fn poll_job(
+  handle: Handle(context, state, answer),
+  reference: job.Reference,
+) -> Result(Snapshot(state, answer), Error) {
+  use _ <- result.try(case reference.run == handle.id {
+    True -> Ok(Nil)
+    False -> Error(CommandRefused("job reference belongs to another run"))
+  })
+  let runtime = handle.runtime
+  use _ <- result.try(
+    runner.observe_job(
+      runtime.store,
+      runtime.work,
+      runtime.options,
+      reference,
       3,
     )
     |> result.map_error(from_runner),
@@ -1095,6 +1128,15 @@ fn snapshot(
           reference.requirement,
         )),
       )
+    control.WaitingJob(a) ->
+      Ok(
+        AwaitingJob(job.Reference(
+          run.issued(state.run),
+          a.id,
+          a.attempt,
+          a.prepared.operation,
+        )),
+      )
     control.WaitingSignal(a) ->
       Ok(
         AwaitingSignal(SignalReference(
@@ -1119,6 +1161,13 @@ fn snapshot(
       Ok(
         Cancelled(case cancellation {
           control.BeforeStart -> BeforeStart
+          control.JobDetached ->
+            JobDetached(job.Reference(
+              run.issued(state.run),
+              a.id,
+              a.attempt,
+              a.prepared.operation,
+            ))
           control.AfterResult -> AfterResult
           control.AfterFailure(fault) -> AfterFailure(failure(fault))
           control.AfterChild(id) ->
@@ -1155,6 +1204,7 @@ fn snapshot(
     | control.Running(a)
     | control.AwaitingApproval(a, _)
     | control.WaitingSignal(a)
+    | control.WaitingJob(a)
     | control.Joining(a, _)
     | control.WaitingChild(a, _)
     | control.ChildBlocked(a, _, _)

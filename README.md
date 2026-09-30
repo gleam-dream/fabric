@@ -13,14 +13,15 @@ agents with idle/nested waits. `fabric/graph/agent` binds a native input,
 prompt and typed reply conversion to the existing agent runner.
 See the [runnable public graph consumer](consumers/graph/README.md)
 and [graph implementation tracker](docs/implementation/graph-flow/wave-tracker.md).
-The [external-job consumer](consumers/jobs/README.md) proves durable submission
-and receipt recovery against a separate local service; managed attachment is
-still part of the remaining runtime work.
+The [external-job consumer](consumers/jobs/README.md) proves durable submission,
+receipt recovery and retained read-only job observation against a separate local
+service. `operation.await_job` retains the receipt without holding a runner;
+`graph.poll_job` records completion. Canceling this binding detaches observation.
 Terminal agent uncertainty settlement, complete-family PostgreSQL retention and
 shared work/child/depth budgets are implemented. Registered graph sweeping recovers
 expired work and changed idle dependencies after local wakeups are lost.
-Durable deadlines, external-job attachment, parallel composition and real decision
-adapters remain in that implementation program.
+Automatic job observation, owned remote cancellation, durable deadlines, parallel
+composition and real decision adapters remain in that implementation program.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
 

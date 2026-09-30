@@ -14,9 +14,10 @@
 - Last closed wave: 2, public durable serial graph runtime.
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's managed job attachment, cancellation ownership and
-  deadline contracts are being refined. The submission/receipt boundary is proven
-  against an independently retained service. Idle dependency discovery is implemented. Public shared work/child/depth budgets, mixed-family admission,
+- Open decisions: wave 3's owned remote cancellation, automatic observation and
+  deadline contracts are being refined. Submission, receipt recovery and retained
+  read-only job waits are proven against an independently retained service.
+  Idle dependency discovery is implemented. Public shared work/child/depth budgets, mixed-family admission,
   root initialization and ledger retention are implemented. Registered graph
   sweeping recovers expired work and changed idle dependencies through mixed attachments. Shared parent
   identities and manual signal contracts are implemented.
@@ -27,10 +28,10 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: 510 root tests, four graph consumer tests, 15 app consumer tests,
-  five external-job consumer scenarios and two independent service tests pass.
-  The unchanged PostgreSQL adapter retains its previous 46-test acceptance,
-  including migration and concurrent index refresh. Builds use
+- Gate status: 520 root tests, four graph consumer tests, 15 app consumer tests,
+  seven external-job consumer scenarios and two independent service tests pass.
+  The PostgreSQL gate passes 47 tests, including job-wait recovery and pruning,
+  migration and concurrent index refresh. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
 - Current evidence: typed native operations and commands run through public
@@ -40,9 +41,9 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: add managed job receipt/wait states, explicit cancellation
-  ownership and durable completion discovery using the real service in
-  `consumers/jobs`, followed by due-time handling under the
+- Next action: add durable due-time observation to the retained job wait using
+  the real service in `consumers/jobs`, followed by owned remote cancellation
+  and explicit deadline outcomes under the
   [managed composition contract](managed-composition.md).
   These remain runtime states rather than blocking operation wrappers.
 - Resume note: the user requested another checkpoint commit and continued
@@ -950,3 +951,40 @@ six-step goal remains active, with wave 3 next.
 - Next: retain an accepted receipt inside a managed graph wait, release idle
   execution ownership, and recover completion or cancellation by stable receipt
   after process loss. Reuse this real service to test the new runtime path.
+
+### Wave 3 — retained read-only external-job observations
+
+- Status: `job.observe` binds native receipt/output codecs to a bounded read;
+  `operation.await_job` retains its admitted receipt in `AwaitingJob`. The wait
+  owns no executor or lease. Explicit `graph.poll_job` records a checked business
+  outcome and route atomically; it does not submit work. This delivers J6–J10.
+- Identity and admission: references identify run, activation, attempt and
+  versioned operation. Policy applies before observation. Pending, failed or
+  timed-out reads retain the wait and reuse its shared work grant. Invalid
+  outputs/routes release no successor. A repeated completed reference uses its
+  retained result without another remote read.
+- Cancellation: this binding owns observation only. Canceling it records
+  `JobDetached`; a concurrent completion cannot revive it or dispatch successor
+  work. An independently owned remote job continues to its real artifact.
+  Definite remote failure terminates the node without its success route.
+- Recovery: directory and PostgreSQL store loss preserve the receipt/reference.
+  Managed subgraphs park around the wait. PostgreSQL retains waiting families
+  and can prune them after settlement. The real service consumer restarts Fabric
+  at an accepted job wait and completes without resubmitting.
+- Compatibility: graph record 7 adds job waits and detached cancellation;
+  readers retain support for representable versions 5–6. Retention projection 4
+  and discovery projection 2 require metadata refresh. PostgreSQL schema remains 3. Explicit polling is the only job scheduling path in this checkpoint.
+- Gate: 520 root, 47 PostgreSQL, four graph consumer, 15 app consumer and seven
+  job consumer tests pass, plus two independent service tests. Builds use warnings
+  as errors. Full source formatting, `nix fmt`, `nix flake check` and
+  `git diff --check` pass. Two legacy graph-format fixtures were updated to
+  exercise downgrade refusal from the new writer version; the rerun is green.
+- Conformance: J6–J10 are covered by nine public core scenarios, a record
+  compatibility scenario, a real PostgreSQL scenario and two added HTTP consumer
+  scenarios. No Saga/Grind dependency was added. Owned remote cancellation,
+  automatic completion observation and deadlines remain unbuilt; wave 3 and
+  waves 4–6 stay open. The user reconfirmed commit/continue authorization and the
+  full six-stage goal remains active on 2026-09-30.
+- Next: make a retained job wait discoverable when its next observation is due,
+  using storage-owned time and the registered sweeper, without holding an idle
+  runner or spending a new work grant for every observation.
