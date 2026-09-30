@@ -71,7 +71,7 @@ by BeamWeaver source or tests; not a comparison).
   records the selected program, typed-authoring proof and public durable
   serial runtime (conditional routes, cycles, admission, approvals, recovery,
   reconciliation and cancellation), plus typed durable manual signals and
-  initial managed subgraphs. Idle/nested child waits, managed agents, deadlines,
+  managed subgraphs with idle/nested waits. Managed agents, deadlines,
   external jobs and later steps
   remain open.
 - **Unfinished** (backlog, ordered by slice in PLAN.md): budgets shared

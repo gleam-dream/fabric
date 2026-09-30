@@ -17,8 +17,8 @@ evidence. Step 1 proved typed authoring in a separate experiment. Step 2 now
 provides public serial execution on the persistent store: typed definitions,
 conditional routes, cycles, recovery, approval, reconciliation and cancellation.
 Step 3 now supports typed durable manual signals and an initial managed-subgraph
-API with restart and cancellation coverage. Idle and nested child waits, managed
-agents, deadlines and jobs, parallel composition, real adapters and the
+API with restart, cancellation settlement and idle/nested wait coverage. Managed
+agents, family budgets/retention, deadlines and jobs, parallel composition, real adapters and the
 agent-recipe evaluation remain in steps 3–6.
 
 The architecture follows variant A of

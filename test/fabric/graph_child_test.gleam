@@ -2,6 +2,7 @@ import fabric/graph
 import fabric/graph/child
 import fabric/graph/definition
 import fabric/graph/operation
+import fabric/graph/signal
 import fabric/policy
 import fabric/run
 import fabric/store
@@ -64,12 +65,20 @@ fn parent(
   runs: store.Store,
   child: graph.Runtime(Nil, Int, Int),
 ) -> graph.Runtime(Nil, Int, Int) {
+  parent_with(runs, child, fn(_, n) { Ok(definition.Finish(n, n)) })
+}
+
+fn parent_with(
+  runs: store.Store,
+  child: graph.Runtime(Nil, Int, Int),
+  accept: fn(Int, Int) -> Result(definition.Command(Int, Int), String),
+) -> graph.Runtime(Nil, Int, Int) {
   let node =
     definition.node(
       id("child"),
       graph.as_subgraph(child),
       fn(n) { Ok(n) },
-      fn(_, n) { Ok(definition.Finish(n, n)) },
+      accept,
       [],
     )
   let assert Ok(spec) =
@@ -137,6 +146,221 @@ pub fn a_child_approval_survives_restart_and_continues_the_same_attachment_test(
   let assert Ok(done) = graph.await(handle, 5000)
   done.status |> should.equal(graph.Completed(42))
   restart.remove_dir(dir)
+}
+
+pub fn an_idle_parent_releases_its_runner_and_wakes_when_its_child_is_approved_test() {
+  let runs = support.store()
+  let child =
+    child_with(runs, fn(_, _, n) { Ok(n + 1) }, fn(_, _) {
+      Ok(policy.RequireApproval(run.Requirement("child-start", 1)))
+    })
+  let assert Ok(handle) =
+    graph.start(parent(runs, child), run_id("idle-parent"), 41)
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.Child(reference, child.Approval(_)) = waiting.status
+  idle(runs, graph.id(handle), 100) |> should.be_true
+  let assert Ok(child_handle) = graph.child(handle, reference.activation, child)
+  let assert Ok(waiting) = graph.read(child_handle)
+  let assert graph.AwaitingApproval(approval) = waiting.status
+  restart.runner(runs, graph.id(child_handle)) |> should.equal(Error(Nil))
+  let assert Ok(_) = graph.approve(child_handle, approval)
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status |> should.equal(graph.Completed(42))
+}
+
+fn idle(runs: store.Store, id: run.RunId, left: Int) -> Bool {
+  case restart.runner(runs, id) {
+    Error(Nil) -> True
+    Ok(_) if left > 0 -> {
+      process.sleep(10)
+      idle(runs, id, left - 1)
+    }
+    Ok(_) -> False
+  }
+}
+
+fn signal_child(
+  runs: store.Store,
+  policy: graph.Policy(Nil),
+) -> graph.Runtime(Nil, Int, Int) {
+  let node =
+    definition.node(
+      id("answer"),
+      operation.await_signal(
+        codec.int(),
+        signal.new(run.Identity("answer", 1), codec.int()),
+      ),
+      fn(n) { Ok(n) },
+      fn(_, n) { Ok(definition.Finish(n, n)) },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(definition.Spec(
+      run.Identity("signal-child", 1),
+      id("answer"),
+      [node],
+      codec.int(),
+      codec.int(),
+      1,
+    ))
+  graph.new(spec, runs, fn() { Nil }, policy)
+}
+
+pub fn nested_approval_and_signal_waits_release_every_runner_and_keep_each_route_test() {
+  let runs = support.store()
+  let leaf =
+    signal_child(runs, fn(_, _) {
+      Ok(policy.RequireApproval(run.Requirement("publish-answer", 1)))
+    })
+  let middle =
+    parent_with(runs, leaf, fn(_, n) { Ok(definition.Finish(n + 10, n + 10)) })
+  let root =
+    parent_with(runs, middle, fn(_, n) {
+      Ok(definition.Finish(n + 100, n + 100))
+    })
+  let assert Ok(handle) = graph.start(root, run_id("nested-signal"), 41)
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.Child(_, child.Approval(_)) = waiting.status
+  let assert Ok(middle_handle) = graph.child(handle, 1, middle)
+  let assert Ok(leaf_handle) = graph.child(middle_handle, 1, leaf)
+  idle(runs, graph.id(handle), 100) |> should.be_true
+  idle(runs, graph.id(middle_handle), 100) |> should.be_true
+  let assert Ok(waiting) = graph.read(leaf_handle)
+  let assert graph.AwaitingApproval(approval) = waiting.status
+  let assert Ok(waiting) = graph.approve(leaf_handle, approval)
+  let assert graph.AwaitingSignal(reference) = waiting.status
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.Child(_, child.Signal(run.Identity("answer", 1))) =
+    waiting.status
+  idle(runs, graph.id(handle), 100) |> should.be_true
+  idle(runs, graph.id(middle_handle), 100) |> should.be_true
+  idle(runs, graph.id(leaf_handle), 100) |> should.be_true
+  let response = signal.new(run.Identity("answer", 1), codec.int())
+  let assert Ok(_) = graph.deliver(leaf_handle, reference, response, 42)
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status |> should.equal(graph.Completed(152))
+  let assert Ok(middle_done) = graph.read(middle_handle)
+  middle_done.status |> should.equal(graph.Completed(52))
+  let assert Ok(_) = graph.deliver(leaf_handle, reference, response, 42)
+  graph.read(handle) |> should.equal(Ok(done))
+}
+
+pub fn recovery_repairs_a_child_completion_notification_lost_with_the_store_test() {
+  let dir = restart.temp_dir()
+  let #(owner, runs) = restart.owned(fn() { support.directory(dir) })
+  let leaf = signal_child(runs, fn(_, _) { Ok(policy.Allow) })
+  let assert Ok(handle) =
+    graph.start(parent(runs, leaf), run_id("missed-child-wake"), 41)
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.Child(_, child.Signal(_)) = waiting.status
+  idle(runs, graph.id(handle), 100) |> should.be_true
+  let wrong_child = signal_child(support.store(), fn(_, _) { Ok(policy.Allow) })
+  let wrong_parent = graph.attach(parent(runs, wrong_child), graph.id(handle))
+  graph.read(wrong_parent) |> should.be_error
+  let assert Ok(leaf_handle) = graph.child(handle, 1, leaf)
+  let assert Ok(waiting) = graph.read(leaf_handle)
+  let assert graph.AwaitingSignal(reference) = waiting.status
+  restart.crash(owner, runs)
+  let runs = support.directory(dir)
+  let leaf = signal_child(runs, fn(_, _) { Ok(policy.Allow) })
+  let handle = graph.attach(parent(runs, leaf), graph.id(handle))
+  let assert Ok(leaf_handle) = graph.child(handle, 1, leaf)
+  let assert Ok(_) =
+    graph.deliver(
+      leaf_handle,
+      reference,
+      signal.new(run.Identity("answer", 1), codec.int()),
+      42,
+    )
+  let assert Ok(before) = graph.read(handle)
+  before.receipts |> should.equal([])
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status |> should.equal(graph.Completed(42))
+  restart.remove_dir(dir)
+}
+
+pub fn parking_checks_a_child_that_completed_before_wakeup_registration_test() {
+  let backend = flaky.new()
+  let runs = flaky.store(backend)
+  let probe = probe.new()
+  let child =
+    child_with(
+      runs,
+      fn(_, _, n) {
+        probe.record(probe, "effect")
+        Ok(n + 1)
+      },
+      fn(_, _) {
+        probe.gate(probe, "before approval")
+        Ok(policy.RequireApproval(run.Requirement("child-start", 1)))
+      },
+    )
+  let assert Ok(handle) =
+    graph.start(parent(runs, child), run_id("park-race"), 41)
+  let arrival = probe.arrival(probe)
+  let held =
+    flaky.hold(backend, fn(id) { id == run.id_to_string(graph.id(handle)) })
+  probe.release(arrival)
+  let assert Ok(_) = process.receive(held, 5000)
+  let other_runs = flaky.store(backend)
+  let other_child =
+    child_with(
+      other_runs,
+      fn(_, _, n) {
+        probe.record(probe, "effect")
+        Ok(n + 1)
+      },
+      fn(_, _) { Ok(policy.Allow) },
+    )
+  let other_parent =
+    graph.attach(parent(other_runs, other_child), graph.id(handle))
+  let assert Ok(child_handle) = graph.child(other_parent, 1, other_child)
+  let assert Ok(waiting) = graph.read(child_handle)
+  let assert graph.AwaitingApproval(approval) = waiting.status
+  let assert Ok(_) = graph.approve(child_handle, approval)
+  let assert Ok(child_done) = graph.await(child_handle, 5000)
+  child_done.status |> should.equal(graph.Completed(42))
+  flaky.release_held(backend)
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status |> should.equal(graph.Completed(42))
+  probe.entries(probe) |> should.equal(["effect"])
+}
+
+pub fn cancellation_wins_over_a_delayed_idle_parent_wakeup_test() {
+  let backend = flaky.new()
+  let runs = flaky.store(backend)
+  let leaf = signal_child(runs, fn(_, _) { Ok(policy.Allow) })
+  let assert Ok(handle) =
+    graph.start(parent(runs, leaf), run_id("cancel-idle-wake"), 41)
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.Child(reference, child.Signal(_)) = waiting.status
+  idle(runs, graph.id(handle), 100) |> should.be_true
+  let assert Ok(leaf_handle) = graph.child(handle, 1, leaf)
+  let assert Ok(waiting) = graph.read(leaf_handle)
+  let assert graph.AwaitingSignal(signal_reference) = waiting.status
+  let held =
+    flaky.hold(backend, fn(id) { id == run.id_to_string(graph.id(handle)) })
+  let assert Ok(_) =
+    graph.deliver(
+      leaf_handle,
+      signal_reference,
+      signal.new(run.Identity("answer", 1), codec.int()),
+      42,
+    )
+  let assert Ok(_) = process.receive(held, 5000)
+  let other_runs = flaky.store(backend)
+  let leaf = signal_child(other_runs, fn(_, _) { Ok(policy.Allow) })
+  let canceller = graph.attach(parent(other_runs, leaf), graph.id(handle))
+  graph.cancel(canceller) |> should.equal(Ok(Nil))
+  let assert Ok(cancelled) = graph.await(canceller, 5000)
+  cancelled.status
+  |> should.equal(graph.Cancelled(graph.ChildSettled(reference)))
+  flaky.release_held(backend)
+  let assert Ok(after) = graph.read(handle)
+  after |> should.equal(cancelled)
+  after.value |> should.equal(41)
+  after.receipts |> should.equal([])
 }
 
 pub fn lost_child_start_and_parent_completion_acknowledgements_do_not_repeat_a_child_test() {

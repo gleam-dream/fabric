@@ -1,3 +1,4 @@
+import fabric/graph/child
 import fabric/graph/operation
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record
@@ -55,6 +56,30 @@ fn running(state: graph.State) -> graph.State {
 fn encoded(state: graph.State) -> String {
   let assert Ok(text) = record.encode(state)
   text
+}
+
+pub fn waiting_children_keep_their_reserved_identity_and_roundtrip_test() {
+  let state = initial()
+  let assert graph.Ready(a) = state.phase
+  let a =
+    graph.Activation(
+      ..a,
+      prepared: graph.Prepared(..a.prepared, kind: operation.Subgraph),
+    )
+  let id = child.reserved_id(state.run, a.id)
+  let waiting = graph.State(..state, phase: graph.WaitingChild(a, id))
+  record.decode(encoded(waiting)) |> should.equal(Ok(waiting))
+  record.encode(
+    graph.State(..waiting, phase: graph.WaitingChild(a, "unrelated")),
+  )
+  |> should.be_error
+  let activity =
+    graph.Activation(
+      ..a,
+      prepared: graph.Prepared(..a.prepared, kind: operation.Activity),
+    )
+  record.encode(graph.State(..waiting, phase: graph.WaitingChild(activity, id)))
+  |> should.be_error
 }
 
 pub fn saved_phases_and_all_terminal_dispositions_roundtrip_test() {
@@ -167,6 +192,10 @@ pub fn recovery_contract_and_attempt_bound_survive_encoding_test() {
 pub fn foreign_formats_and_future_versions_are_refused_before_state_decode_test() {
   record.decode("{\"format\":\"fabric.graph\",\"version\":1}")
   |> should.equal(Error(record.UnsupportedVersion(1)))
+  record.decode("{\"format\":\"fabric.graph\",\"version\":2}")
+  |> should.equal(Error(record.UnsupportedVersion(2)))
+  record.decode("{\"format\":\"fabric.graph\",\"version\":3}")
+  |> should.equal(Error(record.UnsupportedVersion(3)))
   let assert Error(record.Corrupt(_)) =
     record.decode("{\"format\":\"fabric.run\",\"version\":1}")
   let assert Error(record.Corrupt(_)) = record.decode("not JSON")

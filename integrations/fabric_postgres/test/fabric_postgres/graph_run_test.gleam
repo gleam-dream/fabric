@@ -220,6 +220,8 @@ pub fn a_managed_subgraph_adopts_its_approved_child_after_postgres_restart_test(
         graph.child(handle, reference.activation, child)
       let assert Ok(waiting) = graph.read(child_handle)
       let assert graph.AwaitingApproval(approval) = waiting.status
+      released(settings, id, 200) |> should.be_true
+      released(settings, reference.child, 200) |> should.be_true
       #(reference, approval)
     })
   agents.kill(owner)
@@ -228,8 +230,8 @@ pub fn a_managed_subgraph_adopts_its_approved_child_after_postgres_restart_test(
   let assert Ok(Nil) = store.start(runs)
   let #(parent, child) = managed_pair(runs)
   let handle = graph.attach(parent, id)
-  // A crashed parent's lease is still authoritative until its deadline.
-  expired(settings, id, 200) |> should.be_true
+  // An idle parent has already released its lease before the store dies.
+  released(settings, id, 200) |> should.be_true
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(child_handle) = graph.child(handle, reference.activation, child)
   graph.id(child_handle) |> should.equal(reference.child)
@@ -298,7 +300,7 @@ pub fn child_cancellation_settlement_survives_postgres_restart_test() {
   process.receive(effects, 0) |> should.equal(Error(Nil))
 }
 
-fn expired(
+fn released(
   settings: fabric_postgres.Settings,
   id: run.RunId,
   tries: Int,
@@ -306,10 +308,10 @@ fn expired(
   let assert Ok(row) =
     fabric_postgres.backend(settings).get(run.id_to_string(id))
   case row.holder {
-    store.Free | store.Held(_, False) -> True
-    store.Held(_, True) if tries > 0 -> {
+    store.Free -> True
+    store.Held(_, _) if tries > 0 -> {
       process.sleep(10)
-      expired(settings, id, tries - 1)
+      released(settings, id, tries - 1)
     }
     _ -> False
   }

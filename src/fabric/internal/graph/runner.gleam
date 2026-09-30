@@ -78,16 +78,8 @@ pub fn admit(
   )
   bounded.call(options.callback_timeout, fn() {
     use _ <- result.try(case activation.prepared.kind {
-      operation.Subgraph -> {
-        use driver <- result.try(
-          work.child(activation) |> result.map_error(string.inspect),
-        )
-        case driver.store(), store.pid(runs) {
-          Ok(child_store), Ok(parent_store) if child_store == parent_store ->
-            Ok(Nil)
-          _, _ -> Error("managed child must use its parent's store")
-        }
-      }
+      operation.Subgraph ->
+        checked_child(runs, work, activation) |> result.replace(Nil)
       operation.Activity | operation.Signal -> Ok(Nil)
     })
     work.admit(state.run, activation)
@@ -113,6 +105,7 @@ fn check_parent(
       use #(_, state) <- result.try(load_raw(runs, link.run))
       use _ <- result.try(case state.phase {
         g.Joining(a, reserved)
+          | g.WaitingChild(a, reserved)
           | g.ChildBlocked(a, reserved, _)
           if a.id == link.activation && reserved == id
         -> Ok(Nil)
@@ -181,9 +174,14 @@ pub fn launch(
     |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
   )
   case g.needs_runner(state) {
-    False ->
-      write(runs, state.run, expected, encoded, store.Detached(False, seize))
+    False -> {
+      let ownership = case state.phase {
+        g.WaitingChild(_, child) -> park(runs, work, options, state.run, child)
+        _ -> store.Detached(False, seize)
+      }
+      write(runs, state.run, expected, encoded, ownership)
       |> result.map_error(StoreFailed)
+    }
     True -> {
       let prepared =
         host.prepare(
@@ -337,9 +335,11 @@ fn transition(
   use #(state, effects) <- result.try(
     g.step(runner.state, event) |> result.map_error(Refused),
   )
-  let ownership = case g.needs_runner(state) {
-    True -> store.Keep
-    False -> store.Leave(process.self())
+  let ownership = case state.phase, g.needs_runner(state) {
+    g.WaitingChild(_, id), _ ->
+      park(runner.runs, runner.work, runner.options, state.run, id)
+    _, True -> store.Keep
+    _, False -> store.Leave(process.self())
   }
   use runner <- result.try(persist(runner, state, ownership))
   Ok(#(runner, effects))
@@ -525,14 +525,7 @@ fn poll_child(runner: Runner) -> Result(Runner, Error) {
   let parent = child.Parent(state.run, a.id)
   let checked =
     bounded.call(runner.options.callback_timeout, fn() {
-      use driver <- result.try(
-        runner.work.child(a) |> result.map_error(string.inspect),
-      )
-      use _ <- result.try(case driver.store(), store.pid(runner.runs) {
-        Ok(child_store), Ok(parent_store) if child_store == parent_store ->
-          Ok(Nil)
-        _, _ -> Error("managed child must use its parent's store")
-      })
+      use driver <- result.try(checked_child(runner.runs, runner.work, a))
       use _ <- result.try(
         driver.reserve(parent, id, a.prepared.input, case stopping {
           True -> child_driver.Cancel
@@ -545,6 +538,8 @@ fn poll_child(runner: Runner) -> Result(Runner, Error) {
     |> result.flatten
   let ref = g.reference(state, a)
   case checked, stopping {
+    Ok(child.Approval(_)), False | Ok(child.Signal(_)), False ->
+      apply(runner, g.ChildWaiting(ref, id))
     Error(reason), False | Ok(child.Uncertain(reason)), False ->
       apply(runner, g.ChildUnavailable(ref, id, reason))
     Ok(child.Cancelled(True)), False ->
@@ -693,10 +688,103 @@ pub fn recover(
 ) -> Result(g.State, Error) {
   use #(entry, state) <- result.try(load(runs, work, options, id))
   case state.phase {
+    g.WaitingChild(a, child) -> {
+      case driven(entry, state) {
+        True -> Ok(state)
+        False -> {
+          // A retained wait proves its child was created. Never recreate a
+          // missing record after earlier child activities may have acted.
+          use _ <- result.try(
+            store.get(runs, child) |> result.map_error(StoreFailed),
+          )
+          use _ <- result.try(
+            bounded.call(options.callback_timeout, fn() {
+              use driver <- result.try(checked_child(runs, work, a))
+              driver.reserve(
+                child.Parent(state.run, a.id),
+                child,
+                a.prepared.input,
+                child_driver.Start,
+              )
+            })
+            |> result.map_error(string.inspect)
+            |> result.flatten
+            |> result.map_error(CallbackFailed),
+          )
+          commit_recovery(
+            runs,
+            work,
+            options,
+            entry,
+            g.State(..state, incarnation: state.incarnation + 1),
+            [],
+            tries,
+          )
+        }
+      }
+    }
     g.Ended(g.Cancelled(a, g.UnresolvedCancellation(_)))
       if a.prepared.kind == operation.Subgraph
     -> recover_cancelled_child(runs, work, options, entry, state, a, tries)
     _ -> recover_work(runs, work, options, entry, state, tries)
+  }
+}
+
+pub fn checked_child(
+  runs: store.Store,
+  work: live.Work,
+  activation: g.Activation,
+) -> Result(child_driver.Driver, String) {
+  use driver <- result.try(
+    work.child(activation) |> result.map_error(string.inspect),
+  )
+  case driver.store(), store.pid(runs) {
+    Ok(child_store), Ok(parent_store) if child_store == parent_store ->
+      Ok(driver)
+    _, _ -> Error("managed child must use its parent's store")
+  }
+}
+
+fn park(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  id: String,
+  dependency: String,
+) -> store.Ownership {
+  store.Park(dependency, fn() {
+    wake_parent(runs, work, options, id) |> result.unwrap(store.KeepWatching)
+  })
+}
+
+/// A notification is only a reason to inspect committed data. It never starts
+/// a child or rewrites an unchanged wait, preventing notification loops.
+fn wake_parent(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  id: String,
+) -> Result(store.WakeupDisposition, Error) {
+  use #(entry, state) <- result.try(load(runs, work, options, id))
+  case state.phase {
+    g.WaitingChild(a, child) -> {
+      use progress <- result.try(
+        bounded.call(options.callback_timeout, fn() {
+          use driver <- result.try(checked_child(runs, work, a))
+          driver.read(child.Parent(state.run, a.id), child)
+        })
+        |> result.map_error(string.inspect)
+        |> result.flatten
+        |> result.map_error(CallbackFailed),
+      )
+      case progress {
+        child.Approval(_) | child.Signal(_) -> Ok(store.KeepWatching)
+        _ ->
+          recover_work(runs, work, options, entry, state, 3)
+          |> result.replace(store.KeepWatching)
+      }
+    }
+    _ -> Ok(store.StopWatching)
   }
 }
 
@@ -714,14 +802,7 @@ fn recover_cancelled_child(
   let id = child.reserved_id(state.run, activation.id)
   use progress <- result.try(
     bounded.call(options.callback_timeout, fn() {
-      use driver <- result.try(
-        work.child(activation) |> result.map_error(string.inspect),
-      )
-      use _ <- result.try(case driver.store(), store.pid(runs) {
-        Ok(child_store), Ok(parent_store) if child_store == parent_store ->
-          Ok(Nil)
-        _, _ -> Error("managed child must use its parent's store")
-      })
+      use driver <- result.try(checked_child(runs, work, activation))
       driver.read(child.Parent(state.run, activation.id), id)
     })
     |> result.map_error(string.inspect)
@@ -756,7 +837,7 @@ fn recover_work(
   tries: Int,
 ) -> Result(g.State, Error) {
   let recoverable = case state.phase {
-    g.ChildBlocked(_, _, _) -> True
+    g.ChildBlocked(_, _, _) | g.WaitingChild(_, _) -> True
     _ -> g.needs_runner(state)
   }
   case driven(entry, state) || !recoverable {

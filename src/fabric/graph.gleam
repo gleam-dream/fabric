@@ -266,7 +266,7 @@ pub fn as_subgraph(
         |> result.map_error(string.inspect)
       },
       read: fn(parent, id) {
-        child_progress(runs, parent, id) |> result.map_error(string.inspect)
+        child_progress(runs, parent, id, 64) |> result.map_error(string.inspect)
       },
     ),
   )
@@ -389,12 +389,22 @@ fn child_progress(
   runs: store.Store,
   parent: child.Parent,
   id: String,
+  left: Int,
 ) -> Result(child.Progress, Error) {
+  use _ <- result.try(case left > 0 {
+    True -> Ok(Nil)
+    False -> Error(CommandRefused("child nesting limit reached"))
+  })
   case runner.load_raw(runs, id) {
     Error(runner.StoreFailed(store.NotFound)) -> Ok(child.Working)
     Error(error) -> Error(from_runner(error))
     Ok(#(_, state)) -> {
       use _ <- result.try(check_attachment(state, parent))
+      use nested <- result.try(case state.phase {
+        control.Joining(a, child) | control.WaitingChild(a, child) ->
+          child_progress(runs, child.Parent(state.run, a.id), child, left - 1)
+        _ -> Ok(child.Working)
+      })
       Ok(case state.phase {
         control.AwaitingApproval(_, approval) ->
           child.Approval(approval.requirement)
@@ -409,7 +419,11 @@ fn child_progress(
         control.Ended(control.Cancelled(_, control.UnresolvedCancellation(_))) ->
           child.Cancelled(True)
         control.Ended(control.Cancelled(_, _)) -> child.Cancelled(False)
-        _ -> child.Working
+        _ ->
+          case nested {
+            child.Approval(_) | child.Signal(_) | child.Uncertain(_) -> nested
+            _ -> child.Working
+          }
       })
     }
   }
@@ -532,6 +546,8 @@ fn now() -> Int
 /// A leased store leaves a live foreign owner alone. On an unleased store,
 /// callers must know the previous owner is gone before recovering through
 /// another store process. Started effects obey their declared replay contract.
+/// Idle child waits restore their local wakeup registration and reconnect the
+/// child; a missed notification is repaired from its retained outcome.
 /// For a canceled subgraph, recovery only records a now-settled child outcome;
 /// it never restarts the child or resumes the parent's routes.
 pub fn recover(
@@ -907,6 +923,20 @@ fn snapshot(
         child.Reference(run.issued(state.run), a.id, run.issued(id)),
         child.Uncertain(reason),
       ))
+    control.WaitingChild(a, id) -> {
+      use driver <- result.try(
+        runner.checked_child(runtime.store, runtime.work, a)
+        |> result.map_error(CallbackFailed),
+      )
+      use progress <- result.try(
+        driver.read(child.Parent(state.run, a.id), id)
+        |> result.map_error(CallbackFailed),
+      )
+      Ok(Child(
+        child.Reference(run.issued(state.run), a.id, run.issued(id)),
+        progress,
+      ))
+    }
     control.StoppingChild(a, id) ->
       Ok(case runner.driven(entry, state) {
         False -> Unattended
@@ -921,8 +951,10 @@ fn snapshot(
       Ok(case runner.driven(entry, state) {
         False -> Unattended
         True -> {
-          let progress = case runtime.work.child(a) {
-            Error(error) -> child.Uncertain(string.inspect(error))
+          let progress = case
+            runner.checked_child(runtime.store, runtime.work, a)
+          {
+            Error(error) -> child.Uncertain(error)
             Ok(driver) ->
               case driver.read(child.Parent(state.run, a.id), id) {
                 Ok(progress) -> progress
@@ -1011,6 +1043,7 @@ fn snapshot(
     | control.AwaitingApproval(a, _)
     | control.WaitingSignal(a)
     | control.Joining(a, _)
+    | control.WaitingChild(a, _)
     | control.ChildBlocked(a, _, _)
     | control.StoppingChild(a, _)
     | control.Blocked(a, _)

@@ -93,6 +93,7 @@ pub type Phase {
   AwaitingApproval(Activation, Approval)
   WaitingSignal(Activation)
   Joining(Activation, child: String)
+  WaitingChild(Activation, child: String)
   ChildBlocked(Activation, child: String, reason: String)
   StoppingChild(Activation, child: String)
   Blocked(Activation, Problem)
@@ -132,6 +133,7 @@ pub type Event {
   ChildUnavailable(Reference, child: String, reason: String)
   ChildMappingFailed(Reference, child: String, output: String, reason: String)
   ChildStopped(Reference, child: String, uncertain: Bool)
+  ChildWaiting(Reference, child: String)
   ChildCancellationSettled(Reference, child: String)
   Cancel
   Stopped
@@ -186,6 +188,10 @@ pub fn step(
   event: Event,
 ) -> Result(#(State, List(Effect)), Rejection) {
   case event, state.phase {
+    ChildWaiting(ref, id), Joining(a, current) if id == current -> {
+      use _ <- result.try(matches(state, a, ref))
+      Ok(#(State(..state, phase: WaitingChild(a, id)), []))
+    }
     ChildCancellationSettled(ref, id),
       Ended(Cancelled(a, UnresolvedCancellation(_)))
       if a.prepared.kind == operation.Subgraph
@@ -303,8 +309,10 @@ pub fn step(
       Ok(cancelled_result(state, activation, output))
     }
     Cancel, Ended(_) -> Error(AlreadyEnded)
-    Cancel, Joining(a, id) | Cancel, ChildBlocked(a, id, _) ->
-      Ok(#(State(..state, phase: StoppingChild(a, id)), [CancelChild(a, id)]))
+    Cancel, Joining(a, id)
+    | Cancel, WaitingChild(a, id)
+    | Cancel, ChildBlocked(a, id, _)
+    -> Ok(#(State(..state, phase: StoppingChild(a, id)), [CancelChild(a, id)]))
     Cancel, StoppingChild(a, id) -> Ok(#(state, [CancelChild(a, id)]))
     Cancel, Ready(activation)
     | Cancel, Queued(activation)
@@ -449,7 +457,7 @@ pub fn recover(state: State) -> Result(#(State, List(Effect)), Rejection) {
   let recovered = State(..state, incarnation: state.incarnation + 1)
   case state.phase {
     Ended(_) -> Error(AlreadyEnded)
-    Joining(a, id) | ChildBlocked(a, id, _) ->
+    Joining(a, id) | WaitingChild(a, id) | ChildBlocked(a, id, _) ->
       Ok(#(State(..recovered, phase: Joining(a, id)), [ObserveChild(a, id)]))
     StoppingChild(a, id) -> Ok(#(recovered, [CancelChild(a, id)]))
     Ready(activation) | Queued(activation) ->
@@ -569,6 +577,7 @@ pub fn needs_runner(state: State) -> Bool {
     | StoppingChild(_, _) -> True
     AwaitingApproval(_, _)
     | WaitingSignal(_)
+    | WaitingChild(_, _)
     | Blocked(_, _)
     | ChildBlocked(_, _, _)
     | Ended(_) -> False
