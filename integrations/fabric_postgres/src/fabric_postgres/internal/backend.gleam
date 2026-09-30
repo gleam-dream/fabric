@@ -21,6 +21,7 @@
 
 import fabric/discovery
 import fabric/retention
+import fabric/statistics
 import fabric/store.{
   type Current, type Holder, type Lease, type LeasedBackend, type StoreError,
   AlreadyExists, Claim, Conflict, Current, Free, Held, Hold, LeaseRefused,
@@ -131,10 +132,10 @@ fn insert(
     pog.query(
       "INSERT INTO "
       <> table
-      <> " (run_id, revision, record, phase, lease_owner, lease_until, retention, retention_revision, discovery, discovery_revision)"
+      <> " (run_id, revision, record, phase, lease_owner, lease_until, retention, retention_revision, discovery, discovery_revision, statistics, statistics_revision)"
       <> " VALUES ($1, 1, $2, $3, $4::text, CASE WHEN $4::text IS NULL THEN NULL ELSE "
       <> expiry
-      <> " END, $6::jsonb, 1, $7::jsonb, 1) ON CONFLICT (run_id) DO NOTHING",
+      <> " END, $6::jsonb, 1, $7::jsonb, 1, $8::jsonb, 1) ON CONFLICT (run_id) DO NOTHING",
     )
     |> pog.parameter(pog.text(run))
     |> pog.parameter(pog.text(record))
@@ -143,6 +144,7 @@ fn insert(
     |> pog.parameter(pog.int(ttl))
     |> pog.parameter(pog.text(retention.encode(run, record)))
     |> pog.parameter(pog.text(discovery.encode(run, record)))
+    |> pog.parameter(pog.text(statistics.encode(run, record)))
     |> pog.execute(connection)
   case outcome {
     Ok(returned) if returned.count == 1 -> Ok(Nil)
@@ -174,22 +176,22 @@ fn compare_and_set(
   let update =
     "UPDATE "
     <> table
-    <> " SET revision = revision + 1, record = $3, phase = $4, updated_at = clock_timestamp(), retention = $5::jsonb, retention_revision = revision + 1, discovery = $6::jsonb, discovery_revision = revision + 1"
+    <> " SET revision = revision + 1, record = $3, phase = $4, updated_at = clock_timestamp(), retention = $5::jsonb, retention_revision = revision + 1, discovery = $6::jsonb, discovery_revision = revision + 1, statistics = $7::jsonb, statistics_revision = revision + 1"
   let current = " WHERE run_id = $1 AND revision = $2"
   let #(sql, parameters) = case lease {
-    Hold(owner) -> #(update <> current <> " AND lease_owner = $7", [
+    Hold(owner) -> #(update <> current <> " AND lease_owner = $8", [
       pog.text(owner),
     ])
     Claim(owner, ttl) -> #(
       update
-        <> ", lease_owner = $7, lease_until = clock_timestamp() + $8::bigint * interval '1 millisecond'"
+        <> ", lease_owner = $8, lease_until = clock_timestamp() + $9::bigint * interval '1 millisecond'"
         <> current
-        <> " AND (lease_owner IS NULL OR lease_owner = $7 OR lease_until <= clock_timestamp())",
+        <> " AND (lease_owner IS NULL OR lease_owner = $8 OR lease_until <= clock_timestamp())",
       [pog.text(owner), pog.int(ttl)],
     )
     Seize(owner, ttl) -> #(
       update
-        <> ", lease_owner = $7, lease_until = clock_timestamp() + $8::bigint * interval '1 millisecond'"
+        <> ", lease_owner = $8, lease_until = clock_timestamp() + $9::bigint * interval '1 millisecond'"
         <> current,
       [pog.text(owner), pog.int(ttl)],
     )
@@ -206,6 +208,7 @@ fn compare_and_set(
     |> pog.parameter(phase(record))
     |> pog.parameter(pog.text(retention.encode(run, record)))
     |> pog.parameter(pog.text(discovery.encode(run, record)))
+    |> pog.parameter(pog.text(statistics.encode(run, record)))
     |> list.fold(parameters, _, pog.parameter)
     |> pog.execute(connection)
   let again = fn() {

@@ -69,5 +69,10 @@ pub fn all() -> List(Migration) {
       "CREATE INDEX fabric_runs_discovery ON fabric_runs (discovery_checked_at, run_id) WHERE lease_owner IS NULL AND (dependency_ids IS NOT NULL OR discovery #>> '{wait,every}' IS NOT NULL OR discovery #>> '{wait,due}' IS NOT NULL)",
       "INSERT INTO fabric_schema_migrations (version) VALUES (6)",
     ]),
+    Migration(7, "20260930040000-fabric_postgres_v7.sql", [
+      lock,
+      "ALTER TABLE fabric_runs ADD COLUMN statistics jsonb, ADD COLUMN statistics_revision bigint",
+      "INSERT INTO fabric_schema_migrations (version) VALUES (7)",
+    ]),
   ]
 }

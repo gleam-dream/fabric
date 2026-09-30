@@ -33,13 +33,6 @@ library publication; those remain explicit later work.
 
 Complete the accepted production-runtime plan with:
 
-- **PostgreSQL statistics:** working and unattended runs; runs suspended
-  on approval and awaiting reconciliation, each with a count and oldest
-  age; leases per node. Add the proposed `fabric_postgres.stats` API and
-  define the timestamps and queries behind each gauge.
-- **Sweep lag:** report the age of the oldest expired lease. The current
-  backend claim returns ids without expiry timestamps, so this needs a
-  metadata contract or a separate query.
 - **Drain summary:** report runners handed off, runners killed at the
   deadline and failed handoffs. The supervising process must account for
   killed runners because they cannot report their own shutdown.
@@ -54,7 +47,10 @@ basic sweep counts; Sinal's unavailable-forwarder drop count; and
 `store.readiness`, with a bounded backend probe, current acceptance, local
 runner count and renewal age. New claims supply the first safe lease window;
 idle stores need no renewal. See the precise [operations contract](implementation/production-readiness/operations.md).
-Preserve
+`fabric_postgres.stats` now reports run counts, record ages, approvals,
+reconciliation, unknown records, live leases per node and oldest expired-lease
+lag. Schema 7 maintains diagnostic projections; `refresh_statistics` rebuilds
+stale metadata without changing records, leases or ages. Preserve
 these and extend their coverage as the remaining operations surface lands.
 
 ## Later: S8 Grind integration

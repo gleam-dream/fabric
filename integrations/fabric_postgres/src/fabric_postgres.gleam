@@ -29,6 +29,7 @@ import fabric_postgres/internal/backend
 import fabric_postgres/internal/discovery
 import fabric_postgres/internal/migrations
 import fabric_postgres/internal/retention
+import fabric_postgres/statistics
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Name}
 import gleam/list
@@ -242,6 +243,35 @@ pub fn prune(
 pub type RefreshError {
   RefreshLimitNotPositive(Int)
   RefreshFailed(reason: String)
+}
+
+pub type StatsError {
+  StatsFailed(reason: String)
+}
+
+/// Reads one database-wide diagnostic snapshot: individual runs, intervention
+/// counts, ages since the latest record write, live leases per node and the
+/// oldest overdue lease. Budget records are excluded from run counts; stale
+/// or unreadable projections are explicit unknowns. This performs no refresh,
+/// writes or claims. See `fabric_postgres/statistics` for the returned values.
+pub fn stats(settings: Settings) -> Result(statistics.Snapshot, StatsError) {
+  statistics.read(settings.connection, table(settings))
+  |> result.map_error(StatsFailed)
+}
+
+/// Rebuilds up to `limit` stale diagnostic projections. Repeat until zero.
+/// Records, revisions, lease ownership/expiry and record ages are unchanged.
+/// Unknown records remain unknown and are examined once per projection version.
+pub fn refresh_statistics(
+  settings: Settings,
+  limit: Int,
+) -> Result(Int, RefreshError) {
+  case limit > 0 {
+    False -> Error(RefreshLimitNotPositive(limit))
+    True ->
+      statistics.refresh(settings.connection, table(settings), limit)
+      |> result.map_error(RefreshFailed)
+  }
 }
 
 /// Refreshes up to `limit` stale retention projections after a schema or

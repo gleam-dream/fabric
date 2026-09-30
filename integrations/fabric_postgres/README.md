@@ -224,6 +224,7 @@ CREATE TABLE fabric_runs (
   parent_id text GENERATED ALWAYS AS (retention ->> 'parent') STORED
     REFERENCES fabric_runs(run_id) DEFERRABLE INITIALLY IMMEDIATE,
   discovery jsonb, discovery_revision bigint,
+  statistics jsonb, statistics_revision bigint,
   dependency_ids jsonb GENERATED ALWAYS AS (discovery #> '{wait,dependencies}') STORED,
   observed_key text, observed_dependencies jsonb,
   discovery_checked_at timestamptz NOT NULL DEFAULT '-infinity',
@@ -370,7 +371,7 @@ member or the absolute deadline makes a joining scope eligible; after expiration
 cleanup uses member changes alone. Failed join acceptance remains eligible at
 its retained deadline. Nested cleanup survives loss of both the original store
 and its recovery store, and unresolved effects prevent pruning until reconciled.
-No schema migration beyond 6 is required. Refresh discovery and retention metadata
+Those fork-deadline changes need no schema migration beyond 6. Refresh discovery and retention metadata
 after deploying graph-version-14 readers.
 
 Register the graph with the shared sweeper. Only a claimed job is observed;
@@ -381,3 +382,39 @@ conditional route commit. Manual, canceled and completed job waits are excluded.
 Discovery provides a reason to inspect a run. Registered recovery still checks
 the saved attachments, compatible definitions, effect policy and ownership
 before it can execute any work.
+
+## Readiness and operational statistics
+
+`store.readiness(runs)` performs a bounded storage read and reports the store's
+current acceptance status, local runner count and lease renewal age. A fresh or
+idle store can be ready before any renewal. A working store requires a safe
+lease window for each runner, initially established by its committed claim.
+Draining stores do not report `Accepting`. A backend failure is an error.
+
+`fabric_postgres.stats(settings)` reads one database snapshot with one clock
+sample. It returns working, unattended, waiting and finished run groups;
+approval and reconciliation groups; unknown records; budget-record count;
+live leases per node; and expired leases with the oldest overdue age.
+
+Run groups count individual records, including children. Approval and
+reconciliation groups can overlap the main groups. They describe each record's
+own evidence, without duplicating child requests onto ancestors. Reconciliation
+includes uncertain effects retained by ended agents; those require external
+resolution, rather than restarting a finished agent. Signal, job and managed
+child waits are not automatically unattended work.
+
+`oldest_record_age_ms` measures time since the latest durable record write, not
+the duration of an approval request or workflow. `oldest_overdue_ms` measures
+time since the oldest lease expired. Empty groups have no oldest age. Neither
+query claims, renews, writes or recovers work.
+
+Schema migration 7 adds a diagnostic projection and its source revision. New
+writes maintain both atomically. After migration or a projection upgrade, run
+`refresh_statistics(settings, limit: 100)` in bounded batches until zero.
+Refresh preserves record bytes, revisions, leases and record ages. Stale,
+unsupported, corrupt and mismatched records count as unknown; they never become
+healthy zeroes. Unreadable records are examined once per projection version.
+
+See the core [operations contract](../../docs/implementation/production-readiness/operations.md)
+for classification and timestamp semantics. Shutdown summaries and the complete
+operations runbook remain under development.

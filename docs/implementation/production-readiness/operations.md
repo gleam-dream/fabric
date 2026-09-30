@@ -56,12 +56,12 @@ Coverage for this slice belongs in `store_readiness_test`: fresh and stopped
 stores, idle and active leased stores, renewal success/failure and restart,
 backend failure/timeout, ongoing normal reads during a held probe, and a drain
 that starts while a probe is pending. Existing lease tests continue to own
-fencing and recovery behavior. PostgreSQL gauges, sweep lag, shutdown summaries
-and the full runbook remain unbuilt S7 work; this slice does not accept them.
+fencing and recovery behavior. Database gauges and sweep lag are defined below.
+Shutdown summaries and the full runbook remain unbuilt S7 work.
 
 ## Database statistics
 
-The next S7 slice adds `fabric_postgres.stats(settings)`, a read-only snapshot
+`fabric_postgres.stats(settings)` returns a read-only snapshot
 of the shared database. Counts concern individual execution records, including
 managed children; they do not count families or expand child state onto every
 ancestor. Budget ledgers are counted separately and excluded from runs.
@@ -115,5 +115,5 @@ Coverage for O6–O11 requires real database examples for all buckets and their
 ages, overlapping interventions, graph waits, budget exclusion, unknown/stale
 rows, per-node live leases and expired backlog, no-write reporting and refresh
 preservation. Pure projection scenarios cover every phase class, unsupported
-records and identity mismatch. Statistics and their migration remain unbuilt
-until that evidence passes the complete gate.
+records and identity mismatch. The accepted implementation uses diagnostic
+projection 1 and SQL schema 7; its complete gate evidence is in the wave tracker.
