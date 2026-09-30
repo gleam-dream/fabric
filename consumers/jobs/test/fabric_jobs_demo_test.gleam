@@ -112,12 +112,13 @@ fn send(invocation, request) {
 fn await_job(receipt, tries) {
   let assert Ok(status) = client.read(support.url(), receipt)
   case status {
-    client.Complete(_) -> status
-    client.Queued if tries > 0 -> {
+    client.Complete(_) | client.Cancelled -> status
+    client.Queued | client.CancelRequested if tries > 0 -> {
       process.sleep(20)
       await_job(receipt, tries - 1)
     }
-    client.Queued -> panic as "external job did not finish"
+    client.Queued | client.CancelRequested ->
+      panic as "external job did not finish"
   }
 }
 

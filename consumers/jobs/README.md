@@ -1,4 +1,4 @@
-# External job submission and observation
+# External job submission, observation and cancellation
 
 This consumer submits an artifact job through a normal fenced Fabric graph
 operation. Its graph answer is a typed **acceptance receipt**. A separate
@@ -21,6 +21,17 @@ backend's saved claim time and clock. The restarted sweeper example waits for
 the real service artifact without calling `graph.poll_job`. Its test backend
 survives store-process loss in the same VM; PostgreSQL scheduling and restart
 are exercised separately by the integration package.
+
+`fabric_jobs_demo.cancellation_runtime` explicitly requests cancellation and
+waits for terminal evidence. The request is an ordinary policy-gated, fenced
+operation. Its typed acknowledgment means the service accepted the stop; a
+separate observation confirms `Stopped`. If completion won first, the workflow
+returns `Finished(digest)` and preserves the artifact. The service deduplicates
+stop requests by receipt, so a lost acknowledgment can use interrupted replay.
+Returned transport uncertainty still needs reconciliation. Restarting Fabric
+after a saved acknowledgment observes the outcome without requesting again.
+This workflow establishes the service boundary for future owned cancellation;
+`graph.cancel` on a read-only job wait still only detaches observation.
 
 Run from the repository root:
 
@@ -55,7 +66,8 @@ Enable `ReplayInterrupted` only when the service makes that promise. A returned
 transport error is classified as an uncertain effect and still needs explicit
 resolution. A service that cannot deduplicate or look up acceptance must use
 `RequireReconciliation`. A stopped Fabric process does not cancel the external
-job; this example submits detached work and owns no remote cancellation rights.
+job. The submission and observation runtimes use detached work; cancellation
+requires the explicit cancellation workflow and its policy admission.
 
 The scenarios prove:
 
@@ -65,17 +77,26 @@ The scenarios prove:
 - a saved receipt survives restart without another submit;
 - unsafe replay stays blocked until explicit receipt reconciliation;
 - concurrent duplicate submissions produce one job and one receipt;
-- queued jobs and completed artifacts survive the job service's own restart.
+- queued jobs and completed artifacts survive the job service's own restart;
 - a retained job wait reconnects after Fabric restart without resubmission;
-- detaching observation leaves the real remote job to complete independently.
+- detaching observation leaves the real remote job to complete independently;
 - a restarted registered sweeper observes real completion without resubmission
-  or manual polling.
+  or manual polling;
+- stop requests require policy admission, and saved acknowledgments survive
+  Fabric restart without another request;
+- lost acknowledgments replay only under the service's idempotency guarantee;
+- returned uncertainty and unsafe replay remain blocked until reconciliation;
+- cancellation and artifact publication have one winner, retained across
+  service restart; malformed requests leave the job unchanged;
+- upgrading the service journal preserves previously accepted jobs.
 
 Fabric's directory store proves store-process recovery, not power-loss safety.
 The service writes and syncs its deterministic artifact before committing the
 completion in SQLite. If that completion commit is lost, it may safely write
-that same artifact again. This guarantee belongs to this example service; it
-is not a general exactly-once effect guarantee.
+that same artifact again. Stop admission and publication share a database
+transaction lock. Cancellation removes any unpublished residue before recording
+its terminal outcome. These guarantees belong to this example service; they
+are not a general exactly-once effect guarantee.
 
 Owned remote cancellation and durable deadlines remain open. Manual observation
 works with any store; scheduled observation needs a leased backend and sweeper.

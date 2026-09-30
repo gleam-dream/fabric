@@ -20,7 +20,69 @@ pub opaque type Receipt {
 
 pub type Status {
   Queued
+  CancelRequested
+  Cancelled
   Complete(digest: String)
+}
+
+pub type CancelReply {
+  StopRequested
+  AlreadyCompleted(digest: String)
+}
+
+pub type CancellationOutcome {
+  Stopped
+  Finished(digest: String)
+}
+
+pub fn cancel_reply_codec() -> codec.Codec(CancelReply) {
+  let assert Ok(tagged) =
+    codec.tagged(
+      "requested",
+      codec.object(codec.empty()),
+      "completed",
+      codec.string(),
+    )
+  codec.imap(
+    tagged,
+    fn(value) {
+      case value {
+        codec.Left(Nil) -> StopRequested
+        codec.Right(digest) -> AlreadyCompleted(digest)
+      }
+    },
+    fn(value) {
+      case value {
+        StopRequested -> codec.Left(Nil)
+        AlreadyCompleted(digest) -> codec.Right(digest)
+      }
+    },
+  )
+}
+
+pub fn cancellation_outcome_codec() -> codec.Codec(CancellationOutcome) {
+  let assert Ok(tagged) =
+    codec.tagged(
+      "stopped",
+      codec.object(codec.empty()),
+      "finished",
+      codec.string(),
+    )
+  codec.imap(
+    tagged,
+    fn(value) {
+      case value {
+        codec.Left(Nil) -> Stopped
+        codec.Right(digest) -> Finished(digest)
+      }
+    },
+    fn(value) {
+      case value {
+        Stopped -> codec.Left(Nil)
+        Finished(digest) -> codec.Right(digest)
+      }
+    },
+  )
 }
 
 pub type Error {
@@ -118,11 +180,17 @@ fn get(url: String) -> Result(String, String) {
 
 pub fn read(url: String, receipt: Receipt) -> Result(Status, String) {
   use body <- result.try(get(url <> "/jobs/" <> receipt.id))
+  decode_status(body, receipt)
+}
+
+fn decode_status(body: String, receipt: Receipt) -> Result(Status, String) {
   let decoder = {
     use id <- decode.field("id", decode.string)
     use state <- decode.field("state", decode.string)
     case id == receipt.id, state {
       True, "queued" -> decode.success(Queued)
+      True, "cancel_requested" -> decode.success(CancelRequested)
+      True, "cancelled" -> decode.success(Cancelled)
       True, "complete" -> {
         use digest <- decode.field("digest", decode.string)
         case valid_id(digest) {
@@ -134,6 +202,39 @@ pub fn read(url: String, receipt: Receipt) -> Result(Status, String) {
     }
   }
   json.parse(body, decoder) |> result.map_error(string.inspect)
+}
+
+/// This service durably deduplicates cancellation by receipt. A success may
+/// acknowledge a request or report completion that won before cancellation.
+/// An unconfirmed response is never evidence that the job stopped.
+pub fn request_cancel(
+  url: String,
+  receipt: Receipt,
+) -> Result(CancelReply, Error) {
+  use #(status, body) <- result.try(
+    http("POST", url <> "/jobs/" <> receipt.id <> "/cancel", "{}")
+    |> result.map_error(Uncertain),
+  )
+  case status {
+    200 | 202 -> {
+      use progress <- result.try(
+        decode_status(body, receipt) |> result.map_error(Uncertain),
+      )
+      case status, progress {
+        202, CancelRequested -> Ok(StopRequested)
+        200, Complete(digest) -> Ok(AlreadyCompleted(digest))
+        _, _ -> Error(Uncertain("unexpected cancellation response"))
+      }
+    }
+    400 | 404 -> Error(Rejected(status, body))
+    _ ->
+      Error(Uncertain(
+        "unconfirmed cancellation: HTTP "
+        <> int.to_string(status)
+        <> " "
+        <> body,
+      ))
+  }
 }
 
 pub fn artifact(url: String, receipt: Receipt) -> Result(String, String) {
