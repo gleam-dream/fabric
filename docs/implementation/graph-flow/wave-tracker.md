@@ -14,26 +14,31 @@
 - Last closed wave: 4, typed fork/map/join with explicit failure handling.
 - Active wave: 5, real classifier, LLM and MCP adapters.
 - Next wave: 6, agent-loop graph recipe evaluation after parity.
-- Open implementation: stage 5 needs actual structured LLM and classifier
-  producers, an MCP operation adapter, typed provider evidence and real protocol
-  exercises. Existing OpenAI and Anthropic environment variables are present;
-  their usability has not yet been verified. Classifier access and an appropriate
-  MCP client remain to be established. No new paid infrastructure is selected.
+- Open implementation: stage 5 now has a structured llm_wire graph operation,
+  typed receipts, nine public adapter scenarios and a separate decision consumer.
+  Its offline protocol gate passes; the live command stopped before I/O because
+  no non-empty OpenAI key was available. Anthropic and TypeSafe keys are also
+  absent or empty. The user has been asked to identify an existing provider setup.
+  Live LLM acceptance, a classifier producer and an MCP operation adapter remain
+  open. No new paid infrastructure is selected.
   Stage 4 now includes typed pairs and bounded maps, isolated results, cyclic
   and sibling identity, shared budgets, persistent discovery and retained
   cancellation/expiration through nested cleanup. Its acceptance evidence is
   recorded below and in the [parallel contract](parallel-composition.md).
   The [durable sequential contract](durable-sequential.md) and
   [managed composition contract](managed-composition.md) own stages 2–3.
-- Temporary substitutions: scripted decisions remain in tests and examples;
-  real decision/protocol adapters are required in wave 5. The synchronous
-  authoring driver has been replaced by the production persistent runner.
-- Gate status: 607 root tests, five graph consumer tests, 15 app consumer tests,
-  19 external-job scenarios, five independent service tests and 57 PostgreSQL
-  tests pass. Builds use warnings as errors. Source formatting, `nix fmt`,
-  `nix flake check` and `git diff --check` pass on this host. The current deadline
-  checkpoint passed its root and integration gates; earlier transient failures
-  remain recorded with their historical checkpoints.
+- Temporary substitutions: scripted decisions remain in tests and the earlier
+  graph example. The new decision consumer has a real llm_wire entry point;
+  live acceptance is still pending. Classifier/MCP adapters are still required.
+  The synchronous authoring driver has been replaced by the persistent runner.
+- Gate status: 616 root tests, one decision consumer test, five graph consumer
+  tests, 15 app consumer tests, 19 external-job scenarios and five independent
+  service tests pass on the current adapter source. Builds use warnings as
+  errors. The 57-test PostgreSQL gate passed for the stage-4 checkpoint;
+  this adapter changes no backend or graph record format. Source formatting,
+  `nix fmt`, `nix flake check` and `git diff --check` pass on this host. The first
+  adapter implementation failed timed scenarios because of excessive codec
+  closure copying; the retained correction and evidence are recorded below.
 - Current evidence: typed native operations and commands run through public
   start/read/await/recover/approval/reconciliation/cancellation APIs. Directory
   and PostgreSQL scenarios retain work over store-process loss. Terminal tool
@@ -41,15 +46,16 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: inspect the current llm_wire structured-output contract and
-  classifier/MCP primary documentation, select the smallest real adapter
-  boundary, and prove typed decisions through the existing public graph runtime.
-  Preserve provider uncertainty, usage and refusal semantics. Stages 5–6 are
-  still open; stage-4 acceptance does not complete the full goal.
+- Next action: inspect the native `mcp_client` candidate and current protocol
+  lifecycle, then implement and exercise the smallest supported adapter against
+  a real local server. Classifier protocol work can proceed independently of
+  missing live credentials. Retry the LLM live consumer only when usable provider
+  configuration is supplied. Stages 5–6 remain open; stage-4 acceptance does not
+  complete the full goal.
 - Resume note: the user requested another checkpoint commit and continued
   implementation on 2026-09-30. The app goal is confirmed active with all six
-  stages preserved. The initial runtime checkpoint
-  is committed as `04ae481`. Initial subgraphs do not establish
+  stages preserved. The stage-4 deadline checkpoint is committed as `ea21454`;
+  the initial runtime checkpoint is `04ae481`. Initial subgraphs do not establish
   complete managed composition, parallel joins or real adapter support.
 
 ## Authorization and acceptance
@@ -1543,3 +1549,44 @@ six-step goal remains active, with wave 3 next.
   evidence, then agent-loop parity evaluation. Broader quorum/streaming/shared
   state parallelism remains outside the selected fork contract rather than
   being silently counted as implemented.
+
+### Wave 5: structured LLM decision binding
+
+- Governing rule: G10 and [the decision adapter contract](decision-adapters.md).
+  `fabric/graph/llm` performs one structured llm_wire request as an ordinary
+  policy-gated activity. It persists the native answer, original JSON, requested
+  model and optional usage. Refusal and output limits remain distinct typed
+  outcomes; uncertain transport/validation failures release no route and do not
+  trigger an automatic retry. Tool catalogs are rejected before I/O.
+- Receipt compatibility: `fabric.graph.llm.v1` validates the native value against
+  its saved JSON and rejects invalid models, usage and outcome tags. Deployment
+  identity/version owns the prompt, provider and schema meaning. Graph writer
+  14/readers 5–14, agent writer 7, retention 11, discovery 10 and PostgreSQL schema
+  6 are unchanged by the adapter.
+- Evidence: nine public tests prove typed results, usage, approval before I/O,
+  durable reuse after store loss, refusal/limit distinction, invalid output,
+  interrupted calls, HTTP failure handling, proven unsent failures, tool refusal,
+  OpenAI schema projection/SSE and receipt corruption refusal. The independent
+  decision consumer routes a native enum to `publish` or `revise` through the
+  same graph with scripted settings and the real-provider entry point.
+- Red/green: the first public scenario observed an unimplemented operation.
+  Initial combinator composition then exposed expensive OTP closure copying:
+  5,072,863 copied words for one receipt codec. Preloading did not fix the timed
+  failures. Composing envelope fields inside the codec callbacks reduced that
+  to 1,884 words; all nine focused scenarios passed in 0.16 seconds without
+  increasing their five-second waits. This changes Fabric's adapter boundary,
+  not json_blueprint's general implementation.
+- Gate: root build/tests pass 616; decision consumer passes 1; existing graph
+  and app consumers pass 5 and 15; jobs pass 19 Gleam and five Python scenarios.
+  All builds use warnings as errors. `nix fmt`, `nix flake check` and
+  `git diff --check` pass. Backend code is unchanged; its latest 57-test
+  PostgreSQL gate is the accepted stage-4 checkpoint.
+- Live limitation: the consumer's live command stopped before network I/O when
+  `OPENAI_API_KEY` was absent or empty. Named-variable checks also found no
+  non-empty Anthropic or TypeSafe key; no secret values were printed. The user
+  has a pending request to identify an existing provider setup. No live model
+  judgment, classifier execution or MCP acceptance is claimed.
+- Remaining: inspect the `mcp_client` Hex package's source/version/ownership
+  behavior before adoption, implement the classifier and MCP slices, prove
+  actual provider/local-server boundaries, then evaluate the agent-loop recipe.
+  The complete unbounded six-stage goal remains active.

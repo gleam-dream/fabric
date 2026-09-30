@@ -26,9 +26,15 @@ local cancellation is retained without routing success.
 Terminal agent uncertainty settlement, complete-family PostgreSQL retention and
 shared work/child/depth budgets are implemented. Registered graph sweeping recovers
 expired work and changed idle dependencies after local wakeups are lost.
-Signal, job and managed-child deadlines survive restart and retain expiration
-separately from owned cleanup. Parallel composition, real decision adapters and
-the agent-recipe evaluation remain in that implementation program.
+Signal, job, managed-child and fork deadlines survive restart and retain
+expiration separately from owned cleanup. Typed pairs and bounded maps retain
+private member results and join them in input order, including after restart.
+`fabric/graph/llm` binds a structured LLM decision to an ordinary graph activity,
+retaining typed answers, raw JSON and usage without a chat continuation. See the
+[decision consumer](consumers/decision/README.md) and
+[adapter contract](docs/implementation/graph-flow/decision-adapters.md).
+Live provider acceptance, classifier/MCP adapters and the agent-recipe
+evaluation remain open in the implementation program.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
 
