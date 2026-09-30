@@ -18,13 +18,15 @@ receipt recovery and retained read-only job observation against a separate local
 service. `operation.await_job` retains the receipt without holding a runner;
 `graph.poll_job` records completion. Opt in with `job.with_poll_interval` to let
 the registered sweeper observe due jobs on a leased store, including after
-restart. Canceling either binding detaches observation. A separate cancellation
-workflow proves policy-gated stop requests, retained acknowledgments and terminal
-evidence against the service; managed owned cancellation remains the next step.
+restart. Canceling a read-only binding detaches observation. `operation.own_job`
+instead admits cancellation ownership: `graph.cancel` saves intent, fences the
+stop request, and exposes `CancellingJob` until an observation confirms a terminal
+outcome. Acknowledgments and uncertain requests survive restart. Completion after
+local cancellation is retained without routing success.
 Terminal agent uncertainty settlement, complete-family PostgreSQL retention and
 shared work/child/depth budgets are implemented. Registered graph sweeping recovers
 expired work and changed idle dependencies after local wakeups are lost.
-Owned remote cancellation, durable deadlines, parallel composition and real
+Durable deadlines, parallel composition and real
 decision adapters remain in that implementation program.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.

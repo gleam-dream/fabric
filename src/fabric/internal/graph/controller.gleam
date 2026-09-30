@@ -85,6 +85,7 @@ pub type Outcome {
 pub type Cancellation {
   BeforeStart
   JobDetached
+  JobStopped
   AfterResult
   AfterFailure(Fault)
   AfterChild(child: String)
@@ -98,6 +99,7 @@ pub type Phase {
   AwaitingApproval(Activation, Approval)
   WaitingSignal(Activation)
   WaitingJob(Activation)
+  StoppingJob(Activation, job.CancellationProgress)
   Joining(Activation, child: String)
   WaitingChild(Activation, child: String)
   ChildBlocked(Activation, child: String, reason: String)
@@ -137,6 +139,9 @@ pub type Event {
   Reconciled(activation: Int, attempt: Int, output: String, decision: Decision)
   JobCompleted(Reference, output: String, decision: Decision)
   JobFailed(Reference, reason: String)
+  JobStopRequested(Reference)
+  JobStopRefused(Reference, reason: String)
+  JobConfirmedStopped(Reference)
   Signaled(activation: Int, attempt: Int, output: String, decision: Decision)
   ChildReturned(Reference, child: String, output: String, decision: Decision)
   ChildFailed(Reference, child: String, reason: String)
@@ -155,6 +160,7 @@ pub type Effect {
   Stop
   ObserveChild(Activation, String)
   CancelChild(Activation, String)
+  RequestJobStop(Activation)
 }
 
 pub type Rejection {
@@ -210,6 +216,48 @@ pub fn step(
   event: Event,
 ) -> Result(#(State, List(Effect)), Rejection) {
   case event, state.phase {
+    BodyStarted(ref), StoppingJob(a, job.RequestQueued) -> {
+      use _ <- result.try(matches(state, a, ref))
+      Ok(#(State(..state, phase: StoppingJob(a, job.RequestStarted)), []))
+    }
+    JobStopRequested(ref), StoppingJob(a, job.RequestStarted) -> {
+      use _ <- result.try(matches(state, a, ref))
+      Ok(#(State(..state, phase: StoppingJob(a, job.RequestAccepted)), []))
+    }
+    JobStopRefused(ref, reason), StoppingJob(a, job.RequestStarted) -> {
+      use _ <- result.try(matches(state, a, ref))
+      Ok(
+        #(State(..state, phase: StoppingJob(a, job.RequestRefused(reason))), []),
+      )
+    }
+    Unresolved(ref, problem), StoppingJob(a, job.RequestStarted) -> {
+      use _ <- result.try(matches(state, a, ref))
+      let evidence = case problem {
+        Uncertain(reason) -> reason
+        InvalidResult(output, reason) -> reason <> ": " <> output
+      }
+      Ok(
+        #(
+          State(..state, phase: StoppingJob(a, job.RequestUncertain(evidence))),
+          [],
+        ),
+      )
+    }
+    JobConfirmedStopped(ref), StoppingJob(a, progress) -> {
+      use _ <- result.try(matches(state, a, ref))
+      use _ <- result.try(stoppable(progress))
+      Ok(ended(state, Cancelled(a, JobStopped)))
+    }
+    CancelledResult(ref, output), StoppingJob(a, progress) -> {
+      use _ <- result.try(matches(state, a, ref))
+      use _ <- result.try(stoppable(progress))
+      Ok(cancelled_result(state, a, output))
+    }
+    JobFailed(ref, reason), StoppingJob(a, progress) -> {
+      use _ <- result.try(matches(state, a, ref))
+      use _ <- result.try(stoppable(progress))
+      Ok(ended(state, Cancelled(a, AfterFailure(OperationFailed(reason)))))
+    }
     ChildWaiting(ref, id), Joining(a, current) if id == current -> {
       use _ <- result.try(matches(state, a, ref))
       Ok(#(State(..state, phase: WaitingChild(a, id)), []))
@@ -347,7 +395,17 @@ pub fn step(
       use _ <- result.try(matches_activation(activation, id, attempt))
       Ok(cancelled_result(state, activation, output))
     }
-    Cancel, WaitingJob(a) -> Ok(ended(state, Cancelled(a, JobDetached)))
+    Cancel, WaitingJob(a) ->
+      case a.prepared.kind {
+        operation.OwnedJob(_) ->
+          Ok(
+            #(State(..state, phase: StoppingJob(a, job.RequestQueued)), [
+              RequestJobStop(a),
+            ]),
+          )
+        _ -> Ok(ended(state, Cancelled(a, JobDetached)))
+      }
+    Cancel, StoppingJob(_, _) -> Ok(#(state, []))
     Cancel, Ended(_) -> Error(AlreadyEnded)
     Cancel, Joining(a, id)
     | Cancel, WaitingChild(a, id)
@@ -420,7 +478,10 @@ fn queue(state: State, activation: Activation) -> #(State, List(Effect)) {
       Dispatch(activation),
     ])
     operation.Signal -> #(State(..state, phase: WaitingSignal(activation)), [])
-    operation.Job(_) -> #(State(..state, phase: WaitingJob(activation)), [])
+    operation.Job(_) | operation.OwnedJob(_) -> #(
+      State(..state, phase: WaitingJob(activation)),
+      [],
+    )
     operation.Subgraph | operation.Agent -> {
       let id = child.reserved_id(state.run, activation.id)
       #(State(..state, phase: Joining(activation, id)), [
@@ -497,6 +558,21 @@ fn cancelled_result(
 pub fn recover(state: State) -> Result(#(State, List(Effect)), Rejection) {
   let recovered = State(..state, incarnation: state.incarnation + 1)
   case state.phase {
+    StoppingJob(a, job.RequestQueued) -> Ok(#(recovered, [RequestJobStop(a)]))
+    StoppingJob(a, job.RequestStarted) ->
+      Ok(
+        #(
+          State(
+            ..recovered,
+            phase: StoppingJob(
+              a,
+              job.RequestUncertain("runner lost after stop request started"),
+            ),
+          ),
+          [],
+        ),
+      )
+    StoppingJob(_, _) -> Ok(#(recovered, []))
     Ended(_) -> Error(AlreadyEnded)
     Joining(a, id) | WaitingChild(a, id) | ChildBlocked(a, id, _) ->
       Ok(#(State(..recovered, phase: Joining(a, id)), [ObserveChild(a, id)]))
@@ -589,7 +665,7 @@ pub fn check_definition(definition: Definition) -> Result(Nil, Rejection) {
 
 pub fn check_prepared(prepared: Prepared) -> Result(Nil, Rejection) {
   use _ <- result.try(case prepared.kind {
-    operation.Job(polling) ->
+    operation.Job(polling) | operation.OwnedJob(polling) ->
       case job.valid_polling(polling) {
         True -> Ok(Nil)
         False -> Error(InvalidPrepared("invalid job polling interval"))
@@ -618,6 +694,9 @@ pub fn check_prepared(prepared: Prepared) -> Result(Nil, Rejection) {
 
 pub fn needs_runner(state: State) -> Bool {
   case state.phase {
+    StoppingJob(_, job.RequestQueued) | StoppingJob(_, job.RequestStarted) ->
+      True
+    StoppingJob(_, _) -> False
     Ready(_)
     | Queued(_)
     | Running(_)
@@ -634,6 +713,14 @@ pub fn needs_runner(state: State) -> Bool {
   }
 }
 
+fn stoppable(progress: job.CancellationProgress) -> Result(Nil, Rejection) {
+  case progress {
+    job.RequestQueued | job.RequestStarted -> Error(WrongPhase)
+    job.RequestAccepted | job.RequestRefused(_) | job.RequestUncertain(_) ->
+      Ok(Nil)
+  }
+}
+
 /// Cancellation when nobody can settle the old executor's reports.
 pub fn cancel_abandoned(
   state: State,
@@ -641,6 +728,15 @@ pub fn cancel_abandoned(
   use #(state, effects) <- result.try(step(state, Cancel))
   case state.phase {
     Stopping(_) -> step(state, Stopped)
+    StoppingJob(a, job.RequestStarted) ->
+      step(
+        state,
+        Unresolved(
+          reference(state, a),
+          Uncertain("owner lost after stop request started"),
+        ),
+      )
+    StoppingJob(a, job.RequestQueued) -> Ok(#(state, [RequestJobStop(a)]))
     _ -> Ok(#(state, effects))
   }
 }

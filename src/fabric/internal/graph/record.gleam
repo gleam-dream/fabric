@@ -18,7 +18,7 @@ import gleam/string
 
 pub const format = "fabric.graph"
 
-pub const version = 8
+pub const version = 9
 
 pub type EncodeError {
   InvalidState(detail: String)
@@ -98,7 +98,9 @@ fn identity_json(identity: run.Identity) -> Json {
 
 fn prepared_json(prepared: g.Prepared) -> Json {
   let schedule = case prepared.kind {
-    operation.Job(job.Every(ms)) -> [#("poll_every", json.int(ms))]
+    operation.Job(job.Every(ms)) | operation.OwnedJob(job.Every(ms)) -> [
+      #("poll_every", json.int(ms)),
+    ]
     _ -> []
   }
   json.object(list.append(
@@ -112,6 +114,7 @@ fn prepared_json(prepared: g.Prepared) -> Json {
           operation.Activity -> "activity"
           operation.Signal -> "signal"
           operation.Job(_) -> "job"
+          operation.OwnedJob(_) -> "owned_job"
           operation.Subgraph -> "subgraph"
           operation.Agent -> "agent"
         }),
@@ -185,6 +188,7 @@ fn cancellation_json(cancellation: g.Cancellation) -> Json {
   case cancellation {
     g.BeforeStart -> tag("before_start", [])
     g.JobDetached -> tag("job_detached", [])
+    g.JobStopped -> tag("job_stopped", [])
     g.AfterResult -> tag("after_result", [])
     g.AfterFailure(fault) ->
       tag("after_failure", [#("fault", fault_json(fault))])
@@ -241,6 +245,11 @@ fn phase_json(phase: g.Phase) -> Json {
     g.WaitingSignal(a) ->
       tag("waiting_signal", [#("activation", activation_json(a))])
     g.WaitingJob(a) -> tag("waiting_job", [#("activation", activation_json(a))])
+    g.StoppingJob(a, progress) ->
+      tag("stopping_job", [
+        #("activation", activation_json(a)),
+        #("request", stop_progress_json(progress)),
+      ])
     g.AwaitingApproval(a, approval) ->
       tag("awaiting_approval", [
         #("activation", activation_json(a)),
@@ -291,11 +300,20 @@ pub fn decode(text: String) -> Result(g.State, DecodeError) {
           found >= 8
             || !list.any(preparations(state), fn(p) {
             case p.kind {
-              operation.Job(job.Every(_)) -> True
+              operation.Job(job.Every(_)) | operation.OwnedJob(job.Every(_)) ->
+                True
               _ -> False
             }
           }),
           "scheduled observations require graph version 8",
+        )
+        |> result.map_error(Corrupt),
+      )
+      use _ <- result.try(
+        require(
+          found >= 9
+            || !list.any(preparations(state), fn(p) { is_owned_job(p.kind) }),
+          "owned jobs require graph version 9",
         )
         |> result.map_error(Corrupt),
       )
@@ -340,13 +358,15 @@ fn prepared_decoder() -> Decoder(g.Prepared) {
       "activity" -> decode.success(operation.Activity)
       "signal" -> decode.success(operation.Signal)
       "job" -> decode.success(operation.Job(polling))
+      "owned_job" -> decode.success(operation.OwnedJob(polling))
       "subgraph" -> decode.success(operation.Subgraph)
       "agent" -> decode.success(operation.Agent)
       _ -> decode.failure(operation.Activity, "a known operation kind")
     }
   })
   use _ <- decode.then(case poll_every, kind {
-    Some(_), operation.Job(_) | None, _ -> decode.success(Nil)
+    Some(_), operation.Job(_) | Some(_), operation.OwnedJob(_) | None, _ ->
+      decode.success(Nil)
     _, _ -> decode.failure(Nil, "only a job may carry a poll interval")
   })
   use recovery <- decode.field("recovery", {
@@ -451,6 +471,7 @@ fn cancellation_decoder() -> Decoder(g.Cancellation) {
   case name {
     "before_start" -> Ok(decode.success(g.BeforeStart))
     "job_detached" -> Ok(decode.success(g.JobDetached))
+    "job_stopped" -> Ok(decode.success(g.JobStopped))
     "after_child" ->
       Ok({
         use id <- decode.field("child", decode.string)
@@ -519,6 +540,12 @@ fn phase_decoder() -> Decoder(g.Phase) {
           "waiting_child" -> g.WaitingChild(a, id)
           _ -> g.StoppingChild(a, id)
         })
+      })
+    "stopping_job" ->
+      Ok({
+        use a <- decode.field("activation", activation_decoder())
+        use progress <- decode.field("request", stop_progress_decoder())
+        decode.success(g.StoppingJob(a, progress))
       })
     "waiting_job" ->
       Ok({
@@ -726,6 +753,13 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       ))
       pending(state, count, last, a)
     }
+    g.StoppingJob(a, _) -> {
+      use _ <- result.try(require(
+        is_owned_job(a.prepared.kind),
+        "stop request requires an owned job",
+      ))
+      pending(state, count, last, a)
+    }
     g.WaitingSignal(a) -> {
       use _ <- result.try(require(
         a.prepared.kind == operation.Signal,
@@ -760,8 +794,8 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
     }
     g.Ended(g.Cancelled(a, g.AfterResult)) -> {
       use _ <- result.try(require(
-        a.prepared.kind == operation.Activity,
-        "a canceled signal cannot have a result",
+        a.prepared.kind == operation.Activity || is_owned_job(a.prepared.kind),
+        "a canceled result requires an activity or owned job",
       ))
       use _ <- result.try(check_activation(a))
       use _ <- result.try(finished(state, count, last, g.Canceled))
@@ -777,7 +811,15 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
     g.Ended(g.Cancelled(a, disposition)) -> {
       use _ <- result.try(case disposition {
         g.JobDetached ->
-          require(is_job(a.prepared.kind), "detachment requires a job observer")
+          require(
+            is_job(a.prepared.kind) && !is_owned_job(a.prepared.kind),
+            "detachment requires a read-only job observer",
+          )
+        g.JobStopped ->
+          require(
+            is_owned_job(a.prepared.kind),
+            "stopped outcome requires an owned job",
+          )
         g.AfterChild(id) ->
           require(
             {
@@ -796,8 +838,13 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       use _ <- result.try(require(
         !is_job(a.prepared.kind)
           || disposition == g.BeforeStart
-          || disposition == g.JobDetached,
-        "a job observation can only detach or be canceled before admission",
+          || disposition == g.JobDetached
+          || is_owned_job(a.prepared.kind)
+          && case disposition {
+          g.JobStopped | g.AfterFailure(g.OperationFailed(_)) -> True
+          _ -> False
+        },
+        "job cancellation does not match its ownership and outcome",
       ))
       pending(state, count, last, a)
     }
@@ -887,6 +934,7 @@ fn preparations(state: g.State) -> List(g.Prepared) {
     | g.AwaitingApproval(a, _)
     | g.WaitingSignal(a)
     | g.WaitingJob(a)
+    | g.StoppingJob(a, _)
     | g.Joining(a, _)
     | g.WaitingChild(a, _)
     | g.ChildBlocked(a, _, _)
@@ -906,8 +954,47 @@ fn preparations(state: g.State) -> List(g.Prepared) {
 
 fn is_job(kind: operation.Kind) -> Bool {
   case kind {
-    operation.Job(_) -> True
+    operation.Job(_) | operation.OwnedJob(_) -> True
     _ -> False
+  }
+}
+
+fn is_owned_job(kind: operation.Kind) -> Bool {
+  case kind {
+    operation.OwnedJob(_) -> True
+    _ -> False
+  }
+}
+
+fn stop_progress_json(progress: job.CancellationProgress) -> Json {
+  case progress {
+    job.RequestQueued -> tag("queued", [])
+    job.RequestStarted -> tag("started", [])
+    job.RequestAccepted -> tag("accepted", [])
+    job.RequestRefused(reason) ->
+      tag("refused", [#("reason", json.string(reason))])
+    job.RequestUncertain(evidence) ->
+      tag("uncertain", [#("evidence", json.string(evidence))])
+  }
+}
+
+fn stop_progress_decoder() -> Decoder(job.CancellationProgress) {
+  use name <- tagged(job.RequestQueued)
+  case name {
+    "queued" -> Ok(decode.success(job.RequestQueued))
+    "started" -> Ok(decode.success(job.RequestStarted))
+    "accepted" -> Ok(decode.success(job.RequestAccepted))
+    "refused" ->
+      Ok({
+        use reason <- decode.field("reason", decode.string)
+        decode.success(job.RequestRefused(reason))
+      })
+    "uncertain" ->
+      Ok({
+        use evidence <- decode.field("evidence", decode.string)
+        decode.success(job.RequestUncertain(evidence))
+      })
+    _ -> Error(Nil)
   }
 }
 

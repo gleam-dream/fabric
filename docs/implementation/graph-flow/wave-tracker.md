@@ -14,12 +14,13 @@
 - Last closed wave: 2, public durable serial graph runtime.
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's owned remote cancellation and deadline outcome
-  contracts are being refined. Submission, receipt recovery, retained read-only
+- Open decisions: wave 3's deadline outcome contracts are being refined.
+  Submission, receipt recovery, retained read-only
   job waits and scheduled observation are proven against an independently
   retained service. An explicit cancellation workflow now proves stop admission,
   retained acknowledgment, uncertain requests and terminal evidence against
-  that service. The managed owned-cancellation binding remains unbuilt.
+  that service. The managed owned binding now retains fenced stop requests and
+  resolves accepted, refused and uncertain requests through terminal observation.
   Backend-owned due intervals survive store loss.
   Idle dependency discovery is implemented. Public shared work/child/depth budgets, mixed-family admission,
   root initialization and ledger retention are implemented. Registered graph
@@ -32,9 +33,9 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: 526 root tests, four graph consumer tests, 15 app consumer tests,
-  14 external-job consumer scenarios and five independent service tests pass.
-  The unchanged PostgreSQL package retains its previous 49-test result, including scheduled job recovery and pruning,
+- Gate status: 534 root tests, four graph consumer tests, 15 app consumer tests,
+  17 external-job consumer scenarios and five independent service tests pass.
+  The PostgreSQL gate passes 50 tests, including owned cancellation, scheduled job recovery and pruning,
   migration and concurrent index refresh. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -45,10 +46,9 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: bind owned remote cancellation into the managed runtime using the
-  proven request/observation contract in `consumers/jobs`, followed by durable deadline outcomes under the
+- Next action: add durable deadline outcomes under the
   [managed composition contract](managed-composition.md).
-  These remain runtime states rather than blocking operation wrappers.
+  Keep deadline expiration distinct from remote cancellation and terminal evidence.
 - Resume note: the user requested another checkpoint commit and continued
   implementation on 2026-09-30. The app goal is confirmed active with all six
   stages preserved. The initial runtime checkpoint
@@ -1072,3 +1072,52 @@ six-step goal remains active, with wave 3 next.
   admission, acknowledgment, terminal evidence and uncertainty distinct. Local
   cancellation must suppress success routes while cleanup remains recoverable.
   Durable deadline outcomes follow that binding.
+
+### Wave 3 — retained owned-job cancellation
+
+- Status: `operation.own_job` admits a typed observer and stop-request callback
+  under the distinct `OwnedJob` policy action. The admitted lifetime includes
+  cancellation authority. `graph.cancel` commits intent and a queued request
+  before the executor's start fence. This delivers J18–J21. Read-only bindings
+  continue to detach without requesting a remote stop.
+- Lifecycle: queued, started, accepted, refused and uncertain stop requests are
+  distinct retained states. A saved acknowledgment releases the runner and
+  lease, exposing `CancellingJob`. Lost runners during queued or started requests
+  are observable as unattended. Recovery can dispatch a never-started request;
+  interruption after its start remains uncertain and never silently replays.
+  Repeated local cancellation does not reset that state.
+- Settlement: manual or scheduled observation resolves accepted, refused or
+  uncertain requests. Confirmed remote cancellation records `JobStopped`;
+  completion retains its checked output with a canceled route, and failure
+  retains its reason. Cleanup never resumes success routing. Families remain
+  retained until authoritative terminal evidence, including under a canceled
+  parent. Cleanup reuses admitted authority and capacity, so it can settle after
+  new family work is closed or exhausted.
+- Compatibility: graph records write 9/read 5–9. Owned states cannot be hidden
+  in earlier formats or confused with read-only observation. Stop dispatch
+  revalidates deployed code even when incompatible code recorded cancellation
+  intent. Retention projection 6 and discovery projection 4 require metadata
+  refresh; PostgreSQL schema stays 4. Cancellation observation has its own due
+  scope, using the existing storage-owned clock and sweeper.
+- Evidence: seven public ownership scenarios prove admission, refusal and
+  uncertainty, failed fences, restart, canceled ancestry, exhausted budgets,
+  compatible cleanup and suppression of routing. A record scenario covers
+  request-state roundtrips, downgrade refusal and invalid ownership. PostgreSQL
+  proves scheduled settlement after restart and retention/pruning of the root
+  plus budget ledger. Three real HTTP scenarios cover saved and lost stop
+  acknowledgments and remote completion that wins before local cancellation.
+- Gate: root warnings-as-errors build and all 534 tests pass. Graph/app consumer
+  builds and tests pass (four/15). The real service gate passes 17 Gleam scenarios
+  and five Python tests; the temporary PostgreSQL gate passes 50 tests. Source
+  formatting, `nix fmt`, `nix flake check` and `git diff --check` pass. No new
+  dependency was introduced. Initial regression failures were hardcoded older
+  version markers in compatibility fixtures; corrected downgrade checks pass.
+- Conformance: the owned lifecycle is retained runtime state, not an operation
+  that blocks until a remote job finishes. The explicit cancellation graph
+  remains a composable consumer alternative, with its own declared safe replay.
+  The owned binding resolves uncertain stop effects through authoritative
+  observation; it does not infer that owning a job makes cancellation repeatable.
+  Wave 3 stays open for durable deadlines, and waves 4–6 remain active.
+- Next: retain deadline identity and expiration outcomes, using backend time and
+  durable scheduling. Expiration must not be confused with confirmed remote
+  cancellation, and interrupted cleanup must remain recoverable.

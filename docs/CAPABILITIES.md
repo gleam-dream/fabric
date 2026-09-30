@@ -71,9 +71,10 @@ by BeamWeaver source or tests; not a comparison).
   records the selected program, typed-authoring proof and public durable
   serial runtime (conditional routes, cycles, admission, approvals, recovery,
   reconciliation and cancellation), plus typed durable manual signals and
-  managed subgraphs with idle/nested waits. Managed agents, deadlines,
-  external jobs and later steps
-  remain open.
+  managed subgraphs/agents with idle/nested waits and shared family budgets.
+  External jobs support durable submission, scheduled observation and owned
+  cancellation. Deadlines, parallel composition, real decision adapters and
+  the agent-recipe evaluation remain open.
 - **Unfinished** (backlog, ordered by slice in PLAN.md): budgets shared
   across a sub-agent family (slice 2b backlog),
   approval expiry and edit/respond answers (slice 2a backlog),

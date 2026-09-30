@@ -30,8 +30,19 @@ returns `Finished(digest)` and preserves the artifact. The service deduplicates
 stop requests by receipt, so a lost acknowledgment can use interrupted replay.
 Returned transport uncertainty still needs reconciliation. Restarting Fabric
 after a saved acknowledgment observes the outcome without requesting again.
-This workflow establishes the service boundary for future owned cancellation;
+This workflow establishes the independently usable request/observation boundary;
 `graph.cancel` on a read-only job wait still only detaches observation.
+
+`fabric_jobs_demo.owned_runtime` submits and retains an owned job wait through
+`operation.own_job`. Its `OwnedJob` policy action admits cancellation authority.
+`graph.cancel` then commits intent and starts a fenced stop request. A saved
+`RequestAccepted` acknowledgment releases the runner and lease while the job
+remains `CancellingJob`. Manual polling or the registered sweeper observes its
+terminal outcome. Confirmed cancellation reports `JobStopped`; completion that
+won remotely retains its digest with a canceled route. Neither resumes the graph.
+An interrupted request stays uncertain and is resolved through observation,
+without automatically repeating the request. The consumer exercises saved and
+lost acknowledgments across Fabric restart against the real service.
 
 Run from the repository root:
 
@@ -66,8 +77,9 @@ Enable `ReplayInterrupted` only when the service makes that promise. A returned
 transport error is classified as an uncertain effect and still needs explicit
 resolution. A service that cannot deduplicate or look up acceptance must use
 `RequireReconciliation`. A stopped Fabric process does not cancel the external
-job. The submission and observation runtimes use detached work; cancellation
-requires the explicit cancellation workflow and its policy admission.
+job. The submission and read-only observation runtimes use detached work;
+cancellation requires the explicit cancellation workflow or an admitted owned
+binding. Losing the Fabric process alone never means that remote work stopped.
 
 The scenarios prove:
 
@@ -88,7 +100,11 @@ The scenarios prove:
 - returned uncertainty and unsafe replay remain blocked until reconciliation;
 - cancellation and artifact publication have one winner, retained across
   service restart; malformed requests leave the job unchanged;
-- upgrading the service journal preserves previously accepted jobs.
+- upgrading the service journal preserves previously accepted jobs;
+- owned cancellation retains its request state across restart and resolves an
+  interrupted request by observing the real service without replay;
+- completion after local cancellation retains its digest and artifact without
+  routing success.
 
 Fabric's directory store proves store-process recovery, not power-loss safety.
 The service writes and syncs its deterministic artifact before committing the
@@ -98,6 +114,6 @@ transaction lock. Cancellation removes any unpublished residue before recording
 its terminal outcome. These guarantees belong to this example service; they
 are not a general exactly-once effect guarantee.
 
-Owned remote cancellation and durable deadlines remain open. Manual observation
+Durable deadlines remain open. Manual observation
 works with any store; scheduled observation needs a leased backend and sweeper.
 Saga and Grind remain optional consumer integrations.

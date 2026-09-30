@@ -246,6 +246,114 @@ pub fn scheduled_job(runs, every, read) {
   graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
+fn owned_job(runs, read, request) {
+  let observer =
+    job.observe(
+      run.Identity("pg-owned-observer", 1),
+      codec.string(),
+      codec.int(),
+      fn(_, receipt) { read(receipt) },
+    )
+  let assert Ok(observer) = job.with_poll_interval(observer, 100)
+  let assert Ok(id) = definition.node_id("observe")
+  let op =
+    operation.own_job(
+      observer,
+      fn(_, _, receipt) { request(receipt) },
+      fn(error) { error },
+    )
+  let node =
+    definition.node(
+      id,
+      op,
+      fn(receipt) { Ok(receipt) },
+      fn(_, _) { panic as "owned cancellation must not route" },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(definition.Spec(
+      run.Identity("pg-owned-job", 1),
+      id,
+      [node],
+      codec.string(),
+      codec.int(),
+      1,
+    ))
+  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+}
+
+pub fn owned_job_cancellation_survives_postgres_restart_and_sweeps_before_pruning_test() {
+  let settings =
+    support.migrated(support.pool(4), "owned-job", support.schema())
+  let assert Ok(id) = run.parse_id("pg-owned-stop")
+  let #(owner, reference) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("owned-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let assert Ok(handle) =
+        graph.start_with_budget(
+          owned_job(runs, fn(_) { Ok(job.Pending) }, fn(receipt) {
+            receipt |> should.equal("accepted")
+            Ok(Nil)
+          }),
+          id,
+          "accepted",
+          budget.Limits(1, 1, 1),
+        )
+      let assert Ok(waiting) = graph.await(handle, 5000)
+      let assert graph.AwaitingJob(reference) = waiting.status
+      graph.cancel(handle) |> should.equal(Ok(Nil))
+      let assert Ok(pending) = graph.await(handle, 5000)
+      pending.status
+      |> should.equal(graph.CancellingJob(reference, job.RequestAccepted))
+      reference
+    })
+  released(settings, id, 200) |> should.be_true
+  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  |> should.equal(Ok(0))
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("owned-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let build = fn(runs) {
+    owned_job(runs, fn(_) { Ok(job.Cancelled) }, fn(_) {
+      panic as "saved request must not repeat"
+    })
+  }
+  let handle = graph.attach(build(runs), id)
+  let assert Ok(pending) = graph.read(handle)
+  pending.status
+  |> should.equal(graph.CancellingJob(reference, job.RequestAccepted))
+  let assert Ok(spec) =
+    fabric.sweeper(
+      runs,
+      [graph.recovery(run.Identity("pg-owned-job", 1), build)],
+      every: 20,
+    )
+  let assert Ok(sweeper) = spec.start()
+  let done = await_owned_settlement(handle, 300)
+  done.status |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
+  released(settings, id, 200) |> should.be_true
+  process.unlink(sweeper.pid)
+  agents.kill(sweeper.pid)
+  // The root and its shared-capacity ledger settle and prune together.
+  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  |> should.equal(Ok(2))
+}
+
+fn await_owned_settlement(handle, left) {
+  let assert Ok(snapshot) = graph.read(handle)
+  case snapshot.status, left {
+    graph.Cancelled(_), _ -> snapshot
+    _, n if n > 0 -> {
+      process.sleep(20)
+      await_owned_settlement(handle, n - 1)
+    }
+    _, _ -> panic as "owned cancellation did not settle"
+  }
+}
+
 pub fn a_postgres_sweeper_retains_the_next_poll_across_store_loss_test() {
   let settings =
     support.migrated(support.pool(4), "scheduled-job", support.schema())

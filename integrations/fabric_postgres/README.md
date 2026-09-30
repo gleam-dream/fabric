@@ -133,18 +133,21 @@ enforce work, child and depth reservations across restarts. Initialization
 creates/adopts the ledger and commits a root marker before any dispatch; an
 initialized root with a missing ledger refuses recovery. Retention projection
 version 3 introduced marker validation and attaches the ledger with matching
-limits. The current retention projection is version 5; it also understands graph
-job waits and their detached cancellation. Run `refresh_retention` for existing
+limits. The current retention projection is version 6; it also understands graph
+job waits, detached cancellation and pending owned cancellation. Run `refresh_retention` for existing
 rows before they can be pruned by the current projection.
 
-Graph records now write version 8 and read versions 5–8. Version 7 adds a retained
+Graph records now write version 9 and read versions 5–9. Version 7 adds a retained
 read-only job wait. Explicit `graph.poll_job` records its checked outcome;
 canceling the wait detaches observation without canceling remote work. Deploy
-version-8 graph readers before writing new records. Version 8 retains optional
+version-9 graph readers before writing new records. Version 8 retains optional
 polling intervals, including completed activation history. Missing intervals in
 older records mean manual observation. Scheduled intervals cannot be hidden in
 older record versions. PostgreSQL schema version 4 indexes scheduled polls along
-with dependencies. Discovery projection version 3 schedules them; run
+with dependencies. Version 9 retains owned jobs and their fenced cancellation
+requests. Accepted, refused and uncertain requests remain retained until an
+authoritative observation settles the job. They share the poll index without
+a new schema migration. Discovery projection version 4 schedules them; run
 `refresh_discovery` to refresh existing metadata.
 
 Existing values and runners retain their setting. The setting affects

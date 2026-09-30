@@ -9,6 +9,17 @@ pub type Progress(output) {
   Pending
   Completed(output)
   Failed(reason: String)
+  /// The service confirms that cancellation has settled.
+  Cancelled
+}
+
+/// A stop request's progress is independent of the remote job's outcome.
+pub type CancellationProgress {
+  RequestQueued
+  RequestStarted
+  RequestAccepted
+  RequestRefused(reason: String)
+  RequestUncertain(evidence: String)
 }
 
 pub type Polling {
@@ -109,6 +120,7 @@ pub fn reader(
     use progress <- result.try(observer.read(context, receipt))
     case progress {
       Pending -> Ok(Pending)
+      Cancelled -> Ok(Cancelled)
       Failed(reason) -> Ok(Failed(reason))
       Completed(output) ->
         codec.encode_json(observer.output, output)
