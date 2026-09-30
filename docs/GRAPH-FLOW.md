@@ -6,7 +6,7 @@ deadlines and cleanup. A structured LLM decision adapter passes protocol tests,
 and the optional MCP graph binding is proven against a real local service.
 The optional TypeSafe classifier and shared decision routing pass protocol tests.
 The agent-recipe evaluation retains ordinary agents as managed graph children;
-actual LLM and TypeSafe inference acceptance remains open.**
+actual OpenAI and TypeSafe inference now pass. The six-step program is accepted.**
 The user has authorized the six-step implementation program. Progress,
 executable contracts and acceptance evidence are retained in the
 [wave tracker](implementation/graph-flow/wave-tracker.md). The API sketches
@@ -488,7 +488,7 @@ not been decided.
   continuation data when an agent is a child or a future graph recipe.
 - Build and run the graph consumer without Saga or Grind installed.
 
-## Remaining acceptance and later choices
+## Acceptance and later choices
 
 The six-stage program validated the typed authoring and implemented routing,
 receipts, child lifecycles, compatibility checks, shared budgets and structured
@@ -497,7 +497,9 @@ forks. The selected public APIs and executable contracts are retained in the
 agent recipe and retained ordinary agents as managed children with their own
 controller; no record migration or controller replacement is selected.
 
-Stage 5 still needs actual LLM and TypeSafe inference with existing credentials.
+Stage 5 has actual OpenAI and TypeSafe inference evidence. The
+[completion audit](implementation/graph-flow/completion-audit.md) verifies all six
+requirements and records the live results.
 Full LangGraph API compatibility, global channels, arbitrary runtime code
 generation, quorum/streaming joins and automatic compensation remain outside
 this implementation program.

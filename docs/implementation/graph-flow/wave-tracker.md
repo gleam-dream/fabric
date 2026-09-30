@@ -3,57 +3,46 @@
 ## Current state
 
 - Last updated: 2026-09-30.
-- Program status: blocked on live-provider configuration. The full six-step
-  objective remains open; it is not complete or reduced.
-- Target design: [GRAPH-FLOW](../../GRAPH-FLOW.md), as selected by the user's
-  explicit six-step implementation goal following the exploration.
-- Approved first outcome: an application authors a generation/review graph
-  with native types and scripted decisions; it returns a typed answer or
-  stops at its activation limit. This is evidence for step 1, not completion
-  of the full runtime objective.
-- Plan revision: 3, 2026-09-29; preserves the six requested steps.
-- Last completed evaluation: wave 6, agent-loop graph recipe. The ordinary
-  controller and managed-agent graph operation are retained after executable
-  comparison. Wave 4 remains accepted; wave 5 is open for live validation.
-- Remaining work: stage-5 actual LLM and classifier inference acceptance. The code,
-  offline protocol gates and opt-in live entry points are implemented. Both live
-  commands stopped before I/O because their existing API keys were missing or
-  empty. The user has one pending request to identify usable provider setup.
-- Adapter evidence: structured LLM decisions retain typed output and usage;
-  TypeSafe retains native probabilities, enum distributions and rubric scores.
-  Both use one routing consumer. MCP transport and schema-pinned binding run
-  against a real local SQLite service. No new paid infrastructure was selected.
-- Agent recipe result: five differential/counterexample scenarios and two
-  comparisons covering three captured oracle cases establish supported round
-  trips and the lifecycle mismatch. A batch receipt cannot retain tool A's
-  individual success if tool B is interrupted before the batch returns.
-  Existing agent APIs and record compatibility remain authoritative. The
-  [evaluation](agent-recipe-evaluation.md) explains why a finer replacement
-  still requires an agent-specific action lifecycle.
-- Temporary substitutions: scripted LLM output and the TypeSafe protocol fixture
-  are offline evidence only. Live provider acceptance is not waived. The
-  evaluation-only recipe lives under `test/` and is not a production API.
-- Gate status: root warnings-as-errors build and 623 tests pass, including all
-  ten oracle tests. Graph/app/decision consumers pass 5/15/2; external jobs pass
-  19 Gleam and five Python tests. PostgreSQL passes 57 tests. MCP and TypeSafe
-  have 22/18 package scenarios and four/three independent service/fixture tests.
-  Graph writer 14/readers 5–14, agent writer 7, discovery 10, retention 11 and
-  PostgreSQL schema 6 remain unchanged. `nix fmt`, `nix flake check` and
-  `git diff --check` pass on this host.
-- Current evidence: the complete selected graph surface runs through public
-  start/read/await/recover, approval, reconciliation and cancellation APIs.
-  Directory/PostgreSQL scenarios retain work across store loss. Managed agent
-  children preserve their own action lifecycle, late settlement and transcript.
-- Next action: run the opt-in LLM and classifier commands when usable existing
-  credentials are supplied, retain the actual provider evidence and correct any
-  incompatibility it reveals. This is the remaining acceptance for the full
-  six-stage goal. No further controller convergence is selected.
-- Resume note: the user requested another checkpoint commit and continued
-  implementation on 2026-09-30. The app goal was confirmed active with all six
-  stages preserved at that checkpoint. The latest blocker audit below records
-  the subsequent status change. The stage-4 deadline checkpoint is `ea21454`;
-  the initial runtime checkpoint is `04ae481`. Initial subgraphs do not establish
-  complete managed composition, parallel joins or real adapter support.
+- Program status: complete. All six original requirements have accepted evidence;
+  the objective was not reduced to an earlier wave or an offline substitute.
+- Target design: [GRAPH-FLOW](../../GRAPH-FLOW.md), with G1–G11 below and the
+  original six-stage implementation program retained unchanged.
+- Plan revision: 3, 2026-09-29. The
+  [completion audit](completion-audit.md) maps every requirement to its current
+  implementation, behavioral tests and real-boundary evidence.
+- Latest acceptance: both live decision consumers passed using user-provided
+  `.env.local` settings. OpenAI returned `approve` with the requested
+  `gpt-4.1-nano-2025-04-14` model and reported usage. TypeSafe resolved
+  `jev-latest` to `jev-1.13.0`, returning yes probability 0.99, Choice `Approve`
+  and rubric Score 2.0. Both reached `publish`; no retry or production fix was
+  required. [Sanitized command output](live-adapters-2026-09-30.txt) is retained.
+- Completed runtime: typed authoring, durable routing and cycles, activation
+  identities, policy/approval, recovery/reconciliation, managed agents/subgraphs,
+  durable signals, external-job attachment and owned cancellation, shared family
+  budgets/retention, and typed fork/map/join with failure and retained deadlines.
+- Completed adapters: structured LLM decisions, native TypeSafe classifier
+  batches and schema-pinned MCP stdio operations. The MCP binding runs against
+  a real local SQLite service; the two decision producers share one application
+  routing definition. Core has no Saga or Grind dependency.
+- Completed evaluation: ordinary agents remain managed graph children. Five
+  differential/counterexample scenarios and two comparisons covering three
+  captured oracle cases establish supported round trips and the lifecycle
+  mismatch. A batch receipt cannot retain tool A's individual success if tool B
+  is interrupted before the batch returns. The [evaluation](agent-recipe-evaluation.md)
+  records the justified decision to retain separate controllers over shared
+  execution mechanisms. No production agent-record migration was selected.
+- Gate status: root build and 623 tests; PostgreSQL 57; graph/app/decision
+  consumers 5/15/2; jobs 19 Gleam plus five Python; MCP/TypeSafe 22/18 plus
+  four/three independent service/fixture checks all pass. Their production/test
+  source is unchanged by the final live-validation turn. The authoring gate was
+  rerun: 12 library and six consumer tests pass, the example reaches draft 3,
+  and both deliberate native type mismatches fail compilation as intended.
+  Final documentation gates are recorded in the completion audit.
+- Compatibility: graph writer 14/readers 5–14, agent writer 7, discovery 10,
+  retention 11 and PostgreSQL schema 6 remain unchanged by final acceptance.
+- Remaining work within this goal: none. Later graph features and the separate
+  repository backlog are explicitly outside this six-stage program; completion
+  does not clear unrelated design-ledger entries or `docs/REMAINING.md` items.
 
 ## Authorization and acceptance
 
@@ -1767,3 +1756,28 @@ six-step goal remains active, with wave 3 next.
   Run the documented opt-in commands in `consumers/decision`, retain actual
   provider responses/usage without credentials, and fix any incompatibility
   before completing the full acceptance audit.
+
+### Wave 5 live acceptance and full program completion, 2026-09-30
+
+- The user supplied the missing provider configuration in the ignored root
+  `.env.local`. Both existing live entry points compiled and exited successfully
+  against the actual services using synthetic arithmetic input. No source fix,
+  automatic retry or fixture substitution was needed.
+- OpenAI requested `gpt-4.1-nano-2025-04-14`, returned `{"decision":"approve"}`,
+  and reported 77 input / six output / 83 total tokens. TypeSafe requested
+  `jev-latest`, resolved to `jev-1.13.0`, returned the three native question
+  answers and reported 384 input / 62 output tokens. Both validated graph
+  receipts led to `publish` and completion with `approved`.
+- Stage 5 is accepted for its selected protocol boundaries, combining actual
+  live LLM/classifier execution with the real local MCP service and offline
+  fault/recovery evidence. Provider behavior beyond this measured integration
+  path is not claimed.
+- The full [completion audit](completion-audit.md) reviewed all six requirements,
+  their contracts and representative public behavioral tests. The retained
+  authoring/compiler-negative gate was rerun and passed. Existing full core,
+  consumer, adapter and PostgreSQL gates apply to unchanged code. Final
+  `nix fmt`, `nix flake check` and `git diff --check` passed.
+- All six stages are accepted. Stage 6's result is the executed negative
+  replacement evaluation permitted by the original program: retain ordinary
+  agents as managed graph children. The live-provider blocker is resolved.
+  No formal design-ledger entry or unrelated backlog item is cleared.

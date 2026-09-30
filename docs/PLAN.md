@@ -21,11 +21,11 @@ subgraphs and agents, shared family budgets/retention, and external-job
 submission, scheduled observation, owned cancellation and job/child deadlines.
 Step 4 implements typed fork/map/join with private results, failure handling,
 shared bounds and retained deadlines/cleanup. Step 5 implements structured LLM,
-TypeSafe classifier and MCP adapters; actual LLM/TypeSafe inference acceptance
-still needs credentials. Step 6's [executed evaluation](implementation/graph-flow/agent-recipe-evaluation.md)
+TypeSafe classifier and MCP adapters, with actual OpenAI/TypeSafe inference
+and real local MCP boundary evidence. Step 6's [executed evaluation](implementation/graph-flow/agent-recipe-evaluation.md)
 retains ordinary agents as managed graph children because the simpler batch
-recipe does not preserve per-tool recovery. The six-step goal remains open for
-stage-5 live validation.
+recipe does not preserve per-tool recovery. The full six-step program is
+accepted; see the [completion audit](implementation/graph-flow/completion-audit.md).
 
 The architecture follows variant A of
 [experiments/workflow_composition/FINDINGS.md](../experiments/workflow_composition/FINDINGS.md):

@@ -63,8 +63,8 @@ with existing credentials, a small token bound and no hidden live fallback.
 Run the adapter scenarios, then the root warnings-as-errors build and tests,
 graph/app/job consumers, and repository formatting gate. No storage format or
 backend contract changes are planned in this slice. Record real-provider
-acceptance separately from scripted protocol evidence. Classifier and MCP
-adapters and stage 6 remain open.
+acceptance separately from scripted protocol evidence. Classifier, MCP and
+agent-recipe evidence have their own linked contracts.
 
 ### Initial evidence, 2026-09-30
 
@@ -113,6 +113,8 @@ real local SQLite service evidence is recorded in [the MCP contract](mcp-adapter
 The optional [TypeSafe package](../../../integrations/fabric_typesafe/README.md)
 now provides typed heterogeneous classifier batches and native HTTP. Its
 [contract and evidence](classifier-adapter.md) retain protocol-fixture checks
-separately from pending Jev inference. Both decision producers use the same
-application routing definition in the decision consumer. Live LLM and classifier
-credentials remain unavailable, so stage-5 real-provider acceptance stays open.
+separately from actual Jev inference. Both decision producers use the same
+application routing definition in the decision consumer. The
+[2026-09-30 live validation](completion-audit.md) now proves actual OpenAI and
+TypeSafe answers reaching the same business route, with validated receipts and
+reported usage. Stage-5 acceptance is complete.
