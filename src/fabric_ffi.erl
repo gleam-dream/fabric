@@ -3,7 +3,7 @@
          directory_insert/3, directory_compare_and_set/4, claim_new/0,
          claim_take/2, exit_shutdown/0, factory_name/1,
          await_or_shutdown/3, requeue_shutdown/1, take_shutdown/1, graph_child_id/2,
-         family_budget_id/1, system_time_ms/0]).
+         family_budget_id/1, system_time_ms/0, graph_branch_id/3]).
 
 family_budget_id(Root) ->
     Hash = crypto:hash(sha256, [<<"fabric.family.budget:">>, Root]),
@@ -12,6 +12,11 @@ family_budget_id(Root) ->
 graph_child_id(Parent, Activation) ->
     Hash = crypto:hash(sha256, [<<"fabric.graph.child:">>, Parent, 0, integer_to_binary(Activation)]),
     <<"graph-", (binary:encode_hex(Hash))/binary>>.
+
+graph_branch_id(Parent, Activation, Member) ->
+    Hash = crypto:hash(sha256, [<<"fabric.graph.branch:">>, Parent, 0,
+                              integer_to_binary(Activation), 0, integer_to_binary(Member)]),
+    <<"branch-", (binary:encode_hex(Hash))/binary>>.
 
 %% Runs Body, turning any raised exception into {error, Description}.
 rescue(Body) ->

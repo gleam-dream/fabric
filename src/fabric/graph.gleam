@@ -9,6 +9,7 @@
 import fabric/budget
 import fabric/graph/child
 import fabric/graph/definition
+import fabric/graph/fork
 import fabric/graph/job
 import fabric/graph/operation
 import fabric/graph/signal
@@ -17,6 +18,7 @@ import fabric/internal/budget/model as reservations
 import fabric/internal/graph/agent_child
 import fabric/internal/graph/child_driver
 import fabric/internal/graph/controller as control
+import fabric/internal/graph/fork_driver
 import fabric/internal/graph/live
 import fabric/internal/graph/record
 import fabric/internal/graph/runner
@@ -26,6 +28,7 @@ import fabric/run
 import fabric/store
 import gleam/erlang/process
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -132,6 +135,7 @@ pub type Cancellation {
   AfterResult
   AfterFailure(Failure)
   ChildSettled(child.Reference)
+  ForkSettled(activation: Int)
   /// Reconcile the child's operation, then recover its canceled or expired parent.
   ChildUnresolved(child.Reference, problem: Problem)
   Unresolved(reference: Reconciliation, problem: Problem)
@@ -146,6 +150,7 @@ pub type Status(answer) {
   AwaitingJob(job.Reference)
   CancellingJob(job.Reference, job.CancellationProgress, operation.StopReason)
   Child(child.Reference, child.Progress)
+  Fork(fork.Snapshot, stop: option.Option(operation.StopReason))
   /// The stop cause is committed; the owned child has not settled yet.
   CancellingChild(child.Reference, operation.StopReason)
   Blocked(Reconciliation, problem: Problem)
@@ -184,6 +189,7 @@ pub type Snapshot(state, answer) {
     receipts: List(Receipt),
     /// UTC Unix milliseconds for a current wait, job cleanup or expired outcome.
     deadline: option.Option(Int),
+    forks: List(fork.Snapshot),
   )
 }
 
@@ -212,7 +218,7 @@ pub fn new(
 ) -> Runtime(context, state, answer) {
   // Keep child runtimes in one deployed callback. The ordinary callbacks
   // capture the parent's codecs and routes, without copying descendant trees.
-  let #(definition, child) = definition.detach_children(definition)
+  let #(definition, child, fork) = definition.detach_children(definition)
   let work =
     live.Work(
       admit: fn(id, activation) {
@@ -242,6 +248,12 @@ pub fn new(
         )
       },
       accept: fn(state, activation, output) {
+        use _ <- result.try(definition.check_join(
+          definition,
+          state,
+          activation,
+          output,
+        ))
         definition.accept(definition, state.value, activation.prepared, output)
       },
       check_output: fn(activation, output) {
@@ -268,6 +280,7 @@ pub fn new(
       },
       validate: fn(state) { definition.validate(definition, state) },
       child: fn(activation) { child(activation.prepared) },
+      fork: fn(activation) { fork(activation.prepared) },
     )
   Runtime(definition, store, work, runner.Options(1000, 60_000, 1000))
 }
@@ -331,12 +344,148 @@ pub fn as_subgraph(
   )
 }
 
+/// Compose two managed graphs with independent native inputs and answers.
+/// A settled member failure is available to the parent as a typed alternative.
+pub fn both(
+  identity: run.Identity,
+  left: Runtime(left_context, left_state, left_answer),
+  right: Runtime(right_context, right_state, right_answer),
+) -> Result(
+  operation.Operation(
+    parent_context,
+    #(left_state, right_state),
+    Result(#(left_answer, right_answer), fork.Failure),
+  ),
+  Error,
+) {
+  let left_input = definition.state_codec(left.definition)
+  let right_input = definition.state_codec(right.definition)
+  let input = codec.pair(left_input, right_input)
+  let left_output = definition.answer_codec(left.definition)
+  let right_output = definition.answer_codec(right.definition)
+  use output <- result.try(
+    fork.result_codec(codec.pair(left_output, right_output))
+    |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
+  )
+  use left_driver <- result.try(
+    operation.child_driver(as_subgraph(left))
+    |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
+  )
+  use right_driver <- result.try(
+    operation.child_driver(as_subgraph(right))
+    |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
+  )
+  let left_definition = definition.identity(left.definition)
+  let right_definition = definition.identity(right.definition)
+  let left_store = left.store
+  let right_store = right.store
+  let driver =
+    fork_driver.Driver(
+      stores: fn() { [store.pid(left_store), store.pid(right_store)] },
+      prepare: fn(encoded) {
+        use values <- result.try(
+          codec.decode_json(input, encoded) |> result.map_error(string.inspect),
+        )
+        use left <- result.try(
+          codec.encode_json(left_input, values.0)
+          |> result.map_error(string.inspect),
+        )
+        use right <- result.map(
+          codec.encode_json(right_input, values.1)
+          |> result.map_error(string.inspect),
+        )
+        [
+          fork.Request(left_definition.identity, left),
+          fork.Request(right_definition.identity, right),
+        ]
+      },
+      member: fn(ordinal) {
+        case ordinal {
+          1 -> Ok(left_driver)
+          2 -> Ok(right_driver)
+          _ -> Error("unknown pair member")
+        }
+      },
+      check: fn(ordinal, request) {
+        case ordinal, request.definition {
+          1, identity if identity == left_definition.identity ->
+            codec.decode_json(left_input, request.input)
+            |> result.replace(Nil)
+            |> result.map_error(string.inspect)
+          2, identity if identity == right_definition.identity ->
+            codec.decode_json(right_input, request.input)
+            |> result.replace(Nil)
+            |> result.map_error(string.inspect)
+          _, _ -> Error("fork member definition changed")
+        }
+      },
+      output: fn(outcome) {
+        use answer <- result.try(case outcome {
+          Error(failure) -> Ok(Error(failure))
+          Ok([left, right]) -> {
+            use left <- result.try(
+              codec.decode_json(left_output, left)
+              |> result.map_error(string.inspect),
+            )
+            use right <- result.map(
+              codec.decode_json(right_output, right)
+              |> result.map_error(string.inspect),
+            )
+            Ok(#(left, right))
+          }
+          Ok(_) -> Error("pair result must contain exactly two members")
+        })
+        codec.encode_json(output, answer) |> result.map_error(string.inspect)
+      },
+    )
+  let signature =
+    json.array([left_definition, right_definition], fn(definition) {
+      json.array(
+        [
+          json.string(definition.identity.name),
+          json.int(definition.identity.version),
+          json.string(definition.signature),
+          json.int(definition.max_activations),
+        ],
+        fn(value) { value },
+      )
+    })
+    |> json.to_string
+  Ok(operation.parallel(identity, input, output, 2, 2, signature, driver))
+}
+
+/// Open one admitted fork member with its native runtime. Ordinals start at one.
+pub fn branch(
+  parent: Handle(context, state, answer),
+  activation: Int,
+  member: Int,
+  runtime: Runtime(child_context, child_state, child_answer),
+) -> Result(Handle(child_context, child_state, child_answer), Error) {
+  let link = child.Branch(run.id_to_string(parent.id), activation, member)
+  attached_child(
+    parent,
+    runtime,
+    link,
+    child.branch_id(link.run, activation, member),
+  )
+}
+
 /// Open a specific child visit, including a completed one, with its native
 /// runtime. The child's reciprocal attachment is checked before returning.
 pub fn child(
   parent: Handle(context, state, answer),
   activation: Int,
   runtime: Runtime(child_context, child_state, child_answer),
+) -> Result(Handle(child_context, child_state, child_answer), Error) {
+  let link = child.Parent(run.id_to_string(parent.id), activation)
+  attached_child(parent, runtime, link, child.reserved_id(link.run, activation))
+}
+
+fn attached_child(
+  parent: Handle(context, state, answer),
+  runtime: Runtime(child_context, child_state, child_answer),
+  link: child.Parent,
+  id: String,
 ) -> Result(Handle(child_context, child_state, child_answer), Error) {
   use _ <- result.try(
     case store.pid(parent.runtime.store), store.pid(runtime.store) {
@@ -345,8 +494,6 @@ pub fn child(
         Error(CommandRefused("child runtime does not use the parent store"))
     },
   )
-  let link = child.Parent(run.id_to_string(parent.id), activation)
-  let id = child.reserved_id(link.run, activation)
   use #(_, state) <- result.try(
     runner.load(runtime.store, runtime.work, runtime.options, id)
     |> result.map_error(from_runner),
@@ -1141,6 +1288,24 @@ fn snapshot(
     |> result.map_error(DefinitionRejected),
   )
   use status <- result.try(case state.phase {
+    control.WaitingFork(a, mode) -> {
+      use active <- result.try(
+        runner.fork_has_activity(runtime.store, runtime.work, state, a)
+        |> result.map_error(CallbackFailed),
+      )
+      use saved <- result.try(
+        list.find(state.forks, fn(saved) { saved.occurrence.activation == a.id })
+        |> result.replace_error(CorruptRecord("missing fork scope")),
+      )
+      Ok(case active {
+        True -> Working
+        False ->
+          Fork(saved, case mode {
+            control.JoiningFork -> None
+            control.ClosingFork(cause) -> Some(cause)
+          })
+      })
+    }
     control.ChildBlocked(a, id, reason) ->
       Ok(Child(
         child.Reference(run.issued(state.run), a.id, run.issued(id)),
@@ -1195,7 +1360,9 @@ fn snapshot(
           )
         }
       })
-    control.Ready(_)
+    control.PreparingFork(_)
+    | control.Forking(..)
+    | control.Ready(_)
     | control.ArmingWait(_)
     | control.Queued(_)
     | control.Running(_)
@@ -1266,28 +1433,30 @@ fn snapshot(
       Ok(Cancelled(public_cancellation(state, a, cancellation)))
   })
   let current = current_action(state)
-  Ok(
-    Snapshot(
-      entry.revision,
-      value,
-      status,
-      current,
-      public_receipts(state),
-      case state.phase {
-        control.WaitingSignal(a)
-        | control.WaitingJob(a)
-        | control.StoppingJob(a, _, _)
-        | control.Joining(a, _)
-        | control.WaitingChild(a, _)
-        | control.ChildBlocked(a, _, _)
-        | control.StoppingChild(a, _, _)
-        | control.Blocked(a, _)
-        | control.Ended(control.Failed(a, control.DeadlineExpired(_)))
-        | control.Ended(control.Expired(a, _)) -> a.deadline
-        _ -> None
-      },
-    ),
-  )
+  Ok(Snapshot(
+    entry.revision,
+    value,
+    status,
+    current,
+    public_receipts(state),
+    case state.phase {
+      control.WaitingSignal(a)
+      | control.WaitingJob(a)
+      | control.StoppingJob(a, _, _)
+      | control.PreparingFork(a)
+      | control.Forking(a, _)
+      | control.WaitingFork(a, _)
+      | control.Joining(a, _)
+      | control.WaitingChild(a, _)
+      | control.ChildBlocked(a, _, _)
+      | control.StoppingChild(a, _, _)
+      | control.Blocked(a, _)
+      | control.Ended(control.Failed(a, control.DeadlineExpired(_)))
+      | control.Ended(control.Expired(a, _)) -> a.deadline
+      _ -> None
+    },
+    state.forks,
+  ))
 }
 
 fn public_cancellation(
@@ -1296,6 +1465,7 @@ fn public_cancellation(
   cancellation: control.Cancellation,
 ) -> Cancellation {
   case cancellation {
+    control.AfterFork -> ForkSettled(a.id)
     control.BeforeStart -> BeforeStart
     control.JobDetached ->
       JobDetached(job.Reference(
@@ -1347,6 +1517,9 @@ fn current_action(state: control.State) -> option.Option(Action) {
     | control.ArmingWait(a)
     | control.WaitingJob(a)
     | control.StoppingJob(a, _, _)
+    | control.PreparingFork(a)
+    | control.Forking(a, _)
+    | control.WaitingFork(a, _)
     | control.Joining(a, _)
     | control.WaitingChild(a, _)
     | control.ChildBlocked(a, _, _)

@@ -17,7 +17,7 @@ import gleam/result
 
 /// Bump when a record format or state changes discovery eligibility or keys.
 /// Backends must refresh older projections before using them for scheduling.
-pub const version = 7
+pub const version = 8
 
 pub type Trigger {
   Changed(dependency: run.RunId, deadline: Option(Int))

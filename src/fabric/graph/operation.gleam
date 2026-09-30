@@ -5,6 +5,7 @@
 import fabric/graph/job
 import fabric/graph/signal
 import fabric/internal/graph/child_driver
+import fabric/internal/graph/fork_driver
 import fabric/run
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -45,6 +46,7 @@ pub type Kind {
   OwnedJob(polling: job.Polling)
   Subgraph
   Agent
+  Fork(max_members: Int, concurrency: Int, signature: String)
 }
 
 type Implementation(context, input, output) {
@@ -60,6 +62,7 @@ type Implementation(context, input, output) {
     fn(context, Invocation, input) -> Result(Nil, Failure),
   )
   Managed(Kind, child_driver.Driver)
+  Parallel(Kind, fork_driver.Driver)
 }
 
 pub opaque type Operation(context, input, output) {
@@ -203,7 +206,7 @@ pub fn kind(operation: Operation(context, input, output)) -> Kind {
     WaitForSignal -> Signal
     WaitForJob(polling, _) -> Job(polling)
     WaitForOwnedJob(polling, _, _) -> OwnedJob(polling)
-    Managed(kind, _) -> kind
+    Managed(kind, _) | Parallel(kind, _) -> kind
   }
 }
 
@@ -212,8 +215,13 @@ pub fn with_replay(
   max_attempts: Int,
 ) -> Result(Operation(context, input, output), ConfigurationError) {
   case kind(operation), max_attempts >= 1 {
-    Signal, _ | Job(_), _ | OwnedJob(_), _ | Subgraph, _ | Agent, _ ->
-      Error(ReplayRequiresActivity)
+    Signal, _
+    | Job(_), _
+    | OwnedJob(_), _
+    | Subgraph, _
+    | Agent, _
+    | Fork(..), _
+    -> Error(ReplayRequiresActivity)
     Activity, True ->
       Ok(Operation(..operation, recovery: ReplayInterrupted(max_attempts)))
     Activity, False -> Error(InvalidAttemptBound(max_attempts))
@@ -288,6 +296,36 @@ pub fn agent(
 }
 
 @internal
+pub fn parallel(
+  identity: run.Identity,
+  input: Codec(input),
+  output: Codec(output),
+  max_members: Int,
+  concurrency: Int,
+  signature: String,
+  driver: fork_driver.Driver,
+) -> Operation(context, input, output) {
+  Operation(
+    identity,
+    input,
+    output,
+    RequireReconciliation,
+    Parallel(Fork(max_members, concurrency, signature), driver),
+    None,
+  )
+}
+
+@internal
+pub fn fork_driver(
+  operation: Operation(context, input, output),
+) -> Result(fork_driver.Driver, Error) {
+  case operation.implementation {
+    Parallel(_, driver) -> Ok(driver)
+    _ -> Error(NotExecutable)
+  }
+}
+
+@internal
 pub fn child_driver(
   operation: Operation(context, input, output),
 ) -> Result(child_driver.Driver, Error) {
@@ -325,13 +363,11 @@ pub fn invoker(
     Perform(_) -> fn(context, invocation, text) {
       invoke(operation, context, invocation, text)
     }
-    WaitForSignal | WaitForJob(..) | WaitForOwnedJob(..) | Managed(..) -> fn(
-      _,
-      _,
-      _,
-    ) {
-      Error(NotExecutable)
-    }
+    WaitForSignal
+    | WaitForJob(..)
+    | WaitForOwnedJob(..)
+    | Managed(..)
+    | Parallel(..) -> fn(_, _, _) { Error(NotExecutable) }
   }
 }
 
@@ -383,8 +419,11 @@ pub fn invoke(
 ) -> Result(String, Error) {
   use perform <- result.try(case operation.implementation {
     Perform(perform) -> Ok(perform)
-    WaitForSignal | WaitForJob(..) | WaitForOwnedJob(..) | Managed(..) ->
-      Error(NotExecutable)
+    WaitForSignal
+    | WaitForJob(..)
+    | WaitForOwnedJob(..)
+    | Managed(..)
+    | Parallel(..) -> Error(NotExecutable)
   })
   use input <- result.try(decode_input(operation, text))
   use output <- result.try(

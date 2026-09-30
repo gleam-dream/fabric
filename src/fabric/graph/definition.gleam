@@ -7,13 +7,16 @@
 //// structural manifest detects topology and declared contract changes, not
 //// arbitrary changes to callback implementations.
 
+import fabric/graph/fork
 import fabric/graph/job
 import fabric/graph/operation.{type Invocation, type Operation}
 import fabric/internal/graph/child_driver
 import fabric/internal/graph/controller as control
+import fabric/internal/graph/fork_driver
 import fabric/internal/graph/record
 import fabric/run
 import gleam/dict.{type Dict}
+import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -44,6 +47,10 @@ pub opaque type Node(context, state, answer) {
     check_input: fn(String) -> Result(Nil, Error),
     check_output: fn(String) -> Result(Nil, Error),
     child: Result(child_driver.Driver, Error),
+    fork: Result(fork_driver.Driver, Error),
+    check_member: fn(Int, fork.Request) -> Result(Nil, String),
+    prepare_members: fn(String) -> Result(List(fork.Request), String),
+    join_output: fn(fork.Snapshot) -> Result(String, String),
     job: fn(context, String) -> Result(job.Progress(String), String),
     stop_job: fn(context, Invocation, String) -> Result(Nil, operation.Error),
   )
@@ -119,6 +126,20 @@ pub fn node(
   let input = operation.input_codec(op)
   let output = operation.output_codec(op)
   let invoke = operation.invoker(op)
+  let fork_driver = operation.fork_driver(op)
+  let check_member = case fork_driver {
+    Ok(driver) -> driver.check
+    Error(_) -> fn(_, _) { Error("operation has no fork members") }
+  }
+  let #(prepare_members, join_output) = case fork_driver {
+    Ok(driver) -> {
+      let encode = driver.output
+      #(driver.prepare, fn(saved) { fork_driver.encode_join(saved, encode) })
+    }
+    Error(_) -> #(fn(_) { Error("operation has no fork members") }, fn(_) {
+      Error("operation has no fork result")
+    })
+  }
   let decode_input = fn(text) {
     codec.decode_json(input, text)
     |> result.map_error(fn(error) {
@@ -162,6 +183,10 @@ pub fn node(
     check_input: fn(text) { decode_input(text) |> result.replace(Nil) },
     check_output: fn(text) { decode_output(text) |> result.replace(Nil) },
     child: operation.child_driver(op) |> result.map_error(OperationRejected),
+    fork: fork_driver |> result.map_error(OperationRejected),
+    check_member:,
+    prepare_members:,
+    join_output:,
     job: operation.job_reader(op),
     stop_job: operation.job_canceller(op),
   )
@@ -262,6 +287,17 @@ fn manifest(spec: Spec(context, state, answer)) -> String {
                 operation.OwnedJob(_) -> "owned_job"
                 operation.Subgraph -> "subgraph"
                 operation.Agent -> "agent"
+                operation.Fork(maximum, concurrency, signature) ->
+                  json.array(
+                    [
+                      json.string("fork"),
+                      json.int(maximum),
+                      json.int(concurrency),
+                      json.string(signature),
+                    ],
+                    fn(value) { value },
+                  )
+                  |> json.to_string
               }),
             ),
             #("recovery", case node.recovery {
@@ -471,12 +507,46 @@ pub fn validate(
   use _ <- result.try(decode_state(definition, saved.value))
   use _ <- result.try(decode_state(definition, saved.initial))
   use _ <- result.try(
+    list.try_each(saved.forks, fn(scope) {
+      use activation <- result.try(
+        control.activation(saved, scope.occurrence.activation)
+        |> result.replace_error(InvalidRecord("fork activation missing")),
+      )
+      use node <- result.try(check_prepared(definition, activation.prepared))
+      use expected <- result.try(
+        node.prepare_members(activation.prepared.input)
+        |> result.map_error(InvalidRecord),
+      )
+      use _ <- result.try(
+        case
+          expected == list.map(scope.members, fn(member) { member.request })
+        {
+          True -> Ok(Nil)
+          False ->
+            Error(InvalidRecord("fork membership differs from its saved input"))
+        },
+      )
+      scope.members
+      |> list.index_map(fn(member, index) { #(member, index + 1) })
+      |> list.try_each(fn(item) {
+        node.check_member(item.1, item.0.request)
+        |> result.map_error(InvalidRecord)
+      })
+    }),
+  )
+  use _ <- result.try(
     list.try_each(saved.receipts, fn(receipt) {
       use node <- result.try(check_prepared(
         definition,
         receipt.activation.prepared,
       ))
       use _ <- result.try(node.check_output(receipt.output))
+      use _ <- result.try(check_join(
+        definition,
+        saved,
+        receipt.activation,
+        receipt.output,
+      ))
       use _ <- result.try(decode_state(definition, receipt.state))
       case receipt.route {
         control.Next(destination) -> allowed(node, NodeId(destination))
@@ -493,6 +563,9 @@ pub fn validate(
     | control.ArmingWait(a)
     | control.WaitingJob(a)
     | control.StoppingJob(a, _, _)
+    | control.PreparingFork(a)
+    | control.Forking(a, _)
+    | control.WaitingFork(a, _)
     | control.Joining(a, _)
     | control.WaitingChild(a, _)
     | control.ChildBlocked(a, _, _)
@@ -520,8 +593,44 @@ pub fn validate(
     _ -> Error(EntryChanged)
   })
   case saved.phase {
+    control.Blocked(a, control.InvalidResult(output, _)) if output != "" ->
+      check_join(definition, saved, a, output)
     control.Ended(control.Completed(answer)) ->
       decode_answer(definition, answer) |> result.replace(Nil)
+    _ -> Ok(Nil)
+  }
+}
+
+/// Fork results are derived from retained member evidence. Reconciliation may
+/// retry acceptance but cannot replace those results or turn failure into success.
+@internal
+pub fn check_join(
+  definition: Definition(context, state, answer),
+  state: control.State,
+  activation: control.Activation,
+  output: String,
+) -> Result(Nil, Error) {
+  case activation.prepared.kind {
+    operation.Fork(..) -> {
+      use node <- result.try(check_prepared(definition, activation.prepared))
+      use saved <- result.try(
+        list.find(state.forks, fn(saved) {
+          saved.occurrence.activation == activation.id
+        })
+        |> result.replace_error(InvalidRecord("fork membership missing")),
+      )
+      use expected <- result.try(
+        node.join_output(saved) |> result.map_error(InvalidRecord),
+      )
+      case
+        json.parse(expected, decode.dynamic),
+        json.parse(output, decode.dynamic)
+      {
+        Ok(expected), Ok(actual) if expected == actual -> Ok(Nil)
+        _, _ ->
+          Error(InvalidRecord("join result differs from retained members"))
+      }
+    }
     _ -> Ok(Nil)
   }
 }
@@ -557,18 +666,31 @@ pub fn detach_children(
 ) -> #(
   Definition(context, state, answer),
   fn(control.Prepared) -> Result(child_driver.Driver, Error),
+  fn(control.Prepared) -> Result(fork_driver.Driver, Error),
 ) {
   let children = dict.map_values(definition.nodes, fn(_, node) { node.child })
+  let forks = dict.map_values(definition.nodes, fn(_, node) { node.fork })
   let definition =
     Definition(
       ..definition,
       nodes: dict.map_values(definition.nodes, fn(_, node) {
-        Node(..node, child: Error(OperationRejected(operation.NotExecutable)))
+        Node(
+          ..node,
+          child: Error(OperationRejected(operation.NotExecutable)),
+          fork: Error(OperationRejected(operation.NotExecutable)),
+        )
       }),
     )
-  #(definition, fn(prepared) {
-    use node <- result.try(check_prepared(definition, prepared))
-    dict.get(children, node.id)
-    |> result.unwrap(Error(NodeMissing(node.id)))
-  })
+  #(
+    definition,
+    fn(prepared) {
+      use node <- result.try(check_prepared(definition, prepared))
+      dict.get(children, node.id)
+      |> result.unwrap(Error(NodeMissing(node.id)))
+    },
+    fn(prepared) {
+      use node <- result.try(check_prepared(definition, prepared))
+      dict.get(forks, node.id) |> result.unwrap(Error(NodeMissing(node.id)))
+    },
+  )
 }

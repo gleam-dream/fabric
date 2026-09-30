@@ -5,6 +5,7 @@
 import fabric/budget
 import fabric/graph/child
 import fabric/graph/definition
+import fabric/graph/fork
 import fabric/graph/job
 import fabric/graph/operation
 import fabric/internal/ancestry
@@ -16,6 +17,8 @@ import fabric/internal/claim
 import fabric/internal/executor
 import fabric/internal/graph/child_driver
 import fabric/internal/graph/controller as g
+import fabric/internal/graph/fork as scope
+import fabric/internal/graph/fork_driver
 import fabric/internal/graph/live
 import fabric/internal/graph/record
 import fabric/internal/runner_host as host
@@ -110,6 +113,8 @@ pub fn admit(
       use _ <- result.try(case activation.prepared.kind {
         operation.Subgraph | operation.Agent ->
           checked_child(runs, work, activation) |> result.replace(Nil)
+        operation.Fork(..) ->
+          checked_fork(runs, work, activation) |> result.replace(Nil)
         operation.Activity
         | operation.Signal
         | operation.Job(_)
@@ -210,6 +215,7 @@ pub fn launch(
   case g.needs_runner(state) {
     False -> {
       let ownership = case state.phase {
+        g.WaitingFork(a, _) -> park_fork(runs, work, options, state, a)
         g.WaitingChild(_, child) -> park(runs, work, options, state.run, child)
         _ -> store.Detached(False, seize)
       }
@@ -408,6 +414,8 @@ fn transition(
     g.step(runner.state, event) |> result.map_error(Refused),
   )
   let ownership = case state.phase, g.needs_runner(state) {
+    g.WaitingFork(a, _), _ ->
+      park_fork(runner.runs, runner.work, runner.options, state, a)
     g.WaitingChild(_, id), _ ->
       park(runner.runs, runner.work, runner.options, state.run, id)
     _, True -> store.Keep
@@ -432,7 +440,23 @@ fn perform(runner: Runner, effects: List(g.Effect)) -> Result(Runner, Error) {
       | g.ObserveChild(_, _), True
       | g.CancelChild(_, _), True
       | g.RequestJobStop(_), True
+      | g.PrepareFork(_), True
+      | g.ObserveFork(_), True
       -> Ok(runner)
+      g.PrepareFork(a), False -> {
+        let prepared =
+          bounded.call(runner.options.callback_timeout, fn() {
+            use driver <- result.try(checked_fork(runner.runs, runner.work, a))
+            driver.prepare(a.prepared.input)
+          })
+          |> result.map_error(string.inspect)
+          |> result.flatten
+        apply(runner, g.ForkPrepared(g.reference(runner.state, a), prepared))
+      }
+      g.ObserveFork(_), False -> {
+        process.send(runner.self, live.PollFork)
+        Ok(runner)
+      }
       g.ArmWait(activation), False -> {
         use now <- result.try(
           store.now(runner.runs) |> result.map_error(StoreFailed),
@@ -551,6 +575,7 @@ fn receive(runner: Runner) -> Nil {
     |> process.selector_receive_forever
   let runner = draining(runner)
   let next = case received {
+    live.PollFork -> poll_fork(runner)
     live.PollChild -> poll_child(runner)
     live.StoreDown -> Error(OwnerUnknown)
     live.Exited(pid, reason) if pid == runner.factory -> {
@@ -761,6 +786,331 @@ fn settle(
         False -> Error(Refused(g.StaleInvocation))
       }
     _ -> Error(Refused(g.StaleInvocation))
+  }
+}
+
+pub fn checked_fork(
+  runs: store.Store,
+  work: live.Work,
+  activation: g.Activation,
+) -> Result(fork_driver.Driver, String) {
+  use driver <- result.try(
+    work.fork(activation) |> result.map_error(string.inspect),
+  )
+  use parent_store <- result.try(
+    store.pid(runs) |> result.replace_error("parent store unavailable"),
+  )
+  case list.all(driver.stores(), fn(found) { found == Ok(parent_store) }) {
+    True -> Ok(driver)
+    False -> Error("every fork member must use its parent's store")
+  }
+}
+
+fn poll_fork(runner: Runner) -> Result(Runner, Error) {
+  use #(a, mode) <- result.try(case runner.state.phase {
+    g.Forking(a, mode) -> Ok(#(a, mode))
+    _ -> Error(Refused(g.WrongPhase))
+  })
+  use driver <- result.try(
+    checked_fork(runner.runs, runner.work, a)
+    |> result.map_error(CallbackFailed),
+  )
+  use members <- result.try(
+    g.current_fork(runner.state, a.id) |> result.map_error(Refused),
+  )
+  use #(runner, working) <- result.try(
+    list.try_fold(scope.unsettled(members), #(runner, False), fn(acc, member) {
+      use #(runner, working) <- result.map(observe_fork_member(
+        acc.0,
+        a,
+        driver,
+        member,
+      ))
+      #(runner, acc.1 || working)
+    }),
+  )
+  use #(runner, working) <- result.try(admit_fork_members(
+    runner,
+    a,
+    driver,
+    working,
+  ))
+  use members <- result.try(
+    g.current_fork(runner.state, a.id) |> result.map_error(Refused),
+  )
+  case scope.join(members), mode {
+    scope.Ready(_), g.ClosingFork(_) ->
+      apply(runner, g.ForkStopped(g.reference(runner.state, a)))
+    scope.Ready(_), g.JoiningFork -> {
+      let encoded =
+        bounded.call(runner.options.callback_timeout, fn() {
+          fork_driver.encode_join(scope.snapshot(members), driver.output)
+        })
+        |> result.map_error(string.inspect)
+        |> result.flatten
+      case encoded {
+        Error(reason) ->
+          apply(
+            runner,
+            g.ForkMappingFailed(g.reference(runner.state, a), "", reason),
+          )
+        Ok(output) ->
+          case
+            bounded.call(runner.options.callback_timeout, fn() {
+              runner.work.accept(runner.state, a, output)
+            })
+          {
+            Ok(Ok(decision)) ->
+              apply(
+                runner,
+                g.ForkReturned(g.reference(runner.state, a), output, decision),
+              )
+            error ->
+              apply(
+                runner,
+                g.ForkMappingFailed(
+                  g.reference(runner.state, a),
+                  output,
+                  string.inspect(error),
+                ),
+              )
+          }
+      }
+    }
+    _, _ ->
+      case working {
+        True -> {
+          let _ = process.send_after(runner.self, 100, live.PollFork)
+          Ok(runner)
+        }
+        False -> apply(runner, g.ForkWaiting(g.reference(runner.state, a)))
+      }
+  }
+}
+
+fn admit_fork_members(
+  runner: Runner,
+  a: g.Activation,
+  driver: fork_driver.Driver,
+  working: Bool,
+) -> Result(#(Runner, Bool), Error) {
+  use members <- result.try(
+    g.current_fork(runner.state, a.id) |> result.map_error(Refused),
+  )
+  case scope.next(members) {
+    None -> Ok(#(runner, working))
+    Some(member) -> {
+      use _ <- result.try(check_ancestry(runner.runs, runner.state))
+      let capacity =
+        capacity.child(
+          runner.runs,
+          runner.state.run,
+          runner.state.parent,
+          runner.state.family_budget,
+          child.branch_id(runner.state.run, a.id, member.member),
+        )
+      case capacity {
+        Error(error) ->
+          case capacity_error(error) {
+            BudgetLimited(reason) -> {
+              use runner <- result.map(apply(
+                runner,
+                g.ForkRejected(
+                  g.reference(runner.state, a),
+                  member,
+                  string.inspect(reason),
+                ),
+              ))
+              // Re-observe admitted siblings under the now-retained stop intent.
+              let _ = process.send_after(runner.self, 0, live.PollFork)
+              #(runner, True)
+            }
+            BudgetUnavailable(reason) | PolicyRejected(reason) ->
+              Error(CallbackFailed(reason))
+          }
+        Ok(_) -> {
+          use runner <- result.try(apply(
+            runner,
+            g.ForkAdmitted(g.reference(runner.state, a), member),
+          ))
+          use #(runner, active) <- result.try(observe_fork_member(
+            runner,
+            a,
+            driver,
+            member,
+          ))
+          admit_fork_members(runner, a, driver, working || active)
+        }
+      }
+    }
+  }
+}
+
+fn fork_progress(progress: child.Progress) -> fork.Progress {
+  case progress {
+    child.Working
+    | child.Approval(_)
+    | child.AgentInput(..)
+    | child.Signal(_)
+    | child.Job(_) -> fork.Active
+    child.Uncertain(reason) | child.FinishedUncertain(reason) ->
+      fork.Uncertain(reason)
+    child.InvalidOutput(output, reason) ->
+      fork.Uncertain(reason <> ": " <> output)
+    child.Succeeded(output) -> fork.Succeeded(output)
+    child.Failed(reason) -> fork.Failed(reason)
+    child.Cancelled(False) -> fork.Cancelled
+    child.Cancelled(True) ->
+      fork.Uncertain("child cancellation retains uncertain effects")
+  }
+}
+
+fn observe_fork_member(
+  runner: Runner,
+  a: g.Activation,
+  driver: fork_driver.Driver,
+  reference: fork.Reference,
+) -> Result(#(Runner, Bool), Error) {
+  use members <- result.try(
+    g.current_fork(runner.state, a.id) |> result.map_error(Refused),
+  )
+  use member <- result.try(
+    scope.member(members, reference)
+    |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
+  )
+  let stopping = scope.snapshot(members).stop != None
+  let id = child.branch_id(runner.state.run, a.id, reference.member)
+  let parent = child.Branch(runner.state.run, a.id, reference.member)
+  use progress <- result.try(
+    bounded.call(runner.options.callback_timeout, fn() {
+      use child_driver <- result.try(driver.member(reference.member))
+      use _ <- result.try(driver.check(reference.member, member.request))
+      use _ <- result.try(case member.status {
+        // Only an unacknowledged reservation may create a missing child.
+        fork.Reserved -> Ok(Nil)
+        _ ->
+          store.get(runner.runs, id)
+          |> result.replace(Nil)
+          |> result.map_error(string.inspect)
+      })
+      use _ <- result.try(
+        child_driver.reserve(parent, id, member.request.input, case stopping {
+          True -> child_driver.Cancel
+          False -> child_driver.Start
+        }),
+      )
+      use _ <- result.try(
+        store.get(runner.runs, id) |> result.map_error(string.inspect),
+      )
+      child_driver.read(parent, id, case stopping {
+        True -> child_driver.Settle
+        False -> child_driver.Observe
+      })
+    })
+    |> result.map_error(string.inspect)
+    |> result.flatten
+    |> result.map_error(CallbackFailed),
+  )
+  let observed = fork_progress(progress)
+  use runner <- result.map(case member.status == fork.Admitted(observed) {
+    True -> Ok(runner)
+    False ->
+      apply(
+        runner,
+        g.ForkObserved(g.reference(runner.state, a), reference, observed),
+      )
+  })
+  let stopped_now =
+    !stopping
+    && case g.current_fork(runner.state, a.id) {
+      Ok(scope) -> scope.snapshot(scope).stop != None
+      Error(_) -> False
+    }
+  #(runner, progress == child.Working || stopped_now)
+}
+
+fn park_fork(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  state: g.State,
+  a: g.Activation,
+) -> store.Ownership {
+  let dependencies = case g.current_fork(state, a.id) {
+    Ok(members) ->
+      scope.unsettled(members)
+      |> list.map(fn(ref) { child.branch_id(state.run, a.id, ref.member) })
+    Error(_) -> []
+  }
+  store.Park(dependencies, fn() {
+    wake_fork(runs, work, options, state.run)
+    |> result.unwrap(store.KeepWatching)
+  })
+}
+
+/// Read-only inspection shared by local wakeups and the public waiting view.
+pub fn fork_has_activity(
+  runs: store.Store,
+  work: live.Work,
+  state: g.State,
+  a: g.Activation,
+) -> Result(Bool, String) {
+  use members <- result.try(
+    g.current_fork(state, a.id) |> result.map_error(string.inspect),
+  )
+  use driver <- result.try(checked_fork(runs, work, a))
+  use observed <- result.map(
+    list.try_map(scope.unsettled(members), fn(ref) {
+      use member <- result.try(
+        scope.member(members, ref) |> result.map_error(string.inspect),
+      )
+      use driver <- result.try(driver.member(ref.member))
+      let child = child.branch_id(state.run, a.id, ref.member)
+      use _ <- result.try(
+        store.get(runs, child) |> result.map_error(string.inspect),
+      )
+      use progress <- result.map(
+        driver.read(
+          child.Branch(state.run, a.id, ref.member),
+          child,
+          case scope.snapshot(members).stop {
+            None -> child_driver.Observe
+            Some(_) -> child_driver.Settle
+          },
+        ),
+      )
+      progress == child.Working
+      || member.status != fork.Admitted(fork_progress(progress))
+    }),
+  )
+  list.any(observed, fn(changed) { changed })
+}
+
+fn wake_fork(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  id: String,
+) -> Result(store.WakeupDisposition, Error) {
+  use #(entry, state) <- result.try(load(runs, work, options, id))
+  case state.phase {
+    g.WaitingFork(a, _) -> {
+      use changed <- result.try(
+        bounded.call(options.callback_timeout, fn() {
+          fork_has_activity(runs, work, state, a)
+        })
+        |> result.map_error(string.inspect)
+        |> result.flatten
+        |> result.map_error(CallbackFailed),
+      )
+      case changed {
+        False -> Ok(store.KeepWatching)
+        True ->
+          recover_work(runs, work, options, entry, state, 3)
+          |> result.replace(store.KeepWatching)
+      }
+    }
+    _ -> Ok(store.StopWatching)
   }
 }
 
@@ -1523,7 +1873,7 @@ fn park(
   id: String,
   dependency: String,
 ) -> store.Ownership {
-  store.Park(dependency, fn() {
+  store.Park([dependency], fn() {
     wake_parent(runs, work, options, id) |> result.unwrap(store.KeepWatching)
   })
 }
@@ -1642,7 +1992,7 @@ fn recover_work(
   tries: Int,
 ) -> Result(g.State, Error) {
   let recoverable = case state.phase {
-    g.ChildBlocked(_, _, _) | g.WaitingChild(_, _) -> True
+    g.ChildBlocked(_, _, _) | g.WaitingChild(_, _) | g.WaitingFork(..) -> True
     _ -> g.needs_runner(state)
   }
   case
