@@ -46,6 +46,11 @@ recovery and cancellation while sharing execution mechanisms.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
 
+Run all maintained packages, consumers and local service/database checks with
+`nix develop -c python3 scripts/check.py full`. See [verification](docs/VERIFICATION.md)
+for fast iteration, logs and the prepared CI profile. Library publication and
+hosted CI activation remain deferred.
+
 ## Usage
 
 A payment desk: a typed tool whose large transfers wait for a treasurer's

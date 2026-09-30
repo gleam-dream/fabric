@@ -63,20 +63,21 @@ by BeamWeaver source or tests; not a comparison).
   coordination over Erlang distribution; exact LangGraph API compatibility,
   time travel and a general channel system; async sub-agents over the remote
   Agent Protocol; a general middleware chain.
-- **Implementation in progress:** Fabric-owned agentic graph control, typed
+- **Graph program complete:** Fabric-owned agentic graph control, typed
   decisions, conditional routing, cycles and bounded fan-out. This supersedes
   the blanket graph exclusion; [GRAPH-FLOW](GRAPH-FLOW.md) separates the
-  requested direction from proposed contracts. Saga stays an independent
+  accepted direction from the original API sketches. Saga stays an independent
   optional integration. The [implementation tracker](implementation/graph-flow/wave-tracker.md)
   records the selected program, typed-authoring proof and public durable
   serial runtime (conditional routes, cycles, admission, approvals, recovery,
   reconciliation and cancellation), plus typed durable manual signals and
   managed subgraphs/agents with idle/nested waits and shared family budgets.
   External jobs support durable submission, scheduled observation and owned
-  cancellation. Deadlines, parallel composition, real decision adapters and
-  the agent-recipe evaluation remain open.
-- **Unfinished** (backlog, ordered by slice in PLAN.md): budgets shared
-  across a sub-agent family (slice 2b backlog),
+  cancellation. Durable deadlines, typed pairs/maps/joins, real decision/MCP
+  adapters and the agent-recipe evaluation are accepted; see the
+  [completion audit](implementation/graph-flow/completion-audit.md).
+- **Unfinished** (backlog, ordered by slice in PLAN.md): shared token
+  accounting across a sub-agent family (work/child/depth bounds exist),
   approval expiry and edit/respond answers (slice 2a backlog),
   streaming (slice 3), structured output (slice 3), elapsed-time budget
   (slice 3), compaction (v2). Production S1–S6 are implemented, including

@@ -206,6 +206,12 @@ an idle run is data in the store with no process holding it.
 
 ## Production runtime: limits, supervised runners, leases
 
+The [production-readiness program](implementation/production-readiness/wave-tracker.md)
+continues with a complete local verification command, S7 operations and a
+realistic application comparison. The user deferred library publication and
+hosted CI activation; [verification](VERIFICATION.md) records the prepared gate
+and the remaining activation steps.
+
 The accepted production-runtime design (2026-09-28, at `7901edb`; user
 decisions D1 to D5) is built in slices. This section records the slices
 built so far (S1 to S6). Operations remain in S7; the optional Grind

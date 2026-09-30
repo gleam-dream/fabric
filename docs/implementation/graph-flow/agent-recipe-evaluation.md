@@ -4,7 +4,8 @@ This evaluation implements G11 of the [six-stage program](wave-tracker.md).
 The question is whether replacing the ordinary agent controller/runner with a
 graph recipe preserves its observable behavior and reduces responsibilities.
 Drawing a cycle or wrapping an agent in a graph node does not prove replacement.
-Stage-5 live-provider acceptance remains pending independently.
+Stage-5 live-provider acceptance is recorded separately in the
+[completion audit](completion-audit.md).
 
 ## Candidates and decision criterion
 

@@ -13,3 +13,6 @@ Behavioural oracle: BeamWeaver (partial migration of its agent loop; see docs/OR
 - `lefthook`: pre-commit hook formats staged files and re-stages them.
 - `nix flake check`: fails iff the tree is not formatted (plus any existing checks).
 - `gleam test`: runs the test suite.
+- `nix develop -c python3 scripts/check.py full`: runs all retained packages,
+  consumers, local services, compiler-negative checks and temporary PostgreSQL.
+  See `docs/VERIFICATION.md`. CI activation awaits library publication.
