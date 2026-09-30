@@ -6,6 +6,23 @@ deferred proposals in [PLAN](PLAN.md) and [CAPABILITIES](CAPABILITIES.md).
 Earlier slice notes remain historical; items completed in later slices
 are not reopened here.
 
+## New direction: agentic graph flow
+
+The requested direction now includes a Fabric-owned graph layer with typed
+decisions, conditional routing, cycles and composable operations. Saga remains
+independent; branching there is deferred, and neither Saga nor Grind becomes
+a Fabric core dependency. [GRAPH-FLOW](GRAPH-FLOW.md) explores the design and
+defines the selected six-step implementation program. The
+[wave tracker](implementation/graph-flow/wave-tracker.md) records step 1's
+typed authoring proof, public durable serial runtime and remaining composition
+work. The graph runner now handles conditional routes, bounded cycles, approval,
+recovery, reconciliation, cancellation, shutdown handoff and typed durable
+signals. Initial managed subgraphs now cover restart, approvals, lost
+acknowledgements and cancellation races. Steps 3–6 remain: idle and nested child
+waits, canceled-child settlement, managed agents, family budgets/retention,
+deadlines and jobs, typed parallel composition, real adapters and
+agent-recipe evaluation. S7 remains part of the production backlog.
+
 ## Next: S7 operations
 
 Complete the accepted production-runtime plan with:
@@ -119,6 +136,8 @@ These require a separate decision; they are not accepted delivery tasks:
 
 Coordination over Erlang distribution; directory-store power-loss
 durability requiring a NIF; retrieval, vector stores and document loading;
-a LangGraph-compatible graph API with breakpoints, time travel, channels
-or `Send`; remote Agent Protocol sub-agents; a general middleware chain.
-Typed DAG workflows belong to Saga and enter Fabric as tools.
+exact LangGraph API compatibility, time travel and a general channel system;
+remote Agent Protocol sub-agents; a general middleware chain. Serial agentic
+graph control is implemented; bounded fan-out remains in the implementation
+program. Saga workflows remain external operations that consumers
+may expose through tools or future graph adapters.

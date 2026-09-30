@@ -67,6 +67,8 @@ pub fn runner(store: Store, id: RunId) -> Result(Pid, Nil) {
   case store.get(store, run.id_to_string(id)) {
     Ok(store.Entry(live: Some(store.Live(mailbox:, ..)), ..)) ->
       process.subject_owner(mailbox)
+    Ok(store.Entry(live: Some(store.GraphLive(mailbox:, ..)), ..)) ->
+      process.subject_owner(mailbox)
     Ok(store.Entry(live: None, ..)) | Error(_) -> Error(Nil)
   }
 }
