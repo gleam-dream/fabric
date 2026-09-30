@@ -35,10 +35,19 @@ pub fn refresh(
     )
     use Nil <- result.try(
       list.try_each(rows.rows, fn(row) {
+        // Refresh must not turn an already claimed poll into immediately due
+        // work. Its stable key and backend timestamp remain authoritative even
+        // when an older writer invalidated the projection's source revision.
+        let same_poll =
+          "($3::jsonb #>> '{wait,every}' IS NOT NULL AND observed_key = $3::jsonb #>> '{wait,key}')"
         pog.query(
           "UPDATE "
           <> table
-          <> " SET discovery = $3::jsonb, discovery_revision = revision, observed_key = NULL, observed_revision = NULL, discovery_checked_at = '-infinity' WHERE run_id = $1 AND revision = $2",
+          <> " SET discovery = $3::jsonb, discovery_revision = revision, observed_key = CASE WHEN "
+          <> same_poll
+          <> " THEN observed_key ELSE NULL END, observed_revision = NULL, discovery_checked_at = CASE WHEN "
+          <> same_poll
+          <> " THEN discovery_checked_at ELSE '-infinity' END WHERE run_id = $1 AND revision = $2",
         )
         |> pog.parameter(pog.text(row.0))
         |> pog.parameter(pog.int(row.1))

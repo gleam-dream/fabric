@@ -216,6 +216,102 @@ pub fn a_job_wait_survives_store_loss_without_holding_a_lease_test() {
   |> should.equal(Ok(1))
 }
 
+pub fn scheduled_job(runs, every, read) {
+  let observer =
+    job.observe(
+      run.Identity("pg-scheduled-observer", 1),
+      codec.string(),
+      codec.int(),
+      fn(_, receipt) { read(receipt) },
+    )
+  let assert Ok(observer) = job.with_poll_interval(observer, every)
+  let assert Ok(id) = definition.node_id("observe")
+  let node =
+    definition.node(
+      id,
+      operation.await_job(observer),
+      fn(receipt) { Ok(receipt) },
+      fn(receipt, n) { Ok(definition.Finish(receipt, n)) },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(definition.Spec(
+      run.Identity("pg-scheduled-job", 1),
+      id,
+      [node],
+      codec.string(),
+      codec.int(),
+      1,
+    ))
+  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+}
+
+pub fn a_postgres_sweeper_retains_the_next_poll_across_store_loss_test() {
+  let settings =
+    support.migrated(support.pool(4), "scheduled-job", support.schema())
+  let observed = process.new_subject()
+  let assert Ok(id) = run.parse_id("pg-scheduled")
+  let #(owner, #(_runs, reference)) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(
+          process.new_name("job-schedule-original"),
+          settings,
+        )
+      let assert Ok(Nil) = store.start(runs)
+      let build = fn(runs) {
+        scheduled_job(runs, 1000, fn(_) {
+          process.send(observed, Nil)
+          Ok(job.Pending)
+        })
+      }
+      let assert Ok(handle) =
+        graph.start_with_budget(
+          build(runs),
+          id,
+          "receipt",
+          budget.Limits(1, 1, 1),
+        )
+      let assert Ok(waiting) = graph.await(handle, 5000)
+      let assert graph.AwaitingJob(reference) = waiting.status
+      let assert Ok(spec) =
+        fabric.sweeper(
+          runs,
+          [graph.recovery(run.Identity("pg-scheduled-job", 1), build)],
+          every: 20,
+        )
+      let assert Ok(_) = spec.start()
+      #(runs, reference)
+    })
+  process.receive(observed, 5000) |> should.equal(Ok(Nil))
+  released(settings, id, 200) |> should.be_true
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("job-schedule-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let build = fn(runs) {
+    scheduled_job(runs, 1000, fn(receipt) {
+      receipt |> should.equal("receipt")
+      Ok(job.Completed(42))
+    })
+  }
+  let handle = graph.attach(build(runs), id)
+  let assert Ok(waiting) = graph.read(handle)
+  waiting.status |> should.equal(graph.AwaitingJob(reference))
+  let assert Ok(spec) =
+    fabric.sweeper(
+      runs,
+      [graph.recovery(run.Identity("pg-scheduled-job", 1), build)],
+      every: 20,
+    )
+  let assert Ok(sweeper) = spec.start()
+  let done = await_idle_completion(handle, 300)
+  done.status |> should.equal(graph.Completed(42))
+  released(settings, id, 200) |> should.be_true
+  process.unlink(sweeper.pid)
+  agents.kill(sweeper.pid)
+}
+
 pub fn managed_pair(
   runs: store.Store,
 ) -> #(graph.Runtime(Nil, Int, Int), graph.Runtime(Nil, Int, Int)) {

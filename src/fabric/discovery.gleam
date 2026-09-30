@@ -1,8 +1,10 @@
-//// Storage-owned discovery of idle graph dependencies. This projection is a
+//// Storage-owned discovery of idle graph dependencies and scheduled job reads.
+//// This projection is a
 //// scheduling hint, never permission to execute. Recovery must revalidate the
 //// stored attachment and deployed definition through the registered root.
 
 import fabric/graph/child
+import fabric/graph/job
 import fabric/graph/operation
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record
@@ -14,27 +16,51 @@ import gleam/result
 
 /// Bump when a record format or state changes discovery eligibility or keys.
 /// Backends must refresh older projections before using them for scheduling.
-pub const version = 2
+pub const version = 3
+
+pub type Trigger {
+  Changed(dependency: run.RunId)
+  Poll(every: Int)
+}
 
 /// `key` identifies one observation scope. It excludes run incarnation and
 /// execution revision so recovering an unchanged wait cannot make it new work.
-pub type Dependency {
-  Dependency(run: run.RunId, dependency: run.RunId, key: String)
+pub type Wait {
+  Wait(run: run.RunId, key: String, trigger: Trigger)
 }
 
 /// Inspect supported records without deployed code. Unknown/corrupt records
-/// fail; readable records without an idle dependency return `None`.
-pub fn inspect(encoded: String) -> Result(Option(Dependency), Nil) {
+/// fail; readable records without an automatic wait return `None`.
+pub fn inspect(encoded: String) -> Result(Option(Wait), Nil) {
   classify(encoded) |> result.map(fn(entry) { entry.1 })
 }
 
-fn classify(encoded: String) -> Result(#(run.RunId, Option(Dependency)), Nil) {
+fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
   case record.decode(encoded) {
     Error(_) ->
       retention.inspect(encoded)
       |> result.map(fn(metadata) { #(metadata.run, None) })
     Ok(state) -> {
       let wait = case state.phase {
+        graph.WaitingJob(activation) ->
+          case activation.prepared.kind {
+            operation.Job(job.Every(every)) ->
+              Some(Wait(
+                run.issued(state.run),
+                json.array(
+                  [
+                    json.string("poll"),
+                    json.int(activation.id),
+                    json.int(activation.attempt),
+                    json.int(every),
+                  ],
+                  fn(value) { value },
+                )
+                  |> json.to_string,
+                Poll(every),
+              ))
+            _ -> None
+          }
         graph.WaitingChild(activation, id)
         | graph.ChildBlocked(activation, id, _) ->
           Some(dependency(state, activation, id, "observe"))
@@ -61,7 +87,7 @@ fn dependency(
   activation: graph.Activation,
   id: String,
   mode: String,
-) -> Dependency {
+) -> Wait {
   let key =
     json.array(
       [
@@ -73,7 +99,7 @@ fn dependency(
       fn(value) { value },
     )
     |> json.to_string
-  Dependency(run.issued(state.run), run.issued(id), key)
+  Wait(run.issued(state.run), key, Changed(run.issued(id)))
 }
 
 /// Metadata for a backend index. Check its version and source revision before
@@ -87,10 +113,14 @@ pub fn encode(stored_id: String, encoded: String) -> String {
           #(
             "wait",
             json.nullable(wait, fn(wait) {
-              json.object([
-                #("dependency", json.string(run.id_to_string(wait.dependency))),
-                #("key", json.string(wait.key)),
-              ])
+              let trigger = case wait.trigger {
+                Changed(id) -> #(
+                  "dependency",
+                  json.string(run.id_to_string(id)),
+                )
+                Poll(every) -> #("every", json.int(every))
+              }
+              json.object([#("key", json.string(wait.key)), trigger])
             }),
           ),
         ]

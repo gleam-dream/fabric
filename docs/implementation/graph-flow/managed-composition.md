@@ -30,10 +30,11 @@ encoded payload exactly, including JSON whitespace; acknowledgement uses the
 saved bytes rather than rerunning codecs to normalize historical results.
 
 Record version 2 introduced execution modes and the waiting phase. The current
-version 7 also retains subgraph and agent attachments, initial input, idle child
+version 8 also retains subgraph and agent attachments, initial input, idle child
 waits, optional root budget declarations and read-only job observations. Versions
-5–6 remain readable for states they can represent; versions 1–4 are rejected.
-Job observations require version 7. The mode participates in definition
+5–7 remain readable for states they can represent; versions 1–4 are rejected.
+Job observations require version 7; scheduled observations require version 8.
+The mode participates in definition
 compatibility, preventing a stored wait from becoming an executable activity.
 
 Consumption commits the output receipt, new state, route and next activation
@@ -115,7 +116,7 @@ composition. Subsequent checkpoints implement idle child waits, local wakeups,
 nested approval/signal propagation and cancellation settlement, including nested
 cancellation across restart. Managed agent nodes are described below. Family
 retention and shared budgets are described below. Job observation is implemented;
-owned remote cancellation, automatic observation and deadlines remain open.
+owned remote cancellation and deadlines remain open.
 
 ### Managed ordinary agents
 
@@ -485,8 +486,7 @@ These are example-service implementation choices, not Fabric dependencies.
 Acceptance requires real HTTP submission, stored receipts, actual artifact
 creation, concurrent duplicate submission and Fabric process loss across the
 acceptance/receipt boundary. The next section adds a retained observation wait;
-owned remote cancellation, automatic observation and Fabric due-time discovery
-remain open.
+owned remote cancellation and general deadline outcomes remain open.
 
 ### Retained job observation
 
@@ -494,8 +494,8 @@ Submission and attachment are separate activations. `job.observe` binds a typed
 receipt and business-output codec to a bounded, repeatable, read-only observation.
 `operation.await_job` makes that binding a managed wait. Its first lifetime
 contract is explicitly observation-only: canceling it detaches local observation
-and grants no authority to cancel the external job. An owned-cancellation binding
-and automatic due-time observation remain subsequent parts of the same wave.
+and grants no authority to cancel the external job. Scheduled observation is
+described below; an owned-cancellation binding remains subsequent work.
 
 - **J6 — admission and retention:** policy and shared work budget admit the job
   wait before any observation. The committed activation input is the accepted
@@ -519,15 +519,52 @@ and automatic due-time observation remain subsequent parts of the same wave.
   too. Explicit polling works after restart without resubmitting the job; a saved
   completion survives further recovery without observing the service again.
 
-The first vertical path uses explicit polling of retained job waits against the
+The first vertical path used explicit polling of retained job waits against the
 real service in `consumers/jobs`. Polling is a bounded command, not an opaque
-blocking operation or a permanent runner. Automatic due-time discovery, external
-cancellation requests/confirmation and deadline outcomes remain unbuilt, so this
-checkpoint cannot close managed external-job acceptance or wave 3.
+blocking operation or a permanent runner. Scheduled observation adds the
+automatic path below. External cancellation requests/confirmation and deadline
+outcomes remain unbuilt, so this cannot close managed external-job acceptance
+or wave 3.
 
 An optional due time is durable data. Timers are wakeup hints only; a due-wait
 scan or index plus an explicit wakeup owner must recover overdue waits after
-downtime. This is later wave 3 work, separate from manual signal delivery.
+downtime. Scheduled job observation implements this for its interval. General
+deadlines remain later wave 3 work, separate from manual signal delivery.
+
+### Scheduled job observation
+
+Opt-in `job.with_poll_interval(observer, milliseconds)` enables this path.
+Manual observation remains the default. A positive bounded interval is part of
+the saved operation contract and definition compatibility. A leased backend
+owns the observation schedule; the existing registered sweeper owns recovery.
+No in-memory timer is authoritative and no new scheduling service is required.
+
+- **J11 — retained schedule:** an admitted scheduled wait is eligible for its
+  first observation immediately. Each successful claim records its activation
+  key and claim time atomically with the lease. Further claims for that wait
+  require the interval to have elapsed according to the backend's clock. Metadata
+  refresh preserves the last claim time for the same key. A new
+  activation has a new key. Pending observations release execution ownership;
+  reads spend no additional work grant. Explicit `poll_job` remains available
+  and does not move the automatic schedule.
+- **J12 — discovery and ownership:** due observation shares the bounded ready
+  scan with changed child dependencies. Concurrent scanners claim disjoint work.
+  Recovery validates the registered root and saved contracts, and observes a job
+  only when this store holds its claim. Reaching an unclaimed or foreign-owned
+  relative never polls it early. Process loss or callback failure retains a
+  lease-expiry retry path. Sweep progress includes a committed observation route,
+  even when it does not restart the run. Backend metadata refresh cannot authorize
+  an effect.
+- **J13 — completion after downtime:** a restarted sweeper finds due waits,
+  reuses their saved receipts and records the actual external outcome. Manual,
+  canceled and completed waits are never automatic polling candidates. A child
+  completion still wakes or becomes discoverable to its parent. Scheduling
+  changes neither cancellation rights nor the definite/uncertain outcome rules.
+
+This interval is a minimum between successful ready claims, not a promised
+completion latency: scan intervals, bounded batches and unavailable services
+can delay observation. Failed recovery retries after lease expiry. General
+deadlines and owned remote cancellation remain separate contracts.
 
 ## Required evidence
 

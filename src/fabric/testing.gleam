@@ -4,6 +4,7 @@
 
 import fabric/discovery
 import fabric/graph/child
+import fabric/graph/job
 import fabric/graph/operation
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
@@ -56,6 +57,10 @@ pub type Check {
 /// in a test and fail it on `Error`.
 pub fn leased_backend_checks(new: fn() -> LeasedBackend) -> List(Check) {
   [
+    Check(
+      "scheduled claims are disjoint, keep revisions and retain their interval",
+      fn() { scheduled_claims(new()) },
+    ),
     Check(
       "idle claims preserve revisions and suppress unchanged dependencies",
       fn() { unchanged_dependencies(new()) },
@@ -778,6 +783,72 @@ fn disjoint_dependencies(backend: LeasedBackend) -> Result(Nil, String) {
 
 // --- a leased backend in memory ---------------------------------------------------
 
+fn scheduled_claims(backend: LeasedBackend) -> Result(Nil, String) {
+  use records <- result.try(
+    list.try_map(list.repeat(Nil, 4), fn(_) {
+      let id = "poll-" <> random_id()
+      let prepared =
+        graph.Prepared(
+          "observe",
+          run.Identity("job", 1),
+          "0",
+          operation.RequireReconciliation,
+          operation.Job(job.Every(60_000)),
+        )
+      let assert Ok(#(state, _)) =
+        graph.start(
+          id,
+          graph.Definition(run.Identity("polling", 1), "v1", 1),
+          "0",
+          prepared,
+        )
+      let assert graph.Ready(a) = state.phase
+      let assert Ok(encoded) =
+        graph_record.encode(graph.State(..state, phase: graph.WaitingJob(a)))
+      backend.insert(id, encoded, Release)
+      |> result.map_error(string.inspect)
+      |> result.map(fn(_) { #(id, encoded) })
+    }),
+  )
+  use claimed <- result.try(
+    together(4, fn(n) {
+      backend.claim_ready("poller-" <> int.to_string(n), long, 1)
+    })
+    |> list.try_map(fn(reply) { reply |> result.map_error(string.inspect) }),
+  )
+  let ids = list.flatten(claimed)
+  use _ <- result.try(expect(
+    "each poll claimed once",
+    list.length(list.unique(ids)),
+    4,
+  ))
+  use _ <- result.try(expect("one row per claim", list.length(ids), 4))
+  use _ <- result.try(
+    list.try_each(records, fn(record) {
+      use current <- result.try(
+        backend.get(record.0) |> result.map_error(string.inspect),
+      )
+      use _ <- result.try(expect(
+        "claim preserves execution revision",
+        current.revision,
+        1,
+      ))
+      use _ <- result.try(expect(
+        "claim preserves execution bytes",
+        current.record,
+        record.1,
+      ))
+      backend.compare_and_set(record.0, 1, record.1, Release)
+      |> result.map_error(string.inspect)
+    }),
+  )
+  expect(
+    "released polls retain their due time",
+    backend.claim_ready("later", long, 4),
+    Ok([]),
+  )
+}
+
 /// A leased backend kept in memory by one process, shared by every store
 /// given `backend` in this VM, and a clock that tests can move forward.
 pub type LeasedMemory {
@@ -973,11 +1044,21 @@ fn leased_serve(
           let #(id, row) = entry
           case row.lease, wait_for(id, row.record) {
             None, Some(wait) -> {
-              let revision =
-                dict.get(rows, run.id_to_string(wait.dependency))
-                |> result.map(fn(row) { row.revision })
-                |> option.from_result
-              case row.observed == Some(#(wait.key, revision)) {
+              let #(revision, ready) = case wait.trigger {
+                discovery.Changed(dependency) -> {
+                  let revision =
+                    dict.get(rows, run.id_to_string(dependency))
+                    |> result.map(fn(row) { row.revision })
+                    |> option.from_result
+                  #(revision, row.observed != Some(#(wait.key, revision)))
+                }
+                discovery.Poll(every) -> #(
+                  None,
+                  row.observed != Some(#(wait.key, None))
+                    || row.checked + every <= now,
+                )
+              }
+              case !ready {
                 True -> Error(Nil)
                 False -> Ok(#(id, wait.key, revision, row.checked))
               }
@@ -1037,7 +1118,7 @@ fn now_ms() -> Int
 @external(erlang, "fabric_ffi", "random_id")
 fn random_id() -> String
 
-fn wait_for(id: String, encoded: String) -> Option(discovery.Dependency) {
+fn wait_for(id: String, encoded: String) -> Option(discovery.Wait) {
   case discovery.inspect(encoded) {
     Ok(Some(wait)) ->
       case run.id_to_string(wait.run) == id {

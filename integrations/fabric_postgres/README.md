@@ -72,7 +72,8 @@ handoffs are committed. Apply migrations before enabling recovery; a scan
 against an unmigrated database reports a failure and retries next interval.
 
 A scan runs at boot, then after each interval. It claims at most 50 expired
-leases and 50 free waits with changed dependencies and never overlaps the next scan. Each root's recovery has 30 seconds,
+leases and 50 free waits with changed dependencies or due job observations,
+and never overlaps the next scan. Each root's recovery has 30 seconds,
 including at most 5 seconds to rebuild context. Invalid intervals, duplicate
 registrations, and unleased stores are rejected before startup. Unknown
 identities and failed recoveries leave their claims to expire; observe
@@ -132,16 +133,19 @@ enforce work, child and depth reservations across restarts. Initialization
 creates/adopts the ledger and commits a root marker before any dispatch; an
 initialized root with a missing ledger refuses recovery. Retention projection
 version 3 introduced marker validation and attaches the ledger with matching
-limits. The current retention projection is version 4; it also understands graph
+limits. The current retention projection is version 5; it also understands graph
 job waits and their detached cancellation. Run `refresh_retention` for existing
 rows before they can be pruned by the current projection.
 
-Graph records now write version 7 and read versions 5–7. Version 7 adds a retained
+Graph records now write version 8 and read versions 5–8. Version 7 adds a retained
 read-only job wait. Explicit `graph.poll_job` records its checked outcome;
 canceling the wait detaches observation without canceling remote work. Deploy
-version-7 graph readers before using these records. The PostgreSQL schema remains
-version 3. Discovery projection version 2 recognizes these waits but does not yet
-schedule them; run `refresh_discovery` to refresh existing dependency metadata.
+version-8 graph readers before writing new records. Version 8 retains optional
+polling intervals, including completed activation history. Missing intervals in
+older records mean manual observation. Scheduled intervals cannot be hidden in
+older record versions. PostgreSQL schema version 4 indexes scheduled polls along
+with dependencies. Discovery projection version 3 schedules them; run
+`refresh_discovery` to refresh existing metadata.
 
 Existing values and runners retain their setting. The setting affects
 future writes only: it neither rewrites rows nor makes an existing
@@ -276,7 +280,7 @@ is unset. Fabric's own gate (the root package, `nix flake check`, CI) does
 not run these tests and needs no PostgreSQL. The suite includes an isolated
 Erlang VM killed with SIGKILL to verify automatic recovery without tool replay.
 
-## Idle dependency discovery
+## Idle dependency and scheduled-job discovery
 
 Schema version 3 stores Fabric's validated discovery projection beside each
 execution and maintains it atomically on normal writes. `claim_ready` leases
@@ -291,6 +295,19 @@ leases and ages. Unknown or corrupt records are examined once per projection
 version and never become scheduling candidates. Old backend writes invalidate
 the source revision; refresh those rows before relying on automatic discovery.
 Concurrent refreshers skip rows locked by others, so zero is local to that call.
+
+Schema version 4 expands the discovery index to include scheduled job waits.
+`job.with_poll_interval(observer, milliseconds)` saves the interval in the graph
+contract. The first ready claim is immediately eligible. Each claim saves the
+key and `discovery_checked_at` with its lease; further ready claims wait until
+that timestamp plus the interval, using `clock_timestamp()`. Same-key record
+writes and metadata refresh preserve this timestamp. A new activation is
+eligible independently. Scans may be later than the due time under load.
+
+Register the graph with the shared sweeper. Only a claimed job is observed;
+recovery does not poll unclaimed relatives. Pending reads release their lease.
+Failed callbacks keep a lease-expiry retry path; completion uses the normal
+conditional route commit. Manual, canceled and completed job waits are excluded.
 
 Discovery provides a reason to inspect a run. Registered recovery still checks
 the saved attachments, compatible definitions, effect policy and ownership

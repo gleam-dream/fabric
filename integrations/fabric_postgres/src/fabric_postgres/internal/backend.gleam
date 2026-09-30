@@ -321,9 +321,11 @@ fn claim_ready(
         <> " r LEFT JOIN "
         <> table
         <> " d ON d.run_id = r.dependency_id"
-        <> " WHERE r.lease_owner IS NULL AND r.dependency_id IS NOT NULL"
+        <> " WHERE r.lease_owner IS NULL"
+        <> " AND (r.dependency_id IS NOT NULL OR r.discovery #>> '{wait,every}' IS NOT NULL)"
         <> " AND r.discovery_revision = r.revision AND r.discovery->>'version' = $4"
-        <> " AND (r.observed_key IS DISTINCT FROM r.discovery #>> '{wait,key}' OR r.observed_revision IS DISTINCT FROM d.revision)"
+        <> " AND ((r.dependency_id IS NOT NULL AND (r.observed_key IS DISTINCT FROM r.discovery #>> '{wait,key}' OR r.observed_revision IS DISTINCT FROM d.revision))"
+        <> " OR (r.discovery #>> '{wait,every}' IS NOT NULL AND (r.observed_key IS DISTINCT FROM r.discovery #>> '{wait,key}' OR r.discovery_checked_at + (r.discovery #>> '{wait,every}')::bigint * interval '1 millisecond' <= clock_timestamp())))"
         <> " ORDER BY r.discovery_checked_at, r.run_id LIMIT $3 FOR UPDATE OF r SKIP LOCKED)"
         <> " UPDATE "
         <> table

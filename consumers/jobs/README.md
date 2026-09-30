@@ -14,6 +14,14 @@ the record unchanged. A completed digest and the graph's route commit together.
 The wait holds neither a runner nor a lease. Canceling this read-only binding
 records `graph.JobDetached` and leaves the independently owned job running.
 
+`fabric_jobs_demo.scheduled_runtime` opts into a 100 ms observation interval.
+Register it with `graph.recovery` in `fabric.sweeper` on a leased store. Its
+first observation is immediately eligible; subsequent ready claims use the
+backend's saved claim time and clock. The restarted sweeper example waits for
+the real service artifact without calling `graph.poll_job`. Its test backend
+survives store-process loss in the same VM; PostgreSQL scheduling and restart
+are exercised separately by the integration package.
+
 Run from the repository root:
 
 ```sh
@@ -60,6 +68,8 @@ The scenarios prove:
 - queued jobs and completed artifacts survive the job service's own restart.
 - a retained job wait reconnects after Fabric restart without resubmission;
 - detaching observation leaves the real remote job to complete independently.
+- a restarted registered sweeper observes real completion without resubmission
+  or manual polling.
 
 Fabric's directory store proves store-process recovery, not power-loss safety.
 The service writes and syncs its deterministic artifact before committing the
@@ -67,6 +77,6 @@ completion in SQLite. If that completion commit is lost, it may safely write
 that same artifact again. This guarantee belongs to this example service; it
 is not a general exactly-once effect guarantee.
 
-Automatic completion observation, owned remote cancellation and durable deadlines
-remain open. The retained wait currently needs explicit polling. Saga and Grind
-remain optional consumer integrations.
+Owned remote cancellation and durable deadlines remain open. Manual observation
+works with any store; scheduled observation needs a leased backend and sweeper.
+Saga and Grind remain optional consumer integrations.

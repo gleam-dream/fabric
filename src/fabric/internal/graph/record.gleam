@@ -4,6 +4,7 @@
 //// Encode once per write and reuse those bytes for acknowledgement recovery.
 
 import fabric/graph/child
+import fabric/graph/job
 import fabric/graph/operation
 import fabric/internal/budget/config as budget_config
 import fabric/internal/graph/controller as g
@@ -17,7 +18,7 @@ import gleam/string
 
 pub const format = "fabric.graph"
 
-pub const version = 7
+pub const version = 8
 
 pub type EncodeError {
   InvalidState(detail: String)
@@ -96,26 +97,33 @@ fn identity_json(identity: run.Identity) -> Json {
 }
 
 fn prepared_json(prepared: g.Prepared) -> Json {
-  json.object([
-    #("node", json.string(prepared.node)),
-    #("operation", identity_json(prepared.operation)),
-    #("input", json.string(prepared.input)),
-    #(
-      "kind",
-      json.string(case prepared.kind {
-        operation.Activity -> "activity"
-        operation.Signal -> "signal"
-        operation.Job -> "job"
-        operation.Subgraph -> "subgraph"
-        operation.Agent -> "agent"
+  let schedule = case prepared.kind {
+    operation.Job(job.Every(ms)) -> [#("poll_every", json.int(ms))]
+    _ -> []
+  }
+  json.object(list.append(
+    [
+      #("node", json.string(prepared.node)),
+      #("operation", identity_json(prepared.operation)),
+      #("input", json.string(prepared.input)),
+      #(
+        "kind",
+        json.string(case prepared.kind {
+          operation.Activity -> "activity"
+          operation.Signal -> "signal"
+          operation.Job(_) -> "job"
+          operation.Subgraph -> "subgraph"
+          operation.Agent -> "agent"
+        }),
+      ),
+      #("recovery", case prepared.recovery {
+        operation.RequireReconciliation -> tag("reconcile", [])
+        operation.ReplayInterrupted(max) ->
+          tag("replay", [#("max_attempts", json.int(max))])
       }),
-    ),
-    #("recovery", case prepared.recovery {
-      operation.RequireReconciliation -> tag("reconcile", [])
-      operation.ReplayInterrupted(max) ->
-        tag("replay", [#("max_attempts", json.int(max))])
-    }),
-  ])
+    ],
+    schedule,
+  ))
 }
 
 fn activation_json(activation: g.Activation) -> Json {
@@ -278,6 +286,19 @@ pub fn decode(text: String) -> Result(g.State, DecodeError) {
         )
         |> result.map_error(Corrupt),
       )
+      use _ <- result.try(
+        require(
+          found >= 8
+            || !list.any(preparations(state), fn(p) {
+            case p.kind {
+              operation.Job(job.Every(_)) -> True
+              _ -> False
+            }
+          }),
+          "scheduled observations require graph version 8",
+        )
+        |> result.map_error(Corrupt),
+      )
       Ok(state)
     }
   }
@@ -304,16 +325,29 @@ fn prepared_decoder() -> Decoder(g.Prepared) {
   use node <- decode.field("node", decode.string)
   use operation <- decode.field("operation", identity_decoder())
   use input <- decode.field("input", decode.string)
+  use poll_every <- decode.optional_field(
+    "poll_every",
+    None,
+    decode.optional(decode.int),
+  )
+  let polling = case poll_every {
+    None -> job.Manual
+    Some(ms) -> job.Every(ms)
+  }
   use kind <- decode.field("kind", {
     use name <- decode.then(decode.string)
     case name {
       "activity" -> decode.success(operation.Activity)
       "signal" -> decode.success(operation.Signal)
-      "job" -> decode.success(operation.Job)
+      "job" -> decode.success(operation.Job(polling))
       "subgraph" -> decode.success(operation.Subgraph)
       "agent" -> decode.success(operation.Agent)
       _ -> decode.failure(operation.Activity, "a known operation kind")
     }
+  })
+  use _ <- decode.then(case poll_every, kind {
+    Some(_), operation.Job(_) | None, _ -> decode.success(Nil)
+    _, _ -> decode.failure(Nil, "only a job may carry a poll interval")
   })
   use recovery <- decode.field("recovery", {
     use name <- tagged(operation.RequireReconciliation)
@@ -687,7 +721,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
     }
     g.WaitingJob(a) -> {
       use _ <- result.try(require(
-        a.prepared.kind == operation.Job,
+        is_job(a.prepared.kind),
         "job wait requires a job observer",
       ))
       pending(state, count, last, a)
@@ -743,10 +777,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
     g.Ended(g.Cancelled(a, disposition)) -> {
       use _ <- result.try(case disposition {
         g.JobDetached ->
-          require(
-            a.prepared.kind == operation.Job,
-            "detachment requires a job observer",
-          )
+          require(is_job(a.prepared.kind), "detachment requires a job observer")
         g.AfterChild(id) ->
           require(
             {
@@ -763,7 +794,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
         "a canceled signal cannot have an activity disposition",
       ))
       use _ <- result.try(require(
-        a.prepared.kind != operation.Job
+        !is_job(a.prepared.kind)
           || disposition == g.BeforeStart
           || disposition == g.JobDetached,
         "a job observation can only detach or be canceled before admission",
@@ -848,7 +879,7 @@ fn finished(
   }
 }
 
-fn has_job(state: g.State) -> Bool {
+fn preparations(state: g.State) -> List(g.Prepared) {
   let current = case state.phase {
     g.Ready(a)
     | g.Queued(a)
@@ -867,11 +898,19 @@ fn has_job(state: g.State) -> Bool {
     g.Ended(g.Exhausted(next)) -> [next]
     g.Ended(g.Completed(_)) -> []
   }
-  list.any(
-    list.append(
-      current,
-      list.map(state.receipts, fn(receipt) { receipt.activation.prepared }),
-    ),
-    fn(prepared) { prepared.kind == operation.Job },
+  list.append(
+    current,
+    list.map(state.receipts, fn(receipt) { receipt.activation.prepared }),
   )
+}
+
+fn is_job(kind: operation.Kind) -> Bool {
+  case kind {
+    operation.Job(_) -> True
+    _ -> False
+  }
+}
+
+fn has_job(state: g.State) -> Bool {
+  list.any(preparations(state), fn(prepared) { is_job(prepared.kind) })
 }

@@ -55,7 +55,8 @@ pub fn idle_graph_and_agent_attachments_have_stable_discovery_keys_test() {
     let state = waiting(kind)
     let wait = project(state)
     wait.run |> should.equal(support.id("root"))
-    wait.dependency |> should.equal(support.id(child.reserved_id("root", 1)))
+    wait.trigger
+    |> should.equal(discovery.Changed(support.id(child.reserved_id("root", 1))))
     project(graph.State(..state, incarnation: 8)) |> should.equal(wait)
     let assert graph.WaitingChild(a, id) = state.phase
     project(
@@ -92,7 +93,7 @@ pub fn idle_graph_and_agent_attachments_have_stable_discovery_keys_test() {
         graph.ChildWaiting(graph.reference(joined, next_activation), next_child),
       )
     should.be_false(project(waiting).key == wait.key)
-    should.be_false(project(waiting).dependency == wait.dependency)
+    should.be_false(project(waiting).trigger == wait.trigger)
     let cancelled =
       graph.State(
         ..state,
@@ -101,7 +102,7 @@ pub fn idle_graph_and_agent_attachments_have_stable_discovery_keys_test() {
           graph.UnresolvedCancellation(graph.Uncertain("child stopped")),
         )),
       )
-    project(cancelled).dependency |> should.equal(wait.dependency)
+    project(cancelled).trigger |> should.equal(wait.trigger)
     should.be_false(project(cancelled).key == wait.key)
   })
 }
@@ -140,13 +141,13 @@ pub fn unknown_corrupt_and_misfiled_records_have_no_usable_discovery_index_test(
   json.parse(indexed, decode.at(["wait", "dependency"], decode.string))
   |> should.equal(Ok(child.reserved_id("root", 1)))
   list.each(
-    ["invalid", string.replace(encoded, "\"version\":7", "\"version\":999")],
+    ["invalid", string.replace(encoded, "\"version\":8", "\"version\":999")],
     fn(encoded) {
       discovery.inspect(encoded) |> should.be_error
-      discovery.encode("root", encoded) |> should.equal("{\"version\":2}")
+      discovery.encode("root", encoded) |> should.equal("{\"version\":3}")
     },
   )
-  discovery.encode("wrong", encoded) |> should.equal("{\"version\":2}")
+  discovery.encode("wrong", encoded) |> should.equal("{\"version\":3}")
 }
 
 pub fn completed_and_settled_child_attachments_stop_dependency_discovery_test() {

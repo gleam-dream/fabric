@@ -2,6 +2,7 @@
 
 import fabric/graph
 import fabric/graph/child
+import fabric/graph/job
 import fabric/run
 import fabric/store
 import fabric_postgres
@@ -155,4 +156,41 @@ pub fn concurrent_refresh_batches_examine_each_stale_row_once_test() {
   fabric_postgres.refresh_discovery(settings, 10) |> should.equal(Ok(0))
   executions(connection, table) |> should.equal(before)
   backend.claim_ready("scanner", 60_000, 10) |> should.equal(Ok([]))
+}
+
+pub fn refreshing_a_scheduled_wait_preserves_its_last_claim_time_test() {
+  let connection = support.pool(4)
+  let schema = support.schema()
+  let settings = support.migrated(connection, "poll-refresh", schema)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("poll-refresh"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let runtime =
+    graph_run_test.scheduled_job(runs, 60_000, fn(_) { Ok(job.Pending) })
+  let assert Ok(id) = run.parse_id("refresh-poll")
+  let assert Ok(handle) = graph.start(runtime, id, "receipt")
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.AwaitingJob(_) = waiting.status
+  let backend = fabric_postgres.backend(settings)
+  backend.claim_ready("poller", 60_000, 1) |> should.equal(Ok(["refresh-poll"]))
+  let assert Ok(row) = backend.get("refresh-poll")
+  backend.compare_and_set(
+    "refresh-poll",
+    row.revision,
+    row.record,
+    store.Release,
+  )
+  |> should.be_ok
+  let table = table(schema)
+  let assert Ok(_) =
+    pog.query(
+      "UPDATE "
+      <> table
+      <> " SET revision=revision+1 WHERE run_id='refresh-poll'",
+    )
+    |> pog.execute(connection)
+  let before = executions(connection, table)
+  fabric_postgres.refresh_discovery(settings, 10) |> should.equal(Ok(1))
+  executions(connection, table) |> should.equal(before)
+  backend.claim_ready("poller-again", 60_000, 1) |> should.equal(Ok([]))
 }

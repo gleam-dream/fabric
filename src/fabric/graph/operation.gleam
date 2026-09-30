@@ -33,7 +33,7 @@ pub type Failure {
 pub type Kind {
   Activity
   Signal
-  Job
+  Job(polling: job.Polling)
   Subgraph
   Agent
 }
@@ -41,7 +41,10 @@ pub type Kind {
 type Implementation(context, input, output) {
   Perform(fn(context, Invocation, input) -> Result(output, Failure))
   WaitForSignal
-  WaitForJob(fn(context, String) -> Result(job.Progress(String), String))
+  WaitForJob(
+    job.Polling,
+    fn(context, String) -> Result(job.Progress(String), String),
+  )
   Managed(Kind, child_driver.Driver)
 }
 
@@ -118,7 +121,7 @@ pub fn await_job(
     job.receipt_codec(observer),
     job.output_codec(observer),
     RequireReconciliation,
-    WaitForJob(job.reader(observer)),
+    WaitForJob(job.polling(observer), job.reader(observer)),
   )
 }
 
@@ -127,7 +130,7 @@ pub fn job_reader(
   operation: Operation(context, input, output),
 ) -> fn(context, String) -> Result(job.Progress(String), String) {
   case operation.implementation {
-    WaitForJob(read) -> read
+    WaitForJob(_, read) -> read
     _ -> fn(_, _) { Error("operation is not a job observer") }
   }
 }
@@ -136,7 +139,7 @@ pub fn kind(operation: Operation(context, input, output)) -> Kind {
   case operation.implementation {
     Perform(_) -> Activity
     WaitForSignal -> Signal
-    WaitForJob(_) -> Job
+    WaitForJob(polling, _) -> Job(polling)
     Managed(kind, _) -> kind
   }
 }
@@ -146,7 +149,8 @@ pub fn with_replay(
   max_attempts: Int,
 ) -> Result(Operation(context, input, output), ConfigurationError) {
   case kind(operation), max_attempts >= 1 {
-    Signal, _ | Job, _ | Subgraph, _ | Agent, _ -> Error(ReplayRequiresActivity)
+    Signal, _ | Job(_), _ | Subgraph, _ | Agent, _ ->
+      Error(ReplayRequiresActivity)
     Activity, True ->
       Ok(Operation(..operation, recovery: ReplayInterrupted(max_attempts)))
     Activity, False -> Error(InvalidAttemptBound(max_attempts))
@@ -227,7 +231,7 @@ pub fn invoker(
     Perform(_) -> fn(context, invocation, text) {
       invoke(operation, context, invocation, text)
     }
-    WaitForSignal | WaitForJob(_) | Managed(..) -> fn(_, _, _) {
+    WaitForSignal | WaitForJob(..) | Managed(..) -> fn(_, _, _) {
       Error(NotExecutable)
     }
   }
@@ -281,7 +285,7 @@ pub fn invoke(
 ) -> Result(String, Error) {
   use perform <- result.try(case operation.implementation {
     Perform(perform) -> Ok(perform)
-    WaitForSignal | WaitForJob(_) | Managed(..) -> Error(NotExecutable)
+    WaitForSignal | WaitForJob(..) | Managed(..) -> Error(NotExecutable)
   })
   use input <- result.try(decode_input(operation, text))
   use output <- result.try(

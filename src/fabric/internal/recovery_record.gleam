@@ -37,6 +37,10 @@ pub opaque type Record {
   )
 }
 
+pub fn revision(record: Record) -> Int {
+  record.entry.revision
+}
+
 pub fn load(runs: store.Store, id: String) -> Result(Record, Nil) {
   use entry <- result.try(store.get(runs, id) |> result.replace_error(Nil))
   use metadata <- result.try(retention.inspect(entry.record))

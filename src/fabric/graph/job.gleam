@@ -11,6 +11,15 @@ pub type Progress(output) {
   Failed(reason: String)
 }
 
+pub type Polling {
+  Manual
+  Every(milliseconds: Int)
+}
+
+pub type ConfigurationError {
+  InvalidPollInterval(Int)
+}
+
 pub type Reference {
   Reference(
     run: run.RunId,
@@ -26,6 +35,7 @@ pub opaque type Observer(context, receipt, output) {
     receipt: Codec(receipt),
     output: Codec(output),
     read: fn(context, receipt) -> Result(Progress(output), String),
+    polling: Polling,
   )
 }
 
@@ -38,7 +48,34 @@ pub fn observe(
   output: Codec(output),
   read: fn(context, receipt) -> Result(Progress(output), String),
 ) -> Observer(context, receipt, output) {
-  Observer(identity, receipt, output, read)
+  Observer(identity, receipt, output, read, Manual)
+}
+
+/// Opt into automatic observation by a registered sweeper on a leased store.
+/// The first observation is immediately eligible; later ready claims wait at
+/// least this interval according to the backend's clock. Manual polling remains
+/// available. Changing this interval changes the persisted operation contract.
+pub fn with_poll_interval(
+  observer: Observer(context, receipt, output),
+  milliseconds: Int,
+) -> Result(Observer(context, receipt, output), ConfigurationError) {
+  case valid_polling(Every(milliseconds)) {
+    True -> Ok(Observer(..observer, polling: Every(milliseconds)))
+    False -> Error(InvalidPollInterval(milliseconds))
+  }
+}
+
+@internal
+pub fn valid_polling(polling: Polling) -> Bool {
+  case polling {
+    Manual -> True
+    Every(ms) -> ms > 0 && ms <= 4_294_967_295
+  }
+}
+
+@internal
+pub fn polling(observer: Observer(context, receipt, output)) -> Polling {
+  observer.polling
 }
 
 @internal
