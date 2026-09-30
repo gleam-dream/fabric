@@ -239,6 +239,7 @@ fn manifest(spec: Spec(context, state, answer)) -> String {
               operation.Activity -> "activity"
               operation.Signal -> "signal"
               operation.Subgraph -> "subgraph"
+              operation.Agent -> "agent"
             }),
           ),
           #("recovery", case node.recovery {

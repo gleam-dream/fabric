@@ -14,7 +14,7 @@
 - Last closed wave: 2, public durable serial graph runtime.
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's family budget/retention and job/deadline
+- Open decisions: wave 3's terminal agent settlement, family budget/retention and job/deadline
   contracts are being refined. Shared parent identities and manual signal
   contracts are implemented.
   Native authoring, serial lifecycle, compatibility and public control are now
@@ -24,16 +24,16 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: the shared-parent checkpoint passes 434 root tests, 32 PostgreSQL tests,
-  three graph consumer tests and 15 existing app consumer tests. Builds use
+- Gate status: the managed-agent checkpoint passes 447 root tests, 33 PostgreSQL tests,
+  four graph consumer tests and 15 existing app consumer tests. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
 - Current evidence: typed native operations and commands run through public
   start/read/await/recover/approval/reconciliation/cancellation APIs. Directory
   and PostgreSQL scenarios retain work over store-process loss. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: implement managed agent nodes over the shared parent contract,
-  then family budgeting/retention, jobs
+- Next action: add settlement for canceled agent uncertainty without restarting
+  work, including delegated families; then family budgeting/retention, jobs
   and deadlines under the [managed composition contract](managed-composition.md).
   These remain runtime states rather than blocking operation wrappers.
 - Resume note: the user requested a checkpoint commit and resumed implementation
@@ -576,3 +576,43 @@ six-step goal remains active, with wave 3 next.
   Check agent descendant ID/depth bounds under hashed graph-child identities;
   do not inherit assumptions about the shorter ordinary root ID. PostgreSQL
   still derives family roots from agent IDs and needs separate retention work.
+
+### Wave 3 — public managed agent operations
+
+- Status: `fabric/graph/agent` provides a typed definition, deployed runtime,
+  managed operation and checked child handle. Ordinary agents run under a
+  parent-reserved identity through the existing agent runner. Prompt and reply
+  conversion are pure callbacks; the typed result follows normal graph
+  acceptance. The parent never blocks an activity task on agent completion.
+- Lifecycle: all approvals and uncertainties of an idle agent family retain
+  their own references in `AgentInput`. Parent graphs park and wake on committed
+  child progress, including graph → agent → delegated-agent nesting. Recovery
+  adopts the saved agent and its prompt; lost start/completion acknowledgements
+  never call the model twice. Conversion failure keeps the original agent reply
+  and releases no route. Cross-store dispatch and child handles are refused.
+- Cancellation: existing agents use their stored cancellation path. Missing
+  agents are buried without prompt, context or answer callbacks. Settlement
+  observes a completed child's outcome without business reply conversion or
+  parent routing. Started tool uncertainty stays visible as `ChildUnresolved`.
+- Bounds/compatibility: declared agent descendants must fit valid IDs below
+  the 70-character graph reservation; construction considers each agent's
+  actual depth and child-count bounds. Graph format version 5 adds `agent`
+  operations and rejects earlier unreleased graph formats. Agent format/writer
+  version 5 is unchanged from the shared-parent checkpoint.
+- Evidence: thirteen public root tests cover typed replies, all approvals,
+  idle wakeup, directory restart, canceled approvals, canceled running tools,
+  active uncertainty reconciliation, invalid replies, nested families, lost
+  acknowledgements, cancellation racing an insert, settlement with broken
+  callbacks and valid/oversized descendant IDs. The external consumer replaces
+  its boolean reviewer with managed agents and retains the same loop/receipts.
+  A PostgreSQL scenario releases both leases, loses the store process, restores
+  the same child/approval and performs its tool once before graph completion.
+- Gate: 447 root tests, 33 PostgreSQL tests, four graph consumer tests and 15
+  existing app consumer tests pass. Builds use warnings as errors; source
+  formatting, `nix fmt`, `nix flake check` and `git diff --check` pass on this host.
+- Remaining gap: the ordinary agent API rejects reconciliation after a terminal
+  outcome. A canceled agent's uncertain tools therefore remain unresolved;
+  terminal settlement and propagation through canceled delegated families are
+  next. This checkpoint does not claim complete cancellation reconciliation,
+  shared family budgets/retention, graph recovery scanning, jobs or deadlines.
+  Wave 3 and all later waves remain active parts of the full six-step goal.

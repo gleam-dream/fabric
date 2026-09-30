@@ -1,7 +1,9 @@
 //// An external package uses only public graph APIs on the real PostgreSQL
 //// backend. Approval survives store loss and completion releases its lease.
 
+import fabric
 import fabric/graph
+import fabric/graph/agent as agent_node
 import fabric/graph/child
 import fabric/graph/definition
 import fabric/graph/operation
@@ -14,6 +16,7 @@ import fabric_postgres/agents
 import fabric_postgres/support
 import gleam/dynamic/decode
 import gleam/erlang/process
+import gleam/int
 import gleam/json
 import gleam/option.{None}
 import gleeunit/should
@@ -315,4 +318,79 @@ fn released(
     }
     _ -> False
   }
+}
+
+fn managed_agent(runs: store.Store, gate: agents.Gate) {
+  let assert Ok(agent) =
+    agent_node.new(
+      agent_node.Definition(
+        run.Identity("pg-agent-node", 1),
+        agents.agent(gate, 120),
+        codec.int(),
+        codec.string(),
+        int.to_string,
+        Ok,
+      ),
+      runs,
+      fn() { Nil },
+    )
+  let assert Ok(id) = definition.node_id("agent")
+  let node =
+    definition.node(
+      id,
+      agent_node.as_operation(agent),
+      fn(n) { Ok(n) },
+      fn(n, answer) { Ok(definition.Finish(n, answer)) },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(definition.Spec(
+      run.Identity("pg-agent-graph", 1),
+      id,
+      [node],
+      codec.int(),
+      codec.string(),
+      1,
+    ))
+  #(graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) }), agent)
+}
+
+pub fn a_managed_agent_keeps_its_approval_and_identity_after_postgres_restart_test() {
+  let settings =
+    support.migrated(support.pool(4), "graph-agent", support.schema())
+    |> fabric_postgres.with_lease(600)
+  let gate = agents.gate()
+  let assert Ok(id) = run.parse_id("postgres-managed-agent")
+  let #(owner, #(reference, approval)) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("agent-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let #(parent, _) = managed_agent(runs, gate)
+      let assert Ok(handle) = graph.start(parent, id, 41)
+      let assert Ok(waiting) = graph.await(handle, 5000)
+      let assert graph.Child(reference, child.AgentInput([approval], [])) =
+        waiting.status
+      released(settings, id, 200) |> should.be_true
+      released(settings, reference.child, 200) |> should.be_true
+      #(reference, approval)
+    })
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("agent-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let #(parent, agent) = managed_agent(runs, gate)
+  let handle = graph.attach(parent, id)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(agent) = agent_node.child(handle, reference.activation, agent)
+  fabric.id(agent) |> should.equal(reference.child)
+  let assert Ok(_) = fabric.approve(agent, approval.reference, None, Nil)
+  let arrival = agents.arrival(gate)
+  arrival.amount |> should.equal(120)
+  agents.release(arrival)
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status |> should.equal(graph.Completed("done: {\"done\":120}"))
+  agents.another(gate, 0) |> should.be_false
+  released(settings, id, 200) |> should.be_true
+  released(settings, reference.child, 200) |> should.be_true
 }

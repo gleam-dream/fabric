@@ -19,8 +19,16 @@ pub type Reference {
 pub type Progress {
   Working
   Approval(run.Requirement)
+  /// Every pending decision in an idle agent family, with its own run/action
+  /// reference. Answer through the managed agent's ordinary Fabric handle.
+  AgentInput(
+    approvals: List(run.PendingApproval),
+    uncertain: List(run.UncertainAction),
+  )
   Signal(run.Identity)
   Uncertain(String)
+  FinishedUncertain(String)
+  InvalidOutput(output: String, reason: String)
   Succeeded(String)
   Failed(String)
   Cancelled(uncertain: Bool)

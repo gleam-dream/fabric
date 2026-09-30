@@ -79,7 +79,7 @@ pub fn admit(
   )
   bounded.call(options.callback_timeout, fn() {
     use _ <- result.try(case activation.prepared.kind {
-      operation.Subgraph ->
+      operation.Subgraph | operation.Agent ->
         checked_child(runs, work, activation) |> result.replace(Nil)
       operation.Activity | operation.Signal -> Ok(Nil)
     })
@@ -513,16 +513,23 @@ fn poll_child(runner: Runner) -> Result(Runner, Error) {
           False -> child_driver.Start
         }),
       )
-      driver.read(parent, id)
+      driver.read(parent, id, case stopping {
+        True -> child_driver.Settle
+        False -> child_driver.Observe
+      })
     })
     |> result.map_error(string.inspect)
     |> result.flatten
   let ref = g.reference(state, a)
   case checked, stopping {
-    Ok(child.Approval(_)), False | Ok(child.Signal(_)), False ->
-      apply(runner, g.ChildWaiting(ref, id))
-    Error(reason), False | Ok(child.Uncertain(reason)), False ->
-      apply(runner, g.ChildUnavailable(ref, id, reason))
+    Ok(child.Approval(_)), False
+    | Ok(child.AgentInput(..)), False
+    | Ok(child.Signal(_)), False
+    -> apply(runner, g.ChildWaiting(ref, id))
+    Error(reason), False
+    | Ok(child.Uncertain(reason)), False
+    | Ok(child.FinishedUncertain(reason)), False
+    -> apply(runner, g.ChildUnavailable(ref, id, reason))
     Ok(child.Cancelled(True)), False ->
       apply(
         runner,
@@ -547,12 +554,18 @@ fn poll_child(runner: Runner) -> Result(Runner, Error) {
           )
       }
     }
+    Ok(child.InvalidOutput(output, reason)), False ->
+      apply(runner, g.ChildMappingFailed(ref, id, output, reason))
     Ok(child.Failed(reason)), False ->
       apply(runner, g.ChildFailed(ref, id, reason))
     Ok(child.Cancelled(False)), False ->
       apply(runner, g.ChildFailed(ref, id, "child was cancelled"))
     Ok(child.Cancelled(uncertain)), True ->
       apply(runner, g.ChildStopped(ref, id, uncertain))
+    Ok(child.FinishedUncertain(_)), True ->
+      apply(runner, g.ChildStopped(ref, id, True))
+    Ok(child.InvalidOutput(..)), True ->
+      apply(runner, g.ChildStopped(ref, id, False))
     Ok(child.Succeeded(_)), True | Ok(child.Failed(_)), True ->
       apply(runner, g.ChildStopped(ref, id, False))
     _, _ -> {
@@ -705,7 +718,10 @@ pub fn recover(
       }
     }
     g.Ended(g.Cancelled(a, g.UnresolvedCancellation(_)))
-      if a.prepared.kind == operation.Subgraph
+      if {
+        a.prepared.kind == operation.Subgraph
+        || a.prepared.kind == operation.Agent
+      }
     -> recover_cancelled_child(runs, work, options, entry, state, a, tries)
     _ -> recover_work(runs, work, options, entry, state, tries)
   }
@@ -752,14 +768,19 @@ fn wake_parent(
       use progress <- result.try(
         bounded.call(options.callback_timeout, fn() {
           use driver <- result.try(checked_child(runs, work, a))
-          driver.read(child.Parent(state.run, a.id), child)
+          driver.read(
+            child.Parent(state.run, a.id),
+            child,
+            child_driver.Observe,
+          )
         })
         |> result.map_error(string.inspect)
         |> result.flatten
         |> result.map_error(CallbackFailed),
       )
       case progress {
-        child.Approval(_) | child.Signal(_) -> Ok(store.KeepWatching)
+        child.Approval(_) | child.AgentInput(..) | child.Signal(_) ->
+          Ok(store.KeepWatching)
         _ ->
           recover_work(runs, work, options, entry, state, 3)
           |> result.replace(store.KeepWatching)
@@ -784,14 +805,21 @@ fn recover_cancelled_child(
   use progress <- result.try(
     bounded.call(options.callback_timeout, fn() {
       use driver <- result.try(checked_child(runs, work, activation))
-      driver.read(child.Parent(state.run, activation.id), id)
+      driver.read(
+        child.Parent(state.run, activation.id),
+        id,
+        child_driver.Settle,
+      )
     })
     |> result.map_error(string.inspect)
     |> result.flatten
     |> result.map_error(CallbackFailed),
   )
   case progress {
-    child.Succeeded(_) | child.Failed(_) | child.Cancelled(False) -> {
+    child.Succeeded(_)
+    | child.Failed(_)
+    | child.InvalidOutput(..)
+    | child.Cancelled(False) -> {
       use #(next, effects) <- result.try(
         g.step(
           state,
@@ -803,8 +831,10 @@ fn recover_cancelled_child(
     }
     child.Working
     | child.Approval(_)
+    | child.AgentInput(..)
     | child.Signal(_)
     | child.Uncertain(_)
+    | child.FinishedUncertain(_)
     | child.Cancelled(True) -> Ok(state)
   }
 }

@@ -11,6 +11,7 @@ import fabric/graph/definition
 import fabric/graph/operation
 import fabric/graph/signal
 import fabric/internal/bounded
+import fabric/internal/graph/agent_child
 import fabric/internal/graph/child_driver
 import fabric/internal/graph/controller as control
 import fabric/internal/graph/live
@@ -241,6 +242,11 @@ pub fn id(handle: Handle(context, state, answer)) -> run.RunId {
   handle.id
 }
 
+@internal
+pub fn backing_store(handle: Handle(context, state, answer)) -> store.Store {
+  handle.runtime.store
+}
+
 /// Bind a graph's native initial state and answer as one managed operation.
 /// Parent and child runtimes must use the same supervised store. The parent
 /// owns cancellation; child policy still gates every child operation.
@@ -265,7 +271,7 @@ pub fn as_subgraph(
         )
         |> result.map_error(string.inspect)
       },
-      read: fn(parent, id) {
+      read: fn(parent, id, _) {
         child_progress(runs, parent, id, 64) |> result.map_error(string.inspect)
       },
     ),
@@ -402,7 +408,18 @@ fn child_progress(
       use _ <- result.try(check_attachment(state, parent))
       use nested <- result.try(case state.phase {
         control.Joining(a, child) | control.WaitingChild(a, child) ->
-          child_progress(runs, child.Parent(state.run, a.id), child, left - 1)
+          case a.prepared.kind {
+            operation.Agent ->
+              agent_child.progress(runs, child.Parent(state.run, a.id), child)
+              |> result.map_error(CallbackFailed)
+            _ ->
+              child_progress(
+                runs,
+                child.Parent(state.run, a.id),
+                child,
+                left - 1,
+              )
+          }
         _ -> Ok(child.Working)
       })
       Ok(case state.phase {
@@ -421,7 +438,11 @@ fn child_progress(
         control.Ended(control.Cancelled(_, _)) -> child.Cancelled(False)
         _ ->
           case nested {
-            child.Approval(_) | child.Signal(_) | child.Uncertain(_) -> nested
+            child.Approval(_)
+            | child.AgentInput(..)
+            | child.Signal(_)
+            | child.Uncertain(_) -> nested
+            child.FinishedUncertain(reason) -> child.Uncertain(reason)
             _ -> child.Working
           }
       })
@@ -530,6 +551,7 @@ fn attend(
     | CancellingChild(_), True
     | Child(_, child.Working), True
     | Child(_, child.Succeeded(_)), True
+    | Child(_, child.InvalidOutput(..)), True
     | Child(_, child.Failed(_)), True
     | Child(_, child.Cancelled(_)), True
     -> {
@@ -836,7 +858,13 @@ fn reconcile_with(
     _ -> Error(CommandRefused("no unresolved result"))
   })
   use _ <- result.try(
-    case cancelled && activation.prepared.kind == operation.Subgraph {
+    case
+      cancelled
+      && {
+        activation.prepared.kind == operation.Subgraph
+        || activation.prepared.kind == operation.Agent
+      }
+    {
       True ->
         Error(CommandRefused(
           "reconcile the child, then recover its canceled parent",
@@ -929,7 +957,7 @@ fn snapshot(
         |> result.map_error(CallbackFailed),
       )
       use progress <- result.try(
-        driver.read(child.Parent(state.run, a.id), id)
+        driver.read(child.Parent(state.run, a.id), id, child_driver.Observe)
         |> result.map_error(CallbackFailed),
       )
       Ok(Child(
@@ -956,7 +984,13 @@ fn snapshot(
           {
             Error(error) -> child.Uncertain(error)
             Ok(driver) ->
-              case driver.read(child.Parent(state.run, a.id), id) {
+              case
+                driver.read(
+                  child.Parent(state.run, a.id),
+                  id,
+                  child_driver.Observe,
+                )
+              {
                 Ok(progress) -> progress
                 Error(reason) -> child.Uncertain(reason)
               }
@@ -1018,7 +1052,10 @@ fn snapshot(
               run.issued(id),
             ))
           control.UnresolvedCancellation(problem)
-            if a.prepared.kind == operation.Subgraph
+            if {
+              a.prepared.kind == operation.Subgraph
+              || a.prepared.kind == operation.Agent
+            }
           ->
             ChildUnresolved(
               child.Reference(

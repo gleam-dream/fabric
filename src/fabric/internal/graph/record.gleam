@@ -16,7 +16,7 @@ import gleam/string
 
 pub const format = "fabric.graph"
 
-pub const version = 4
+pub const version = 5
 
 pub type EncodeError {
   InvalidState(detail: String)
@@ -101,6 +101,7 @@ fn prepared_json(prepared: g.Prepared) -> Json {
         operation.Activity -> "activity"
         operation.Signal -> "signal"
         operation.Subgraph -> "subgraph"
+        operation.Agent -> "agent"
       }),
     ),
     #("recovery", case prepared.recovery {
@@ -284,6 +285,7 @@ fn prepared_decoder() -> Decoder(g.Prepared) {
       "activity" -> decode.success(operation.Activity)
       "signal" -> decode.success(operation.Signal)
       "subgraph" -> decode.success(operation.Subgraph)
+      "agent" -> decode.success(operation.Agent)
       _ -> decode.failure(operation.Activity, "a known operation kind")
     }
   })
@@ -602,14 +604,20 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
   let count = list.length(state.receipts)
   case state.phase {
     g.Blocked(a, g.InvalidResult(_, _))
-      if a.prepared.kind == operation.Subgraph
+      if {
+        a.prepared.kind == operation.Subgraph
+        || a.prepared.kind == operation.Agent
+      }
     -> pending(state, count, last, a)
     g.Joining(a, id)
     | g.WaitingChild(a, id)
     | g.StoppingChild(a, id)
     | g.ChildBlocked(a, id, _) -> {
       use _ <- result.try(require(
-        a.prepared.kind == operation.Subgraph
+        {
+          a.prepared.kind == operation.Subgraph
+          || a.prepared.kind == operation.Agent
+        }
           && id == child.reserved_id(state.run, a.id),
         "invalid child reservation",
       ))
@@ -675,7 +683,10 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       use _ <- result.try(case disposition {
         g.AfterChild(id) ->
           require(
-            a.prepared.kind == operation.Subgraph
+            {
+              a.prepared.kind == operation.Subgraph
+              || a.prepared.kind == operation.Agent
+            }
               && id == child.reserved_id(state.run, a.id),
             "cancellation does not identify its child",
           )

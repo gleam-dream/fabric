@@ -9,11 +9,19 @@ pub type Reservation {
   Cancel
 }
 
+pub type Observation {
+  Observe
+  /// Cancellation observes the retained outcome without interpreting a
+  /// business reply through application callbacks.
+  Settle
+}
+
 pub type Driver {
   Driver(
     store: fn() -> Result(Pid, Nil),
     reserve: fn(child.Parent, String, String, Reservation) ->
       Result(Nil, String),
-    read: fn(child.Parent, String) -> Result(child.Progress, String),
+    read: fn(child.Parent, String, Observation) ->
+      Result(child.Progress, String),
   )
 }

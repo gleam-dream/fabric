@@ -194,7 +194,10 @@ pub fn step(
     }
     ChildCancellationSettled(ref, id),
       Ended(Cancelled(a, UnresolvedCancellation(_)))
-      if a.prepared.kind == operation.Subgraph
+      if {
+        a.prepared.kind == operation.Subgraph
+        || a.prepared.kind == operation.Agent
+      }
     -> {
       use _ <- result.try(matches(state, a, ref))
       use _ <- result.try(case id == child.reserved_id(state.run, a.id) {
@@ -380,7 +383,7 @@ fn queue(state: State, activation: Activation) -> #(State, List(Effect)) {
       Dispatch(activation),
     ])
     operation.Signal -> #(State(..state, phase: WaitingSignal(activation)), [])
-    operation.Subgraph -> {
+    operation.Subgraph | operation.Agent -> {
       let id = child.reserved_id(state.run, activation.id)
       #(State(..state, phase: Joining(activation, id)), [
         ObserveChild(activation, id),

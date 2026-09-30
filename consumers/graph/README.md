@@ -16,6 +16,13 @@ Its test delivers native boolean decisions through `graph.deliver`, first
 requesting another draft and then accepting it. State, routes and bounds stay
 the same; the graph waits as stored data between decisions.
 
+`execute_agent` instead supplies the boolean through an ordinary managed agent.
+Its versioned `fabric/graph/agent.Definition` builds a prompt from the native
+revision and converts `approve`/`revise` replies into `Bool`. The same state,
+routes and six-activation bound produce the same three-draft result. Every
+review visit owns a separate durable agent run; this is not a blocking tool
+wrapper. The model is scripted here; real provider adapters remain a later wave.
+
 The example uses an in-memory store and scripted/manual decisions. Real restart
 coverage lives in `test/fabric/graph_runtime_test.gleam` and the PostgreSQL
 integration tests. The package has no Saga or Grind dependency.
