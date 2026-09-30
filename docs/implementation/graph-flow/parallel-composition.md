@@ -1,0 +1,123 @@
+# Structured parallel graph contract
+
+This refines G9 in the [wave tracker](wave-tracker.md) under the authorized
+six-stage program. It owns the fork lifecycle described by
+[GRAPH-FLOW](../../GRAPH-FLOW.md#parallel-composition-without-shared-writes).
+Stage 4 remains open until the public runtime and persistent-backend scenarios
+exercise this contract.
+
+## Membership and ownership
+
+A fork occurrence belongs to one parent run and one activation. It fixes an
+ordered list of member requests before admitting any child. A request names a
+versioned child definition and its encoded initial state. Member ordinals start
+at one; equal inputs still produce different members. Repeating a node creates
+another activation and another occurrence. Incarnations and observation attempts
+do not change the occurrence or member identity.
+
+Each admitted member owns a managed graph child with private state. Ordinary
+operations and agents can participate through graph definitions. Pair composition
+retains two independently typed answers; map composition retains one answer per
+input position. Both use this same scope lifecycle. The parent commits one join
+after the scope settles. Branches never write parent application state directly.
+
+The scope records a positive maximum member count and a positive concurrency
+limit. An empty map is successful with no children. An oversized map is refused
+before admission. Concurrency counts admitted, unsettled members, including
+members waiting for approvals, signals or reconciliation. Admission follows
+declared order. Shared family work, child and depth budgets still apply.
+Restoration also checks capacity at each admitted ordinal: an earlier member
+that remains unsettled could not have freed its slot for a later member.
+
+## Member lifecycle
+
+| State                         | Meaning                                               |
+| ----------------------------- | ----------------------------------------------------- |
+| Pending                       | No child has been admitted.                           |
+| Withdrawn                     | A stop prevented admission; no child is owned.        |
+| Rejected(reason)              | Admission failed definitely; no child is owned.       |
+| Admitted(Active)              | The scope owns a child whose result is not yet known. |
+| Admitted(Uncertain(evidence)) | Child effects or its result need resolution.          |
+| Admitted(Succeeded(output))   | A validated encoded result is retained.               |
+| Admitted(Failed(reason))      | A definite child failure is retained.                 |
+| Admitted(Cancelled)           | The child is canceled with no unresolved effects.     |
+
+Admission is a retained ownership fact, not proof that child start was
+acknowledged. Recovery must adopt the same child identity. A rejected admission
+and a failed admitted child remain different because only the latter has a
+child to retain and settle. Child records own detailed approval, signal, job
+and effect evidence; the scope owns membership and join eligibility.
+
+The scope is either open or stopping with a retained first cause: a failed
+member, explicit cancellation, or expiration. A definite rejection, failure or
+unexpected child cancellation closes admission and withdraws pending members.
+Every admitted unsettled child must then receive cancellation and be observed
+until settled. Later successes remain evidence and cannot turn the stopped
+scope into a successful join. Later stop requests do not replace its cause.
+An admission rejection must itself be the saved stop cause: once another stop
+has committed, admission can no longer be attempted or rejected.
+
+Uncertainty alone blocks further member admission and joining. Already admitted
+members may settle. Resolving the uncertain child's record can restore active
+work or establish a terminal result. An observer error or unavailable child is
+not a definite business failure and must never free its slot.
+
+## Behavioral rules
+
+| Rule | Required outcome                                                                                                                                                                                 |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| F1   | Creation validates the occurrence, positive bounds, request identities and encoded inputs, fixing all member ordinals before admission. Empty membership succeeds; excess membership is refused. |
+| F2   | Admission selects the first pending member only when the scope is open, no member is uncertain and capacity remains. Committing admission precedes child start.                                  |
+| F3   | An observation must name an admitted member of the exact occurrence. Identical terminal observations are idempotent; conflicting terminal observations are refused.                              |
+| F4   | A successful join contains every member's result in declared order. Partial completion and uncertainty cannot release a join.                                                                    |
+| F5   | Definite member failure retains its identity as the first stop cause, withdraws pending members and keeps ownership of admitted siblings until settlement.                                       |
+| F6   | Explicit cancellation or expiration also closes admission and retains cleanup. Cancellation may win before the parent commits its join, even after all member results arrived.                   |
+| F7   | Uncertainty prevents new admissions and join completion until authoritative child evidence resolves it. Stop intent never erases uncertainty.                                                    |
+| F8   | Restoring a scope validates membership, bounds, admission order, stop cause and member-state coherence. Saved outcomes are reused without rerunning members.                                     |
+
+## Join and failure handling
+
+Successful pair and map results keep their native result types. A settled
+definite member failure is a typed fork failure available to the node's
+acceptance callback, so the application can route to a fallback. Its failed
+member reference and all saved member outcomes remain inspectable. Explicit
+parent cancellation and expiration bypass business acceptance, as they do for
+serial managed children. A failed join callback retains the settled scope and
+encoded output for reconciliation; it never repeats children.
+
+Readiness is derived from the saved scope. It is not another terminal flag.
+A scope with unsettled admitted members cannot join, including after a stop.
+The parent record's revision check arbitrates concurrent observations, stop
+intent and join acceptance. An observation of a child result does not itself
+authorize a successor or replace the parent's ownership checks.
+
+## Runtime and persistence integration
+
+The graph controller owns the scope within its execution record, retaining it
+in history after a join. The runner commits membership and admissions before
+effects, verifies deployed child definitions, reserves family capacity, starts
+or adopts managed children, and commits observations. Live reports remain
+fenced by the graph controller's incarnation and attempt. Scope references
+add membership correlation; they do not replace that fence.
+
+Idle discovery must observe every admitted unsettled child. Losing a local
+notification cannot hide completion or cleanup after restart. Retention follows
+every admitted child's reciprocal attachment and refuses pruning an incomplete
+or unresolved family. Neither scheduling hints nor missing child records grant
+permission to fabricate a result or a replacement child.
+
+This introduces no Saga, Grind or new infrastructure dependency. The first
+model supports all-success joins with settled failure handling. Streaming
+partial results, sibling writes to shared state, races and quorum policies
+remain outside this wave.
+
+## Evidence and remaining integration
+
+The pure scope tests own F1–F8's transition and restoration cases. They do not
+establish runtime durability. Wave 4 also requires public typed pair/map tests,
+actual overlapping child execution, partial restart, missed notifications,
+failure during another member's effect, cancellation and uncertain cleanup,
+join failure, repeated visits and sibling scopes, shared budgets, and persistent
+concurrency scenarios. Existing graph record versions must explicitly reject
+the new scope state when it is integrated; no format change is claimed by the
+standalone lifecycle model.
