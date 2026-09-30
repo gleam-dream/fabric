@@ -104,3 +104,15 @@ does not list Gleam. The [2026-07-28 tool contract](https://modelcontextprotocol
 must be checked alongside a chosen client's actual supported version before
 selecting a transport subset. No classifier/MCP library has been selected and
 no live classifier/MCP acceptance is claimed by this initial reconnaissance.
+
+## Current adapter evidence
+
+The optional [MCP package](../../../integrations/fabric_mcp/README.md) now owns
+its bounded modern stdio transport and typed schema-pinned graph binding; its
+real local SQLite service evidence is recorded in [the MCP contract](mcp-adapter.md).
+The optional [TypeSafe package](../../../integrations/fabric_typesafe/README.md)
+now provides typed heterogeneous classifier batches and native HTTP. Its
+[contract and evidence](classifier-adapter.md) retain protocol-fixture checks
+separately from pending Jev inference. Both decision producers use the same
+application routing definition in the decision consumer. Live LLM and classifier
+credentials remain unavailable, so stage-5 real-provider acceptance stays open.

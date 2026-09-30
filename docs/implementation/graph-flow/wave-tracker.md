@@ -21,8 +21,11 @@
   absent or empty. The user has been asked to identify an existing provider setup.
   The optional MCP package now has a native stdio connection and typed graph
   binding proven against a real SQLite service, including approval, schema drift,
-  cancellation and offline restart. Live LLM acceptance and the classifier
-  producer remain open. No new paid infrastructure is selected.
+  cancellation and offline restart. The optional TypeSafe adapter now provides
+  heterogeneous typed classifier batches, bounded HTTP and durable receipts.
+  LLM and classifier producers share one routing consumer. Live LLM/classifier
+  acceptance remains open; both live commands stopped before I/O because their
+  configured keys were missing. No new paid infrastructure is selected.
   Stage 4 now includes typed pairs and bounded maps, isolated results, cyclic
   and sibling identity, shared budgets, persistent discovery and retained
   cancellation/expiration through nested cleanup. Its acceptance evidence is
@@ -32,12 +35,15 @@
 - Temporary substitutions: scripted decisions remain in tests and the earlier
   graph example. The new decision consumer has a real llm_wire entry point;
   live acceptance is still pending. The MCP transport and graph binding have
-  real local evidence. The classifier adapter is still required.
+  real local evidence. The classifier's protocol fixture is explicit and is
+  not evidence of Jev inference; its live entry point is implemented.
   The synchronous authoring driver has been replaced by the persistent runner.
-- Gate status: the MCP package passes 22 scenarios and four independent service
+- Gate status: the classifier package passes 18 scenarios and three independent
+  HTTP fixture tests; the decision consumer passes two tests exercising both
+  routes with each producer. The MCP package passes 22 scenarios and four independent service
   tests with warnings as errors. The root gate passed 616 tests in the transport
   checkpoint; the typed MCP slice changes no core/backend source. Earlier gates
-  passed one decision consumer test, five graph consumer tests, 15 app consumer
+  passed five graph consumer tests, 15 app consumer
   tests, 19 external-job scenarios and five independent job-service tests.
   The 57-test PostgreSQL gate passed for stage 4. Graph/backend formats are
   unchanged. Source formatting, `nix fmt`, `nix flake check` and
@@ -50,10 +56,10 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: implement and exercise the classifier producer using current
-  primary protocol documentation. Retry the LLM live consumer only when usable
-  provider configuration is supplied. Then evaluate the ordinary agent-loop
-  graph recipe against its retained parity requirements. Stages 5–6 remain open;
+- Next action: evaluate the ordinary agent-loop graph recipe against its retained
+  parity requirements while live provider credentials remain unavailable. Retry
+  the LLM/classifier live consumers only when usable configuration is supplied.
+  Keep their real-provider acceptance pending. Stages 5–6 remain open;
   completion of the optional MCP binding does not complete the full goal.
 - Resume note: the user requested another checkpoint commit and continued
   implementation on 2026-09-30. The app goal is confirmed active with all six
@@ -1672,3 +1678,49 @@ six-step goal remains active, with wave 3 next.
 - Remaining goal: the classifier producer and live LLM acceptance, followed by
   the agent-loop recipe/parity evaluation. The full unbounded six-stage goal
   remains active. No credential failure prevents independent classifier work.
+
+### Wave 5: typed non-generative classifier and shared decision routes
+
+- Governing rules: G6/G10 and [the classifier contract](classifier-adapter.md).
+  The optional `fabric_typesafe` package uses the documented System One HTTP API
+  directly, with the existing Gun transport dependency. Fabric core gains no
+  classifier dependency. Noul retains the yes probability; Choice maps labels
+  to native values and retains its distribution; Score retains its fractional
+  position on the actual rubric. Confidence stays concentration evidence.
+- Composition: checked question constructors and heterogeneous batches retain
+  unique IDs and complete distributions. The decision consumer's LLM and
+  classifier producers now use one `publish`/`revise` routing definition, with
+  separate deployed identities and receipt codecs. Neither uses chat state,
+  Saga or Grind. Routing thresholds and consequences belong to the application.
+- Protocol: one request has verified TLS, byte/header/deadline bounds and owner
+  cancellation. There are no redirects or automatic retries. Preparation and
+  proven unsent connection failures are definite; post-dispatch uncertainty
+  cannot release a successor. HTTP errors expose status and retry hints without
+  copying the body or key into diagnostics.
+- Recovery: `fabric.typesafe.receipt.v1` preserves the exact request/response,
+  requested/resolved models, reported tokens and typed answers. Exact JSON
+  range checks precede float projection; stored questions and rubrics must match
+  the deployed batch. Native answer/model/usage forgery is refused. Completed
+  receipts restore after store loss with the HTTP service already stopped.
+  Graph writer 14/readers 5–14 and all backend formats remain unchanged.
+- Evidence: 18 public package scenarios cover question shapes and invalid
+  evidence, approval before I/O, transport limits, deadline/caller cancellation,
+  failed dispatch, no redirects/retries, uncertainty and offline restart. Three
+  independent Python tests check fixture shapes, status/hints and incomplete
+  replies. Two separate consumer tests cover both routes with each producer.
+  The fixture names itself `protocol-fixture-only`; it performs no inference.
+- Corrections found during implementation: canonical JSON numbers needed a
+  decimal mantissa before native float parsing, and credential validation needed
+  to reject all ASCII controls rather than just CR/LF. Model identities now
+  reject whitespace-only values on both fresh and restored receipts.
+- Gate: package and consumer builds use warnings as errors. Their 18/2 Gleam
+  tests and three independent HTTP checks pass. Core source remains unchanged
+  from the 616-test root gate and the backend from its 57-test PostgreSQL gate.
+  `nix fmt`, `nix flake check` and `git diff --check` pass on this host.
+  Final evidence is retained in the adapter document.
+- Live limitation: `gleam run -m fabric_decision_classifier` stopped before I/O
+  because `TYPESAFE_API_KEY` was missing or empty. No Jev inference or provider
+  spend occurred. The earlier live LLM limitation still applies. Provider
+  credentials are requested once and remain pending; no offline fixture replaces
+  that acceptance. The complete unbounded six-stage goal is active. Independent
+  agent-recipe evaluation proceeds while stage-5 live acceptance remains open.

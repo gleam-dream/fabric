@@ -36,8 +36,11 @@ retaining typed answers, raw JSON and usage without a chat continuation. See the
 The optional [MCP package](integrations/fabric_mcp/README.md) binds discovered
 tool schemas and native values to policy-gated operations, retaining original
 responses and restoring saved results without replay. Its stdio client and graph
-binding are exercised against a real local service. Live LLM acceptance, the
-classifier adapter and the agent-recipe evaluation remain open.
+binding are exercised against a real local service.
+The optional [TypeSafe package](integrations/fabric_typesafe/README.md) provides
+non-generative yes/no, enum and rubric-score decisions with durable typed receipts.
+Its protocol tests and shared routing consumer pass; live LLM/classifier
+acceptance and the agent-recipe evaluation remain open.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
 
