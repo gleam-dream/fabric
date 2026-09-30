@@ -19,8 +19,13 @@ conditional routes, cycles, recovery, approval, reconciliation and cancellation.
 Step 3 now supports typed durable signals with optional deadlines, managed
 subgraphs and agents, shared family budgets/retention, and external-job
 submission, scheduled observation, owned cancellation and job/child deadlines.
-Parallel composition, real adapters and the agent-recipe evaluation remain in
-steps 4–6.
+Step 4 implements typed fork/map/join with private results, failure handling,
+shared bounds and retained deadlines/cleanup. Step 5 implements structured LLM,
+TypeSafe classifier and MCP adapters; actual LLM/TypeSafe inference acceptance
+still needs credentials. Step 6's [executed evaluation](implementation/graph-flow/agent-recipe-evaluation.md)
+retains ordinary agents as managed graph children because the simpler batch
+recipe does not preserve per-tool recovery. The six-step goal remains open for
+stage-5 live validation.
 
 The architecture follows variant A of
 [experiments/workflow_composition/FINDINGS.md](../experiments/workflow_composition/FINDINGS.md):

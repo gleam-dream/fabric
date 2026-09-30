@@ -11,56 +11,42 @@
   stops at its activation limit. This is evidence for step 1, not completion
   of the full runtime objective.
 - Plan revision: 3, 2026-09-29; preserves the six requested steps.
-- Last closed wave: 4, typed fork/map/join with explicit failure handling.
-- Active wave: 5, real classifier, LLM and MCP adapters.
-- Next wave: 6, agent-loop graph recipe evaluation after parity.
-- Open implementation: stage 5 now has a structured llm_wire graph operation,
-  typed receipts, nine public adapter scenarios and a separate decision consumer.
-  Its offline protocol gate passes; the live command stopped before I/O because
-  no non-empty OpenAI key was available. Anthropic and TypeSafe keys are also
-  absent or empty. The user has been asked to identify an existing provider setup.
-  The optional MCP package now has a native stdio connection and typed graph
-  binding proven against a real SQLite service, including approval, schema drift,
-  cancellation and offline restart. The optional TypeSafe adapter now provides
-  heterogeneous typed classifier batches, bounded HTTP and durable receipts.
-  LLM and classifier producers share one routing consumer. Live LLM/classifier
-  acceptance remains open; both live commands stopped before I/O because their
-  configured keys were missing. No new paid infrastructure is selected.
-  Stage 4 now includes typed pairs and bounded maps, isolated results, cyclic
-  and sibling identity, shared budgets, persistent discovery and retained
-  cancellation/expiration through nested cleanup. Its acceptance evidence is
-  recorded below and in the [parallel contract](parallel-composition.md).
-  The [durable sequential contract](durable-sequential.md) and
-  [managed composition contract](managed-composition.md) own stages 2–3.
-- Temporary substitutions: scripted decisions remain in tests and the earlier
-  graph example. The new decision consumer has a real llm_wire entry point;
-  live acceptance is still pending. The MCP transport and graph binding have
-  real local evidence. The classifier's protocol fixture is explicit and is
-  not evidence of Jev inference; its live entry point is implemented.
-  The synchronous authoring driver has been replaced by the persistent runner.
-- Gate status: the classifier package passes 18 scenarios and three independent
-  HTTP fixture tests; the decision consumer passes two tests exercising both
-  routes with each producer. The MCP package passes 22 scenarios and four independent service
-  tests with warnings as errors. The root gate passed 616 tests in the transport
-  checkpoint; the typed MCP slice changes no core/backend source. Earlier gates
-  passed five graph consumer tests, 15 app consumer
-  tests, 19 external-job scenarios and five independent job-service tests.
-  The 57-test PostgreSQL gate passed for stage 4. Graph/backend formats are
-  unchanged. Source formatting, `nix fmt`, `nix flake check` and
-  `git diff --check` pass on this host. The earlier LLM codec-copying correction
-  and evidence are retained below.
-- Current evidence: typed native operations and commands run through public
-  start/read/await/recover/approval/reconciliation/cancellation APIs. Directory
-  and PostgreSQL scenarios retain work over store-process loss. Terminal tool
-  evidence and delegated outcomes settle without resuming canceled work.
-  PostgreSQL prunes complete settled graph/agent families from their saved
-  attachments, preserving unresolved effects and incomplete membership. Shared host
-  startup and the executor preserve current agent behavior.
-- Next action: evaluate the ordinary agent-loop graph recipe against its retained
-  parity requirements while live provider credentials remain unavailable. Retry
-  the LLM/classifier live consumers only when usable configuration is supplied.
-  Keep their real-provider acceptance pending. Stages 5–6 remain open;
-  completion of the optional MCP binding does not complete the full goal.
+- Last completed evaluation: wave 6, agent-loop graph recipe. The ordinary
+  controller and managed-agent graph operation are retained after executable
+  comparison. Wave 4 remains accepted; wave 5 is open for live validation.
+- Active work: stage-5 actual LLM and classifier inference acceptance. The code,
+  offline protocol gates and opt-in live entry points are implemented. Both live
+  commands stopped before I/O because their existing API keys were missing or
+  empty. The user has one pending request to identify usable provider setup.
+- Adapter evidence: structured LLM decisions retain typed output and usage;
+  TypeSafe retains native probabilities, enum distributions and rubric scores.
+  Both use one routing consumer. MCP transport and schema-pinned binding run
+  against a real local SQLite service. No new paid infrastructure was selected.
+- Agent recipe result: five differential/counterexample scenarios and two
+  comparisons covering three captured oracle cases establish supported round
+  trips and the lifecycle mismatch. A batch receipt cannot retain tool A's
+  individual success if tool B is interrupted before the batch returns.
+  Existing agent APIs and record compatibility remain authoritative. The
+  [evaluation](agent-recipe-evaluation.md) explains why a finer replacement
+  still requires an agent-specific action lifecycle.
+- Temporary substitutions: scripted LLM output and the TypeSafe protocol fixture
+  are offline evidence only. Live provider acceptance is not waived. The
+  evaluation-only recipe lives under `test/` and is not a production API.
+- Gate status: root warnings-as-errors build and 623 tests pass, including all
+  ten oracle tests. Graph/app/decision consumers pass 5/15/2; external jobs pass
+  19 Gleam and five Python tests. PostgreSQL passes 57 tests. MCP and TypeSafe
+  have 22/18 package scenarios and four/three independent service/fixture tests.
+  Graph writer 14/readers 5–14, agent writer 7, discovery 10, retention 11 and
+  PostgreSQL schema 6 remain unchanged. `nix fmt`, `nix flake check` and
+  `git diff --check` pass on this host.
+- Current evidence: the complete selected graph surface runs through public
+  start/read/await/recover, approval, reconciliation and cancellation APIs.
+  Directory/PostgreSQL scenarios retain work across store loss. Managed agent
+  children preserve their own action lifecycle, late settlement and transcript.
+- Next action: run the opt-in LLM and classifier commands when usable existing
+  credentials are supplied, retain the actual provider evidence and correct any
+  incompatibility it reveals. This is the remaining acceptance for the full
+  six-stage goal. No further controller convergence is selected.
 - Resume note: the user requested another checkpoint commit and continued
   implementation on 2026-09-30. The app goal is confirmed active with all six
   stages preserved. The stage-4 deadline checkpoint is committed as `ea21454`;
@@ -1724,3 +1710,34 @@ six-step goal remains active, with wave 3 next.
   credentials are requested once and remain pending; no offline fixture replaces
   that acceptance. The complete unbounded six-stage goal is active. Independent
   agent-recipe evaluation proceeds while stage-5 live acceptance remains open.
+
+### Wave 6: executed agent-recipe evaluation
+
+- Governing rule: G11 and [the evaluation report](agent-recipe-evaluation.md).
+  The private executable probe uses model-turn and tool-batch graph nodes over
+  the existing pure controller and encoded agent state. It changes no production
+  API, dependency, controller or record format.
+- Positive evidence: provider replay data, native tool success/model-visible
+  errors, transcript order, usage, refusal/output limits and turn/token budgets
+  match on supported paths. Two oracle tests cover the three captured basic
+  round-trip/limit cases under their existing comparison rules. All eight
+  ordinary-runtime oracle tests still pass.
+- Counterexample: store loss after the first tool succeeds but while the second
+  waits preserves only the batch's prior inner state in the recipe. The outer
+  graph correctly blocks the batch; it cannot recover the first individual
+  success. The ordinary runner preserves that success and marks only the second
+  action uncertain. Cancellation has the same scope-level loss of detail.
+  A per-action approval cannot be answered through a generic batch approval.
+- Decision: retain the ordinary controller/runner and `fabric/graph/agent` as the
+  supported composition. A finer graph recipe still needs agent-specific action
+  admission, independent uncertainty, settlement, retry/backoff, public handles
+  and record compatibility. No simplifying replacement has been demonstrated;
+  the evaluated batch recipe is not shipped as one. This negative evaluation is
+  the accepted stage-6 outcome allowed by the original program.
+- Gate: root build and all 623 tests pass; graph/app/decision consumers pass
+  5/15/2, jobs pass 19 plus five independent service tests, and PostgreSQL passes 57. Builds use warnings as errors. Adapter and formatting results are retained
+  with the evaluation report. No design-ledger entry is cleared.
+- Remaining goal: actual LLM and TypeSafe inference evidence, using the existing
+  configured-provider question rather than another request for credentials.
+  Stage 5 stays open. The full unbounded six-stage goal remains active and is
+  not marked complete merely because its remaining live checks require input.

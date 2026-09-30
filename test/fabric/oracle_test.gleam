@@ -9,10 +9,14 @@
 
 import fabric
 import fabric/agent
+import fabric/graph
+import fabric/internal/controller
+import fabric/internal/record
 import fabric/model.{type Reply}
 import fabric/policy
 import fabric/run
 import fabric/support
+import fabric/support/agent_recipe as recipe
 import fabric/support/probe.{type Probe}
 import fabric/support/restart
 import fabric/support/scripted
@@ -151,6 +155,10 @@ fn plain(content: String) -> String {
 
 fn observe(run: fabric.Run(context), probe: Probe) -> Observed {
   let assert Ok(snapshot) = fabric.snapshot(run)
+  observe_snapshot(snapshot, probe)
+}
+
+fn observe_snapshot(snapshot: run.Snapshot, probe: Probe) -> Observed {
   let statuses =
     list.map(snapshot.actions, fn(action) {
       #(action.call.id, case action.state {
@@ -620,4 +628,114 @@ pub fn a_rejected_sub_agent_start_matches_beamweaver_test() {
   without_final(observe(run, probe)) |> should.equal(without_final(oracle))
   oracle.tool_effects |> should.equal([])
   oracle.model_calls |> should.equal(2)
+}
+
+// The evaluation-only recipe also executes the retained basic oracle cases.
+// Approval/delegation fixtures continue to belong to the ordinary runtime;
+// the recipe's unsupported lifecycle is asserted in agent_recipe_test.
+fn recipe_scenario(probe, rules, tools, max_turns) {
+  let worker =
+    agent.new("agent", oracle_model(probe, rules), tools, policy.always_allow())
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), max_turns: max_turns),
+    )
+    |> support.agent
+  let assert Ok(handle) =
+    graph.start(
+      recipe.runtime(support.store(), worker, fn() { Nil }),
+      support.id("oracle-recipe"),
+      recipe.initial(worker, Nil, "go"),
+    )
+  let assert Ok(done) = graph.await(handle, 5000)
+  let assert graph.Completed(raw) = done.status
+  let assert Ok(state) = record.decode(raw)
+  controller.snapshot(state)
+}
+
+pub fn graph_recipe_tool_round_trips_match_the_captured_oracle_subset_test() {
+  ["two_tool_calls", "tool_error_visible"]
+  |> list.each(fn(name) {
+    let probe = probe.new()
+    let #(calls, tools) = case name {
+      "two_tool_calls" -> #(
+        [
+          scripted.call("call_a", "lookup", "{\"city\":\"Paris\"}"),
+          scripted.call("call_b", "pay", "{\"to\":\"bob\"}"),
+        ],
+        [lookup(probe), pay(probe)],
+      )
+      _ -> #(
+        [
+          scripted.call("call_a", "lookup", "{\"city\":\"Paris\"}"),
+          scripted.call("call_b", "lookup", "{\"city\":\"Oslo\"}"),
+          scripted.call("call_c", "ghost", "{}"),
+        ],
+        [lookup(probe)],
+      )
+    }
+    let snapshot =
+      recipe_scenario(
+        probe,
+        fn(seen) {
+          case seen {
+            [] -> model.ToolRequest(model.AssistantTurn("", calls, None), None)
+            _ -> final(seen)
+          }
+        },
+        tools,
+        8,
+      )
+    let actual = observe_snapshot(snapshot, probe)
+    let expected = fixture(name)
+    case name {
+      "two_tool_calls" -> actual |> should.equal(expected)
+      _ -> {
+        // Package-specific error wording is excluded by the retained oracle rule.
+        actual.model_calls |> should.equal(expected.model_calls)
+        actual.tool_effects |> should.equal(expected.tool_effects)
+        list.take(actual.transcript, list.length(actual.transcript) - 1)
+        |> should.equal(list.take(
+          expected.transcript,
+          list.length(expected.transcript) - 1,
+        ))
+      }
+    }
+  })
+}
+
+pub fn graph_recipe_preserves_fabrics_deliberate_oracle_turn_limit_difference_test() {
+  let probe = probe.new()
+  let snapshot =
+    recipe_scenario(
+      probe,
+      fn(seen) {
+        let n = list.length(seen) + 1
+        model.ToolRequest(
+          model.AssistantTurn(
+            "",
+            [
+              scripted.call(
+                "call_" <> int.to_string(n),
+                "step",
+                "{\"n\":" <> int.to_string(n) <> "}",
+              ),
+            ],
+            None,
+          ),
+          None,
+        )
+      },
+      [step(probe)],
+      2,
+    )
+  let actual = observe_snapshot(snapshot, probe)
+  let expected = fixture("model_call_limit")
+  snapshot.status
+  |> should.equal(run.Finished(run.BudgetExhausted(run.TurnLimit(2))))
+  actual.model_calls |> should.equal(expected.model_calls)
+  list.take(actual.transcript, 4)
+  |> should.equal(list.take(expected.transcript, 4))
+  actual.tool_effects |> should.equal(["tool:step:1"])
+  expected.tool_effects |> should.equal(["tool:step:1", "tool:step:2"])
+  let assert [_, run.ActionRecord(state: run.NotStarted, ..)] = snapshot.actions
 }
