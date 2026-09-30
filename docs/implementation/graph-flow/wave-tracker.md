@@ -17,7 +17,10 @@
 - Open decisions: wave 3's owned remote cancellation and deadline outcome
   contracts are being refined. Submission, receipt recovery, retained read-only
   job waits and scheduled observation are proven against an independently
-  retained service. Backend-owned due intervals survive store loss.
+  retained service. An explicit cancellation workflow now proves stop admission,
+  retained acknowledgment, uncertain requests and terminal evidence against
+  that service. The managed owned-cancellation binding remains unbuilt.
+  Backend-owned due intervals survive store loss.
   Idle dependency discovery is implemented. Public shared work/child/depth budgets, mixed-family admission,
   root initialization and ledger retention are implemented. Registered graph
   sweeping recovers expired work and changed idle dependencies through mixed attachments. Shared parent
@@ -30,8 +33,8 @@
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
 - Gate status: 526 root tests, four graph consumer tests, 15 app consumer tests,
-  eight external-job consumer scenarios and two independent service tests pass.
-  The PostgreSQL gate passes 49 tests, including scheduled job recovery and pruning,
+  14 external-job consumer scenarios and five independent service tests pass.
+  The unchanged PostgreSQL package retains its previous 49-test result, including scheduled job recovery and pruning,
   migration and concurrent index refresh. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -42,8 +45,8 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: add an explicit owned remote-cancellation contract using the real
-  service in `consumers/jobs`, followed by durable deadline outcomes under the
+- Next action: bind owned remote cancellation into the managed runtime using the
+  proven request/observation contract in `consumers/jobs`, followed by durable deadline outcomes under the
   [managed composition contract](managed-composition.md).
   These remain runtime states rather than blocking operation wrappers.
 - Resume note: the user requested another checkpoint commit and continued
@@ -1031,3 +1034,41 @@ six-step goal remains active, with wave 3 next.
   cancellation and uncertainty distinctly. Exercise that contract against the
   real service before adding deadline-triggered behavior. Keep read-only
   detachment available for jobs that Fabric does not own.
+
+### Wave 3 — real external cancellation boundary
+
+- Status: an explicit cancellation graph requests a stop through a normal
+  policy-gated, fenced activity, then retains its acknowledgment while observing
+  terminal evidence. Its typed result distinguishes stopped work from completion
+  that won the race. This delivers J14–J17 at the real service boundary; managed
+  owned cancellation through `graph.cancel` remains unbuilt.
+- Remote contract: the artifact service saves cancellation intent before its
+  acknowledgment and deduplicates by receipt. Stop admission and publication
+  serialize under one SQLite transaction lock. The worker removes unpublished
+  artifact residue before confirming cancellation. Completed results and their
+  artifacts cannot be overwritten by a later stop request. Journal version 1
+  migrates the earlier queued/complete records without replacing receipts.
+- Recovery: a saved acknowledgment survives Fabric restart without another
+  request. An interrupted request repeats only with the declared service
+  idempotency contract. An unrepeatable request or returned transport uncertainty
+  remains blocked until explicit reconciliation. Service restart retains both
+  accepted stop requests and terminal outcomes.
+- Evidence: six added public consumer scenarios cover approval/refusal, restart,
+  safe and unsafe interrupted replay, returned uncertainty, and completion before
+  cancellation. Three added service tests cover migration, cancellation restart
+  with unpublished residue, and concurrent stop/publication. Malformed stop
+  requests leave the remote job unchanged.
+- Gate: `nix develop -c consumers/jobs/test-service.sh` passes 14 Gleam scenarios
+  and five Python tests. Root and graph/app consumer builds use warnings as errors;
+  their test suites pass 526, four and 15 tests. PostgreSQL source is unchanged;
+  its previous 49-test result remains evidence. No Python static-type checker is
+  configured. Source formatting, `nix fmt`, `nix flake check` and
+  `git diff --check` pass.
+- Conformance: the request and outcome use existing public activity and job-wait
+  contracts; no new core dependency or record version is required. The explicit
+  workflow is a boundary proof, not a blocking wrapper or a substitute for the
+  retained owned-job lifecycle. Wave 3 and waves 4–6 remain open.
+- Next: add the managed owned binding, keeping cancellation intent, request
+  admission, acknowledgment, terminal evidence and uncertainty distinct. Local
+  cancellation must suppress success routes while cleanup remains recoverable.
+  Durable deadline outcomes follow that binding.

@@ -145,7 +145,8 @@ fn wait_with(
         client.read(url, receipt)
         |> result.map(fn(status) {
           case status {
-            client.Queued -> job.Pending
+            client.Queued | client.CancelRequested -> job.Pending
+            client.Cancelled -> job.Failed("external job was cancelled")
             client.Complete(digest) -> job.Completed(digest)
           }
         })
@@ -181,4 +182,81 @@ fn wait_with(
       2,
     ))
   graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+}
+
+/// An explicit cancellation workflow proving the remote request boundary.
+/// This does not change `graph.cancel` on the ordinary read-only job observer.
+pub fn cancellation_runtime(
+  runs: store.Store,
+  request: fn(operation.Invocation, client.Receipt) ->
+    Result(client.CancelReply, client.Error),
+  url: String,
+  recovery: operation.Recovery,
+  gate: graph.Policy(Nil),
+) -> graph.Runtime(Nil, client.Receipt, client.CancellationOutcome) {
+  let assert Ok(stop_id) = definition.node_id("request-stop")
+  let assert Ok(wait_id) = definition.node_id("confirm-stop")
+  let stop =
+    operation.new(
+      run.Identity("artifact-stop-request", 1),
+      client.receipt_codec(),
+      client.cancel_reply_codec(),
+      fn(_, invocation, receipt) { request(invocation, receipt) },
+      client.classify,
+    )
+  let stop = case recovery {
+    operation.RequireReconciliation -> stop
+    operation.ReplayInterrupted(attempts) -> {
+      let assert Ok(replay) = operation.with_replay(stop, attempts)
+      replay
+    }
+  }
+  let request_node =
+    definition.node(
+      stop_id,
+      stop,
+      fn(receipt) { Ok(receipt) },
+      fn(receipt, reply) {
+        case reply {
+          client.StopRequested -> Ok(definition.Continue(receipt, wait_id))
+          client.AlreadyCompleted(digest) ->
+            Ok(definition.Finish(receipt, client.Finished(digest)))
+        }
+      },
+      [wait_id],
+    )
+  let observer =
+    job.observe(
+      run.Identity("artifact-stop-outcome", 1),
+      client.receipt_codec(),
+      client.cancellation_outcome_codec(),
+      fn(_, receipt) {
+        client.read(url, receipt)
+        |> result.map(fn(progress) {
+          case progress {
+            client.Queued | client.CancelRequested -> job.Pending
+            client.Cancelled -> job.Completed(client.Stopped)
+            client.Complete(digest) -> job.Completed(client.Finished(digest))
+          }
+        })
+      },
+    )
+  let wait_node =
+    definition.node(
+      wait_id,
+      operation.await_job(observer),
+      fn(receipt) { Ok(receipt) },
+      fn(receipt, outcome) { Ok(definition.Finish(receipt, outcome)) },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(definition.Spec(
+      run.Identity("artifact-cancellation", 1),
+      stop_id,
+      [request_node, wait_node],
+      client.receipt_codec(),
+      client.cancellation_outcome_codec(),
+      2,
+    ))
+  graph.new(spec, runs, fn() { Nil }, gate)
 }

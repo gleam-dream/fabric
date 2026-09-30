@@ -566,6 +566,42 @@ completion latency: scan intervals, bounded batches and unavailable services
 can delay observation. Failed recovery retries after lease expiry. General
 deadlines and owned remote cancellation remain separate contracts.
 
+### External cancellation boundary
+
+Before an owned job binding can interpret `graph.cancel`, the consumer's remote
+service must distinguish an accepted stop request from a confirmed terminal
+outcome. The boundary proof uses an explicit cancellation graph against
+the retained artifact service. This graph is a request-and-observe workflow;
+it does not change the read-only binding's `JobDetached` contract or claim that
+the managed owned-cancellation lifecycle is complete.
+
+- **J14 — cancellation admission:** requesting a remote stop is an external
+  effect. Its activation passes policy and a committed start fence before the
+  service is called. A denied or unapproved request changes no remote job.
+  Read-only observation of an existing job grants no cancellation authority.
+- **J15 — accepted stop request:** the service durably records acceptance before
+  acknowledging it. An acknowledgment proves a request, not that the job stopped.
+  Duplicate requests for the same accepted job are idempotent in this service.
+  Lost acknowledgments may use interrupted replay only under that explicit
+  service guarantee; returned transport uncertainty retains the existing
+  reconciliation requirement.
+- **J16 — terminal evidence:** observing a confirmed cancellation proves that
+  this service exposes no artifact for that job. If completion wins the
+  race, cancellation reports the existing completion and preserves its artifact.
+  A cancellation acknowledgment cannot overwrite a completed result. A saved
+  cancellation request and its final outcome survive service restart.
+- **J17 — retained cancellation workflow:** Fabric commits the stop-request
+  receipt before waiting for terminal evidence. Store loss reuses that receipt
+  rather than requesting again. The final typed result distinguishes canceled
+  work from work that already completed. Stopping the local observation never
+  silently changes that remote result.
+
+The service serializes stop admission and artifact publication through its own
+storage transaction. That is a property of this example service, not a promise
+that arbitrary external effects are exactly once or always cancelable. The
+subsequent owned binding must retain intent, request progress and uncertainty
+and must not route success after graph cancellation.
+
 ## Required evidence
 
 Signal scenarios cover store-process loss, correct native decoding, changed

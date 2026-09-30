@@ -18,7 +18,9 @@ receipt recovery and retained read-only job observation against a separate local
 service. `operation.await_job` retains the receipt without holding a runner;
 `graph.poll_job` records completion. Opt in with `job.with_poll_interval` to let
 the registered sweeper observe due jobs on a leased store, including after
-restart. Canceling either binding detaches observation.
+restart. Canceling either binding detaches observation. A separate cancellation
+workflow proves policy-gated stop requests, retained acknowledgments and terminal
+evidence against the service; managed owned cancellation remains the next step.
 Terminal agent uncertainty settlement, complete-family PostgreSQL retention and
 shared work/child/depth budgets are implemented. Registered graph sweeping recovers
 expired work and changed idle dependencies after local wakeups are lost.
