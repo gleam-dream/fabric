@@ -639,13 +639,30 @@ fn receive(runner: Runner) -> Nil {
   }
 }
 
+fn with_child_deadline(
+  runner: Runner,
+  a: g.Activation,
+  stopping: Bool,
+  next: fn() -> Result(Runner, Error),
+) -> Result(Runner, Error) {
+  use due <- result.try(case stopping {
+    True -> Ok(None)
+    False -> wait_due(runner.runs, a)
+  })
+  case due {
+    None -> next()
+    Some(now) -> apply(runner, g.ExpireWait(g.reference(runner.state, a), now))
+  }
+}
+
 fn poll_child(runner: Runner) -> Result(Runner, Error) {
   let state = runner.state
   use #(a, id, stopping) <- result.try(case state.phase {
     g.Joining(a, id) -> Ok(#(a, id, False))
-    g.StoppingChild(a, id) -> Ok(#(a, id, True))
+    g.StoppingChild(a, id, _) -> Ok(#(a, id, True))
     _ -> Error(Refused(g.WrongPhase))
   })
+  use <- with_child_deadline(runner, a, stopping)
   let parent = child.Parent(state.run, a.id)
   let checked =
     bounded.call(runner.options.callback_timeout, fn() {
@@ -663,6 +680,7 @@ fn poll_child(runner: Runner) -> Result(Runner, Error) {
     })
     |> result.map_error(string.inspect)
     |> result.flatten
+  use <- with_child_deadline(runner, a, stopping)
   let ref = g.reference(state, a)
   case checked, stopping {
     Ok(child.Approval(_)), False
@@ -688,6 +706,7 @@ fn poll_child(runner: Runner) -> Result(Runner, Error) {
         bounded.call(runner.options.callback_timeout, fn() {
           runner.work.accept(state, a, output)
         })
+      use <- with_child_deadline(runner, a, False)
       case accepted {
         Ok(Ok(decision)) ->
           apply(runner, g.ChildReturned(ref, id, output, decision))
@@ -862,82 +881,91 @@ pub fn discover(
       g.WaitingChild(..) | g.ChildBlocked(..) -> True
       _ -> False
     }
-  let outcome = case state.phase {
-    g.WaitingSignal(_) ->
-      case driven(entry, state) {
-        True -> Ok(state)
-        False -> recover_abandoned(runs, work, options, entry, state, 1)
-      }
-    g.StoppingJob(_, job.RequestQueued, _)
-    | g.StoppingJob(_, job.RequestStarted, _) ->
-      case driven(entry, state) {
-        True -> Ok(state)
-        False -> recover_work(runs, work, options, entry, state, 1)
-      }
-    g.WaitingJob(a) | g.StoppingJob(a, _, _) ->
-      discover_job(runs, work, options, entry, state, a)
-    g.Joining(a, child)
-      | g.WaitingChild(a, child)
-      | g.ChildBlocked(a, child, _)
-      | g.StoppingChild(a, child)
-      if inspect_child
-    -> {
-      use progress <- result.try(
-        bounded.call(options.callback_timeout, fn() {
-          use _ <- result.try(
-            store.get(runs, child) |> result.map_error(string.inspect),
-          )
-          use driver <- result.try(checked_child(runs, work, a))
-          let mode = case state.phase {
-            g.StoppingChild(..) -> child_driver.Cancel
-            _ -> child_driver.Discover
+  use due <- result.try(case driven(entry, state) {
+    True -> Ok(None)
+    False -> child_due(runs, state)
+  })
+  let outcome = case due {
+    Some(_) -> recover_abandoned(runs, work, options, entry, state, 1)
+    None ->
+      case state.phase {
+        g.WaitingSignal(_) ->
+          case driven(entry, state) {
+            True -> Ok(state)
+            False -> recover_abandoned(runs, work, options, entry, state, 1)
           }
-          use _ <- result.try(driver.reserve(
-            child.Parent(state.run, a.id),
-            child,
-            a.prepared.input,
-            mode,
-          ))
-          driver.read(
-            child.Parent(state.run, a.id),
-            child,
-            child_driver.Observe,
-          )
-        })
-        |> result.map_error(string.inspect)
-        |> result.flatten
-        |> result.map_error(CallbackFailed),
-      )
-      case driven(entry, state) {
-        True -> Ok(state)
-        False ->
-          case resting_child(state.phase, progress), entry.holding {
-            Some(_), store.Unheld -> Ok(state)
-            Some(phase), _ ->
-              commit_recovery(
-                runs,
-                work,
-                options,
-                entry,
-                g.State(
-                  ..state,
-                  phase: phase,
-                  incarnation: state.incarnation + 1,
-                ),
-                [],
-                1,
+        g.StoppingJob(_, job.RequestQueued, _)
+        | g.StoppingJob(_, job.RequestStarted, _) ->
+          case driven(entry, state) {
+            True -> Ok(state)
+            False -> recover_work(runs, work, options, entry, state, 1)
+          }
+        g.WaitingJob(a) | g.StoppingJob(a, _, _) ->
+          discover_job(runs, work, options, entry, state, a)
+        g.Joining(a, child)
+          | g.WaitingChild(a, child)
+          | g.ChildBlocked(a, child, _)
+          | g.StoppingChild(a, child, _)
+          if inspect_child
+        -> {
+          use progress <- result.try(
+            bounded.call(options.callback_timeout, fn() {
+              use _ <- result.try(
+                store.get(runs, child) |> result.map_error(string.inspect),
               )
-            None, _ -> recover_work(runs, work, options, entry, state, 1)
+              use driver <- result.try(checked_child(runs, work, a))
+              let mode = case state.phase {
+                g.StoppingChild(..) -> child_driver.Cancel
+                _ -> child_driver.Discover
+              }
+              use _ <- result.try(driver.reserve(
+                child.Parent(state.run, a.id),
+                child,
+                a.prepared.input,
+                mode,
+              ))
+              driver.read(
+                child.Parent(state.run, a.id),
+                child,
+                child_driver.Observe,
+              )
+            })
+            |> result.map_error(string.inspect)
+            |> result.flatten
+            |> result.map_error(CallbackFailed),
+          )
+          case driven(entry, state) {
+            True -> Ok(state)
+            False ->
+              case resting_child(state.phase, progress), entry.holding {
+                Some(_), store.Unheld -> Ok(state)
+                Some(phase), _ ->
+                  commit_recovery(
+                    runs,
+                    work,
+                    options,
+                    entry,
+                    g.State(
+                      ..state,
+                      phase: phase,
+                      incarnation: state.incarnation + 1,
+                    ),
+                    [],
+                    1,
+                  )
+                None, _ -> recover_work(runs, work, options, entry, state, 1)
+              }
           }
+        }
+        g.Ended(g.Cancelled(a, g.UnresolvedCancellation(_)))
+          | g.Ended(g.Expired(a, g.UnresolvedCancellation(_)))
+          if {
+            a.prepared.kind == operation.Subgraph
+            || a.prepared.kind == operation.Agent
+          }
+        -> settle_child(runs, work, options, entry, state, a, 1, True)
+        _ -> recover_work(runs, work, options, entry, state, 1)
       }
-    }
-    g.Ended(g.Cancelled(a, g.UnresolvedCancellation(_)))
-      if {
-        a.prepared.kind == operation.Subgraph
-        || a.prepared.kind == operation.Agent
-      }
-    -> recover_cancelled_child(runs, work, options, entry, state, a, 1)
-    _ -> recover_work(runs, work, options, entry, state, 1)
   }
   case outcome {
     Error(StoreFailed(store.Conflict(_))) if tries > 1 ->
@@ -1289,33 +1317,40 @@ fn recover_driven_child(
   options: Options,
   state: g.State,
 ) -> Result(g.State, Error) {
-  case state.phase {
-    g.Joining(a, id)
-    | g.WaitingChild(a, id)
-    | g.ChildBlocked(a, id, _)
-    | g.StoppingChild(a, id) -> {
-      use _ <- result.try(store.get(runs, id) |> result.map_error(StoreFailed))
-      let mode = case state.phase {
-        g.StoppingChild(..) -> child_driver.Cancel
-        _ -> child_driver.Start
-      }
-      use _ <- result.map(
-        bounded.call(options.callback_timeout, fn() {
-          use driver <- result.try(checked_child(runs, work, a))
-          driver.reserve(
-            child.Parent(state.run, a.id),
-            id,
-            a.prepared.input,
-            mode,
+  use due <- result.try(child_due(runs, state))
+  case due {
+    Some(_) -> Ok(state)
+    None ->
+      case state.phase {
+        g.Joining(a, id)
+        | g.WaitingChild(a, id)
+        | g.ChildBlocked(a, id, _)
+        | g.StoppingChild(a, id, _) -> {
+          use _ <- result.try(
+            store.get(runs, id) |> result.map_error(StoreFailed),
           )
-        })
-        |> result.map_error(string.inspect)
-        |> result.flatten
-        |> result.map_error(CallbackFailed),
-      )
-      state
-    }
-    _ -> Ok(state)
+          let mode = case state.phase {
+            g.StoppingChild(..) -> child_driver.Cancel
+            _ -> child_driver.Start
+          }
+          use _ <- result.map(
+            bounded.call(options.callback_timeout, fn() {
+              use driver <- result.try(checked_child(runs, work, a))
+              driver.reserve(
+                child.Parent(state.run, a.id),
+                id,
+                a.prepared.input,
+                mode,
+              )
+            })
+            |> result.map_error(string.inspect)
+            |> result.flatten
+            |> result.map_error(CallbackFailed),
+          )
+          state
+        }
+        _ -> Ok(state)
+      }
   }
 }
 
@@ -1327,14 +1362,63 @@ fn recover_abandoned(
   state: g.State,
   tries: Int,
 ) -> Result(g.State, Error) {
-  case state.phase {
-    g.WaitingSignal(a) | g.WaitingJob(a) -> {
-      use due <- result.try(wait_due(runs, a))
-      case due {
-        None
-          if entry.holding == store.HeldHere
-          && a.prepared.kind == operation.Signal
-        ->
+  use due <- result.try(child_due(runs, state))
+  case due {
+    Some(#(a, now)) -> {
+      use #(next, effects) <- result.try(
+        g.step(state, g.ExpireWait(g.reference(state, a), now))
+        |> result.map_error(Refused),
+      )
+      commit_recovery(runs, work, options, entry, next, effects, tries)
+    }
+    None ->
+      case state.phase {
+        g.WaitingSignal(a) | g.WaitingJob(a) -> {
+          use due <- result.try(wait_due(runs, a))
+          case due {
+            None
+              if entry.holding == store.HeldHere
+              && a.prepared.kind == operation.Signal
+            ->
+              commit_recovery(
+                runs,
+                work,
+                options,
+                entry,
+                g.State(..state, incarnation: state.incarnation + 1),
+                [],
+                tries,
+              )
+            None -> Ok(state)
+            Some(now) -> {
+              use #(next, effects) <- result.try(
+                g.step(state, g.ExpireWait(g.reference(state, a), now))
+                |> result.map_error(Refused),
+              )
+              commit_recovery(runs, work, options, entry, next, effects, tries)
+            }
+          }
+        }
+        g.WaitingChild(a, child) -> {
+          // A retained wait proves its child was created. Never recreate a
+          // missing record after earlier child activities may have acted.
+          use _ <- result.try(
+            store.get(runs, child) |> result.map_error(StoreFailed),
+          )
+          use _ <- result.try(
+            bounded.call(options.callback_timeout, fn() {
+              use driver <- result.try(checked_child(runs, work, a))
+              driver.reserve(
+                child.Parent(state.run, a.id),
+                child,
+                a.prepared.input,
+                child_driver.Start,
+              )
+            })
+            |> result.map_error(string.inspect)
+            |> result.flatten
+            |> result.map_error(CallbackFailed),
+          )
           commit_recovery(
             runs,
             work,
@@ -1344,53 +1428,58 @@ fn recover_abandoned(
             [],
             tries,
           )
-        None -> Ok(state)
+        }
+        g.Ended(g.Cancelled(a, g.UnresolvedCancellation(_)))
+          | g.Ended(g.Expired(a, g.UnresolvedCancellation(_)))
+          if {
+            a.prepared.kind == operation.Subgraph
+            || a.prepared.kind == operation.Agent
+          }
+        -> settle_child(runs, work, options, entry, state, a, tries, False)
+        _ -> recover_work(runs, work, options, entry, state, tries)
+      }
+  }
+}
+
+pub fn child_due(
+  runs: store.Store,
+  state: g.State,
+) -> Result(Option(#(g.Activation, Int)), Error) {
+  let current = case state.phase {
+    g.Joining(a, _)
+    | g.WaitingChild(a, _)
+    | g.ChildBlocked(a, _, _)
+    | g.Blocked(a, g.InvalidResult(_, _)) ->
+      case a.prepared.kind {
+        operation.Agent | operation.Subgraph -> Some(a)
+        _ -> None
+      }
+    _ -> None
+  }
+  case current {
+    None -> Ok(None)
+    Some(a) -> {
+      use due <- result.try(wait_due(runs, a))
+      case due {
+        None -> Ok(None)
         Some(now) -> {
-          use #(next, effects) <- result.try(
-            g.step(state, g.ExpireWait(g.reference(state, a), now))
-            |> result.map_error(Refused),
-          )
-          commit_recovery(runs, work, options, entry, next, effects, tries)
+          // A retained wait or result proves the child already existed. Its
+          // disappearance is data loss, never permission for a new tombstone.
+          use _ <- result.try(case state.phase {
+            g.WaitingChild(_, id) ->
+              store.get(runs, id)
+              |> result.replace(Nil)
+              |> result.map_error(StoreFailed)
+            g.Blocked(_, g.InvalidResult(_, _)) ->
+              store.get(runs, child.reserved_id(state.run, a.id))
+              |> result.replace(Nil)
+              |> result.map_error(StoreFailed)
+            _ -> Ok(Nil)
+          })
+          Ok(Some(#(a, now)))
         }
       }
     }
-    g.WaitingChild(a, child) -> {
-      // A retained wait proves its child was created. Never recreate a
-      // missing record after earlier child activities may have acted.
-      use _ <- result.try(
-        store.get(runs, child) |> result.map_error(StoreFailed),
-      )
-      use _ <- result.try(
-        bounded.call(options.callback_timeout, fn() {
-          use driver <- result.try(checked_child(runs, work, a))
-          driver.reserve(
-            child.Parent(state.run, a.id),
-            child,
-            a.prepared.input,
-            child_driver.Start,
-          )
-        })
-        |> result.map_error(string.inspect)
-        |> result.flatten
-        |> result.map_error(CallbackFailed),
-      )
-      commit_recovery(
-        runs,
-        work,
-        options,
-        entry,
-        g.State(..state, incarnation: state.incarnation + 1),
-        [],
-        tries,
-      )
-    }
-    g.Ended(g.Cancelled(a, g.UnresolvedCancellation(_)))
-      if {
-        a.prepared.kind == operation.Subgraph
-        || a.prepared.kind == operation.Agent
-      }
-    -> recover_cancelled_child(runs, work, options, entry, state, a, tries)
-    _ -> recover_work(runs, work, options, entry, state, tries)
   }
 }
 
@@ -1477,9 +1566,9 @@ fn wake_parent(
   }
 }
 
-/// Settlement observes retained child evidence only. It never restarts a child
-/// or calls the parent's routing callback after cancellation.
-fn recover_cancelled_child(
+/// Settlement reads retained evidence. Discovery also follows nested cleanup;
+/// neither path recreates missing children or resumes parent business routing.
+fn settle_child(
   runs: store.Store,
   work: live.Work,
   options: Options,
@@ -1487,11 +1576,28 @@ fn recover_cancelled_child(
   state: g.State,
   activation: g.Activation,
   tries: Int,
+  discover: Bool,
 ) -> Result(g.State, Error) {
   let id = child.reserved_id(state.run, activation.id)
   use progress <- result.try(
     bounded.call(options.callback_timeout, fn() {
       use driver <- result.try(checked_child(runs, work, activation))
+      use _ <- result.try(case discover {
+        False -> Ok(Nil)
+        True -> {
+          // Discovery follows already retained children so a nested cleanup
+          // can settle. Missing records never authorize child recreation.
+          use _ <- result.try(
+            store.get(runs, id) |> result.map_error(string.inspect),
+          )
+          driver.reserve(
+            child.Parent(state.run, activation.id),
+            id,
+            activation.prepared.input,
+            child_driver.Discover,
+          )
+        }
+      })
       driver.read(
         child.Parent(state.run, activation.id),
         id,

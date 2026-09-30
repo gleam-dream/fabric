@@ -1,9 +1,9 @@
 # Managed composition contract
 
 Wave 3 implements G7–G8 from the [wave tracker](wave-tracker.md), continuing the
-accepted [serial runtime](durable-sequential.md). This document distinguishes
-the first concrete signal contract from the child/job contracts still being
-refined. It is not evidence that all wave 3 behavior has shipped.
+accepted [serial runtime](durable-sequential.md). This document retains the
+signal, child, job, deadline and family contracts. The wave tracker records
+their acceptance evidence; later parallel composition remains separate work.
 
 ## Typed signals
 
@@ -30,13 +30,13 @@ encoded payload exactly, including JSON whitespace; acknowledgement uses the
 saved bytes rather than rerunning codecs to normalize historical results.
 
 Record version 2 introduced execution modes and the waiting phase. The current
-version 11 also retains subgraph and agent attachments, initial input, idle child
+version 12 also retains subgraph and agent attachments, initial input, idle child
 waits, optional root budget declarations and job observations with explicit
-cancellation ownership and deadlines. Versions 5–10 remain readable for states they can represent;
+cancellation ownership and deadlines. Versions 5–11 remain readable for states they can represent;
 versions 1–4 are rejected.
 Job observations require version 7; scheduled observations require version 8.
 Owned cancellation requires version 9, signal deadlines version 10 and job
-deadlines version 11.
+deadlines version 11; managed-child deadlines require version 12.
 The mode participates in definition
 compatibility, preventing a stored wait from becoming an executable activity.
 
@@ -65,13 +65,13 @@ child, and missing completion notifications are repaired by reading the child.
 Child approval and uncertainty remain observable through the parent's current
 attachment. Typed graph results are decoded at the child boundary; agent
 replies require an explicit business-result adapter. Mapping a child outcome
-must not obscure uncertain effects. The parent cannot finish while it owns
+must not obscure uncertain effects. The parent cannot report settled while it owns
 unsettled child work. Cancellation intent, pre-start tombstones, ancestral
 admission checks, depth and child-count bounds must cover both runtime kinds.
 The shared parent reference is `run.Parent`: `AgentParent(run, ActionId)` or
 `GraphParent(run, activation)`. Graph activations never become chat action IDs.
-Family retention uses the saved attachment contract described below. Shared
-budgets still need a contract across both runtime kinds.
+Family retention uses the saved attachment contract described below. The shared
+family reservation contract applies budgets across both runtime kinds.
 
 Both controllers retain this parent sum. Agent record version 5 writes tagged
 parent variants; older agent records decode to `AgentParent`. Writers 2–4 keep
@@ -92,7 +92,7 @@ graph-rooted family. Changed idle dependencies use the discovery contract below.
 The first managed-child implementation is a subgraph in the same store. Its
 typed operation is constructed from a child graph runtime, with the child
 state codec as input and answer codec as output. The parent applies policy
-before reserving a child identity. The identity derives from parent run and
+before committing a child attachment. The identity derives from parent run and
 activation, never an attempt or a node name, and is stored with the attachment.
 The committed attachment is the durable scheduling admission. Recovery may
 finish creating its absent child; each child operation still passes its own
@@ -739,13 +739,66 @@ child expiration remains a later slice because cleanup can outlive the deadline.
   commits, only the configured cleanup poll interval schedules observation; the
   expired timestamp must not create an endless immediately-due polling loop.
   Store loss, metadata refresh and backward clock corrections preserve these
-  distinctions. Managed-child deadlines remain the following slice.
+  distinctions. Managed-child deadlines extend this contract below.
 
 Job records write version 11 and require a stop cause; older supported stop
 records default to caller-requested cancellation. Job deadline states cannot
 decode as older formats. Retention projection 8 keeps pending cleanup unsettled;
 discovery projection 6 combines polling and absolute eligibility. PostgreSQL's
 existing schema-5 index supports that combination without another migration.
+
+### Managed-child deadline contract
+
+This slice extends D4–D8 and D10 to graph-owned agents and subgraphs under G7.
+It introduces no new scheduler or Saga dependency.
+
+- **D14 — child admission and arming:** `with_deadline` bounds a managed child
+  attachment from parent admission. The due time commits before child creation;
+  approval and unavailable arming clocks do not create child work. Every visit
+  retains its own child identity and deadline. Recovery never resets either.
+  Cancellation during unarmed admission is definite before-start cancellation.
+- **D15 — expiration owns settlement:** expiration commits its cause and closes
+  parent routing before requesting child cancellation. It uses the reserved child
+  identity, including a never-started tombstone when creation has no saved result.
+  Cleanup can outlive the deadline and uses existing admission, not fresh budget.
+  Explicit cancellation and expiration preserve whichever cause commits first.
+  Settlement does not need the deadline clock after that cause is committed.
+- **D16 — retained child evidence:** settled expiration exposes
+  `Expired(due, ChildSettled(reference))`. The referenced child keeps its actual
+  completion, failure or cancellation evidence. Uncertain effects expose
+  `Expired(due, ChildUnresolved(reference, problem))`, retain the family and remain
+  discoverable for later settlement. Neither outcome permits parent routing.
+  Recovery observes reconciled evidence without recreating a missing child or
+  repeating an uncertain effect. Compatible deployed child bindings remain required.
+- **D17 — acceptance and recovery:** child start/observation and parent result
+  mapping check the parent's deadline. A callback crossing it cannot route even
+  when it returned a valid result; rejected result mapping cannot disable expiry.
+  Public reconciliation uses the same cutoff. As with jobs, time samples precede
+  separate revision-checked commits; the bound governs parent acceptance, not
+  an atomic clock fence on every descendant effect. Committed stop intent closes
+  descendant admission through the existing ancestry checks.
+- **D18 — durable discovery:** parked and blocked child attachments become eligible
+  when their child changes or their deadline is due. Expiration switches uncertain
+  settlement to dependency-only discovery, avoiding an expired-time polling loop.
+  Restart, clock corrections, nested children and missed notifications preserve
+  the deadline and attachment. Read and await remain observational.
+
+Acceptance requires public scenarios for both child kinds, restart and overdue
+discovery, cancellation before creation, a result crossing its deadline, invalid
+mapping/reconciliation, and uncertain effects settled after expiration. Record
+validation must retain causes, refuse invalid combinations and refuse child
+deadlines in older formats. PostgreSQL must prove combined dependency/deadline
+eligibility and retention until the complete family has settled.
+
+The implementation writes graph format 12, reading 5–12. Stopping-child records
+require a cause in format 12; older records decode as caller cancellation.
+Retention projection 9 preserves expired child attachments and unresolved effects.
+Discovery projection 7 combines child dependency changes with absolute due time
+using the existing PostgreSQL schema-5 index. Refresh both projections on upgrade.
+Manual recovery observes the selected canceled/expired child's evidence;
+registered discovery also follows retained nested cleanup so an inner job can
+settle without a separate caller recovering each parent. Missing children refuse
+that discovery path. Neither path admits fresh business work.
 
 ## Required evidence
 

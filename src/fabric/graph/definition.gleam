@@ -496,7 +496,7 @@ pub fn validate(
     | control.Joining(a, _)
     | control.WaitingChild(a, _)
     | control.ChildBlocked(a, _, _)
-    | control.StoppingChild(a, _)
+    | control.StoppingChild(a, _, _)
     | control.Blocked(a, _)
     | control.Stopping(a)
     | control.Ended(control.Failed(a, _))

@@ -18,7 +18,7 @@ import gleam/string
 
 pub const format = "fabric.graph"
 
-pub const version = 11
+pub const version = 12
 
 pub type EncodeError {
   InvalidState(detail: String)
@@ -245,10 +245,11 @@ fn phase_json(phase: g.Phase) -> Json {
         #("activation", activation_json(a)),
         #("child", json.string(id)),
       ])
-    g.StoppingChild(a, id) ->
+    g.StoppingChild(a, id, cause) ->
       tag("stopping_child", [
         #("activation", activation_json(a)),
         #("child", json.string(id)),
+        #("cause", stop_reason_json(cause)),
       ])
     g.Ready(a) -> tag("ready", [#("activation", activation_json(a))])
     g.Queued(a) -> tag("queued", [#("activation", activation_json(a))])
@@ -260,6 +261,7 @@ fn phase_json(phase: g.Phase) -> Json {
       tag(
         case a.prepared.kind {
           operation.Signal -> "arming_signal"
+          operation.Subgraph | operation.Agent -> "arming_child"
           _ -> "arming_job"
         },
         [#("activation", activation_json(a))],
@@ -353,6 +355,16 @@ pub fn decode(text: String) -> Result(g.State, DecodeError) {
             p.deadline != None && p.kind != operation.Signal
           }),
           "job deadlines require graph version 11",
+        )
+        |> result.map_error(Corrupt),
+      )
+      use _ <- result.try(
+        require(
+          found >= 12
+            || !list.any(preparations(state), fn(p) {
+            p.deadline != None && is_child(p.kind)
+          }),
+          "child deadlines require graph version 12",
         )
         |> result.map_error(Corrupt),
       )
@@ -588,21 +600,27 @@ fn phase_decoder(found: Int) -> Decoder(g.Phase) {
         use reason <- decode.field("reason", decode.string)
         decode.success(g.ChildBlocked(a, id, reason))
       })
-    "joining" | "stopping_child" | "waiting_child" ->
+    "joining" | "waiting_child" ->
       Ok({
         use a <- decode.field("activation", activation_decoder())
         use id <- decode.field("child", decode.string)
         decode.success(case name {
           "joining" -> g.Joining(a, id)
-          "waiting_child" -> g.WaitingChild(a, id)
-          _ -> g.StoppingChild(a, id)
+          _ -> g.WaitingChild(a, id)
         })
+      })
+    "stopping_child" ->
+      Ok({
+        use a <- decode.field("activation", activation_decoder())
+        use id <- decode.field("child", decode.string)
+        use cause <- stop_reason_field(found, 12)
+        decode.success(g.StoppingChild(a, id, cause))
       })
     "stopping_job" ->
       Ok({
         use a <- decode.field("activation", activation_decoder())
         use progress <- decode.field("request", stop_progress_decoder())
-        use cause <- stop_reason_field(found)
+        use cause <- stop_reason_field(found, 11)
         decode.success(g.StoppingJob(a, progress, cause))
       })
     "waiting_job" ->
@@ -615,13 +633,15 @@ fn phase_decoder(found: Int) -> Decoder(g.Phase) {
         use activation <- decode.field("activation", activation_decoder())
         decode.success(g.WaitingSignal(activation))
       })
-    "arming_signal" | "arming_job" ->
+    "arming_signal" | "arming_job" | "arming_child" ->
       Ok({
         use activation <- decode.field("activation", activation_decoder())
-        case
-          { name == "arming_signal" }
-          == { activation.prepared.kind == operation.Signal }
-        {
+        let expected = case activation.prepared.kind {
+          operation.Signal -> "arming_signal"
+          operation.Subgraph | operation.Agent -> "arming_child"
+          _ -> "arming_job"
+        }
+        case name == expected {
           True -> decode.success(g.ArmingWait(activation))
           False ->
             decode.failure(
@@ -801,11 +821,12 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
         a.prepared.kind == operation.Subgraph
         || a.prepared.kind == operation.Agent
       }
-    -> pending(state, count, last, a)
-    g.Joining(a, id)
-    | g.WaitingChild(a, id)
-    | g.StoppingChild(a, id)
-    | g.ChildBlocked(a, id, _) -> {
+    -> {
+      use _ <- result.try(check_armed_child(a))
+      pending(state, count, last, a)
+    }
+    g.Joining(a, id) | g.WaitingChild(a, id) | g.ChildBlocked(a, id, _) -> {
+      use _ <- result.try(check_armed_child(a))
       use _ <- result.try(require(
         {
           a.prepared.kind == operation.Subgraph
@@ -814,6 +835,15 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
           && id == child.reserved_id(state.run, a.id),
         "invalid child reservation",
       ))
+      pending(state, count, last, a)
+    }
+    g.StoppingChild(a, id, cause) -> {
+      use _ <- result.try(check_armed_child(a))
+      use _ <- result.try(require(
+        is_child(a.prepared.kind) && id == child.reserved_id(state.run, a.id),
+        "invalid stopped child reservation",
+      ))
+      use _ <- result.try(check_stop_reason(a, cause))
       pending(state, count, last, a)
     }
     g.Ready(a) -> {
@@ -825,7 +855,11 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
     }
     g.ArmingWait(a) -> {
       use _ <- result.try(require(
-        { a.prepared.kind == operation.Signal || is_job(a.prepared.kind) }
+        {
+          a.prepared.kind == operation.Signal
+          || is_job(a.prepared.kind)
+          || is_child(a.prepared.kind)
+        }
           && a.prepared.deadline != None
           && a.deadline == None,
         "arming requires an admitted wait with an unarmed deadline",
@@ -851,14 +885,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       pending(state, count, last, a)
     }
     g.StoppingJob(a, _, cause) -> {
-      use _ <- result.try(case cause {
-        operation.CancellationRequested -> Ok(Nil)
-        operation.DeadlineReached(due) ->
-          require(
-            a.deadline == Some(due),
-            "stop cause must match the expired deadline",
-          )
-      })
+      use _ <- result.try(check_stop_reason(a, cause))
       use _ <- result.try(require(
         is_owned_job(a.prepared.kind),
         "stop request requires an owned job",
@@ -899,6 +926,13 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       ))
       pending(state, count, last, a)
     }
+    g.Ended(g.Failed(a, g.OperationFailed(_)))
+      if a.prepared.kind == operation.Subgraph
+      || a.prepared.kind == operation.Agent
+    -> {
+      use _ <- result.try(check_armed_child(a))
+      pending(state, count, last, a)
+    }
     g.Ended(g.Failed(a, _)) -> {
       use _ <- result.try(require(
         a.deadline == None || is_job(a.prepared.kind),
@@ -937,6 +971,10 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
       }
     }
     g.Ended(g.Cancelled(a, disposition)) -> {
+      use _ <- result.try(case disposition, is_child(a.prepared.kind) {
+        g.UnresolvedCancellation(_), True -> check_armed_child(a)
+        _, _ -> Ok(Nil)
+      })
       use _ <- result.try(case disposition {
         g.AfterFailure(g.DeadlineExpired(_)) ->
           Error("signal expiration is not an activity cancellation outcome")
@@ -950,7 +988,8 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
             is_owned_job(a.prepared.kind),
             "stopped outcome requires an owned job",
           )
-        g.AfterChild(id) ->
+        g.AfterChild(id) -> {
+          use _ <- result.try(check_armed_child(a))
           require(
             {
               a.prepared.kind == operation.Subgraph
@@ -959,6 +998,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
               && id == child.reserved_id(state.run, a.id),
             "cancellation does not identify its child",
           )
+        }
         _ -> Ok(Nil)
       })
       use _ <- result.try(require(
@@ -1026,11 +1066,30 @@ fn check_expired(
 ) -> Result(Nil, String) {
   use _ <- result.try(check_activation(a))
   use _ <- result.try(require(
-    is_job(a.prepared.kind) && a.deadline != None,
-    "expired outcome requires an armed job wait",
+    { is_job(a.prepared.kind) || is_child(a.prepared.kind) }
+      && a.deadline != None,
+    "expired outcome requires an armed job or child wait",
   ))
   case disposition {
+    g.AfterChild(id) -> {
+      use _ <- result.try(require(
+        is_child(a.prepared.kind) && id == child.reserved_id(state.run, a.id),
+        "expiration does not identify its child",
+      ))
+      pending(state, count, last, a)
+    }
+    g.UnresolvedCancellation(_) -> {
+      use _ <- result.try(require(
+        is_child(a.prepared.kind),
+        "unresolved expiration requires a managed child",
+      ))
+      pending(state, count, last, a)
+    }
     g.AfterResult -> {
+      use _ <- result.try(require(
+        is_job(a.prepared.kind),
+        "expired result receipt requires a job",
+      ))
       use _ <- result.try(finished(state, count, last, g.Canceled))
       case last {
         Some(receipt) ->
@@ -1043,14 +1102,44 @@ fn check_expired(
     }
     g.JobDetached -> {
       use _ <- result.try(require(
-        !is_owned_job(a.prepared.kind),
+        is_job(a.prepared.kind) && !is_owned_job(a.prepared.kind),
         "owned expiration cannot detach cleanup",
       ))
       pending(state, count, last, a)
     }
-    g.JobStopped | g.AfterFailure(g.OperationFailed(_)) ->
+    g.JobStopped | g.AfterFailure(g.OperationFailed(_)) -> {
+      use _ <- result.try(require(
+        is_job(a.prepared.kind),
+        "expired job evidence requires a job",
+      ))
       pending(state, count, last, a)
+    }
     _ -> Error("invalid expired job disposition")
+  }
+}
+
+fn check_armed_child(a: g.Activation) -> Result(Nil, String) {
+  require(
+    { a.prepared.deadline == None } == { a.deadline == None },
+    "admitted child must retain its configured deadline",
+  )
+}
+
+fn is_child(kind: operation.Kind) -> Bool {
+  kind == operation.Subgraph || kind == operation.Agent
+}
+
+fn check_stop_reason(
+  a: g.Activation,
+  cause: operation.StopReason,
+) -> Result(Nil, String) {
+  case cause {
+    operation.CancellationRequested -> Ok(Nil)
+    operation.DeadlineReached(due) ->
+      require(
+        a.deadline == Some(due),
+        "stop cause must match the expired deadline",
+      )
   }
 }
 
@@ -1063,9 +1152,10 @@ fn stop_reason_json(cause: operation.StopReason) -> Json {
 
 fn stop_reason_field(
   found: Int,
+  required: Int,
   next: fn(operation.StopReason) -> Decoder(a),
 ) -> Decoder(a) {
-  case found >= 11 {
+  case found >= required {
     True -> decode.field("cause", stop_reason_decoder(), next)
     False ->
       decode.optional_field(
@@ -1149,7 +1239,7 @@ fn preparations(state: g.State) -> List(g.Prepared) {
     | g.Joining(a, _)
     | g.WaitingChild(a, _)
     | g.ChildBlocked(a, _, _)
-    | g.StoppingChild(a, _)
+    | g.StoppingChild(a, _, _)
     | g.Blocked(a, _)
     | g.Stopping(a)
     | g.Ended(g.Failed(a, _))
