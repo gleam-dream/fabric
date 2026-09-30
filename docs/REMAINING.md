@@ -37,9 +37,6 @@ Complete the accepted production-runtime plan with:
   on approval and awaiting reconciliation, each with a count and oldest
   age; leases per node. Add the proposed `fabric_postgres.stats` API and
   define the timestamps and queries behind each gauge.
-- **Readiness:** report whether the store is reachable and its last
-  successful renewal is younger than its lease. Define readiness before
-  the first renewal and while no run needs renewal.
 - **Sweep lag:** report the age of the oldest expired lease. The current
   backend claim returns ids without expiry timestamps, so this needs a
   metadata contract or a separate query.
@@ -53,7 +50,11 @@ Complete the accepted production-runtime plan with:
 
 Already delivered from S7's original scope: family-safe PostgreSQL pruning;
 `lease_lost`, `renewal_failed`, `run_taken_over` and per-run handoff events;
-basic sweep counts; Sinal's unavailable-forwarder drop count. Preserve
+basic sweep counts; Sinal's unavailable-forwarder drop count; and
+`store.readiness`, with a bounded backend probe, current acceptance, local
+runner count and renewal age. New claims supply the first safe lease window;
+idle stores need no renewal. See the precise [operations contract](implementation/production-readiness/operations.md).
+Preserve
 these and extend their coverage as the remaining operations surface lands.
 
 ## Later: S8 Grind integration

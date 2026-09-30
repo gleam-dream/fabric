@@ -21,8 +21,15 @@
   Claim revalidation plus a local reservation fixed the reproduced race:
   100 repetitions and two new regression scenarios pass. The final full gate
   passed all 41 checks, including 625 core and 57 real PostgreSQL tests.
-- Next action: commit the verified changes and implement S7. Hosted CI and
-  publication remain deferred by the user's explicit correction.
+- Checkpoints: `39e28a8` repairs scheduled observation; `4e491af` prepares the
+  local gate and reconciles the backlog.
+- Next action: implement database statistics. The first S7 slice, store
+  readiness, passed the complete local gate. Its
+  [operations contract](operations.md) defines bounded storage probes, live
+  acceptance, safe lease evidence and renewal age. Seven focused core scenarios
+  pass, including a delayed probe, renewal failure, restart and an expired
+  lease window. PostgreSQL proves migration is required and probes leave
+  records untouched. Hosted CI and publication remain explicitly deferred.
 
 ## Original objective and authorization
 
@@ -180,3 +187,25 @@ Remaining distance: S7 and the realistic comparison are unbuilt. Hosted
 verification still requires published dependency selection and a fresh hosted
 run, explicitly deferred by the user. The next wave remains S7; the scheduling
 repair supplies stronger recovery evidence without changing its scope.
+
+### Wave 2 progress — readiness slice accepted 2026-09-30
+
+O1–O5 are implemented by `store.readiness`: a bounded storage probe followed
+by a current actor-state report, local runner count, lease duration and last
+successful renewal age. Ready idle/startup behavior, read failure/crash/timeout,
+lease expiry during a process stall, concurrent drain, renewal failure and
+restart are covered by seven core scenarios. A real PostgreSQL scenario checks
+an unmigrated database fails, migration makes it ready, and inspection creates
+no row or record/lease mutation. Readiness does not claim or renew work.
+
+`nix develop -c python3 scripts/check.py full --logs
+/tmp/fabric-readiness-s7-gate` passed all 41 checks: 632 core tests and 58
+PostgreSQL tests, plus the existing integrations, consumers and authoring proof.
+The initial missing-API scenario failed before implementation; a manual focused
+invocation initially lacked the telemetry application, then passed with runtime
+dependencies started. The full gate starts them through the normal test runner.
+
+This accepts the readiness slice, not wave 2. O6–O11 record the next statistics
+contract. Database gauges, sweep backlog, shutdown summaries and the runbook
+remain required before S7 is complete. No new runtime dependency or persisted
+execution format was introduced.
