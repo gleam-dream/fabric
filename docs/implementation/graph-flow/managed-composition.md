@@ -276,6 +276,45 @@ child retry cues disappear. Manual `graph.recover` remains the repair for that
 case until wait discovery is delivered; registering a graph is not a claim
 that free waits already receive distributed notification.
 
+### Durable discovery of idle dependencies
+
+An idle graph attachment must remain discoverable without a live process,
+local notification or expired execution lease. The storage integration derives
+an index from validated records through `fabric/discovery`. A waiting or blocked
+child attachment identifies its dependency and observation key. Unresolved
+cancellation of a managed child identifies the same dependency with a settlement
+key. Approval waits, external signals without a due time, finished attachments,
+ordinary operations and budget ledgers have no automatic dependency to inspect.
+
+The observation key contains the activation and attempt identity, dependency
+identity and observation/settlement mode. Root incarnation and record revision
+are excluded: recovering the same idle wait does not create new work. A new
+visit, retry, child or cancellation mode changes the key. Unknown/corrupt records
+and a mismatch between stored and declared run IDs produce no usable index.
+Projection versioning lets a backend refuse stale metadata and refresh it in
+bounded batches without changing execution records or retention ages.
+
+A backend tracks the dependency revision last observed for each key separately
+from the execution record. A free wait is eligible if it has never been checked,
+its key changes or its dependency revision changes. The initial check is needed
+even when the child finished before the parent parked. Claiming the wait records
+the observed dependency revision and obtains its ordinary per-run lease in one
+atomic transaction. A concurrent child change therefore remains discoverable.
+Successful recovery releases that lease or launches ordinary fenced work; failed
+recovery leaves a lease retry cue. A claim changes neither execution revision nor
+retention age. Concurrent claims are disjoint, bounded and ordered fairly.
+
+Rewriting the same wait preserves its observation checkpoint. Leaving the wait
+clears it. An old writer that cannot maintain the index invalidates its source
+revision; it cannot leave apparently current metadata behind. Neither the index
+nor a scan result authorizes execution: the registered root is rebuilt and its
+saved attachment, definition, policy, budgets and ownership are checked again.
+
+This contract is being implemented in wave 3. Its first checkpoint supplies the
+validated dependency projection; automatic free-wait claiming and PostgreSQL
+index maintenance remain open until exercised end to end. Durable due-time
+selection will extend discovery when deadline states are implemented.
+
 ### Family retention
 
 `fabric/retention` derives metadata through the current agent, graph and budget

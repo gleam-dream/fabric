@@ -26,7 +26,8 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: registered graph recovery passes 504 root tests, 43 PostgreSQL tests,
+- Gate status: idle dependency projection passes 508 root tests; the last
+  PostgreSQL gate passed 43 tests and its adapter is unchanged. The current gate includes
   four graph consumer tests and 15 existing app consumer tests. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -37,7 +38,8 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: add durable discovery for free idle waits, external jobs
+- Next action: persist idle-dependency observations and atomically claim changed
+  free waits through the shared sweeper, then external jobs
   and deadlines under the [managed composition contract](managed-composition.md).
   These remain runtime states rather than blocking operation wrappers.
 - Resume note: the user requested a checkpoint commit and resumed implementation
@@ -838,3 +840,37 @@ six-step goal remains active, with wave 3 next.
 - Next: provide a durable discovery/index contract for free waits and due
   wakeups, then exercise external-job submission, retained receipts and
   completion with an independently running local service.
+
+### Wave 3 — validated idle dependency projection
+
+- Status: `fabric/discovery` derives a versioned storage index for idle managed
+  graph/agent attachments, including blocked children and unresolved child
+  cancellation. It executes no application code. This is the index prerequisite;
+  automatic free-wait claiming is still unimplemented.
+- Identity: a key contains observation/settlement mode, activation, attempt and
+  child identity. Recovering an unchanged wait preserves its key; a new graph
+  visit changes it. Completed or settled attachments, ordinary activity effects
+  and budget records have no idle dependency. Unknown/corrupt/misfiled records
+  produce no usable index. Current managed children never retry independently;
+  the attempt component retains the recorded invocation identity.
+- Contract: store the dependency revision observed by each key separately from
+  execution state. Claim an unseen or changed dependency and its run lease
+  atomically. Preserve observations across unchanged wait rewrites; a child
+  update during recovery remains eligible. Failed recovery keeps an expired-lease
+  retry path. Source revision/version checks invalidate stale writer metadata.
+- Evidence: four scenarios exercise both child runtime kinds, stable recovery,
+  actual graph cycle transitions, settlement mode changes, excluded states,
+  unknown/misfiled records and completion clearing dependency discovery.
+- Gate: 508 root tests and the four graph/15 app consumer tests pass with
+  warnings as errors. Formatting, `nix flake check` and `git diff --check` pass.
+  PostgreSQL runtime/storage code is unchanged; its previous 43-test gate
+  remains the last backend evidence, not proof of free-wait discovery.
+- Conformance: the remaining G7 discovery gap is not closed. The six-stage goal
+  remains active, including external jobs/deadlines and all of waves 4–6.
+- Next implementation: add source-revision-checked discovery metadata and an
+  observed key/dependency revision to the leased backend; PostgreSQL needs a
+  forward migration and bounded refresh for existing rows. Claim free changed
+  dependencies fairly alongside expired work, preserving execution revisions,
+  leases and retention ages. Exercise store loss, cross-store child completion,
+  unchanged waits, contention, old writes and missed cancellation settlement
+  through registered recovery on the real backend before accepting discovery.
