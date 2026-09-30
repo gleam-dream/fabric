@@ -36,6 +36,9 @@
 //// text and calls. Earlier formats cannot retain it and are refused when it
 //// is present. Legacy transcripts decode with no adapter data.
 ////
+//// Version 5 distinguishes agent-action and graph-activation parents. An
+//// agent parent can still be written in versions 2–4; a graph parent cannot.
+////
 //// An outcome's budget is written under its own tag (`turn_limit`,
 //// `token_limit`). The tag `budget_exhausted`, which wraps a budget, is
 //// still read; it was written only for a sub-agent limit ending a run,
@@ -47,6 +50,7 @@
 //// confirmed, which refuses late settlements until recovery completes the
 //// stop.
 
+import fabric/graph/child
 import fabric/internal/controller.{type Phase, type State, State}
 import fabric/internal/registry.{type Registry}
 import fabric/model.{type Message, type ToolCall}
@@ -64,13 +68,14 @@ import gleam/string
 
 pub const format = "fabric.run"
 
-pub const version = 4
+pub const version = 5
 
 /// The writer window is narrower than the reader's accepted versions.
 pub type WriteVersion {
   V2
   V3
   V4
+  V5
 }
 
 pub fn writer(version: Int) -> Result(WriteVersion, Nil) {
@@ -78,6 +83,7 @@ pub fn writer(version: Int) -> Result(WriteVersion, Nil) {
     2 -> Ok(V2)
     3 -> Ok(V3)
     4 -> Ok(V4)
+    5 -> Ok(V5)
     _ -> Error(Nil)
   }
 }
@@ -92,6 +98,20 @@ pub fn encode_as(
   state: State,
   target: WriteVersion,
 ) -> Result(String, EncodeError) {
+  use Nil <- result.try(case target, state.parent {
+    V5, _ -> Ok(Nil)
+    _, Some(run.GraphParent(..)) ->
+      Error(Unrepresentable(
+        case target {
+          V2 -> 2
+          V3 -> 3
+          V4 -> 4
+          V5 -> 5
+        },
+        "a graph parent requires version 5",
+      ))
+    _, _ -> Ok(Nil)
+  })
   let has_data =
     list.any(state.transcript, fn(message) {
       case message {
@@ -107,7 +127,8 @@ pub fn encode_as(
     _, _ -> Ok(Nil)
   })
   case target, state.phase, state.transcript {
-    V4, _, _ -> Ok(encode(state))
+    V5, _, _ -> Ok(encode(state))
+    V4, _, _ -> Ok(encode_version(state, 4, state.phase))
     V3, _, _ -> Ok(encode_version(state, 3, state.phase))
     V2, controller.NeverStarted, [] ->
       Ok(encode_version(state, 2, controller.Ended(run.Cancelled)))
@@ -147,10 +168,23 @@ fn encode_version(state: State, version: Int, phase: Phase) -> String {
     #(
       "parent",
       json.nullable(state.parent, fn(parent) {
-        json.object([
-          #("run", json.string(run.id_to_string(parent.run))),
-          #("action", action_id(parent.id)),
-        ])
+        case parent {
+          run.AgentParent(id, action) -> {
+            let fields = [
+              #("run", json.string(run.id_to_string(id))),
+              #("action", action_id(action)),
+            ]
+            case version >= 5 {
+              True -> tag("agent", fields)
+              False -> json.object(fields)
+            }
+          }
+          run.GraphParent(id, activation) ->
+            tag("graph", [
+              #("run", json.string(run.id_to_string(id))),
+              #("activation", json.int(activation)),
+            ])
+        }
       }),
     ),
     #("depth", json.int(state.depth)),
@@ -421,12 +455,18 @@ fn never_started_before_3(state: State, found: Int) -> State {
   }
 }
 
-/// A child run's id is its parent's id, `-`, and a positive sequence
-/// number. A record whose parent or child links break that rule is
-/// corrupt; ids then strictly grow down a family, so no link is cyclic.
+/// An agent delegation appends a positive sequence number to its parent's
+/// id. A graph attachment uses the activation's stable reserved id instead.
+/// Descendants started by this agent still follow the agent naming rule.
+/// Cross-runtime ancestry is checked separately with a bounded walk.
 fn linked(state: State) -> Result(State, DecodeError) {
   let parent = case state.parent {
-    Some(parent) -> extends(state.run, run.id_to_string(parent.run))
+    Some(run.AgentParent(parent, _)) ->
+      extends(state.run, run.id_to_string(parent))
+    Some(run.GraphParent(parent, activation)) ->
+      activation > 0
+      && result.is_ok(run.parse_id(run.id_to_string(parent)))
+      && state.run == child.reserved_id(run.id_to_string(parent), activation)
     None -> True
   }
   let actions = case state.phase {
@@ -447,7 +487,7 @@ fn linked(state: State) -> Result(State, DecodeError) {
     True, True -> Ok(state)
     False, _ ->
       Error(Corrupt(
-        "the run " <> state.run <> " does not extend its parent's id",
+        "the run " <> state.run <> " does not match its parent's reservation",
       ))
     _, False ->
       Error(Corrupt(
@@ -512,11 +552,7 @@ fn state_decoder(found: Int) -> Decoder(State) {
     found,
     "parent",
     None,
-    decode.optional({
-      use run <- decode.field("run", decode.string)
-      use action <- decode.field("action", action_id_decoder())
-      decode.success(run.ActionRef(run.issued(run), action))
-    }),
+    decode.optional(parent_decoder(found)),
   )
   use depth <- since_2(found, "depth", 0, decode.int)
   use limits <- decode.field("limits", {
@@ -562,6 +598,34 @@ fn state_decoder(found: Int) -> Decoder(State) {
     approvals_issued:,
     phase:,
   ))
+}
+
+fn parent_decoder(found: Int) -> Decoder(run.Parent) {
+  use id <- decode.field("run", decode.string)
+  case found < 5 {
+    True -> {
+      use action <- decode.field("action", action_id_decoder())
+      decode.success(run.AgentParent(run.issued(id), action))
+    }
+    False -> {
+      use tag <- decode.field("tag", decode.string)
+      case tag {
+        "agent" -> {
+          use action <- decode.field("action", action_id_decoder())
+          decode.success(run.AgentParent(run.issued(id), action))
+        }
+        "graph" -> {
+          use activation <- decode.field("activation", decode.int)
+          decode.success(run.GraphParent(run.issued(id), activation))
+        }
+        _ ->
+          decode.failure(
+            run.AgentParent(run.issued(id), run.ActionId(0, "")),
+            "a parent attachment",
+          )
+      }
+    }
+  }
 }
 
 fn tagged(zero: a, cases: fn(String) -> Result(Decoder(a), Nil)) -> Decoder(a) {

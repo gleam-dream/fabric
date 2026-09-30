@@ -80,9 +80,10 @@ committed outcome.
 
 ## Record versions
 
-The current runtime reads versions 1–4 and writes version 4 by default.
-Versions 2 and 3 remain writable when the state has no assistant provider
-data. For a deployment that must still write version 3:
+The current runtime reads agent record versions 1–5 and writes version 5 by
+default. Versions 2–4 remain writable for representable states. Assistant
+provider data requires at least version 4; a graph parent attachment requires
+version 5. For a deployment that must still write version 3:
 
 ```gleam
 let assert Ok(runs) =
@@ -91,20 +92,26 @@ let assert Ok(runs) = store.with_record_version(runs, 3)
 ```
 
 Configure before starting the store, and use this returned value for all
-run handles and the sweeper. Versions outside 2–4 return
-`UnwritableVersion(requested, oldest, newest)`. Reads still accept 1–4.
+run handles and the sweeper. Versions outside 2–5 return
+`UnwritableVersion(requested, oldest, newest)`. Reads still accept 1–5.
 
 Deploy version-4 readers everywhere before enabling the new llm_wire tool
-turns, then restart with writer 4 (or the default). Those turns preserve
+turns, then restart with writer 4. Those turns preserve
 provider data that versions 2 and 3 cannot retain. An older writer refuses
 the response commit before dispatching tools, leaving the run unattended;
 recover with writer 4 to continue. A mixed-version deployment must keep
 these new tool turns disabled until the reader upgrade is complete.
 
+Deploy version-5 readers before selecting the new default writer. Version 5
+distinguishes an agent-action parent from a graph-activation parent. Writers
+2–4 retain ordinary agent parent links in their historical shape, but refuse
+a graph attachment before inserting it or starting its model call. Graph
+records have a separate version contract; this setting controls agent records.
+
 Existing values and runners retain their setting. The setting affects
 future writes only: it neither rewrites rows nor makes an existing
-version-4 row readable by an old reader. Rolling back to an old reader
-after version-4 writes therefore needs a separate migration plan.
+newer row readable by an old reader. Rolling back after newer-format writes
+therefore needs a separate migration plan.
 
 The compatibility tests use the actual historical version-2 decoder.
 They establish record-format compatibility; every participating runtime

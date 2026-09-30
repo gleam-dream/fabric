@@ -1,5 +1,6 @@
 //// The versioned run record codec.
 
+import fabric/graph/child
 import fabric/internal/controller.{type State}
 import fabric/internal/record
 import fabric/internal/registry
@@ -76,7 +77,7 @@ fn base() -> State {
     run: "run-01-3",
     agent: run.Identity("desk", 3),
     incarnation: 4,
-    parent: Some(run.ActionRef(support.id("run-01"), ActionId(3, "delegate"))),
+    parent: Some(run.AgentParent(support.id("run-01"), ActionId(3, "delegate"))),
     depth: 1,
     limits: controller.Limits(
       max_turns: 8,
@@ -160,6 +161,28 @@ pub fn every_record_shape_survives_a_round_trip_test() {
   })
 }
 
+pub fn a_graph_parent_is_retained_and_refused_by_legacy_writers_test() {
+  let parent = support.id("graph-owner")
+  let state =
+    controller.State(
+      ..base(),
+      run: child.reserved_id(support.text(parent), 3),
+      parent: Some(run.GraphParent(parent, 3)),
+      history: [],
+    )
+  record.decode(record.encode(state)) |> should.equal(Ok(state))
+  list.each([record.V2, record.V3, record.V4], fn(writer) {
+    let assert Error(record.Unrepresentable(_, _)) =
+      record.encode_as(state, writer)
+  })
+  let assert Error(record.Corrupt(_)) =
+    record.decode(record.encode(controller.State(..state, run: "unrelated")))
+  let assert Error(record.Corrupt(_)) =
+    record.decode(record.encode(
+      controller.State(..state, parent: Some(run.GraphParent(parent, 0))),
+    ))
+}
+
 pub fn assistant_turn_data_survives_storage_and_cannot_be_downgraded_test() {
   let turn =
     model.AssistantTurn(
@@ -187,8 +210,8 @@ pub fn legacy_records_cannot_hide_provider_data_and_malformed_data_is_corrupt_te
   let encoded = record.encode(state)
   list.each(
     [
-      string.replace(encoded, "\"version\":4", "\"version\":3"),
-      string.replace(encoded, "\"version\":4", "\"version\":2"),
+      string.replace(encoded, "\"version\":5", "\"version\":3"),
+      string.replace(encoded, "\"version\":5", "\"version\":2"),
       string.replace(encoded, "\"format\":\"example.v1\"", "\"format\":7"),
       string.replace(encoded, "\"value\":\"opaque\"", "\"value\":null"),
     ],
@@ -204,15 +227,15 @@ pub fn legacy_records_cannot_hide_provider_data_and_malformed_data_is_corrupt_te
 
 pub fn the_record_is_versioned_json_test() {
   let encoded = record.encode(base())
-  string.starts_with(encoded, "{\"format\":\"fabric.run\",\"version\":4,")
+  string.starts_with(encoded, "{\"format\":\"fabric.run\",\"version\":5,")
   |> should.be_true
 }
 
 pub fn another_version_is_unsupported_test() {
   let encoded =
     record.encode(base())
-    |> string.replace("\"version\":4,", "\"version\":5,")
-  record.decode(encoded) |> should.equal(Error(record.UnsupportedVersion(5)))
+    |> string.replace("\"version\":5,", "\"version\":6,")
+  record.decode(encoded) |> should.equal(Error(record.UnsupportedVersion(6)))
 }
 
 /// A version 1 record (written before sub-agents) is read as a root run
@@ -361,7 +384,7 @@ pub fn a_child_that_never_started_is_explicit_test() {
     )
   let version_2 =
     record.encode(tombstone)
-    |> string.replace("\"version\":4,", "\"version\":2,")
+    |> string.replace("\"version\":5,", "\"version\":2,")
   let assert Ok(read) = record.decode(version_2)
   read.phase |> should.equal(controller.NeverStarted)
   controller.child_result(read) |> should.equal(Ok(controller.ChildMissing))
@@ -429,7 +452,7 @@ pub fn a_version_2_tombstone_keeps_its_old_meaning_test() {
   string.contains(encoded, "never_started") |> should.be_false
   record.decode(encoded) |> should.equal(Ok(tombstone))
   old_record.decode(record.encode(tombstone))
-  |> should.equal(Error(old_record.UnsupportedVersion(4)))
+  |> should.equal(Error(old_record.UnsupportedVersion(5)))
 }
 
 pub fn a_version_2_write_never_discards_or_reinterprets_a_transcript_test() {

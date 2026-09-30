@@ -115,7 +115,7 @@ pub type State {
     /// Increases by one each time a lost runner's work is taken over.
     incarnation: Int,
     /// The action that started this run, for a sub-agent run.
-    parent: Option(run.ActionRef),
+    parent: Option(run.Parent),
     /// Levels below the root run: 0 for a root run.
     depth: Int,
     limits: Limits,
@@ -216,7 +216,7 @@ pub fn start(
   agent: Identity,
   limits: Limits,
   prompt: String,
-  parent: Option(run.ActionRef),
+  parent: Option(run.Parent),
   depth: Int,
 ) -> #(State, List(Effect)) {
   let state =
@@ -1540,7 +1540,7 @@ pub fn never_started(
     run: child,
     agent:,
     incarnation: 1,
-    parent: Some(run.ActionRef(run.issued(parent.run), action)),
+    parent: Some(run.AgentParent(run.issued(parent.run), action)),
     depth: parent.depth + 1,
     limits: parent.limits,
     turns_used: 0,

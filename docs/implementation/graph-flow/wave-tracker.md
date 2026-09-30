@@ -14,8 +14,9 @@
 - Last closed wave: 2, public durable serial graph runtime.
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's shared child/family representation and job/deadline
-  contracts are being refined. Manual signal contracts are implemented.
+- Open decisions: wave 3's family budget/retention and job/deadline
+  contracts are being refined. Shared parent identities and manual signal
+  contracts are implemented.
   Native authoring, serial lifecycle, compatibility and public control are now
   concrete in the [durable sequential contract](durable-sequential.md).
   Actual remote credentials/endpoints are checked before wave 5. No new paid
@@ -23,7 +24,7 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: the idle-child checkpoint passes 428 root tests, 32 PostgreSQL tests,
+- Gate status: the shared-parent checkpoint passes 434 root tests, 32 PostgreSQL tests,
   three graph consumer tests and 15 existing app consumer tests. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -31,8 +32,8 @@
   start/read/await/recover/approval/reconciliation/cancellation APIs. Directory
   and PostgreSQL scenarios retain work over store-process loss. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: generalize the parent/family contract across graph and agent
-  records, then implement managed agent nodes, family budgeting/retention, jobs
+- Next action: implement managed agent nodes over the shared parent contract,
+  then family budgeting/retention, jobs
   and deadlines under the [managed composition contract](managed-composition.md).
   These remain runtime states rather than blocking operation wrappers.
 - Resume note: the user requested a checkpoint commit and resumed implementation
@@ -539,3 +540,39 @@ six-step goal remains active, with wave 3 next.
   family metadata, settle the shared graph/agent attachment representation,
   and exercise a real managed ordinary agent from a graph. Preserve the
   existing agent suite and avoid treating graph activations as chat action IDs.
+
+### Wave 3 — shared parent identities and ancestry
+
+- Status: both controllers retain `run.Parent`, distinguishing agent actions
+  from graph activations. The agent snapshot exposes that sum; uncertainty
+  references remain `ActionRef`. No graph activation is given a fake tool-call
+  identity. The existing subgraph wire shape and version are unchanged.
+- Admission: a shared bounded ancestry reader checks each parent's record
+  identity and its exact active child reservation. Agent model calls and retries
+  now perform this check, alongside existing tool fences, child starts and
+  approval commands. Graph admission and execution use the same checked chain.
+  Missing, unreadable, unrelated and stopped ancestors release no new work.
+- Compatibility: agent format version 5 tags parent variants. Readers accept
+  versions 1–5; writers 2–4 retain ordinary agent links in their historical
+  shape. They refuse graph parents before a child insert or model invocation.
+  Provider data still requires at least version 4. The existing agent sweeper
+  stops at graph-owned families; it cannot reinterpret them as agent roots.
+- Evidence: six new root tests cover parent roundtrips and legacy-write refusal,
+  mixed graph/agent ancestry, wrong reservations, bounded ancestry, cancellation
+  before the first model call and before a retry, and refused child approval.
+  Rolling-upgrade cases exercise reads/writes between version 5 and 2, 3 and 4.
+  Existing saved-delegation cancellation and tombstone scenarios remain green.
+- Gate: 434 root tests, 32 PostgreSQL tests, three graph consumer tests and 15
+  existing app consumer tests pass, with warning-free builds. Source formatting,
+  `nix fmt`, `nix flake check` and `git diff --check` pass on this host.
+- Conformance: this establishes the shared ownership prerequisite of G7. It
+  does not establish the public managed-agent adapter, family-wide budgets or
+  pruning, graph sweeper registration, external jobs or deadlines. Graph records
+  still reject agent-action parents until graph-as-agent-tool is implemented.
+  Wave 3 and the full six-step goal remain active.
+- Next: bind the ordinary agent runner as a managed graph operation with an
+  explicit typed answer adapter. Preserve all child approvals and uncertainty,
+  reserved identity, same-store checks, restart, cancellation and idle wakeups.
+  Check agent descendant ID/depth bounds under hashed graph-child identities;
+  do not inherit assumptions about the shorter ordinary root ID. PostgreSQL
+  still derives family roots from agent IDs and needs separate retention work.

@@ -280,7 +280,7 @@ pub fn ancestors_open(
   use #(_, state) <- result.try(runner.load(store, id))
   case state.phase {
     controller.Ended(_) | controller.NeverStarted -> Ok(True)
-    _ -> runner.read_ancestors(store, state.parent, 64, 0)
+    _ -> runner.read_ancestors(store, state.run, state.parent, 64, 0)
   }
 }
 
@@ -401,7 +401,7 @@ fn reattach_child(
           runner.notify_parent(child_setup, controller.ChildMissing)
         Error(runner.NotFound) ->
           case
-            runner.ancestors_open(setup.store, parent.parent),
+            runner.ancestors_open(setup.store, parent.run, parent.parent),
             registry.prompt(
               setup.env.registry,
               action.call.name,

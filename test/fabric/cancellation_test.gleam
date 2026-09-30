@@ -426,7 +426,7 @@ fn store_orphaned_child(
       run: child,
       agent:,
       incarnation: 1,
-      parent: Some(run.ActionRef(support.id(id), ActionId(1, "r"))),
+      parent: Some(run.AgentParent(support.id(id), ActionId(1, "r"))),
       depth: 1,
       limits: limits(1, 2),
       turns_used: 1,
@@ -476,10 +476,9 @@ pub fn a_tool_under_a_stopping_ancestor_never_starts_test() {
   probe.entries(probe) |> should.equal([])
 }
 
-/// A child whose root is stopping asks to start a sub-agent of its own:
-/// the start finds the root stopping, stores no grandchild, and the child
-/// cancels itself.
-pub fn a_sub_agent_under_a_stopping_ancestor_never_starts_test() {
+/// A recovered child sees its stopping root before calling the model. No
+/// new delegation is requested or reserved, and the child cancels itself.
+pub fn a_model_under_a_stopping_ancestor_never_starts_test() {
   let probe = probe.new()
   let store = support.store()
   store_stopping_root(store, "run-elder")
@@ -496,13 +495,11 @@ pub fn a_sub_agent_under_a_stopping_ancestor_never_starts_test() {
   let assert Ok(recovered) = fabric.recover(store, delegating, Nil, child)
   fabric.await(recovered, 5000)
   |> should.equal(Ok(run.Finished(run.Cancelled)))
-  states(recovered) |> should.equal([run.NotStarted])
+  states(recovered) |> should.equal([])
   probe.entries(probe) |> should.equal([])
-  // The grandchild is a tombstone: cancelled before it ever started.
-  let assert Ok(store.Entry(record: stored, ..)) =
-    store.get(store, support.text(child) <> "-1")
-  let assert Ok(controller.State(phase: controller.NeverStarted, ..)) =
-    record.decode(stored)
+  // Cancellation precedes the model request, so no delegation is reserved.
+  store.get(store, support.text(child) <> "-1")
+  |> should.equal(Error(store.NotFound))
 }
 
 /// An answer to a child races its parent's cancellation: the answer's

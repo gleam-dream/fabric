@@ -288,7 +288,7 @@ pub fn a_sub_agent_starts_only_after_approval_even_across_a_restart_test() {
   let assert Ok(snapshot) = fabric.snapshot(child)
   snapshot.agent |> should.equal(run.Identity("researcher", 1))
   snapshot.parent
-  |> should.equal(Some(run.ActionRef(fabric.id(run), ActionId(1, "r"))))
+  |> should.equal(Some(run.AgentParent(fabric.id(run), ActionId(1, "r"))))
   snapshot.status |> should.equal(run.Finished(run.Completed("found gleam")))
   probe.entries(probe)
   |> should.equal([

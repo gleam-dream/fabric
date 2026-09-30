@@ -300,7 +300,7 @@ fn check_attachment(
   state: control.State,
   parent: child.Parent,
 ) -> Result(Nil, Error) {
-  case state.parent == Some(parent) {
+  case state.parent == Some(child.attachment(parent)) {
     True -> Ok(Nil)
     False ->
       Error(CommandRefused("child belongs to a different parent activation"))
@@ -348,7 +348,7 @@ fn reserved_child(
         control.start(id, definition.identity(runtime.definition), value, entry)
         |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
       )
-      let state = control.State(..state, parent: Some(parent))
+      let state = control.State(..state, parent: Some(child.attachment(parent)))
       use #(state, effects) <- result.try(case cancel {
         True ->
           control.cancel_abandoned(state)

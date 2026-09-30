@@ -112,7 +112,7 @@ pub type State {
     receipts: List(Receipt),
     phase: Phase,
     initial: String,
-    parent: Option(child.Parent),
+    parent: Option(run.Parent),
   )
 }
 

@@ -19,9 +19,9 @@ import gleeunit/should
 
 pub fn unsupported_write_versions_are_refused_before_startup_test() {
   let runs = store.in_memory(process.new_name("version-window"))
-  list.each([-1, 0, 1, 5], fn(version) {
+  list.each([-1, 0, 1, 6], fn(version) {
     store.with_record_version(runs, version)
-    |> should.equal(Error(store.UnwritableVersion(version, 2, 4)))
+    |> should.equal(Error(store.UnwritableVersion(version, 2, 5)))
   })
 }
 
@@ -83,24 +83,28 @@ pub fn configured_writes_remain_readable_by_the_version_2_decoder_test() {
 }
 
 pub fn the_write_target_does_not_restrict_what_can_be_read_test() {
-  list.each([#(4, 2), #(2, 4), #(4, 3), #(3, 4)], fn(versions) {
-    let memory = testing.leased_memory()
-    let body = probe.new()
-    let agent = reviewed(body)
-    let first = node(memory.backend, versions.0)
-    let second = node(memory.backend, versions.1)
-    let assert Ok(started) = fabric.start(first, agent, Nil, "go")
-    let assert Ok(run.Suspended([pending], [])) = fabric.await(started, 5000)
-    writes(memory.backend, fabric.id(started), versions.0)
-    let assert Ok(opened) = fabric.open(second, agent, Nil, fabric.id(started))
-    let assert Ok(_) =
-      fabric.approve(opened, pending.reference, reviewer: None, context: Nil)
-    let running = probe.arrival(body)
-    probe.release(running)
-    fabric.await(opened, 5000)
-    |> should.equal(Ok(run.Finished(run.Completed("final: \"work\""))))
-    writes(memory.backend, fabric.id(opened), versions.1)
-  })
+  list.each(
+    [#(5, 2), #(2, 5), #(5, 3), #(3, 5), #(5, 4), #(4, 5)],
+    fn(versions) {
+      let memory = testing.leased_memory()
+      let body = probe.new()
+      let agent = reviewed(body)
+      let first = node(memory.backend, versions.0)
+      let second = node(memory.backend, versions.1)
+      let assert Ok(started) = fabric.start(first, agent, Nil, "go")
+      let assert Ok(run.Suspended([pending], [])) = fabric.await(started, 5000)
+      writes(memory.backend, fabric.id(started), versions.0)
+      let assert Ok(opened) =
+        fabric.open(second, agent, Nil, fabric.id(started))
+      let assert Ok(_) =
+        fabric.approve(opened, pending.reference, reviewer: None, context: Nil)
+      let running = probe.arrival(body)
+      probe.release(running)
+      fabric.await(opened, 5000)
+      |> should.equal(Ok(run.Finished(run.Completed("final: \"work\""))))
+      writes(memory.backend, fabric.id(opened), versions.1)
+    },
+  )
 }
 
 import fabric/model
