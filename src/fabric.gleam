@@ -899,17 +899,16 @@ fn random_id() -> String
 @external(erlang, "fabric_ffi", "now_ms")
 fn now() -> Int
 
-/// A root agent and the application's way to rebuild its run context.
-/// The context function is called during recovery, never during setup.
-pub opaque type Recovery {
-  Recovery(sweeper.Recovery)
-}
+/// A registered root and its deployed recovery code. Construct with
+/// `fabric.recovery` for agents or `fabric/graph.recovery` for graphs.
+pub type Recovery =
+  sweeper.Recovery
 
 pub fn recovery(
   agent: Agent(context),
   context: fn(RunId) -> context,
 ) -> Recovery {
-  Recovery(sweeper.recovery(agent, context))
+  sweeper.recovery(agent, context)
 }
 
 pub type SweeperError {
@@ -923,7 +922,8 @@ pub type SweeperError {
 /// in a rest-for-one supervisor: it stops before runners drain. It scans
 /// at boot, then waits `every` milliseconds after each bounded batch of at
 /// most 100 expired runs. No scans overlap. Each candidate is recovered
-/// through its root agent; a crashed running tool becomes uncertain.
+/// through its registered agent or graph root; a crashed running effect
+/// becomes uncertain according to its recovery contract.
 ///
 /// Context construction has 5 seconds; each root recovery has 30 seconds.
 /// A failure or unknown identity leaves its claim to expire and does not
@@ -936,11 +936,6 @@ pub fn sweeper(
   recoveries: List(Recovery),
   every milliseconds: Int,
 ) -> Result(supervision.ChildSpecification(Nil), List(SweeperError)) {
-  let recoveries =
-    list.map(recoveries, fn(item) {
-      let Recovery(recovery) = item
-      recovery
-    })
   sweeper.new(store, recoveries, milliseconds)
   |> result.map_error(fn(errors) {
     list.map(errors, fn(error) {

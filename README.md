@@ -14,8 +14,9 @@ prompt and typed reply conversion to the existing agent runner.
 See the [runnable public graph consumer](consumers/graph/README.md)
 and [graph implementation tracker](docs/implementation/graph-flow/wave-tracker.md).
 Terminal agent uncertainty settlement, complete-family PostgreSQL retention and
-shared work/child/depth budgets are implemented. Automatic graph recovery scans,
-durable deadlines, external-job attachment, parallel composition and real decision
+shared work/child/depth budgets are implemented. Registered graph sweeping recovers
+expired work. Discovery of free idle waits, durable deadlines, external-job
+attachment, parallel composition and real decision
 adapters remain in that implementation program.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
@@ -299,8 +300,9 @@ earlier store process), so it is safe to call at any time. Node ids must
 be unique across live VMs; generated process names are unique only within
 a VM. Coordination over Erlang distribution is not supported.
 
-Automatic recovery: register each root agent with
-`fabric.recovery(agent, context_for_run)` and add
+Automatic recovery: register agent roots with
+`fabric.recovery(agent, context_for_run)` and graph roots with `graph.recovery`
+(described below), then add
 `fabric.sweeper(runs, recoveries, every: 1000)` after the store in a
 rest-for-one supervisor. It scans expired leases at boot and periodically,
 rebuilds context from the root run id, and recovers each eligible family
@@ -340,6 +342,15 @@ Existing `start` calls keep their per-run limits without a shared family budget.
 Quota exhaustion is a typed `FamilyLimit` agent outcome or `FamilyBudget` graph
 failure, with started effects preserved for reconciliation. See the
 [reservation contract](docs/implementation/graph-flow/managed-composition.md#shared-family-reservations).
+
+Add `graph.recovery(identity, fn(pinned_store) { build_runtime(pinned_store) })`
+alongside ordinary `fabric.recovery` registrations in `fabric.sweeper`. Rebuild
+all child runtimes against the supplied store. The sweeper follows saved
+attachments to the correct agent or graph root and recovers expired work
+without taking a live parent's lease. An interrupted effect keeps its recovery
+contract. Registrations are distinct by runtime kind and definition version.
+Free idle waits whose wakeup was lost still require explicit `graph.recover`;
+this scan discovers expired leases, not every retained wait.
 
 After cancellation, `fabric.reconcile_stored(store, effect, content)` records
 evidence for an uncertain tool without resuming the agent. Then

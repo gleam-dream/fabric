@@ -1,10 +1,10 @@
-//// Bounded scans of expired leases. A candidate identifies a root agent;
+//// Bounded scans of expired leases. A candidate identifies a registered root;
 //// recovery of that root preserves each member's independent lease.
 
 import fabric/agent.{type Agent}
 import fabric/internal/bounded
-import fabric/internal/controller
 import fabric/internal/family
+import fabric/internal/recovery_record as record
 import fabric/internal/runner
 import fabric/observation as o
 import fabric/run.{type Identity, type RunId}
@@ -19,12 +19,12 @@ import gleam/result
 import sinal/forwarder
 
 pub opaque type Recovery {
-  Recovery(identity: Identity, restore: fn(Store, String) -> Result(Nil, Nil))
+  Recovery(key: record.Key, restore: fn(Store, String) -> Result(Nil, Nil))
 }
 
 pub fn recovery(agent: Agent(c), context: fn(RunId) -> c) -> Recovery {
   let admitted = agent.admitted(agent)
-  Recovery(admitted.identity, fn(store, root) {
+  Recovery(record.Key(record.Agent, admitted.identity), fn(store, root) {
     use context <- result.try(
       bounded.call(5000, fn() { context(run.issued(root)) })
       |> result.map_error(fn(_) { Nil }),
@@ -32,6 +32,13 @@ pub fn recovery(agent: Agent(c), context: fn(RunId) -> c) -> Recovery {
     family.take_over(runner.setup(store, admitted, context, None), root, 3)
     |> result.map_error(fn(_) { Nil })
   })
+}
+
+pub fn graph_recovery(
+  identity: Identity,
+  restore: fn(Store, String) -> Result(Nil, Nil),
+) -> Recovery {
+  Recovery(record.Key(record.Graph, identity), restore)
 }
 
 pub type ConfigError {
@@ -61,9 +68,9 @@ pub fn new(
   }
   let #(indexed, errors) =
     list.fold(recoveries, #(dict.new(), errors), fn(acc, recovery) {
-      case dict.has_key(acc.0, recovery.identity) {
-        True -> #(acc.0, [DuplicateRecovery(recovery.identity), ..acc.1])
-        False -> #(dict.insert(acc.0, recovery.identity, recovery), acc.1)
+      case dict.has_key(acc.0, recovery.key) {
+        True -> #(acc.0, [DuplicateRecovery(recovery.key.identity), ..acc.1])
+        False -> #(dict.insert(acc.0, recovery.key, recovery), acc.1)
       }
     })
   case errors {
@@ -89,7 +96,7 @@ type Loop {
 
 fn start(
   store: Store,
-  recoveries: Dict(Identity, Recovery),
+  recoveries: Dict(record.Key, Recovery),
   every: Int,
 ) -> actor.StartResult(Nil) {
   actor.new_with_initialiser(5000, fn(self) {
@@ -152,13 +159,13 @@ fn empty() -> o.Sweep {
   o.Sweep(claimed: 0, recovered: 0, unmatched: 0, failed: 0)
 }
 
-fn scan(store: Store, recoveries: Dict(Identity, Recovery)) -> o.Sweep {
+fn scan(store: Store, recoveries: Dict(record.Key, Recovery)) -> o.Sweep {
   case store.claim_expired(store, batch_size) {
     Error(_) -> o.Sweep(..empty(), failed: 1)
     Ok(ids) -> {
       let #(roots, failures) =
         list.fold(ids, #(dict.new(), 0), fn(acc, id) {
-          case root(store, id, 128) {
+          case record.root(store, id, 128) {
             Error(_) -> #(acc.0, acc.1 + 1)
             Ok(#(root, identity)) -> #(
               dict.upsert(acc.0, #(root, identity), fn(existing) {
@@ -178,8 +185,8 @@ fn scan(store: Store, recoveries: Dict(Identity, Recovery)) -> o.Sweep {
             Ok(recovery) -> {
               let before =
                 list.filter_map(candidates, fn(id) {
-                  runner.load(store, id)
-                  |> result.map(fn(loaded) { #(id, loaded.1.incarnation) })
+                  record.load(store, id)
+                  |> result.map(fn(loaded) { #(id, record.incarnation(loaded)) })
                 })
               case
                 bounded.call(30_000, fn() { recovery.restore(store, root) })
@@ -188,10 +195,10 @@ fn scan(store: Store, recoveries: Dict(Identity, Recovery)) -> o.Sweep {
                   let recovered =
                     list.count(before, fn(candidate) {
                       let #(id, incarnation) = candidate
-                      case runner.load(store, id) {
-                        Ok(#(_, state)) ->
-                          state.incarnation > incarnation
-                          || release_acknowledged(store, state)
+                      case record.load(store, id) {
+                        Ok(state) ->
+                          record.incarnation(state) > incarnation
+                          || record.release_acknowledged(store, state)
                         Error(_) -> False
                       }
                     })
@@ -204,70 +211,5 @@ fn scan(store: Store, recoveries: Dict(Identity, Recovery)) -> o.Sweep {
         },
       )
     }
-  }
-}
-
-/// Follow checked records, not the spelling of a run id. The record codec
-/// validates parent prefixes; the bound also contains damaged ancestry.
-fn root(
-  store: Store,
-  id: String,
-  left: Int,
-) -> Result(#(String, Identity), Nil) {
-  case left {
-    0 -> Error(Nil)
-    _ -> {
-      use #(_, state) <- result.try(
-        runner.load(store, id) |> result.map_error(fn(_) { Nil }),
-      )
-      case state.parent {
-        None -> Ok(#(id, state.agent))
-        Some(run.AgentParent(parent, _)) ->
-          root(store, run.id_to_string(parent), left - 1)
-        // This registry binds agent roots only. A graph-owned family is
-        // reattached by graph recovery, never recovered as an agent root.
-        Some(run.GraphParent(..)) -> Error(Nil)
-      }
-    }
-  }
-}
-
-/// An ended child keeps a lease as a retry cue until its parent no longer
-/// awaits it. Only then can a sweep clear that cue with a revision check.
-fn release_acknowledged(store: Store, state: controller.State) -> Bool {
-  let terminal = case state.phase {
-    controller.Ended(_) | controller.NeverStarted -> True
-    _ -> False
-  }
-  let acknowledged = case state.parent {
-    None -> terminal
-    Some(run.GraphParent(..)) -> False
-    Some(run.AgentParent(id, action)) ->
-      case runner.load(store, run.id_to_string(id)) {
-        Error(_) -> False
-        Ok(#(_, above)) ->
-          !list.any(controller.active_children(above), fn(child) {
-            child.0 == action
-          })
-      }
-  }
-  case terminal && acknowledged {
-    False -> False
-    True ->
-      case runner.load(store, state.run) {
-        Ok(#(entry, current)) if current == state ->
-          store.encode(store, state)
-          |> result.try(fn(encoded) {
-            store.commit(
-              store,
-              state.run,
-              entry.revision,
-              encoded,
-              store.Detached(in_flight: False, seize: False),
-            )
-          })
-          |> result.is_ok
-        _ -> False
-      }
   }
 }

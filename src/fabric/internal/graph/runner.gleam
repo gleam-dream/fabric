@@ -783,41 +783,88 @@ pub fn recover(
   tries: Int,
 ) -> Result(g.State, Error) {
   use #(entry, state) <- result.try(load(runs, work, options, id))
+  case driven(entry, state) {
+    True -> recover_driven_child(runs, work, options, state)
+    False -> recover_abandoned(runs, work, options, entry, state, tries)
+  }
+}
+
+// A live parent retains its own lease. Its child may independently lose a
+// runner, so the root registration must still drive that child's recovery.
+fn recover_driven_child(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  state: g.State,
+) -> Result(g.State, Error) {
+  case state.phase {
+    g.Joining(a, id)
+    | g.WaitingChild(a, id)
+    | g.ChildBlocked(a, id, _)
+    | g.StoppingChild(a, id) -> {
+      use _ <- result.try(store.get(runs, id) |> result.map_error(StoreFailed))
+      let mode = case state.phase {
+        g.StoppingChild(..) -> child_driver.Cancel
+        _ -> child_driver.Start
+      }
+      use _ <- result.map(
+        bounded.call(options.callback_timeout, fn() {
+          use driver <- result.try(checked_child(runs, work, a))
+          driver.reserve(
+            child.Parent(state.run, a.id),
+            id,
+            a.prepared.input,
+            mode,
+          )
+        })
+        |> result.map_error(string.inspect)
+        |> result.flatten
+        |> result.map_error(CallbackFailed),
+      )
+      state
+    }
+    _ -> Ok(state)
+  }
+}
+
+fn recover_abandoned(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  entry: store.Entry,
+  state: g.State,
+  tries: Int,
+) -> Result(g.State, Error) {
   case state.phase {
     g.WaitingChild(a, child) -> {
-      case driven(entry, state) {
-        True -> Ok(state)
-        False -> {
-          // A retained wait proves its child was created. Never recreate a
-          // missing record after earlier child activities may have acted.
-          use _ <- result.try(
-            store.get(runs, child) |> result.map_error(StoreFailed),
+      // A retained wait proves its child was created. Never recreate a
+      // missing record after earlier child activities may have acted.
+      use _ <- result.try(
+        store.get(runs, child) |> result.map_error(StoreFailed),
+      )
+      use _ <- result.try(
+        bounded.call(options.callback_timeout, fn() {
+          use driver <- result.try(checked_child(runs, work, a))
+          driver.reserve(
+            child.Parent(state.run, a.id),
+            child,
+            a.prepared.input,
+            child_driver.Start,
           )
-          use _ <- result.try(
-            bounded.call(options.callback_timeout, fn() {
-              use driver <- result.try(checked_child(runs, work, a))
-              driver.reserve(
-                child.Parent(state.run, a.id),
-                child,
-                a.prepared.input,
-                child_driver.Start,
-              )
-            })
-            |> result.map_error(string.inspect)
-            |> result.flatten
-            |> result.map_error(CallbackFailed),
-          )
-          commit_recovery(
-            runs,
-            work,
-            options,
-            entry,
-            g.State(..state, incarnation: state.incarnation + 1),
-            [],
-            tries,
-          )
-        }
-      }
+        })
+        |> result.map_error(string.inspect)
+        |> result.flatten
+        |> result.map_error(CallbackFailed),
+      )
+      commit_recovery(
+        runs,
+        work,
+        options,
+        entry,
+        g.State(..state, incarnation: state.incarnation + 1),
+        [],
+        tries,
+      )
     }
     g.Ended(g.Cancelled(a, g.UnresolvedCancellation(_)))
       if {

@@ -447,6 +447,68 @@ pub fn a_restarted_managed_agent_cannot_reset_its_family_work_budget_test() {
   fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(3))
 }
 
+pub fn a_registered_graph_recovers_its_agent_after_postgres_store_loss_test() {
+  let settings =
+    support.migrated(support.pool(4), "graph-sweep", support.schema())
+    |> fabric_postgres.with_lease(600)
+  let gate = agents.gate()
+  let assert Ok(id) = run.parse_id("postgres-swept-graph")
+  let #(owner, #(handle, worker, approval)) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("sweep-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let #(runtime, worker) = managed_agent(runs, gate)
+      let assert Ok(handle) =
+        graph.start_with_budget(runtime, id, 41, budget.Limits(4, 1, 1))
+      let assert Ok(waiting) = graph.await(handle, 5000)
+      let assert graph.Child(reference, child.AgentInput([approval], [])) =
+        waiting.status
+      let assert Ok(worker) =
+        agent_node.child(handle, reference.activation, worker)
+      #(handle, worker, approval)
+    })
+  fabric.approve(worker, approval.reference, None, Nil) |> should.be_ok
+  let _started = agents.arrival(gate)
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("sweep-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let assert Ok(spec) =
+    fabric.sweeper(
+      runs,
+      [
+        graph.recovery(run.Identity("pg-agent-graph", 1), fn(pinned) {
+          managed_agent(pinned, gate).0
+        }),
+      ],
+      every: 20,
+    )
+  let assert Ok(sweeper) = spec.start()
+  let #(runtime, worker) = managed_agent(runs, gate)
+  let handle = graph.attach(runtime, graph.id(handle))
+  let effect = swept_uncertainty(handle, 150)
+  let assert Ok(worker) = agent_node.child(handle, 1, worker)
+  fabric.reconcile(worker, effect.reference, "effect confirmed") |> should.be_ok
+  let assert Ok(done) = graph.await(handle, 5000)
+  done.status |> should.equal(graph.Completed("done: effect confirmed"))
+  agents.another(gate, 0) |> should.be_false
+  process.unlink(sweeper.pid)
+  agents.kill(sweeper.pid)
+}
+
+fn swept_uncertainty(handle, tries) {
+  let assert Ok(snapshot) = graph.await(handle, 25)
+  case snapshot.status {
+    graph.Child(_, child.AgentInput([], [effect])) -> effect
+    _ if tries > 0 -> {
+      process.sleep(10)
+      swept_uncertainty(handle, tries - 1)
+    }
+    _ -> panic as "automatic graph recovery did not expose the interrupted tool"
+  }
+}
+
 pub fn canceled_agent_evidence_settles_after_postgres_restart_test() {
   let settings =
     support.migrated(support.pool(4), "agent-settlement", support.schema())
