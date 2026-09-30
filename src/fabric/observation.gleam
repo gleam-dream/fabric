@@ -10,8 +10,9 @@
 //// renewal, so that no handler holds up the store. The `sweep` event is
 //// emitted after a scan in a separate process with a 1-second deadline;
 //// a blocked synchronous handler is stopped, so scans cannot accumulate
-//// blocked emitters. Every event is emitted
-//// with `sinal/forwarder.emit_routed`, so the application chooses where
+//// blocked emitters. Shutdown emits `drain` or `drain_unavailable` with
+//// the same bound before the store closes. Every event uses
+//// `sinal/forwarder.emit_routed`, so the application chooses where
 //// handlers run:
 ////
 //// - By default, synchronously in the committing process. A handler that
@@ -91,6 +92,10 @@
 //// | `run_cancelled` | `[fabric, run, cancel]` | a cancellation was committed
 //// |
 //// | `run_finished` | `[fabric, run, stop]` | the run ended |
+//// | `drain` | `[fabric, drain, stop]` | the factory stopped; runner exit
+//// and handoff evidence were collected within the accounting deadline |
+//// | `drain_unavailable` | `[fabric, drain, unavailable]` | shutdown
+//// accounting could not be read; no successful empty summary is inferred |
 ////
 //// A late settlement (`tool.bind_settling`) of a stopped action is
 //// observed as that action's `tool_settled`; one that resolves an
@@ -726,4 +731,71 @@ pub fn sweep() -> Event(Sweep, Nil) {
       ),
     fields.empty(),
   )
+}
+
+/// One factory's shutdown cohort. Exit counts partition runners; handoff
+/// evidence is independent. A killed runner may already have handed off.
+/// Pending or unobserved evidence makes the report incomplete. Elapsed time
+/// is monotonic milliseconds since admission closed, not a per-run duration.
+pub type Drain {
+  Drain(
+    runners: Int,
+    handed_off: Int,
+    failed_handoffs: Int,
+    pending_handoffs: Int,
+    killed: Int,
+    exited: Int,
+    unobserved: Int,
+    elapsed_ms: Int,
+  )
+}
+
+/// Emitted after the factory stops and before its store stops. Metadata is
+/// the store's registered name. Killed means a forced exit, including but
+/// not limited to the supervisor's deadline. Failed means unconfirmed, not
+/// proof that a backend write had no effect. Reporting is bounded and best
+/// effort, as for other events; it never owns recovery.
+pub fn drain() -> Event(Drain, String) {
+  event(
+    ["drain", "stop"],
+    both(
+      both(
+        both(int("runners"), int("handed_off")),
+        both(int("failed_handoffs"), int("pending_handoffs")),
+      ),
+      both(
+        both(int("killed"), int("exited")),
+        both(int("unobserved"), int("elapsed_ms")),
+      ),
+    )
+      |> fields.imap(
+        fn(v) {
+          Drain(
+            v.0.0.0,
+            v.0.0.1,
+            v.0.1.0,
+            v.0.1.1,
+            v.1.0.0,
+            v.1.0.1,
+            v.1.1.0,
+            v.1.1.1,
+          )
+        },
+        fn(d) {
+          #(
+            #(
+              #(d.runners, d.handed_off),
+              #(d.failed_handoffs, d.pending_handoffs),
+            ),
+            #(#(d.killed, d.exited), #(d.unobserved, d.elapsed_ms)),
+          )
+        },
+      ),
+    text("store"),
+  )
+}
+
+/// Shutdown accounting could not be read. No zero-run success is inferred.
+pub fn drain_unavailable() -> Event(Nil, String) {
+  event(["drain", "unavailable"], fields.empty(), text("store"))
 }

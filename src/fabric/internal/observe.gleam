@@ -31,6 +31,14 @@ pub fn handed_off(state: State) -> Nil {
   emit(o.run_handed_off(), Nil, o.RunHandedOff(state.run, state.incarnation))
 }
 
+pub fn drained(summary: o.Drain, store: String) -> Nil {
+  emit(o.drain(), summary, store)
+}
+
+pub fn drain_unavailable(store: String) -> Nil {
+  emit(o.drain_unavailable(), Nil, store)
+}
+
 /// A recovery took over `state` from the lease of `previous_owner`.
 pub fn taken_over(state: State, previous_owner: String) -> Nil {
   emit(

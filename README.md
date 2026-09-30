@@ -346,7 +346,9 @@ rebuilds context from the root run id, and recovers each eligible family
 member under its own lease. A live parent learns a child’s stored outcome
 even when another node recovered the child. Running tools become uncertain
 and are never replayed. See the [PostgreSQL setup](integrations/fabric_postgres/README.md#automatic-recovery)
-for shutdown order and recovery limits.
+for shutdown order and recovery limits. The [operations runbook](docs/OPERATIONS.md)
+covers readiness, database statistics, shutdown summaries, recovery procedures,
+rolling upgrades and retention.
 
 Conversations: Fabric stores each `model.AssistantTurn` (text, calls and
 optional provider data) before dispatching tools. The llm_wire adapter

@@ -57,7 +57,8 @@ stores, idle and active leased stores, renewal success/failure and restart,
 backend failure/timeout, ongoing normal reads during a held probe, and a drain
 that starts while a probe is pending. Existing lease tests continue to own
 fencing and recovery behavior. Database gauges and sweep lag are defined below.
-Shutdown summaries and the full runbook remain unbuilt S7 work.
+Shutdown accounting is specified below. Operational procedures are in the
+[runbook](../../OPERATIONS.md).
 
 ## Database statistics
 
@@ -117,3 +118,53 @@ rows, per-node live leases and expired backlog, no-write reporting and refresh
 preservation. Pure projection scenarios cover every phase class, unsupported
 records and identity mismatch. The accepted implementation uses diagnostic
 projection 1 and SQL schema 7; its complete gate evidence is in the wave tracker.
+
+## Shutdown summaries
+
+The store subtree retains diagnostic accounting for its factory's runners and
+emits `observation.drain()` after the factory has stopped, before stopping the
+store actor. Factory supervision and the configured runner drain window remain
+unchanged. An additional reporting worker follows the factory in shutdown order;
+it does not own runs or perform workflow effects.
+
+- **O12 — supervised cohort:** ordinary completed runners are removed from
+  accounting. Once drain begins, retain the factory's current runners and any
+  already-admitted starts that race shutdown, through their process exits.
+  Suspended runs with no process are excluded. A runner belongs to one cohort
+  once, even if it receives repeated shutdown notifications.
+- **O13 — handoff evidence:** count a handoff only after the store confirms its
+  write, including confirmation after a lost acknowledgment. A refused write,
+  unavailable commit or unencodable handoff is a failed handoff: this means
+  unconfirmed, not proof that the database changed nothing. A write still in
+  progress is pending. Process termination cannot turn pending evidence into
+  success. Counts are per runner, not per write attempt.
+- **O14 — exit evidence:** the store monitors runners, including runners killed
+  at the supervisor's deadline. `killed`, `exited` and `unobserved` partition the
+  cohort. `killed` records a forced process exit; it includes deadline enforcement
+  and can also include another force kill during drain. It does not invent a
+  cause from elapsed time. Handoff counts are independent: a runner may commit
+  its handoff and then be killed while a synchronous observation handler hangs.
+- **O15 — bounded reporting:** shutdown first closes admission, then stops the
+  factory, then asks for accounting. The actor allows up to one second for
+  outstanding exit or handoff evidence; after that it reports pending and
+  unobserved counts explicitly. Emission is bounded to one further second and
+  cannot prevent shutdown. Unreachable store accounting emits
+  `drain_unavailable`, never an invented zero-run success. Abrupt VM loss may
+  produce no observation, as for existing events.
+- **O16 — diagnostic isolation:** summaries do not cancel, claim, release,
+  restart or reconcile runs. Reporting failure never changes the saved outcome
+  or repeats an effect. Applications keep their event forwarder alive until
+  after the store subtree stops; ordinary Sinal delivery/drop rules still apply.
+
+The `Drain` measurement contains `runners`, `handed_off`, `failed_handoffs`,
+`pending_handoffs`, `killed`, `exited`, `unobserved` and `elapsed_ms`; metadata
+identifies the store. Elapsed time is local monotonic time since admission
+closed. No prompt, output, backend error text or run payload is emitted.
+The report is complete when pending and unobserved counts are both zero.
+
+O12–O16 are covered by twelve public shutdown scenarios for successful and failed handoff,
+deadline termination, pending commit, an idle store, a start during drain,
+graph runners, process loss, and a blocked observation handler. The existing
+drain/recovery suite continues to prove workflow behavior. The complete local gate
+passed all 41 checks, including 650 core and 64 PostgreSQL tests; see the wave
+tracker for the acceptance evidence. No execution format or effect ownership changed.
