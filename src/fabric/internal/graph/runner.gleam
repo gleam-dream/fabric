@@ -363,7 +363,8 @@ fn draining(runner: Runner) -> Runner {
 
 fn active_body(state: g.State) -> Bool {
   case state.phase {
-    g.Running(_) | g.Stopping(_) | g.StoppingJob(_, job.RequestStarted) -> True
+    g.Running(_) | g.Stopping(_) | g.StoppingJob(_, job.RequestStarted, _) ->
+      True
     _ -> False
   }
 }
@@ -426,17 +427,17 @@ fn perform(runner: Runner, effects: List(g.Effect)) -> Result(Runner, Error) {
     let runner = draining(runner)
     case effect, runner.draining {
       g.Inspect(_), True
-      | g.ArmSignal(_), True
+      | g.ArmWait(_), True
       | g.Dispatch(_), True
       | g.ObserveChild(_, _), True
       | g.CancelChild(_, _), True
       | g.RequestJobStop(_), True
       -> Ok(runner)
-      g.ArmSignal(activation), False -> {
+      g.ArmWait(activation), False -> {
         use now <- result.try(
           store.now(runner.runs) |> result.map_error(StoreFailed),
         )
-        apply(runner, g.SignalArmed(g.reference(runner.state, activation), now))
+        apply(runner, g.WaitArmed(g.reference(runner.state, activation), now))
       }
       g.Inspect(activation), False -> {
         use #(event, body) <- result.try(
@@ -564,7 +565,9 @@ fn receive(runner: Runner) -> Nil {
     live.Exited(_, process.Normal) -> Ok(runner)
     live.Exited(_, reason) -> {
       case runner.state.phase {
-        g.Running(a) | g.Stopping(a) | g.StoppingJob(a, job.RequestStarted) ->
+        g.Running(a)
+        | g.Stopping(a)
+        | g.StoppingJob(a, job.RequestStarted, _) ->
           apply(
             Runner(..runner, executor: None),
             g.Unresolved(
@@ -584,7 +587,7 @@ fn receive(runner: Runner) -> Nil {
         use _ <- result.try(case runner.state.phase {
           // The retained owned admission authorizes cleanup after ancestors
           // close. The start fence still requires compatible deployed code.
-          g.StoppingJob(_, job.RequestQueued) ->
+          g.StoppingJob(_, job.RequestQueued, _) ->
             bounded.call(runner.options.callback_timeout, fn() {
               runner.work.validate(runner.state)
             })
@@ -722,7 +725,7 @@ fn settle(
   execution: live.Execution,
 ) -> Result(Runner, Error) {
   case runner.state.phase {
-    g.Running(a) | g.Stopping(a) | g.StoppingJob(a, job.RequestStarted) ->
+    g.Running(a) | g.Stopping(a) | g.StoppingJob(a, job.RequestStarted, _) ->
       case ref == g.reference(runner.state, a) {
         True ->
           apply(
@@ -751,19 +754,19 @@ fn result_event(
   execution: live.Execution,
 ) -> g.Event {
   case state.phase, execution {
-    g.StoppingJob(_, _), live.Returned(Ok(_)) -> g.JobStopRequested(ref)
-    g.StoppingJob(_, _),
+    g.StoppingJob(_, _, _), live.Returned(Ok(_)) -> g.JobStopRequested(ref)
+    g.StoppingJob(_, _, _),
       live.Returned(Error(definition.OperationRejected(operation.BodyFailed(operation.DefiniteFailure(
         reason,
       )))))
     -> g.JobStopRefused(ref, reason)
-    g.StoppingJob(_, _), live.Interrupted(reason)
-    | g.StoppingJob(_, _),
+    g.StoppingJob(_, _, _), live.Interrupted(reason)
+    | g.StoppingJob(_, _, _),
       live.Returned(Error(definition.OperationRejected(operation.BodyFailed(operation.UncertainEffect(
         reason,
       )))))
     -> g.Unresolved(ref, g.Uncertain(reason))
-    g.StoppingJob(_, _), result ->
+    g.StoppingJob(_, _, _), result ->
       g.Unresolved(ref, g.Uncertain(string.inspect(result)))
     _, execution ->
       ordinary_result_event(work, options, state, activation, ref, execution)
@@ -865,48 +868,14 @@ pub fn discover(
         True -> Ok(state)
         False -> recover_abandoned(runs, work, options, entry, state, 1)
       }
-    g.StoppingJob(_, job.RequestQueued)
-    | g.StoppingJob(_, job.RequestStarted) ->
+    g.StoppingJob(_, job.RequestQueued, _)
+    | g.StoppingJob(_, job.RequestStarted, _) ->
       case driven(entry, state) {
         True -> Ok(state)
         False -> recover_work(runs, work, options, entry, state, 1)
       }
-    g.WaitingJob(a) | g.StoppingJob(a, _) ->
-      case a.prepared.kind, entry.holding {
-        operation.Job(job.Every(_)), store.HeldHere
-        | operation.OwnedJob(job.Every(_)), store.HeldHere
-        -> {
-          use observed <- result.try(observe_job(
-            runs,
-            work,
-            options,
-            job.Reference(
-              run.issued(state.run),
-              a.id,
-              a.attempt,
-              a.prepared.operation,
-            ),
-            1,
-          ))
-          case observed.phase {
-            g.WaitingJob(_) | g.StoppingJob(_, _) -> {
-              // Pending observation changes no business data. A conditional
-              // release acknowledges this claim; the backend retains its due time.
-              commit_recovery(
-                runs,
-                work,
-                options,
-                entry,
-                g.State(..observed, incarnation: observed.incarnation + 1),
-                [],
-                1,
-              )
-            }
-            _ -> Ok(observed)
-          }
-        }
-        _, _ -> Ok(state)
-      }
+    g.WaitingJob(a) | g.StoppingJob(a, _, _) ->
+      discover_job(runs, work, options, entry, state, a)
     g.Joining(a, child)
       | g.WaitingChild(a, child)
       | g.ChildBlocked(a, child, _)
@@ -977,6 +946,66 @@ pub fn discover(
   }
 }
 
+fn discover_job(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  entry: store.Entry,
+  state: g.State,
+  a: g.Activation,
+) -> Result(g.State, Error) {
+  use due <- result.try(case state.phase, driven(entry, state) {
+    g.WaitingJob(_), False -> wait_due(runs, a)
+    _, _ -> Ok(None)
+  })
+  case due {
+    Some(_) -> recover_abandoned(runs, work, options, entry, state, 1)
+    None ->
+      case a.prepared.kind, entry.holding {
+        operation.Job(job.Every(_)), store.HeldHere
+        | operation.OwnedJob(job.Every(_)), store.HeldHere
+        -> {
+          use observed <- result.try(observe_job(
+            runs,
+            work,
+            options,
+            job.Reference(
+              run.issued(state.run),
+              a.id,
+              a.attempt,
+              a.prepared.operation,
+            ),
+            1,
+          ))
+          case observed == state {
+            True ->
+              commit_recovery(
+                runs,
+                work,
+                options,
+                entry,
+                g.State(..observed, incarnation: observed.incarnation + 1),
+                [],
+                1,
+              )
+            False -> Ok(observed)
+          }
+        }
+        _, store.HeldHere ->
+          commit_recovery(
+            runs,
+            work,
+            options,
+            entry,
+            g.State(..state, incarnation: state.incarnation + 1),
+            [],
+            1,
+          )
+        _, _ -> Ok(state)
+      }
+  }
+}
+
 /// Retained idle states need no new child command. Keep changed uncertainty
 /// evidence when acknowledging a claimed wait, without restarting observation.
 fn resting_child(phase: g.Phase, progress: child.Progress) -> Option(g.Phase) {
@@ -1031,7 +1060,8 @@ fn observe_current_job(
   state: g.State,
 ) -> Result(g.State, Error) {
   case state.phase {
-    g.Ended(g.Cancelled(a, g.JobStopped))
+    g.Ended(g.Expired(a, _))
+    | g.Ended(g.Cancelled(a, g.JobStopped))
     | g.Ended(g.Cancelled(a, g.AfterFailure(g.OperationFailed(_)))) ->
       case job_matches(ref, a) {
         True -> Ok(state)
@@ -1039,9 +1069,10 @@ fn observe_current_job(
       }
     _ -> {
       use a <- result.try(case state.phase {
-        g.StoppingJob(_, job.RequestQueued)
-        | g.StoppingJob(_, job.RequestStarted) -> Error(Refused(g.WrongPhase))
-        g.WaitingJob(a) | g.StoppingJob(a, _) ->
+        g.StoppingJob(_, job.RequestQueued, _)
+        | g.StoppingJob(_, job.RequestStarted, _) ->
+          Error(Refused(g.WrongPhase))
+        g.WaitingJob(a) | g.StoppingJob(a, _, _) ->
           case job_matches(ref, a) {
             True -> Ok(a)
             False -> Error(Refused(g.StaleInvocation))
@@ -1049,83 +1080,180 @@ fn observe_current_job(
         _ -> Error(Refused(g.WrongPhase))
       })
       let stopping = case state.phase {
-        g.StoppingJob(_, _) -> True
+        g.StoppingJob(..) -> True
         _ -> False
       }
       use _ <- result.try(case stopping {
         True -> Ok(Nil)
         False -> check_ancestry(runs, state)
       })
-      use progress <- result.try(
-        bounded.call(options.callback_timeout, fn() { work.observe_job(a) })
+      use due <- result.try(case stopping {
+        True -> Ok(None)
+        False -> wait_due(runs, a)
+      })
+      case due {
+        Some(now) ->
+          commit_job(
+            runs,
+            work,
+            options,
+            ref,
+            tries,
+            entry,
+            state,
+            g.ExpireWait(g.reference(state, a), now),
+          )
+        None ->
+          read_job(runs, work, options, ref, tries, entry, state, a, stopping)
+      }
+    }
+  }
+}
+
+fn read_job(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  ref: job.Reference,
+  tries: Int,
+  entry: store.Entry,
+  state: g.State,
+  a: g.Activation,
+  stopping: Bool,
+) -> Result(g.State, Error) {
+  let observed =
+    bounded.call(options.callback_timeout, fn() { work.observe_job(a) })
+    |> result.map_error(string.inspect)
+    |> result.try(fn(reply) { reply |> result.map_error(string.inspect) })
+    |> result.map_error(CallbackFailed)
+  use due <- result.try(case stopping {
+    True -> Ok(None)
+    False -> wait_due(runs, a)
+  })
+  case due {
+    Some(now) -> {
+      // A failed read has no terminal authority, but cannot extend the wait.
+      let progress = result.unwrap(observed, job.Pending)
+      let progress = case progress {
+        job.Completed(output) ->
+          case checked_job_output(work, options, a, output) {
+            Ok(_) -> progress
+            Error(_) -> job.Pending
+          }
+        _ -> progress
+      }
+      commit_job(
+        runs,
+        work,
+        options,
+        ref,
+        tries,
+        entry,
+        state,
+        g.JobExpired(g.reference(state, a), now, progress),
+      )
+    }
+    None -> {
+      use progress <- result.try(observed)
+      case progress {
+        job.Pending -> Ok(state)
+        _ -> {
+          use event <- result.try(job_event(
+            work,
+            options,
+            state,
+            a,
+            progress,
+            stopping,
+          ))
+          use due <- result.try(case stopping {
+            True -> Ok(None)
+            False -> wait_due(runs, a)
+          })
+          let event = case due {
+            None -> event
+            Some(now) -> g.JobExpired(g.reference(state, a), now, progress)
+          }
+          commit_job(runs, work, options, ref, tries, entry, state, event)
+        }
+      }
+    }
+  }
+}
+
+fn checked_job_output(
+  work: live.Work,
+  options: Options,
+  a: g.Activation,
+  output: String,
+) -> Result(Nil, Error) {
+  bounded.call(options.callback_timeout, fn() { work.check_output(a, output) })
+  |> result.map_error(string.inspect)
+  |> result.try(fn(reply) { reply |> result.map_error(string.inspect) })
+  |> result.map_error(CallbackFailed)
+}
+
+fn job_event(
+  work: live.Work,
+  options: Options,
+  state: g.State,
+  a: g.Activation,
+  progress: job.Progress(String),
+  stopping: Bool,
+) -> Result(g.Event, Error) {
+  case progress, stopping {
+    job.Completed(output), True -> {
+      use _ <- result.map(checked_job_output(work, options, a, output))
+      g.CancelledResult(g.reference(state, a), output)
+    }
+    job.Cancelled, True -> Ok(g.JobConfirmedStopped(g.reference(state, a)))
+    job.Cancelled, False ->
+      Ok(g.JobFailed(g.reference(state, a), "external job was cancelled"))
+    job.Completed(output), False -> {
+      use decision <- result.map(
+        bounded.call(options.callback_timeout, fn() {
+          work.accept(state, a, output)
+        })
         |> result.map_error(string.inspect)
         |> result.try(fn(reply) { reply |> result.map_error(string.inspect) })
         |> result.map_error(CallbackFailed),
       )
-      case progress {
-        job.Pending -> Ok(state)
-        _ -> {
-          use event <- result.try(case progress, stopping {
-            job.Completed(output), True -> {
-              use _ <- result.try(
-                bounded.call(options.callback_timeout, fn() {
-                  work.check_output(a, output)
-                })
-                |> result.map_error(string.inspect)
-                |> result.try(fn(reply) {
-                  reply |> result.map_error(string.inspect)
-                })
-                |> result.map_error(CallbackFailed),
-              )
-              Ok(g.CancelledResult(g.reference(state, a), output))
-            }
-            job.Cancelled, True ->
-              Ok(g.JobConfirmedStopped(g.reference(state, a)))
-            job.Cancelled, False ->
-              Ok(g.JobFailed(
-                g.reference(state, a),
-                "external job was cancelled",
-              ))
-            job.Completed(output), False -> {
-              use decision <- result.map(
-                bounded.call(options.callback_timeout, fn() {
-                  work.accept(state, a, output)
-                })
-                |> result.map_error(string.inspect)
-                |> result.try(fn(reply) {
-                  reply |> result.map_error(string.inspect)
-                })
-                |> result.map_error(CallbackFailed),
-              )
-              g.JobCompleted(g.reference(state, a), output, decision)
-            }
-            job.Failed(reason), _ ->
-              Ok(g.JobFailed(g.reference(state, a), reason))
-            job.Pending, _ -> Error(Refused(g.WrongPhase))
-          })
-          use #(next, effects) <- result.try(
-            g.step(state, event) |> result.map_error(Refused),
-          )
-          case
-            launch(
-              runs,
-              work,
-              options,
-              Some(entry.revision),
-              next,
-              effects,
-              None,
-              False,
-            )
-          {
-            Ok(_) -> Ok(next)
-            Error(StoreFailed(store.Conflict(_))) if tries > 1 ->
-              observe_job(runs, work, options, ref, tries - 1)
-            Error(error) -> Error(error)
-          }
-        }
-      }
+      g.JobCompleted(g.reference(state, a), output, decision)
     }
+    job.Failed(reason), _ -> Ok(g.JobFailed(g.reference(state, a), reason))
+    job.Pending, _ -> Error(Refused(g.WrongPhase))
+  }
+}
+
+fn commit_job(
+  runs: store.Store,
+  work: live.Work,
+  options: Options,
+  ref: job.Reference,
+  tries: Int,
+  entry: store.Entry,
+  state: g.State,
+  event: g.Event,
+) -> Result(g.State, Error) {
+  use #(next, effects) <- result.try(
+    g.step(state, event) |> result.map_error(Refused),
+  )
+  case
+    launch(
+      runs,
+      work,
+      options,
+      Some(entry.revision),
+      next,
+      effects,
+      None,
+      False,
+    )
+  {
+    Ok(_) -> Ok(next)
+    Error(StoreFailed(store.Conflict(_))) if tries > 1 ->
+      observe_job(runs, work, options, ref, tries - 1)
+    Error(error) -> Error(error)
   }
 }
 
@@ -1200,10 +1328,13 @@ fn recover_abandoned(
   tries: Int,
 ) -> Result(g.State, Error) {
   case state.phase {
-    g.WaitingSignal(a) -> {
-      use due <- result.try(signal_due(runs, a))
+    g.WaitingSignal(a) | g.WaitingJob(a) -> {
+      use due <- result.try(wait_due(runs, a))
       case due {
-        None if entry.holding == store.HeldHere ->
+        None
+          if entry.holding == store.HeldHere
+          && a.prepared.kind == operation.Signal
+        ->
           commit_recovery(
             runs,
             work,
@@ -1216,7 +1347,7 @@ fn recover_abandoned(
         None -> Ok(state)
         Some(now) -> {
           use #(next, effects) <- result.try(
-            g.step(state, g.ExpireSignal(g.reference(state, a), now))
+            g.step(state, g.ExpireWait(g.reference(state, a), now))
             |> result.map_error(Refused),
           )
           commit_recovery(runs, work, options, entry, next, effects, tries)
@@ -1265,7 +1396,7 @@ fn recover_abandoned(
 
 /// A time sample is only an input to a revision-checked transition. A missing
 /// clock never grants delivery permission or substitutes a local timestamp.
-pub fn signal_due(
+pub fn wait_due(
   runs: store.Store,
   activation: g.Activation,
 ) -> Result(Option(Int), Error) {

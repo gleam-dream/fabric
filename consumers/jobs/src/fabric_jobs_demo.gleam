@@ -9,6 +9,7 @@ import fabric/policy
 import fabric/run
 import fabric/store
 import fabric_jobs_demo/client
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import json/blueprint/codec
 
@@ -94,7 +95,7 @@ pub fn waiting_runtime(
   submit: Submit,
   url: String,
 ) -> graph.Runtime(Nil, State, String) {
-  wait_with(runs, submit, url, job.Manual, Detached)
+  wait_with(runs, submit, url, job.Manual, Detached, None)
 }
 
 /// The registered sweeper can observe this graph's saved job every 100 ms.
@@ -103,7 +104,7 @@ pub fn scheduled_runtime(
   submit: Submit,
   url: String,
 ) -> graph.Runtime(Nil, State, String) {
-  wait_with(runs, submit, url, job.Every(100), Detached)
+  wait_with(runs, submit, url, job.Every(100), Detached, None)
 }
 
 type Lifetime {
@@ -119,7 +120,19 @@ pub fn owned_runtime(
   request: fn(operation.Invocation, client.Receipt) -> Result(Nil, client.Error),
   url: String,
 ) -> graph.Runtime(Nil, State, String) {
-  wait_with(runs, submit, url, job.Every(100), Owned(request))
+  wait_with(runs, submit, url, job.Every(100), Owned(request), None)
+}
+
+/// Bound the accepted job wait while retaining owned cancellation and terminal
+/// evidence after expiration. The service remains independently durable.
+pub fn deadline_runtime(
+  runs: store.Store,
+  submit: Submit,
+  request: fn(operation.Invocation, client.Receipt) -> Result(Nil, client.Error),
+  url: String,
+  within: Int,
+) -> graph.Runtime(Nil, State, String) {
+  wait_with(runs, submit, url, job.Every(100), Owned(request), Some(within))
 }
 
 fn wait_with(
@@ -128,6 +141,7 @@ fn wait_with(
   url: String,
   polling: job.Polling,
   lifetime: Lifetime,
+  deadline: Option(Int),
 ) -> graph.Runtime(Nil, State, String) {
   let assert Ok(submit_id) = definition.node_id("submit")
   let assert Ok(wait_id) = definition.node_id("wait")
@@ -176,18 +190,26 @@ fn wait_with(
       scheduled
     }
   }
+  let op = case lifetime {
+    Detached -> operation.await_job(observer)
+    Owned(request) ->
+      operation.own_job(
+        observer,
+        fn(_, invocation, receipt) { request(invocation, receipt) },
+        client.classify,
+      )
+  }
+  let op = case deadline {
+    None -> op
+    Some(ms) -> {
+      let assert Ok(op) = operation.with_deadline(op, ms)
+      op
+    }
+  }
   let waiting =
     definition.node(
       wait_id,
-      case lifetime {
-        Detached -> operation.await_job(observer)
-        Owned(request) ->
-          operation.own_job(
-            observer,
-            fn(_, invocation, receipt) { request(invocation, receipt) },
-            client.classify,
-          )
-      },
+      op,
       fn(state) {
         case state {
           Accepted(receipt) -> Ok(receipt)

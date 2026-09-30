@@ -57,7 +57,10 @@ pub fn idle_graph_and_agent_attachments_have_stable_discovery_keys_test() {
     let wait = project(state)
     wait.run |> should.equal(support.id("root"))
     wait.trigger
-    |> should.equal(discovery.Changed(support.id(child.reserved_id("root", 1))))
+    |> should.equal(discovery.Changed(
+      support.id(child.reserved_id("root", 1)),
+      None,
+    ))
     project(graph.State(..state, incarnation: 8)) |> should.equal(wait)
     let assert graph.WaitingChild(a, id) = state.phase
     project(
@@ -142,13 +145,13 @@ pub fn unknown_corrupt_and_misfiled_records_have_no_usable_discovery_index_test(
   json.parse(indexed, decode.at(["wait", "dependency"], decode.string))
   |> should.equal(Ok(child.reserved_id("root", 1)))
   list.each(
-    ["invalid", string.replace(encoded, "\"version\":10", "\"version\":1099")],
+    ["invalid", string.replace(encoded, "\"version\":11", "\"version\":1199")],
     fn(encoded) {
       discovery.inspect(encoded) |> should.be_error
-      discovery.encode("root", encoded) |> should.equal("{\"version\":5}")
+      discovery.encode("root", encoded) |> should.equal("{\"version\":6}")
     },
   )
-  discovery.encode("wrong", encoded) |> should.equal("{\"version\":5}")
+  discovery.encode("wrong", encoded) |> should.equal("{\"version\":6}")
 }
 
 pub fn completed_and_settled_child_attachments_stop_dependency_discovery_test() {

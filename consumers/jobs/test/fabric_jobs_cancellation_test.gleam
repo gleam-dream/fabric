@@ -305,7 +305,11 @@ pub fn owned_cancellation_reconnects_to_the_real_terminal_outcome_after_restart_
   graph.cancel(handle) |> should.equal(Ok(Nil))
   let assert Ok(pending) = graph.await(handle, 5000)
   pending.status
-  |> should.equal(graph.CancellingJob(reference, job.RequestAccepted))
+  |> should.equal(graph.CancellingJob(
+    reference,
+    job.RequestAccepted,
+    operation.CancellationRequested,
+  ))
   support.crash(owner, runs)
   let rt =
     demo.owned_runtime(
@@ -355,7 +359,11 @@ pub fn an_interrupted_owned_request_is_resolved_by_real_observation_without_repl
     )
   let handle = graph.attach(rt, id("owned-lost-stop"))
   let assert Ok(recovered) = graph.recover(handle)
-  let assert graph.CancellingJob(_, job.RequestUncertain(_)) = recovered.status
+  let assert graph.CancellingJob(
+    _,
+    job.RequestUncertain(_),
+    operation.CancellationRequested,
+  ) = recovered.status
   poll_owned(handle, reference, 100).status
   |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
   support.remove_dir(directory)

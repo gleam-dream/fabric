@@ -144,7 +144,7 @@ pub type Status(answer) {
   AwaitingApproval(Approval)
   AwaitingSignal(SignalReference)
   AwaitingJob(job.Reference)
-  CancellingJob(job.Reference, job.CancellationProgress)
+  CancellingJob(job.Reference, job.CancellationProgress, operation.StopReason)
   Child(child.Reference, child.Progress)
   /// Cancellation is committed; the owned child has not settled yet.
   CancellingChild(child.Reference)
@@ -153,6 +153,7 @@ pub type Status(answer) {
   Failed(Failure)
   Exhausted
   Cancelled(Cancellation)
+  Expired(due: Int, disposition: Cancellation)
 }
 
 pub type Route {
@@ -181,7 +182,7 @@ pub type Snapshot(state, answer) {
     status: Status(answer),
     current: option.Option(Action),
     receipts: List(Receipt),
-    /// UTC Unix milliseconds for a current signal wait or its expired outcome.
+    /// UTC Unix milliseconds for a current wait, job cleanup or expired outcome.
     deadline: option.Option(Int),
   )
 }
@@ -488,14 +489,16 @@ fn child_progress(
           child.Approval(approval.requirement)
         control.WaitingSignal(a) -> child.Signal(a.prepared.operation)
         control.WaitingJob(a) -> child.Job(a.prepared.operation)
-        control.StoppingJob(_, job.RequestQueued)
-        | control.StoppingJob(_, job.RequestStarted) -> child.Working
-        control.StoppingJob(_, _) -> child.Cancelled(True)
+        control.StoppingJob(_, job.RequestQueued, _)
+        | control.StoppingJob(_, job.RequestStarted, _) -> child.Working
+        control.StoppingJob(_, _, _) -> child.Cancelled(True)
         control.Blocked(_, problem) -> child.Uncertain(string.inspect(problem))
         control.ChildBlocked(_, _, reason) -> child.Uncertain(reason)
         control.Ended(control.Completed(output)) -> child.Succeeded(output)
         control.Ended(control.Failed(_, fault)) ->
           child.Failed(string.inspect(fault))
+        control.Ended(control.Expired(_, _)) ->
+          child.Failed("child job deadline expired")
         control.Ended(control.Exhausted(_)) ->
           child.Failed("child activation limit reached")
         control.Ended(control.Cancelled(_, control.UnresolvedCancellation(_))) ->
@@ -650,8 +653,8 @@ fn attend(
   let left = deadline - now()
   case snapshot.status, left > 0 {
     Working, True
-    | CancellingJob(_, job.RequestQueued), True
-    | CancellingJob(_, job.RequestStarted), True
+    | CancellingJob(_, job.RequestQueued, _), True
+    | CancellingJob(_, job.RequestStarted, _), True
     | CancellingChild(_), True
     | Child(_, child.Working), True
     | Child(_, child.Succeeded(_)), True
@@ -851,12 +854,12 @@ fn deliver_with(
         _ -> Error(CommandRefused("no signal is awaited"))
       })
       use due <- result.try(
-        runner.signal_due(runtime.store, activation)
+        runner.wait_due(runtime.store, activation)
         |> result.map_error(from_runner),
       )
       use event <- result.try(case due {
         Some(now) ->
-          Ok(control.ExpireSignal(control.reference(state, activation), now))
+          Ok(control.ExpireWait(control.reference(state, activation), now))
         None -> signal_event(runtime, state, activation, output)
       })
       use #(next, effects) <- result.try(
@@ -898,11 +901,11 @@ fn signal_event(
   )
   use decision <- result.try(accepted |> result.map_error(DefinitionRejected))
   use due <- result.map(
-    runner.signal_due(runtime.store, activation)
+    runner.wait_due(runtime.store, activation)
     |> result.map_error(from_runner),
   )
   case due {
-    Some(now) -> control.ExpireSignal(control.reference(state, activation), now)
+    Some(now) -> control.ExpireWait(control.reference(state, activation), now)
     None ->
       control.Signaled(activation.id, activation.attempt, output, decision)
   }
@@ -1165,7 +1168,7 @@ fn snapshot(
         }
       })
     control.Ready(_)
-    | control.ArmingSignal(_)
+    | control.ArmingWait(_)
     | control.Queued(_)
     | control.Running(_)
     | control.Stopping(_) ->
@@ -1192,7 +1195,7 @@ fn snapshot(
           a.prepared.operation,
         )),
       )
-    control.StoppingJob(a, progress) ->
+    control.StoppingJob(a, progress, cause) ->
       Ok(case control.needs_runner(state) && !runner.driven(entry, state) {
         True -> Unattended
         False ->
@@ -1204,6 +1207,7 @@ fn snapshot(
               a.prepared.operation,
             ),
             progress,
+            cause,
           )
       })
     control.WaitingSignal(a) ->
@@ -1226,63 +1230,90 @@ fn snapshot(
       |> result.map_error(DefinitionRejected)
     control.Ended(control.Exhausted(_)) -> Ok(Exhausted)
     control.Ended(control.Failed(_, fault)) -> Ok(Failed(failure(fault)))
+    control.Ended(control.Expired(a, disposition)) -> {
+      let assert Some(due) = a.deadline
+      Ok(Expired(due, public_cancellation(state, a, disposition)))
+    }
     control.Ended(control.Cancelled(a, cancellation)) ->
-      Ok(
-        Cancelled(case cancellation {
-          control.BeforeStart -> BeforeStart
-          control.JobDetached ->
-            JobDetached(job.Reference(
-              run.issued(state.run),
-              a.id,
-              a.attempt,
-              a.prepared.operation,
-            ))
-          control.JobStopped ->
-            JobStopped(job.Reference(
-              run.issued(state.run),
-              a.id,
-              a.attempt,
-              a.prepared.operation,
-            ))
-          control.AfterResult -> AfterResult
-          control.AfterFailure(fault) -> AfterFailure(failure(fault))
-          control.AfterChild(id) ->
-            ChildSettled(child.Reference(
-              run.issued(state.run),
-              a.id,
-              run.issued(id),
-            ))
-          control.UnresolvedCancellation(problem)
-            if {
-              a.prepared.kind == operation.Subgraph
-              || a.prepared.kind == operation.Agent
-            }
-          ->
-            ChildUnresolved(
-              child.Reference(
-                run.issued(state.run),
-                a.id,
-                run.issued(child.reserved_id(state.run, a.id)),
-              ),
-              public_problem(problem),
-            )
-          control.UnresolvedCancellation(problem) ->
-            Unresolved(
-              Reconciliation(run.issued(state.run), a.id, a.attempt),
-              public_problem(problem),
-            )
-        }),
-      )
+      Ok(Cancelled(public_cancellation(state, a, cancellation)))
   })
-  let current = case state.phase {
+  let current = current_action(state)
+  Ok(
+    Snapshot(
+      entry.revision,
+      value,
+      status,
+      current,
+      public_receipts(state),
+      case state.phase {
+        control.WaitingSignal(a)
+        | control.WaitingJob(a)
+        | control.StoppingJob(a, _, _)
+        | control.Ended(control.Failed(a, control.DeadlineExpired(_)))
+        | control.Ended(control.Expired(a, _)) -> a.deadline
+        _ -> None
+      },
+    ),
+  )
+}
+
+fn public_cancellation(
+  state: control.State,
+  a: control.Activation,
+  cancellation: control.Cancellation,
+) -> Cancellation {
+  case cancellation {
+    control.BeforeStart -> BeforeStart
+    control.JobDetached ->
+      JobDetached(job.Reference(
+        run.issued(state.run),
+        a.id,
+        a.attempt,
+        a.prepared.operation,
+      ))
+    control.JobStopped ->
+      JobStopped(job.Reference(
+        run.issued(state.run),
+        a.id,
+        a.attempt,
+        a.prepared.operation,
+      ))
+    control.AfterResult -> AfterResult
+    control.AfterFailure(fault) -> AfterFailure(failure(fault))
+    control.AfterChild(id) ->
+      ChildSettled(child.Reference(run.issued(state.run), a.id, run.issued(id)))
+    control.UnresolvedCancellation(problem)
+      if {
+        a.prepared.kind == operation.Subgraph
+        || a.prepared.kind == operation.Agent
+      }
+    ->
+      ChildUnresolved(
+        child.Reference(
+          run.issued(state.run),
+          a.id,
+          run.issued(child.reserved_id(state.run, a.id)),
+        ),
+        public_problem(problem),
+      )
+    control.UnresolvedCancellation(problem) ->
+      Unresolved(
+        Reconciliation(run.issued(state.run), a.id, a.attempt),
+        public_problem(problem),
+      )
+  }
+}
+
+fn current_action(state: control.State) -> option.Option(Action) {
+  case state.phase {
     control.Ready(a)
     | control.Queued(a)
     | control.Running(a)
     | control.AwaitingApproval(a, _)
     | control.WaitingSignal(a)
-    | control.ArmingSignal(a)
+    | control.ArmingWait(a)
     | control.WaitingJob(a)
-    | control.StoppingJob(a, _)
+    | control.StoppingJob(a, _, _)
     | control.Joining(a, _)
     | control.WaitingChild(a, _)
     | control.ChildBlocked(a, _, _)
@@ -1290,6 +1321,7 @@ fn snapshot(
     | control.Blocked(a, _)
     | control.Stopping(a)
     | control.Ended(control.Failed(a, _))
+    | control.Ended(control.Expired(a, _))
     | control.Ended(control.Cancelled(a, _)) ->
       Some(Action(
         operation.Invocation(run.issued(state.run), a.id, a.attempt),
@@ -1302,37 +1334,26 @@ fn snapshot(
     control.Ended(control.Completed(_)) | control.Ended(control.Exhausted(_)) ->
       None
   }
-  Ok(
-    Snapshot(
-      entry.revision,
-      value,
-      status,
-      current,
-      list.map(state.receipts, fn(receipt) {
-        let a = receipt.activation
-        Receipt(
-          a.id,
-          a.attempt,
-          a.prepared.node,
-          a.prepared.operation,
-          a.prepared.input,
-          receipt.output,
-          receipt.state,
-          case receipt.route {
-            control.Next(node) -> Next(node)
-            control.Finished -> Finished
-            control.Canceled -> Canceled
-          },
-        )
-      }),
-      case state.phase {
-        control.WaitingSignal(a)
-        | control.Ended(control.Failed(a, control.DeadlineExpired(_))) ->
-          a.deadline
-        _ -> None
+}
+
+fn public_receipts(state: control.State) -> List(Receipt) {
+  list.map(state.receipts, fn(receipt) {
+    let a = receipt.activation
+    Receipt(
+      a.id,
+      a.attempt,
+      a.prepared.node,
+      a.prepared.operation,
+      a.prepared.input,
+      receipt.output,
+      receipt.state,
+      case receipt.route {
+        control.Next(node) -> Next(node)
+        control.Finished -> Finished
+        control.Canceled -> Canceled
       },
-    ),
-  )
+    )
+  })
 }
 
 fn failure(fault: control.Fault) -> Failure {

@@ -78,7 +78,7 @@ pub fn deadline_configuration_is_bounded_and_part_of_definition_compatibility_te
       fn(_error: Nil) { operation.DefiniteFailure("none") },
     )
   operation.with_deadline(activity, 1000)
-  |> should.equal(Error(operation.DeadlineRequiresSignal))
+  |> should.equal(Error(operation.DeadlineRequiresWait))
   let memory = testing.leased_memory()
   let runs = nodes.node(memory.backend, "definition", nodes.long)
   let assert Ok(handle) =

@@ -133,14 +133,14 @@ enforce work, child and depth reservations across restarts. Initialization
 creates/adopts the ledger and commits a root marker before any dispatch; an
 initialized root with a missing ledger refuses recovery. Retention projection
 version 3 introduced marker validation and attaches the ledger with matching
-limits. The current retention projection is version 7; it also understands graph
-job waits, owned cancellation and signal deadlines. Run `refresh_retention` for existing
+limits. The current retention projection is version 8; it also understands graph
+job waits, owned cancellation and signal/job deadlines. Run `refresh_retention` for existing
 rows before they can be pruned by the current projection.
 
-Graph records now write version 10 and read versions 5–10. Version 7 adds a retained
+Graph records now write version 11 and read versions 5–11. Version 7 adds a retained
 read-only job wait. Explicit `graph.poll_job` records its checked outcome;
 canceling the wait detaches observation without canceling remote work. Deploy
-version-10 graph readers before writing new records. Version 8 retains optional
+version-11 graph readers before writing new records. Version 8 retains optional
 polling intervals, including completed activation history. Missing intervals in
 older records mean manual observation. Scheduled intervals cannot be hidden in
 older record versions. PostgreSQL schema version 4 indexes scheduled polls along
@@ -148,8 +148,9 @@ with dependencies. Version 9 retains owned jobs and their fenced cancellation
 requests. Accepted, refused and uncertain requests remain retained until an
 authoritative observation settles the job. They share the poll index without
 a new schema migration. Version 10 retains signal deadline configuration,
-arming, absolute due times and expiration outcomes. The current discovery
-projection is version 5; schema migration 5 adds absolute due waits to the ready
+arming, absolute due times and expiration outcomes. Version 11 adds job deadlines
+and records expiration separately from stop progress and terminal evidence.
+The current discovery projection is version 6; schema migration 5 adds absolute due waits to the ready
 index. Run `refresh_discovery` to refresh existing metadata. Deadline contracts
 and due times cannot be hidden in older record versions.
 
@@ -187,8 +188,8 @@ A state that cannot retain its meaning in version 2 fails before writing.
 `clock_timestamp()`, using the same clock as leases and scheduled discovery.
 This read changes no execution records, leases or scheduling metadata. Errors
 propagate without using the caller's clock. No migration is needed for this
-clock API. Signal deadlines use it when arming and when accepting delivery or
-recovering a wait; deadline support for other operation kinds remains open.
+clock API. Signal and job deadlines use it when arming and when accepting a
+result or recovering a wait; managed-child deadlines remain open.
 
 ## Migrations
 
@@ -325,6 +326,14 @@ recovery releases the lease while retaining its original due time. It remains
 discoverable when time reaches the deadline. Expiration records no accepted
 signal value or successor route; completed signal deadlines can be pruned with
 their settled family. Reads alone do not expire waits.
+
+Discovery projection 6 combines a job's polling interval with its optional
+absolute deadline. Either condition makes it eligible under the existing
+schema-5 index. Manual jobs with deadlines use only absolute eligibility.
+Expiration of an owned job retains its stop cause and cleanup progress; that
+cleanup uses a separate polling key with no deadline, so the expired timestamp
+cannot cause repeated immediate polls. Pending cleanup prevents family pruning.
+Refresh both discovery and retention metadata after upgrading these projections.
 
 Register the graph with the shared sweeper. Only a claimed job is observed;
 recovery does not poll unclaimed relatives. Pending reads release their lease.

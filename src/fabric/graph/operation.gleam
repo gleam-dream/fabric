@@ -31,6 +31,13 @@ pub type Failure {
   UncertainEffect(evidence: String)
 }
 
+/// Why an admitted operation's lifetime is being stopped. This does not imply
+/// that a remote effect stopped or that its cancellation was acknowledged.
+pub type StopReason {
+  CancellationRequested
+  DeadlineReached(due: Int)
+}
+
 pub type Kind {
   Activity
   Signal
@@ -70,7 +77,7 @@ pub type ConfigurationError {
   InvalidAttemptBound(Int)
   ReplayRequiresActivity
   InvalidDeadline(Int)
-  DeadlineRequiresSignal
+  DeadlineRequiresWait
 }
 
 pub type Error {
@@ -217,17 +224,20 @@ pub fn identity(operation: Operation(context, input, output)) -> run.Identity {
   operation.identity
 }
 
-/// Bound an admitted signal wait in milliseconds. The backend clock starts
-/// the duration after policy approval; the due time survives restart. Job and
-/// managed-child deadlines are not supported by this binding yet.
+/// Bound an admitted signal or job wait in milliseconds. The backend clock
+/// starts the duration after policy approval; the due time survives restart.
+/// Owned jobs retain cancellation progress after expiration. Managed-child
+/// deadlines are not supported by this binding yet.
 pub fn with_deadline(
   operation: Operation(context, input, output),
   within: Int,
 ) -> Result(Operation(context, input, output), ConfigurationError) {
   case kind(operation), within > 0 && within <= 4_294_967_295 {
-    Signal, True -> Ok(Operation(..operation, deadline: Some(within)))
-    Signal, False -> Error(InvalidDeadline(within))
-    _, _ -> Error(DeadlineRequiresSignal)
+    Signal, True | Job(_), True | OwnedJob(_), True ->
+      Ok(Operation(..operation, deadline: Some(within)))
+    Signal, False | Job(_), False | OwnedJob(_), False ->
+      Error(InvalidDeadline(within))
+    _, _ -> Error(DeadlineRequiresWait)
   }
 }
 

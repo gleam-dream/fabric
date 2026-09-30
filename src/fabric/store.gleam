@@ -63,6 +63,8 @@
 ////   An absolute `At(due)` wait is eligible when backend UTC milliseconds reach
 ////   `due`. Claiming it does not consume it: after release it remains eligible
 ////   until the execution leaves that wait. Never treat it as a polling interval.
+////   `Poll` and `Changed` can also carry an absolute deadline. Either the
+////   ordinary trigger or that deadline makes the wait eligible, independently.
 ////   Claims are disjoint and bounded, change no execution bytes/revisions or
 ////   retention ages, and refuse stale source revisions/projection versions.
 ////   Use `fabric/discovery` to derive metadata from supported records.

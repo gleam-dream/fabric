@@ -1140,17 +1140,22 @@ fn leased_serve(
             None, Some(wait) -> {
               let #(revision, ready) = case wait.trigger {
                 discovery.At(due) -> #(None, now >= due)
-                discovery.Changed(dependency) -> {
+                discovery.Changed(dependency, due) -> {
                   let revision =
                     dict.get(rows, run.id_to_string(dependency))
                     |> result.map(fn(row) { row.revision })
                     |> option.from_result
-                  #(revision, row.observed != Some(#(wait.key, revision)))
+                  #(
+                    revision,
+                    row.observed != Some(#(wait.key, revision))
+                      || deadline_due(due, now),
+                  )
                 }
-                discovery.Poll(every) -> #(
+                discovery.Poll(every, due) -> #(
                   None,
                   row.observed != Some(#(wait.key, None))
-                    || row.checked + every <= now,
+                    || row.checked + every <= now
+                    || deadline_due(due, now),
                 )
               }
               case !ready {
@@ -1204,6 +1209,13 @@ fn leased_serve(
         offset,
       )
     }
+  }
+}
+
+fn deadline_due(due: Option(Int), now: Int) -> Bool {
+  case due {
+    None -> False
+    Some(at) -> now >= at
   }
 }
 

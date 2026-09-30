@@ -92,7 +92,12 @@ pub fn refusals_uncertainty_and_read_failures_remain_pending_until_terminal_evid
       let assert graph.AwaitingJob(reference) = waiting.status
       graph.cancel(handle) |> should.equal(Ok(Nil))
       let assert Ok(pending) = graph.await(handle, 5000)
-      pending.status |> should.equal(graph.CancellingJob(reference, pair.1))
+      pending.status
+      |> should.equal(graph.CancellingJob(
+        reference,
+        pair.1,
+        operation.CancellationRequested,
+      ))
       graph.poll_job(handle, reference) |> should.be_error
       graph.read(handle) |> should.equal(Ok(pending))
       graph.cancel(handle) |> should.equal(Ok(Nil))
@@ -151,7 +156,11 @@ pub fn a_failed_start_fence_releases_no_stop_and_queued_recovery_can_request_tes
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(pending) = graph.await(handle, 5000)
   pending.status
-  |> should.equal(graph.CancellingJob(reference, job.RequestAccepted))
+  |> should.equal(graph.CancellingJob(
+    reference,
+    job.RequestAccepted,
+    operation.CancellationRequested,
+  ))
   probe.entries(calls) |> should.equal(["request"])
   let assert Ok(done) = graph.poll_job(handle, reference)
   done.status |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
@@ -197,7 +206,11 @@ pub fn owned_cleanup_continues_under_a_cancelled_parent_with_no_unused_work_budg
   let assert graph.Cancelled(graph.ChildUnresolved(_, _)) = pending.status
   let assert Ok(child_pending) = graph.read(child_handle)
   child_pending.status
-  |> should.equal(graph.CancellingJob(reference, job.RequestAccepted))
+  |> should.equal(graph.CancellingJob(
+    reference,
+    job.RequestAccepted,
+    operation.CancellationRequested,
+  ))
   let assert Ok(done) = graph.poll_job(child_handle, reference)
   done.status |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
   let assert Ok(settled) = graph.recover(handle)
@@ -232,7 +245,11 @@ pub fn incompatible_code_can_record_intent_but_cannot_dispatch_owned_cleanup_tes
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(pending) = graph.await(handle, 5000)
   pending.status
-  |> should.equal(graph.CancellingJob(reference, job.RequestAccepted))
+  |> should.equal(graph.CancellingJob(
+    reference,
+    job.RequestAccepted,
+    operation.CancellationRequested,
+  ))
   let assert Ok(done) = graph.poll_job(handle, reference)
   done.status |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
   probe.entries(calls) |> should.equal(["request"])
@@ -259,7 +276,11 @@ pub fn accepted_cancellation_survives_restart_until_confirmed_test() {
   graph.cancel(handle) |> should.equal(Ok(Nil))
   let assert Ok(pending) = graph.await(handle, 5000)
   pending.status
-  |> should.equal(graph.CancellingJob(reference, job.RequestAccepted))
+  |> should.equal(graph.CancellingJob(
+    reference,
+    job.RequestAccepted,
+    operation.CancellationRequested,
+  ))
   let assert Ok(entry) = store.get(runs, "owned-stop")
   entry.live |> should.equal(None)
   let assert Ok(metadata) = retention.inspect(entry.record)
@@ -318,7 +339,11 @@ pub fn an_interrupted_stop_is_not_replayed_and_completion_settles_without_routin
       support.id("lost-stop"),
     )
   let assert Ok(recovered) = graph.recover(handle)
-  let assert graph.CancellingJob(_, job.RequestUncertain(_)) = recovered.status
+  let assert graph.CancellingJob(
+    _,
+    job.RequestUncertain(_),
+    operation.CancellationRequested,
+  ) = recovered.status
   let assert Ok(done) = graph.poll_job(handle, reference)
   done.status |> should.equal(graph.Cancelled(graph.AfterResult))
   let assert [receipt] = done.receipts

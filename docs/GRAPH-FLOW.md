@@ -1,7 +1,7 @@
 # Fabric graph flow: design exploration
 
 2026-09-30. **Serial runtime, durable signals with optional deadlines, managed
-children and external-job ownership are implemented. Job/child deadlines,
+children and external-job ownership with deadlines are implemented. Child deadlines,
 parallel composition, real decision adapters and agent-recipe evaluation remain open.**
 The user has authorized the six-step implementation program. Progress,
 executable contracts and acceptance evidence are retained in the

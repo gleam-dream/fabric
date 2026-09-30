@@ -26,8 +26,8 @@ local cancellation is retained without routing success.
 Terminal agent uncertainty settlement, complete-family PostgreSQL retention and
 shared work/child/depth budgets are implemented. Registered graph sweeping recovers
 expired work and changed idle dependencies after local wakeups are lost.
-Signal deadlines now survive restart and expire through delivery or registered
-recovery. Deadlines for jobs and managed children, parallel composition and real
+Signal and job deadlines survive restart and retain expiration separately from
+owned cleanup. Deadlines for managed children, parallel composition and real
 decision adapters remain in that implementation program.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
@@ -368,7 +368,7 @@ attachments to the correct agent or graph root and recovers expired work
 without taking a live parent's lease. An interrupted effect keeps its recovery
 contract. Registrations are distinct by runtime kind and definition version.
 Free managed waits remain discoverable when their child changes, including
-after local wakeups are lost. Scheduled job waits and signal deadlines share
+after local wakeups are lost. Scheduled job waits and signal/job deadlines share
 this scan. PostgreSQL schema version 5 indexes these waits; refresh existing rows with
 `fabric_postgres.refresh_discovery` after migration. Only the backend's clock
 determines when a polling interval is due. Failed observations retry after lease
@@ -381,9 +381,20 @@ time from the backend clock. `snapshot.deadline` exposes that UTC timestamp.
 Late delivery or recovery commits `Failed(DeadlineExpired(due))` without accepting
 an output or routing onward. The sweeper discovers overdue waits on leased
 backends after downtime. Unleased stores require explicit recovery or delivery.
-Each new visit gets its own deadline. Jobs and managed children do not yet
-support this option. Eligibility uses the last backend time sample before the
+Each new visit gets its own deadline. Eligibility uses the last backend time sample before the
 revision-checked write; the clock check and write are separate operations.
+
+The same option bounds a job wait. Read-only jobs finish with
+`Expired(due, JobDetached(reference))`. Owned jobs retain
+`CancellingJob(reference, progress, DeadlineReached(due))` until observation
+confirms remote cancellation, completion or failure. A completed output is
+retained with a canceled route. Explicit cancellation uses the separate
+`CancellationRequested` cause; whichever cause commits first remains saved.
+The deadline bounds Fabric's observation and acceptance, not the remote
+service's completion timestamp. Scheduled jobs are discovered when either their
+poll interval or deadline is due; cleanup then uses only the poll interval.
+Manual jobs expire automatically on leased stores but require manual cleanup
+observation. Managed children do not yet support this option.
 
 After cancellation, `fabric.reconcile_stored(store, effect, content)` records
 evidence for an uncertain tool without resuming the agent. Then
