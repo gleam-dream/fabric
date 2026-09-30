@@ -1,6 +1,6 @@
 # Remaining work
 
-Current after library adoption, 2026-09-29. This inventory consolidates the
+Current after graph acceptance, 2026-09-30. This inventory consolidates the
 accepted production plan, retained feature backlog, release gaps and
 deferred proposals in [PLAN](PLAN.md) and [CAPABILITIES](CAPABILITIES.md).
 Earlier slice notes remain historical; items completed in later slices
@@ -8,22 +8,26 @@ are not reopened here.
 
 ## New direction: agentic graph flow
 
-The requested direction now includes a Fabric-owned graph layer with typed
+The accepted implementation includes a Fabric-owned graph layer with typed
 decisions, conditional routing, cycles and composable operations. Saga remains
 independent; branching there is deferred, and neither Saga nor Grind becomes
 a Fabric core dependency. [GRAPH-FLOW](GRAPH-FLOW.md) explores the design and
 defines the selected six-step implementation program. The
-[wave tracker](implementation/graph-flow/wave-tracker.md) records step 1's
-typed authoring proof, public durable serial runtime and remaining composition
-work. The graph runner now handles conditional routes, bounded cycles, approval,
+[completion audit](implementation/graph-flow/completion-audit.md) accepts all
+six stages. The graph runner handles conditional routes, bounded cycles, approval,
 recovery, reconciliation, cancellation, shutdown handoff and typed durable
 signals. Managed subgraphs and agents cover restart, approvals, lost
 acknowledgements, cancellation races, idle/nested waits, shared family budgets,
 retention and registered recovery. External jobs support submission, scheduled
 observation and retained owned cancellation with real-service evidence.
-Steps 3–6 still require durable deadlines, typed parallel composition, real
-decision/MCP adapters and agent-recipe evaluation. S7 remains part of the
-production backlog.
+Durable deadlines, typed parallel composition, real LLM/TypeSafe/MCP adapters
+and the agent-recipe evaluation are complete. Ordinary agents remain managed
+graph children to retain their per-tool recovery guarantees.
+
+The current [production-readiness program](implementation/production-readiness/wave-tracker.md)
+prepares complete local verification, delivers S7 and exercises a realistic
+application with both decision providers. The user deferred CI activation and
+library publication; those remain explicit later work.
 
 ## Next: S7 operations
 
@@ -76,12 +80,12 @@ building the Fabric adapter.
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Approval expiry          | Store the request's issue time and evaluate expiry with a trusted or injected clock. A policy recheck can enforce application expiry today, but Fabric has no durable expiry model.                                                       |
 | Edit and respond answers | Extend approval handling beyond approve and reject, with explicit continuation behavior.                                                                                                                                                  |
-| Family budgets           | Share turn and token accounting across parent and child runs. Current budgets belong to individual runs.                                                                                                                                  |
+| Family token accounting  | Share token accounting across parent and child runs. Durable family work/model-attempt, child and depth limits are implemented; token limits remain per agent run.                                                                        |
 | Narrower child context   | Let a delegation derive a child's context rather than passing the parent's context with the same type.                                                                                                                                    |
 | Direct child recovery    | Give a directly recovered child consistent parent attachment and outcome delivery. S5 handles automatic root resolution and leased-parent polling; the public child-only recovery path still constructs its handle without a parent link. |
 | Model progress streaming | Adapt llm_wire streams and close them when a run is cancelled.                                                                                                                                                                            |
 | Structured final output  | Use llm_wire's structured session and support typed child results beyond decoding the child's final string.                                                                                                                               |
-| Time budgets             | Add elapsed-time budgets and per-tool timeouts with a trusted clock.                                                                                                                                                                      |
+| Agent time budgets       | Add whole-agent elapsed-time budgets and per-tool deadlines with a trusted clock. Graph signal, job, managed-child and fork deadlines already exist.                                                                                      |
 | Context compaction       | Specify and implement compaction or summarization after the earlier features. Budget exhaustion currently stops the run.                                                                                                                  |
 
 These are retained backlog items, not prerequisites for finishing S7.
@@ -89,16 +93,17 @@ Their detailed acceptance rules still need to be designed before coding.
 
 ## Release and continuous checks
 
-- Replace sibling path dependencies with publishable versions, or define
-  a reproducible checkout arrangement for development and CI. Reconcile
+- Library publication and hosted CI activation are deferred by the user.
+  Replace sibling path dependencies with published versions, or define
+  a pinned public checkout arrangement before activating CI. Reconcile
   json_blueprint's reported 1.7.1 with its unreleased 2.0 work; publish the
   required sibling versions and Fabric packages when their release gates
   are met.
-- Repair CI's dependency setup: it checks out Fabric alone even though
+- The current CI dependency setup still checks out Fabric alone even though
   the packages resolve llm_wire, json_blueprint, Sinal and Saga beside it.
-- Automate the external consumer, Saga and temporary PostgreSQL gates.
-  They are checked locally; the current CI and root test suite do not
-  exercise all four packages.
+- The shared [verification command](VERIFICATION.md) prepares full package,
+  consumer, service and temporary PostgreSQL checks for local use and later CI.
+  Its current acceptance is tracked in the production-readiness program.
 
 ## Library improvements adopted
 
@@ -112,8 +117,8 @@ Fabric uses Blueprint's decode-error renderer.
 The caller-owned conversation contract supersedes the proposed persistable
 continuation API. There is no remaining continuation-handle feature to build.
 See [PLAN](PLAN.md#library-adoption-caller-owned-conversations) for the new
-model port, record version 4 and acceptance evidence. Release work remains:
-the adopted llm_wire changes were still uncommitted when integrated.
+model port, record version 4 and acceptance evidence. The adopted changes are
+now committed in the local sibling repositories; publishing remains separate.
 
 ## Optional proposals and known limitations
 
@@ -140,6 +145,5 @@ Coordination over Erlang distribution; directory-store power-loss
 durability requiring a NIF; retrieval, vector stores and document loading;
 exact LangGraph API compatibility, time travel and a general channel system;
 remote Agent Protocol sub-agents; a general middleware chain. Serial agentic
-graph control is implemented; bounded fan-out remains in the implementation
-program. Saga workflows remain external operations that consumers
+graph control and bounded fan-out are implemented. Saga workflows remain external operations that consumers
 may expose through tools or future graph adapters.
