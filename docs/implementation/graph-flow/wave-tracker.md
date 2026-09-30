@@ -3,7 +3,8 @@
 ## Current state
 
 - Last updated: 2026-09-30.
-- Program status: active. Full six-step objective remains open.
+- Program status: blocked on live-provider configuration. The full six-step
+  objective remains open; it is not complete or reduced.
 - Target design: [GRAPH-FLOW](../../GRAPH-FLOW.md), as selected by the user's
   explicit six-step implementation goal following the exploration.
 - Approved first outcome: an application authors a generation/review graph
@@ -14,7 +15,7 @@
 - Last completed evaluation: wave 6, agent-loop graph recipe. The ordinary
   controller and managed-agent graph operation are retained after executable
   comparison. Wave 4 remains accepted; wave 5 is open for live validation.
-- Active work: stage-5 actual LLM and classifier inference acceptance. The code,
+- Remaining work: stage-5 actual LLM and classifier inference acceptance. The code,
   offline protocol gates and opt-in live entry points are implemented. Both live
   commands stopped before I/O because their existing API keys were missing or
   empty. The user has one pending request to identify usable provider setup.
@@ -48,8 +49,9 @@
   incompatibility it reveals. This is the remaining acceptance for the full
   six-stage goal. No further controller convergence is selected.
 - Resume note: the user requested another checkpoint commit and continued
-  implementation on 2026-09-30. The app goal is confirmed active with all six
-  stages preserved. The stage-4 deadline checkpoint is committed as `ea21454`;
+  implementation on 2026-09-30. The app goal was confirmed active with all six
+  stages preserved at that checkpoint. The latest blocker audit below records
+  the subsequent status change. The stage-4 deadline checkpoint is `ea21454`;
   the initial runtime checkpoint is `04ae481`. Initial subgraphs do not establish
   complete managed composition, parallel joins or real adapter support.
 
@@ -1741,3 +1743,27 @@ six-step goal remains active, with wave 3 next.
   configured-provider question rather than another request for credentials.
   Stage 5 stays open. The full unbounded six-stage goal remains active and is
   not marked complete merely because its remaining live checks require input.
+
+### Live-provider blocker audit, 2026-09-30
+
+- Previous turn classification: progress. The classifier adapter/shared decision
+  consumer is committed as `5ffa72c`; the executed recipe evaluation and updated
+  design are committed as `8aa4d96`. All independent program work is retained.
+- Current evidence: the worktree was clean at revalidation. The existing live
+  entry points still require provider configuration. Named-variable presence
+  checks found `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `TYPESAFE_API_KEY`
+  missing or empty; no values were read into diagnostics. The latest retained
+  root, PostgreSQL, consumer, adapter and formatting gates all passed.
+- This is the same missing-provider condition reported through the LLM, MCP and
+  classifier checkpoint turns. Earlier independent work could proceed; none of
+  the remaining live acceptance can now proceed without configuration. There
+  is no confirmed running provider job or test handle to wait on.
+- The goal is marked blocked after the repeated-condition audit. Its original
+  six requirements are unchanged and completion is not claimed. The existing
+  request to identify a usable provider setup remains pending; no duplicate
+  credential request or substitute inference was introduced.
+- Resume: configure the existing OpenAI and TypeSafe environment variables, or
+  identify another authorized existing provider setup, then resume the goal.
+  Run the documented opt-in commands in `consumers/decision`, retain actual
+  provider responses/usage without credentials, and fix any incompatibility
+  before completing the full acceptance audit.
