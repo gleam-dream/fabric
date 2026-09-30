@@ -2,12 +2,10 @@
 //// `main` is explicitly live; tests always inject llm_wire's script transport.
 
 import fabric/graph
-import fabric/graph/definition
 import fabric/graph/llm
-import fabric/graph/operation
-import fabric/policy
 import fabric/run
 import fabric/store
+import fabric_decision_demo/routing
 import gleam/erlang/process
 import gleam/io
 import gleam/option.{None, Some}
@@ -18,26 +16,8 @@ import llm_wire/config
 import llm_wire/provider/openai
 import llm_wire/types
 
-pub type Decision {
-  Approve
-  Revise
-}
-
-pub fn decision_codec() -> codec.Codec(Decision) {
-  let assert Ok(choices) =
-    codec.string_enum([#("approve", Approve), #("revise", Revise)])
-  codec.field(
-    "decision",
-    choices
-      |> codec.describe(
-        "Approve only a correct arithmetic statement; otherwise revise.",
-      ),
-  )
-}
-
-fn node_id(name: String) -> definition.NodeId {
-  let assert Ok(id) = definition.node_id(name)
-  id
+pub fn decision_codec() -> codec.Codec(routing.Decision) {
+  routing.decision_codec()
 }
 
 pub fn runtime(
@@ -64,62 +44,18 @@ pub fn runtime(
         )
       },
     )
-  let review =
-    definition.node(
-      node_id("review"),
-      reviewer,
-      fn(state) { Ok(state) },
-      fn(state, receipt) {
-        case receipt.outcome {
-          llm.Answer(Approve, _) ->
-            Ok(definition.Continue(state, node_id("publish")))
-          llm.Answer(Revise, _) ->
-            Ok(definition.Continue(state, node_id("revise")))
-          llm.Refusal(reason) -> Error("review refused: " <> reason)
-          llm.OutputLimited(_) -> Error("review output was incomplete")
-        }
-      },
-      [node_id("publish"), node_id("revise")],
-    )
-  let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.Identity("arithmetic-review-graph", 1),
-      node_id("review"),
-      [
-        review,
-        finish("publish", "approved"),
-        finish("revise", "needs revision"),
-      ],
-      codec.string(),
-      codec.string(),
-      2,
-    ))
-  let assert Ok(runtime) =
-    graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
-    |> graph.with_timeouts(5000, 30_000, 1000)
-  runtime
-}
-
-fn finish(
-  name: String,
-  answer: String,
-) -> definition.Node(Nil, String, String) {
-  let op =
-    operation.new(
-      run.Identity(name, 1),
-      codec.string(),
-      codec.string(),
-      fn(_, _, _) { Ok(answer) },
-      fn(_error: Nil) {
-        operation.DefiniteFailure("pure terminal operation cannot fail")
-      },
-    )
-  definition.node(
-    node_id(name),
-    op,
-    fn(state) { Ok(state) },
-    fn(state, answer) { Ok(definition.Finish(state, answer)) },
-    [],
+  routing.runtime(
+    run.Identity("arithmetic-review-graph", 1),
+    runs,
+    fn() { Nil },
+    reviewer,
+    fn(receipt) {
+      case receipt.outcome {
+        llm.Answer(answer, _) -> Ok(answer)
+        llm.Refusal(reason) -> Error("review refused: " <> reason)
+        llm.OutputLimited(_) -> Error("review output was incomplete")
+      }
+    },
   )
 }
 

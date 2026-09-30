@@ -1,18 +1,31 @@
-# Structured LLM decision consumer
+# Typed decision consumer
 
-This separate consumer uses a native enum to choose `publish` or `revise`.
-`fabric/graph/llm` retains the structured result, original JSON and usage. The
-same graph runs with scripted transport in tests or OpenAI in the live entry
-point. Neither path uses a chat-agent continuation, Saga or Grind.
+A native enum chooses `publish` or `revise`. One application routing definition
+accepts either structured LLM output or a non-generative TypeSafe classifier
+answer. Each producer retains its own protocol receipt and recovery codec.
+Neither path requires an agent conversation, Saga or Grind.
 
-From the repository root, run the offline gate:
+The LLM operation preserves typed output, raw JSON and reported usage. Refused
+or incomplete responses block acceptance before either business route. The
+classifier batches yes/no, enum and score questions, then routes on the enum.
+It also retains the yes probability, full distributions, rubric, confidence,
+requested/resolved models and usage. Application code chooses how that evidence
+controls routing; this example deliberately uses only the selected enum.
+
+Run the offline gate from the repository root:
 
 ```sh
 nix develop -c sh -c 'cd consumers/decision && gleam build --warnings-as-errors && gleam test'
 ```
 
-The following command makes **one live OpenAI request**, using the existing
-`OPENAI_API_KEY` environment variable and synthetic input `2 + 2 = 4`:
+Tests exercise both routes with llm_wire's scripted transport and an explicit
+loopback TypeSafe protocol fixture. The fixture is not Jev inference. Tests do
+not read credentials or contact a provider.
+
+## Live LLM
+
+This command makes **one live OpenAI request**, using `OPENAI_API_KEY` and
+synthetic input `2 + 2 = 4`:
 
 ```sh
 nix develop -c sh -c 'cd consumers/decision && gleam run'
@@ -21,11 +34,24 @@ nix develop -c sh -c 'cd consumers/decision && gleam run'
 The default requested model is `gpt-4.1-nano-2025-04-14`; override it with
 `FABRIC_DECISION_MODEL`. OpenAI documents structured output support on the
 [model page](https://developers.openai.com/api/docs/models/gpt-4.1-nano).
-The request is bounded to 64 output tokens and 20 seconds. There are no
-automatic retries. An unavailable key/provider or invalid result fails the
-live command; it never falls back to a script.
+The request is bounded to 64 output tokens and 20 seconds.
 
-Only the route, typed output, requested model and reported token counts are
-printed. Credentials stay in process configuration. Tests do not read them or
-contact the provider. Refused/incomplete results block this graph's acceptance
-callback instead of reaching either business route.
+## Live classifier
+
+This command makes **one live TypeSafe request** containing the three independent
+questions, using `TYPESAFE_API_KEY` and the same synthetic input:
+
+```sh
+nix develop -c sh -c 'cd consumers/decision && gleam run -m fabric_decision_classifier'
+```
+
+The default requested model is `jev-latest`; override it with
+`FABRIC_CLASSIFIER_MODEL`. The request has a 20-second deadline. It uses
+[TypeSafe's System One API](https://docs.typesafe.ai/api) directly, without
+converting the questions into chat messages.
+
+Both live commands print the route, typed answers, model identities and reported
+usage. Credentials stay in process configuration. Missing keys, provider
+failures and invalid results fail the live command. Neither command retries or
+falls back to a script. A live run is accepted only when the actual provider
+returns a validated answer that reaches the expected route.
