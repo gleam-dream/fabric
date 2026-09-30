@@ -44,6 +44,12 @@ Its protocol tests, shared routing consumer and actual OpenAI/TypeSafe
 retains ordinary agents as managed graph nodes, preserving per-tool approval,
 recovery and cancellation while sharing execution mechanisms.
 
+The [writing consumer](consumers/writing/README.md) composes real source and
+artifact tools with generation, interchangeable LLM/TypeSafe review, bounded
+revision and durable approval. Its tests exercise restart and an interrupted
+save; an explicit live runner compares both reviewers on the same frozen cases
+and verifies a full workflow across separate VMs.
+
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
 
 Run all maintained packages, consumers and local service/database checks with

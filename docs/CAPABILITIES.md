@@ -80,8 +80,9 @@ by BeamWeaver source or tests; not a comparison).
   accounting across a sub-agent family (work/child/depth bounds exist),
   approval expiry and edit/respond answers (slice 2a backlog),
   streaming (slice 3), structured output (slice 3), elapsed-time budget
-  (slice 3), compaction (v2). Production S1–S6 are implemented, including
+  (slice 3), compaction (v2). Production S1–S7 are implemented, including
   PostgreSQL storage, automatic recovery and the record write-version
-  window. Operational gauges and the runbook remain in S7; the optional
+  window, readiness, operational gauges, shutdown summaries and the
+  [operations runbook](OPERATIONS.md). The optional
   Grind integration follows in S8. [Remaining work](REMAINING.md) collects
   the current backlog, release work and deferred proposals.
