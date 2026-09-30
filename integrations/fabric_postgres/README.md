@@ -49,13 +49,21 @@ The store is then used like any Fabric store: `fabric.start(runs, ...)`,
 
 ## Automatic recovery
 
-Build one `Recovery` per root agent. Its context function receives the
-root run id, including when an expired child triggered the scan:
+Build one recovery registration per root definition. An agent
+registration receives the root run id, including when an expired child
+triggered the scan:
 
 ```gleam
 let recoveries = [fabric.recovery(root_agent, context_for_run)]
 let assert Ok(sweeper) = fabric.sweeper(runs, recoveries, every: 1000)
 ```
+
+For graph roots, add `graph.recovery(identity, build_runtime)` to the same
+list. The factory receives the pinned store and must rebuild the complete
+graph, including managed child runtimes, against it. Agent and graph
+registrations may share a name/version; duplicates within one runtime kind
+are rejected. Saved reciprocal attachments determine which root to recover.
+A graph-owned agent is recovered through its graph registration.
 
 Add `sweeper` after `store.supervised(runs)` in the rest-for-one supervisor.
 The order is pool, optional Sinal forwarder, store, sweeper. Shutdown stops
@@ -66,10 +74,12 @@ against an unmigrated database reports a failure and retries next interval.
 A scan runs at boot, then after each interval. It claims at most 100 expired
 leases and never overlaps the next scan. Each root's recovery has 30 seconds,
 including at most 5 seconds to rebuild context. Invalid intervals, duplicate
-root identities, and unleased stores are rejected before startup. Unknown
+registrations, and unleased stores are rejected before startup. Unknown
 identities and failed recoveries leave their claims to expire; observe
 `fabric/observation.sweep()` for counts. No run context is stored by Fabric.
 
+Free idle graph waits with lost local wakeups still require explicit
+`graph.recover`; this scan does not discover every retained wait.
 Only expired leases are discoverable, so an automatic scan waits for expiry
 even after this store restarts. Explicit `fabric.recover` with a known run id
 can take over a prior local store process's lease immediately. Running tools

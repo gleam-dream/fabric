@@ -14,9 +14,10 @@
 - Last closed wave: 2, public durable serial graph runtime.
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's recovery scanning and job/deadline contracts are
+- Open decisions: wave 3's free-wait discovery and job/deadline contracts are
   being refined. Public shared work/child/depth budgets, mixed-family admission,
-  root initialization and ledger retention are implemented. Shared parent
+  root initialization and ledger retention are implemented. Registered graph
+  sweeping recovers expired work through mixed attachments. Shared parent
   identities and manual signal contracts are implemented.
   Native authoring, serial lifecycle, compatibility and public control are now
   concrete in the [durable sequential contract](durable-sequential.md).
@@ -25,7 +26,7 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: shared budget enforcement passes 498 root tests, 42 PostgreSQL tests,
+- Gate status: registered graph recovery passes 504 root tests, 43 PostgreSQL tests,
   four graph consumer tests and 15 existing app consumer tests. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -36,7 +37,7 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: add automatic graph recovery scanning, external jobs
+- Next action: add durable discovery for free idle waits, external jobs
   and deadlines under the [managed composition contract](managed-composition.md).
   These remain runtime states rather than blocking operation wrappers.
 - Resume note: the user requested a checkpoint commit and resumed implementation
@@ -804,3 +805,36 @@ six-step goal remains active, with wave 3 next.
   deadlines. Waves 4–6 and the full six-step goal remain open and unchanged.
 - Next: recover registered graph definitions through a bounded scan after
   process loss, then attach independently retained jobs and recover due waits.
+
+### Wave 3 — registered graph recovery from expired leases
+
+- Status: `graph.recovery(identity, build_runtime)` registers graph roots in
+  the same `fabric.sweeper` used by ordinary agents. Kind plus versioned
+  definition identity distinguishes registrations. The factory rebuilds the
+  complete graph/child runtime against the pinned store, with a five-second
+  bound and checked identity/store before any recovery starts.
+- Topology: scan candidates follow decoded reciprocal family attachments,
+  including graph-owned agents. Unknown, corrupt, misfiled and nonreciprocal
+  records dispatch nothing. The existing 100-candidate batch, bounded root
+  recovery and nonoverlapping scans remain unchanged.
+- Ownership: recovering a graph with a live foreign lease can still recover
+  its independently expired child. It neither takes the parent's lease nor
+  rewrites that parent's state. Parent recovery later adopts the same child's
+  outcome. Terminal retry cues release only after parent acknowledgement.
+- Evidence: six public scenarios cover interrupted graph effects, graph-owned
+  agents beneath a foreign parent, same-name agent/graph registrations,
+  duplicate/wrong-store configuration, competing sweepers, unknown/misfiled
+  records and invalid reciprocal attachments. A real PostgreSQL scenario
+  restarts a budgeted graph/agent family automatically, exposes the interrupted
+  tool as uncertain and completes only after reconciliation.
+- Gate: 504 root tests, 43 PostgreSQL tests, four graph consumer tests and 15
+  app consumer tests pass with warnings as errors. Formatting, `nix flake check`
+  and `git diff --check` pass on this host.
+- Conformance: this proves discovery of expired graph work under G7; it does
+  not prove distributed discovery of a free idle wait after all local wakeups
+  and child retry cues disappear. That case still has explicit recovery and
+  remains open in wave 3 alongside external jobs and durable deadlines.
+  Waves 4–6 and the active six-step objective remain unchanged.
+- Next: provide a durable discovery/index contract for free waits and due
+  wakeups, then exercise external-job submission, retained receipts and
+  completion with an independently running local service.

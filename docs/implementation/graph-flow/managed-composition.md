@@ -80,9 +80,9 @@ Shared ancestry checks read each saved parent and require its active reservation
 to name the exact descendant and action/activation. A stopped, unrelated,
 unreadable or excessively deep chain admits no new work. Agent model attempts
 (including retries), tool fences, child starts and approval commands use this
-contract, as do graph admission and effect fences. The existing agent sweeper
-stops at a graph parent: graph recovery owns that boundary. Automatic graph
-recovery remains separate work.
+contract, as do graph admission and effect fences. The shared sweeper resolves
+the registered root through checked mixed attachments; graph recovery owns a
+graph-rooted family. Discovery of free idle waits remains separate work.
 
 The first managed-child implementation is a subgraph in the same store. Its
 typed operation is constructed from a child graph runtime, with the child
@@ -241,14 +241,40 @@ local hint. Store loss, a failed wakeup or a child write through another store
 can lose that hint. `graph.recover(parent)` restores the registration and
 checks the child, without requiring another child notification. It can recover
 nested attachments through their deployed runtimes. `read` and `await` remain
-observation APIs and do not start recovery. Automatic graph-wide scanning is
-separate work; these local wakeups do not claim distributed notification.
+observation APIs and do not start recovery. Registered sweeping discovers
+expired leases, while free idle waits still need a durable discovery path;
+these local wakeups do not claim distributed notification.
 
 Cancellation closes the waiting attachment through the same committed intent
 as a working child. A stale notification or competing recovery cannot reopen
 it. Store shutdown starts no wakeup work after draining begins; any lost wakeup
 remains repairable from the retained wait. Graph record version 4 introduces
 the waiting-child phase and rejects earlier unreleased graph formats.
+
+### Registered recovery of expired work
+
+The leased-store sweeper accepts ordinary agent registrations and graph
+registrations in one bounded scan. Registrations are keyed by runtime kind
+and definition identity/version, so an agent and a graph may share a name.
+A graph registration rebuilds the complete runtime, including child bindings,
+against the supplied pinned store; the factory is bounded and its definition
+and store must match before recovery begins.
+
+Each claimed candidate follows decoded reciprocal attachments to its root.
+A graph-owned agent is recovered through its graph registration, never through
+an independently registered agent with the same identity. Corrupt, unknown,
+misfiled, mismatched or overlong ancestry dispatches nothing. Root recovery
+uses the existing per-run leases, definition checks, policy, budget and effect
+rules; competing scans cannot repeat a fenced body. Terminal candidates release
+their retry lease only when their parent has acknowledged them. Scan observations
+count a candidate as recovered only after its incarnation advances or its
+acknowledged terminal lease is released.
+
+This increment discovers expired work only. A graph parked on a free child
+wait needs a separate durable discovery path if both its local wakeup and all
+child retry cues disappear. Manual `graph.recover` remains the repair for that
+case until wait discovery is delivered; registering a graph is not a claim
+that free waits already receive distributed notification.
 
 ### Family retention
 

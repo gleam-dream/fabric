@@ -19,6 +19,7 @@ import fabric/internal/graph/controller as control
 import fabric/internal/graph/live
 import fabric/internal/graph/record
 import fabric/internal/graph/runner
+import fabric/internal/sweeper
 import fabric/policy
 import fabric/run
 import fabric/store
@@ -55,6 +56,34 @@ pub opaque type Runtime(context, state, answer) {
 
 pub opaque type Handle(context, state, answer) {
   Handle(runtime: Runtime(context, state, answer), id: run.RunId)
+}
+
+/// Register a root graph for `fabric.sweeper`. The bounded factory rebuilds
+/// its complete runtime and children against the supplied pinned store.
+/// Registration discovers expired leases; free idle waits still require
+/// explicit recovery when their local wakeup is lost.
+pub fn recovery(
+  identity: run.Identity,
+  build: fn(store.Store) -> Runtime(context, state, answer),
+) -> sweeper.Recovery {
+  sweeper.graph_recovery(identity, fn(runs, id) {
+    use runtime <- result.try(
+      bounded.call(5000, fn() { build(runs) }) |> result.replace_error(Nil),
+    )
+    use Nil <- result.try(
+      case
+        definition.identity(runtime.definition).identity == identity,
+        store.pid(runtime.store),
+        store.pid(runs)
+      {
+        True, Ok(actual), Ok(expected) if actual == expected -> Ok(Nil)
+        _, _, _ -> Error(Nil)
+      },
+    )
+    runner.recover(runs, runtime.work, runtime.options, id, 3)
+    |> result.replace(Nil)
+    |> result.replace_error(Nil)
+  })
 }
 
 pub type Approval {
