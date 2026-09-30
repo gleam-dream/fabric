@@ -6,6 +6,8 @@ import gleam/erlang/process.{type Pid}
 
 pub type Reservation {
   Start
+  /// Recover existing work without rewriting unchanged, unclaimed waits.
+  Discover
   Cancel
 }
 

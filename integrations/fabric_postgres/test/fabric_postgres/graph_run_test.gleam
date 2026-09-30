@@ -146,12 +146,73 @@ pub fn a_signal_wait_releases_its_lease_and_another_store_consumes_it_once_test(
   duplicate.revision |> should.equal(done.revision)
 }
 
-fn managed_pair(
+pub fn managed_pair(
   runs: store.Store,
 ) -> #(graph.Runtime(Nil, Int, Int), graph.Runtime(Nil, Int, Int)) {
   managed_pair_with(runs, fn(_, _, n) { Ok(n + 1) }, fn(_, _) {
     Ok(policy.RequireApproval(run.Requirement("child-increment", 1)))
   })
+}
+
+pub fn an_idle_parent_discovers_a_completed_child_after_losing_its_wakeup_test() {
+  let settings =
+    support.migrated(support.pool(4), "idle-discovery", support.schema())
+  let assert Ok(id) = run.parse_id("postgres-idle-parent")
+  let #(owner, #(reference, approval)) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("idle-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let #(parent, runtime) = managed_pair(runs)
+      let assert Ok(handle) = graph.start(parent, id, 41)
+      let assert Ok(waiting) = graph.await(handle, 5000)
+      let assert graph.Child(reference, child.Approval(_)) = waiting.status
+      let assert Ok(child_handle) =
+        graph.child(handle, reference.activation, runtime)
+      let assert Ok(snapshot) = graph.read(child_handle)
+      let assert graph.AwaitingApproval(approval) = snapshot.status
+      released(settings, id, 200) |> should.be_true
+      released(settings, reference.child, 200) |> should.be_true
+      #(reference, approval)
+    })
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("idle-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let #(parent, child) = managed_pair(runs)
+  let handle = graph.attach(parent, id)
+  let assert Ok(child) = graph.child(handle, reference.activation, child)
+  let assert Ok(_) = graph.approve(child, approval)
+  let assert Ok(done) = graph.await(child, 5000)
+  done.status |> should.equal(graph.Completed(42))
+  released(settings, id, 200) |> should.be_true
+  released(settings, reference.child, 200) |> should.be_true
+  let assert Ok(spec) =
+    fabric.sweeper(
+      runs,
+      [
+        graph.recovery(run.Identity("pg-parent", 1), fn(pinned) {
+          managed_pair(pinned).0
+        }),
+      ],
+      every: 20,
+    )
+  let assert Ok(sweeper) = spec.start()
+  await_idle_completion(handle, 150).status |> should.equal(graph.Completed(42))
+  process.unlink(sweeper.pid)
+  agents.kill(sweeper.pid)
+}
+
+fn await_idle_completion(handle, tries) {
+  let assert Ok(snapshot) = graph.await(handle, 25)
+  case snapshot.status {
+    graph.Completed(_) -> snapshot
+    _ if tries > 0 -> {
+      process.sleep(10)
+      await_idle_completion(handle, tries - 1)
+    }
+    _ -> panic as "free parent never discovered its completed child"
+  }
 }
 
 fn managed_pair_with(
@@ -289,7 +350,22 @@ pub fn child_cancellation_settlement_survives_postgres_restart_test() {
   let handle = graph.attach(parent, id)
   let assert Ok(child_handle) = graph.child(handle, reference.activation, child)
   let assert Ok(_) = graph.reconcile(child_handle, reconciliation, "42")
-  let assert Ok(settled) = graph.recover(handle)
+  let assert Ok(spec) =
+    fabric.sweeper(
+      runs,
+      [
+        graph.recovery(run.Identity("pg-parent", 1), fn(pinned) {
+          managed_pair_with(pinned, perform, fn(_, _) {
+            panic as "settlement must not admit work"
+          }).0
+        }),
+      ],
+      every: 20,
+    )
+  let assert Ok(sweeper) = spec.start()
+  let settled = await_settlement(handle, 150)
+  process.unlink(sweeper.pid)
+  agents.kill(sweeper.pid)
   settled.status |> should.equal(graph.Cancelled(graph.ChildSettled(reference)))
   settled.value |> should.equal(41)
   settled.receipts |> should.equal([])
@@ -303,6 +379,18 @@ pub fn child_cancellation_settlement_survives_postgres_restart_test() {
   process.receive(effects, 1000) |> should.equal(Ok(Nil))
   process.receive(effects, 0) |> should.equal(Error(Nil))
   fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(2))
+}
+
+fn await_settlement(handle, tries) {
+  let assert Ok(snapshot) = graph.read(handle)
+  case snapshot.status {
+    graph.Cancelled(graph.ChildSettled(_)) -> snapshot
+    _ if tries > 0 -> {
+      process.sleep(10)
+      await_settlement(handle, tries - 1)
+    }
+    _ -> panic as "canceled parent did not discover child settlement"
+  }
 }
 
 fn released(

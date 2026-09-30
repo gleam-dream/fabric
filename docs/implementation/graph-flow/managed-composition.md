@@ -82,7 +82,7 @@ unreadable or excessively deep chain admits no new work. Agent model attempts
 (including retries), tool fences, child starts and approval commands use this
 contract, as do graph admission and effect fences. The shared sweeper resolves
 the registered root through checked mixed attachments; graph recovery owns a
-graph-rooted family. Discovery of free idle waits remains separate work.
+graph-rooted family. Changed idle dependencies use the discovery contract below.
 
 The first managed-child implementation is a subgraph in the same store. Its
 typed operation is constructed from a child graph runtime, with the child
@@ -242,7 +242,7 @@ can lose that hint. `graph.recover(parent)` restores the registration and
 checks the child, without requiring another child notification. It can recover
 nested attachments through their deployed runtimes. `read` and `await` remain
 observation APIs and do not start recovery. Registered sweeping discovers
-expired leases, while free idle waits still need a durable discovery path;
+expired leases and changed free idle dependencies;
 these local wakeups do not claim distributed notification.
 
 Cancellation closes the waiting attachment through the same committed intent
@@ -270,11 +270,10 @@ their retry lease only when their parent has acknowledged them. Scan observation
 count a candidate as recovered only after its incarnation advances or its
 acknowledged terminal lease is released.
 
-This increment discovers expired work only. A graph parked on a free child
-wait needs a separate durable discovery path if both its local wakeup and all
-child retry cues disappear. Manual `graph.recover` remains the repair for that
-case until wait discovery is delivered; registering a graph is not a claim
-that free waits already receive distributed notification.
+Expired-lease recovery and idle-dependency discovery share registrations and
+attachment validation. A graph parked on a free child wait uses the discovery
+path below when local wakeups and child retry cues disappear. Manual
+`graph.recover` remains available for an explicitly selected run.
 
 ### Durable discovery of idle dependencies
 
@@ -304,16 +303,27 @@ Successful recovery releases that lease or launches ordinary fenced work; failed
 recovery leaves a lease retry cue. A claim changes neither execution revision nor
 retention age. Concurrent claims are disjoint, bounded and ordered fairly.
 
-Rewriting the same wait preserves its observation checkpoint. Leaving the wait
-clears it. An old writer that cannot maintain the index invalidates its source
+Rewriting the same wait preserves its observation checkpoint, including a
+brief return to active child observation. Leaving the wait removes scheduling
+eligibility; its old checkpoint may remain as inert metadata. A later visit
+has a new activation key. An old writer that cannot maintain the index invalidates its source
 revision; it cannot leave apparently current metadata behind. Neither the index
 nor a scan result authorizes execution: the registered root is rebuilt and its
 saved attachment, definition, policy, budgets and ownership are checked again.
 
-This contract is being implemented in wave 3. Its first checkpoint supplies the
-validated dependency projection; automatic free-wait claiming and PostgreSQL
-index maintenance remain open until exercised end to end. Durable due-time
-selection will extend discovery when deadline states are implemented.
+The shared sweeper claims up to 50 expired leases and 50 changed idle waits
+per batch. Recovery of a claimed family member may inspect free relatives;
+unchanged, unclaimed waits are read without rewriting them. This prevents
+recovery itself from creating an endless chain of new dependency revisions.
+Explicit recovery can still restore a local wakeup. An existing retained wait
+never recreates a missing child.
+
+PostgreSQL schema version 3 maintains the projection and source revision on
+writes. `refresh_discovery` projects old rows in bounded, concurrent batches
+without changing execution data, leases or ages. Unknown records are examined
+once per projection version. End-to-end tests cover missed wakeups, cancellation
+settlement, unchanged nested waits, concurrent claims and old-writer invalidation.
+Durable due-time selection remains open until deadline states are implemented.
 
 ### Family retention
 
@@ -422,7 +432,7 @@ lacked it are refused. Ordinary pre-budget records remain readable. If
 cancellation commits before initialization can finish, recovery seals the
 bookkeeping without restarting the canceled execution. Retention projection 3
 validates the marker and typed quota outcomes; existing projections require
-refresh before pruning. The PostgreSQL schema remains version 2.
+refresh before pruning. The later discovery migration advances the PostgreSQL schema to version 3.
 
 ## External jobs and deadlines
 

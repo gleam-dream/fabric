@@ -60,8 +60,8 @@ pub opaque type Handle(context, state, answer) {
 
 /// Register a root graph for `fabric.sweeper`. The bounded factory rebuilds
 /// its complete runtime and children against the supplied pinned store.
-/// Registration discovers expired leases; free idle waits still require
-/// explicit recovery when their local wakeup is lost.
+/// Registration discovers expired leases and changed idle dependencies,
+/// including waits whose local wakeup was lost.
 pub fn recovery(
   identity: run.Identity,
   build: fn(store.Store) -> Runtime(context, state, answer),
@@ -80,7 +80,7 @@ pub fn recovery(
         _, _, _ -> Error(Nil)
       },
     )
-    runner.recover(runs, runtime.work, runtime.options, id, 3)
+    runner.discover(runs, runtime.work, runtime.options, id, 3)
     |> result.replace(Nil)
     |> result.replace_error(Nil)
   })
@@ -293,14 +293,7 @@ pub fn as_subgraph(
     child_driver.Driver(
       store: fn() { store.pid(runs) },
       reserve: fn(parent, id, input, reservation) {
-        reserved_child(
-          runtime,
-          parent,
-          id,
-          input,
-          reservation == child_driver.Cancel,
-          3,
-        )
+        reserved_child(runtime, parent, id, input, reservation, 3)
         |> result.map_error(string.inspect)
       },
       read: fn(parent, id, _) {
@@ -350,7 +343,7 @@ fn reserved_child(
   parent: child.Parent,
   id: String,
   input: String,
-  cancel: Bool,
+  reservation: child_driver.Reservation,
   tries: Int,
 ) -> Result(Nil, Error) {
   case runner.load_raw(runtime.store, id) {
@@ -361,18 +354,25 @@ fn reserved_child(
         False ->
           Error(CommandRefused("child input differs from its reservation"))
       })
-      case cancel, state.phase {
-        True, control.Ended(_) -> Ok(Nil)
-        True, _ ->
+      case reservation, state.phase {
+        child_driver.Cancel, control.Ended(_) -> Ok(Nil)
+        child_driver.Cancel, _ ->
           runner.cancel(runtime.store, runtime.work, runtime.options, id, 3)
           |> result.replace(Nil)
           |> result.map_error(from_runner)
-        False, _ ->
+        child_driver.Discover, _ ->
+          runner.discover(runtime.store, runtime.work, runtime.options, id, 3)
+          |> result.replace(Nil)
+          |> result.map_error(from_runner)
+        child_driver.Start, _ ->
           runner.recover(runtime.store, runtime.work, runtime.options, id, 3)
           |> result.replace(Nil)
           |> result.map_error(from_runner)
       }
     }
+    Error(runner.StoreFailed(store.NotFound))
+      if reservation == child_driver.Discover
+    -> Error(from_runner(runner.StoreFailed(store.NotFound)))
     Error(runner.StoreFailed(store.NotFound)) -> {
       use initial <- result.try(
         definition.decode_state(runtime.definition, input)
@@ -387,20 +387,22 @@ fn reserved_child(
         |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
       )
       let state = control.State(..state, parent: Some(child.attachment(parent)))
-      use #(state, effects) <- result.try(case cancel {
-        True ->
-          control.cancel_abandoned(state)
-          |> result.map_error(fn(error) {
-            CommandRefused(string.inspect(error))
-          })
-        False -> {
-          use _ <- result.map(
-            runner.check_ancestry(runtime.store, state)
-            |> result.map_error(from_runner),
-          )
-          #(state, effects)
-        }
-      })
+      use #(state, effects) <- result.try(
+        case reservation == child_driver.Cancel {
+          True ->
+            control.cancel_abandoned(state)
+            |> result.map_error(fn(error) {
+              CommandRefused(string.inspect(error))
+            })
+          False -> {
+            use _ <- result.map(
+              runner.check_ancestry(runtime.store, state)
+              |> result.map_error(from_runner),
+            )
+            #(state, effects)
+          }
+        },
+      )
       case
         runner.launch(
           runtime.store,
@@ -415,7 +417,7 @@ fn reserved_child(
       {
         Ok(_) -> Ok(Nil)
         Error(runner.StoreFailed(store.AlreadyExists)) if tries > 1 ->
-          reserved_child(runtime, parent, id, input, cancel, tries - 1)
+          reserved_child(runtime, parent, id, input, reservation, tries - 1)
         Error(error) -> Error(from_runner(error))
       }
     }

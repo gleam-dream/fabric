@@ -921,7 +921,8 @@ pub type SweeperError {
 /// A supervised recovery driver for a leased store. Add it after the store
 /// in a rest-for-one supervisor: it stops before runners drain. It scans
 /// at boot, then waits `every` milliseconds after each bounded batch of at
-/// most 100 expired runs. No scans overlap. Each candidate is recovered
+/// most 50 expired leases and 50 changed idle dependencies. No scans overlap.
+/// Each candidate is recovered
 /// through its registered agent or graph root; a crashed running effect
 /// becomes uncertain according to its recovery contract.
 ///
@@ -929,8 +930,9 @@ pub type SweeperError {
 /// A failure or unknown identity leaves its claim to expire and does not
 /// prevent the next root's recovery. `observation.sweep` reports each scan;
 /// synchronous sweep handlers have 1 second before their emitter is stopped.
-/// An automatic scan discovers only expired leases, including after a local
-/// store restart; explicit `recover` can take an earlier local lease at once.
+/// Held work waits for lease expiry; explicit `recover` can take an earlier
+/// local lease at once. Free managed waits remain discoverable after losing
+/// local wakeups. Signal waits without a deadline require explicit delivery.
 pub fn sweeper(
   store: Store,
   recoveries: List(Recovery),

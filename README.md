@@ -15,8 +15,8 @@ See the [runnable public graph consumer](consumers/graph/README.md)
 and [graph implementation tracker](docs/implementation/graph-flow/wave-tracker.md).
 Terminal agent uncertainty settlement, complete-family PostgreSQL retention and
 shared work/child/depth budgets are implemented. Registered graph sweeping recovers
-expired work. Discovery of free idle waits, durable deadlines, external-job
-attachment, parallel composition and real decision
+expired work and changed idle dependencies after local wakeups are lost.
+Durable deadlines, external-job attachment, parallel composition and real decision
 adapters remain in that implementation program.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
@@ -304,7 +304,8 @@ Automatic recovery: register agent roots with
 `fabric.recovery(agent, context_for_run)` and graph roots with `graph.recovery`
 (described below), then add
 `fabric.sweeper(runs, recoveries, every: 1000)` after the store in a
-rest-for-one supervisor. It scans expired leases at boot and periodically,
+rest-for-one supervisor. It scans expired leases and changed idle dependencies
+at boot and periodically,
 rebuilds context from the root run id, and recovers each eligible family
 member under its own lease. A live parent learns a child’s stored outcome
 even when another node recovered the child. Running tools become uncertain
@@ -349,8 +350,10 @@ all child runtimes against the supplied store. The sweeper follows saved
 attachments to the correct agent or graph root and recovers expired work
 without taking a live parent's lease. An interrupted effect keeps its recovery
 contract. Registrations are distinct by runtime kind and definition version.
-Free idle waits whose wakeup was lost still require explicit `graph.recover`;
-this scan discovers expired leases, not every retained wait.
+Free managed waits remain discoverable when their child changes, including
+after local wakeups are lost. PostgreSQL schema version 3 maintains this index;
+refresh existing rows with `fabric_postgres.refresh_discovery` after migration.
+Signal waits without a deadline require explicit delivery.
 
 After cancellation, `fabric.reconcile_stored(store, effect, content)` records
 evidence for an uncertain tool without resuming the agent. Then

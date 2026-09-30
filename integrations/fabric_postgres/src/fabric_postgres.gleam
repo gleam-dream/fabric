@@ -26,6 +26,7 @@
 
 import fabric/store.{type LeaseConfigError, type LeasedBackend, type Store}
 import fabric_postgres/internal/backend
+import fabric_postgres/internal/discovery
 import fabric_postgres/internal/migrations
 import fabric_postgres/internal/retention
 import gleam/dynamic/decode
@@ -237,7 +238,7 @@ pub fn prune(
   }
 }
 
-/// A retention-index refresh could not run. No execution record is changed.
+/// A derived-index refresh could not run. No execution record is changed.
 pub type RefreshError {
   RefreshLimitNotPositive(Int)
   RefreshFailed(reason: String)
@@ -263,6 +264,21 @@ pub fn refresh_retention(
 
 fn table(settings: Settings) -> String {
   quoted(settings.schema) <> ".fabric_runs"
+}
+
+/// Refreshes up to `limit` stale idle-dependency projections after migration
+/// or old-backend writes. Preserves execution bytes/revisions, leases and ages.
+/// Repeat until zero; unknown records are examined once per projection version.
+pub fn refresh_discovery(
+  settings: Settings,
+  limit: Int,
+) -> Result(Int, RefreshError) {
+  case limit > 0 {
+    False -> Error(RefreshLimitNotPositive(limit))
+    True ->
+      discovery.refresh(settings.connection, table(settings), limit)
+      |> result.map_error(RefreshFailed)
+  }
 }
 
 /// A schema name `with_schema` accepted, as an SQL identifier.

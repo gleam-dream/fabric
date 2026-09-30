@@ -44,5 +44,11 @@ pub fn all() -> List(Migration) {
       "CREATE INDEX fabric_runs_retention ON fabric_runs (updated_at, run_id) WHERE parent_id IS NULL AND retention_revision = revision AND retention->>'settled' = 'true'",
       "INSERT INTO fabric_schema_migrations (version) VALUES (2)",
     ]),
+    Migration(3, "20260930000000-fabric_postgres_v3.sql", [
+      lock,
+      "ALTER TABLE fabric_runs ADD COLUMN discovery jsonb, ADD COLUMN discovery_revision bigint, ADD COLUMN dependency_id text GENERATED ALWAYS AS (discovery #>> '{wait,dependency}') STORED, ADD COLUMN observed_key text, ADD COLUMN observed_revision bigint, ADD COLUMN discovery_checked_at timestamptz NOT NULL DEFAULT '-infinity'",
+      "CREATE INDEX fabric_runs_discovery ON fabric_runs (discovery_checked_at, run_id) WHERE lease_owner IS NULL AND dependency_id IS NOT NULL",
+      "INSERT INTO fabric_schema_migrations (version) VALUES (3)",
+    ]),
   ]
 }

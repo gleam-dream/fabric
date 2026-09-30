@@ -19,6 +19,7 @@
 //// rows with `FOR UPDATE SKIP LOCKED` so that concurrent claimers never
 //// take the same run. Neither changes a revision.
 
+import fabric/discovery
 import fabric/retention
 import fabric/store.{
   type Current, type Holder, type Lease, type LeasedBackend, type StoreError,
@@ -53,6 +54,9 @@ pub fn new(connection: pog.Connection, table: String) -> LeasedBackend {
     },
     claim_expired: fn(owner, ttl, limit) {
       claim_expired(connection, table, owner, ttl, limit, retries)
+    },
+    claim_ready: fn(owner, ttl, limit) {
+      claim_ready(connection, table, owner, ttl, limit, retries)
     },
   )
 }
@@ -111,10 +115,10 @@ fn insert(
     pog.query(
       "INSERT INTO "
       <> table
-      <> " (run_id, revision, record, phase, lease_owner, lease_until, retention, retention_revision)"
+      <> " (run_id, revision, record, phase, lease_owner, lease_until, retention, retention_revision, discovery, discovery_revision)"
       <> " VALUES ($1, 1, $2, $3, $4::text, CASE WHEN $4::text IS NULL THEN NULL ELSE "
       <> expiry
-      <> " END, $6::jsonb, 1) ON CONFLICT (run_id) DO NOTHING",
+      <> " END, $6::jsonb, 1, $7::jsonb, 1) ON CONFLICT (run_id) DO NOTHING",
     )
     |> pog.parameter(pog.text(run))
     |> pog.parameter(pog.text(record))
@@ -122,6 +126,7 @@ fn insert(
     |> pog.parameter(owner)
     |> pog.parameter(pog.int(ttl))
     |> pog.parameter(pog.text(retention.encode(run, record)))
+    |> pog.parameter(pog.text(discovery.encode(run, record)))
     |> pog.execute(connection)
   case outcome {
     Ok(returned) if returned.count == 1 -> Ok(Nil)
@@ -153,22 +158,22 @@ fn compare_and_set(
   let update =
     "UPDATE "
     <> table
-    <> " SET revision = revision + 1, record = $3, phase = $4, updated_at = clock_timestamp(), retention = $5::jsonb, retention_revision = revision + 1"
+    <> " SET revision = revision + 1, record = $3, phase = $4, updated_at = clock_timestamp(), retention = $5::jsonb, retention_revision = revision + 1, discovery = $6::jsonb, discovery_revision = revision + 1"
   let current = " WHERE run_id = $1 AND revision = $2"
   let #(sql, parameters) = case lease {
-    Hold(owner) -> #(update <> current <> " AND lease_owner = $6", [
+    Hold(owner) -> #(update <> current <> " AND lease_owner = $7", [
       pog.text(owner),
     ])
     Claim(owner, ttl) -> #(
       update
-        <> ", lease_owner = $6, lease_until = clock_timestamp() + $7::bigint * interval '1 millisecond'"
+        <> ", lease_owner = $7, lease_until = clock_timestamp() + $8::bigint * interval '1 millisecond'"
         <> current
-        <> " AND (lease_owner IS NULL OR lease_owner = $6 OR lease_until <= clock_timestamp())",
+        <> " AND (lease_owner IS NULL OR lease_owner = $7 OR lease_until <= clock_timestamp())",
       [pog.text(owner), pog.int(ttl)],
     )
     Seize(owner, ttl) -> #(
       update
-        <> ", lease_owner = $6, lease_until = clock_timestamp() + $7::bigint * interval '1 millisecond'"
+        <> ", lease_owner = $7, lease_until = clock_timestamp() + $8::bigint * interval '1 millisecond'"
         <> current,
       [pog.text(owner), pog.int(ttl)],
     )
@@ -184,6 +189,7 @@ fn compare_and_set(
     |> pog.parameter(pog.text(record))
     |> pog.parameter(phase(record))
     |> pog.parameter(pog.text(retention.encode(run, record)))
+    |> pog.parameter(pog.text(discovery.encode(run, record)))
     |> list.fold(parameters, _, pog.parameter)
     |> pog.execute(connection)
   let again = fn() {
@@ -293,6 +299,42 @@ fn claim_expired(
       |> pog.parameter(pog.text(owner))
       |> pog.parameter(pog.int(ttl))
       |> pog.parameter(pog.int(limit))
+      |> pog.returning(decode.field(0, decode.string, decode.success))
+      |> rows(connection, retries)
+  }
+}
+
+fn claim_ready(
+  connection: pog.Connection,
+  table: String,
+  owner: String,
+  ttl: Int,
+  limit: Int,
+  retries: Int,
+) -> Result(List(String), StoreError) {
+  case limit > 0 {
+    False -> Ok([])
+    True ->
+      pog.query(
+        "WITH candidates AS (SELECT r.run_id, r.discovery #>> '{wait,key}' AS key, d.revision AS dependency_revision FROM "
+        <> table
+        <> " r LEFT JOIN "
+        <> table
+        <> " d ON d.run_id = r.dependency_id"
+        <> " WHERE r.lease_owner IS NULL AND r.dependency_id IS NOT NULL"
+        <> " AND r.discovery_revision = r.revision AND r.discovery->>'version' = $4"
+        <> " AND (r.observed_key IS DISTINCT FROM r.discovery #>> '{wait,key}' OR r.observed_revision IS DISTINCT FROM d.revision)"
+        <> " ORDER BY r.discovery_checked_at, r.run_id LIMIT $3 FOR UPDATE OF r SKIP LOCKED)"
+        <> " UPDATE "
+        <> table
+        <> " r SET lease_owner = $1, lease_until = clock_timestamp() + $2::bigint * interval '1 millisecond',"
+        <> " observed_key = c.key, observed_revision = c.dependency_revision, discovery_checked_at = clock_timestamp()"
+        <> " FROM candidates c WHERE r.run_id = c.run_id RETURNING r.run_id",
+      )
+      |> pog.parameter(pog.text(owner))
+      |> pog.parameter(pog.int(ttl))
+      |> pog.parameter(pog.int(limit))
+      |> pog.parameter(pog.text(int.to_string(discovery.version)))
       |> pog.returning(decode.field(0, decode.string, decode.success))
       |> rows(connection, retries)
   }
