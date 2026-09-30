@@ -210,8 +210,8 @@ pub fn legacy_records_cannot_hide_provider_data_and_malformed_data_is_corrupt_te
   let encoded = record.encode(state)
   list.each(
     [
-      string.replace(encoded, "\"version\":5", "\"version\":3"),
-      string.replace(encoded, "\"version\":5", "\"version\":2"),
+      string.replace(encoded, "\"version\":6", "\"version\":3"),
+      string.replace(encoded, "\"version\":6", "\"version\":2"),
       string.replace(encoded, "\"format\":\"example.v1\"", "\"format\":7"),
       string.replace(encoded, "\"value\":\"opaque\"", "\"value\":null"),
     ],
@@ -227,15 +227,15 @@ pub fn legacy_records_cannot_hide_provider_data_and_malformed_data_is_corrupt_te
 
 pub fn the_record_is_versioned_json_test() {
   let encoded = record.encode(base())
-  string.starts_with(encoded, "{\"format\":\"fabric.run\",\"version\":5,")
+  string.starts_with(encoded, "{\"format\":\"fabric.run\",\"version\":6,")
   |> should.be_true
 }
 
 pub fn another_version_is_unsupported_test() {
   let encoded =
     record.encode(base())
-    |> string.replace("\"version\":5,", "\"version\":6,")
-  record.decode(encoded) |> should.equal(Error(record.UnsupportedVersion(6)))
+    |> string.replace("\"version\":6,", "\"version\":7,")
+  record.decode(encoded) |> should.equal(Error(record.UnsupportedVersion(7)))
 }
 
 /// A version 1 record (written before sub-agents) is read as a root run
@@ -384,7 +384,7 @@ pub fn a_child_that_never_started_is_explicit_test() {
     )
   let version_2 =
     record.encode(tombstone)
-    |> string.replace("\"version\":5,", "\"version\":2,")
+    |> string.replace("\"version\":6,", "\"version\":2,")
   let assert Ok(read) = record.decode(version_2)
   read.phase |> should.equal(controller.NeverStarted)
   controller.child_result(read) |> should.equal(Ok(controller.ChildMissing))
@@ -452,7 +452,7 @@ pub fn a_version_2_tombstone_keeps_its_old_meaning_test() {
   string.contains(encoded, "never_started") |> should.be_false
   record.decode(encoded) |> should.equal(Ok(tombstone))
   old_record.decode(record.encode(tombstone))
-  |> should.equal(Error(old_record.UnsupportedVersion(5)))
+  |> should.equal(Error(old_record.UnsupportedVersion(6)))
 }
 
 pub fn a_version_2_write_never_discards_or_reinterprets_a_transcript_test() {
@@ -468,4 +468,43 @@ pub fn a_version_2_write_never_discards_or_reinterprets_a_transcript_test() {
       record.encode_as(state, record.V2)
     record.encode_as(state, record.V3) |> should.be_ok
   })
+}
+
+pub fn terminal_child_settlement_is_versioned_and_requires_its_parent_link_test() {
+  let settled =
+    run.ActionRecord(
+      ..action("child", run.ChildSettled(run.Cancelled)),
+      child: Some(support.id("run-01-3-1")),
+    )
+  let state =
+    controller.State(
+      ..base(),
+      history: [settled],
+      phase: controller.Ended(run.Cancelled),
+    )
+  record.decode(record.encode(state)) |> should.equal(Ok(state))
+  list.each(
+    [#(2, record.V2), #(3, record.V3), #(4, record.V4), #(5, record.V5)],
+    fn(target) {
+      let assert Error(record.Unrepresentable(found, _)) =
+        record.encode_as(state, target.1)
+      found |> should.equal(target.0)
+    },
+  )
+  let legacy =
+    record.encode(state) |> string.replace("\"version\":6", "\"version\":5")
+  let assert Error(record.Corrupt(_)) = record.decode(legacy)
+  list.each(
+    [
+      controller.State(..state, phase: controller.Acting(2, [])),
+      controller.State(..state, phase: controller.NeverStarted),
+      controller.State(..state, history: [
+        run.ActionRecord(..settled, child: None),
+      ]),
+    ],
+    fn(invalid) {
+      let assert Error(record.Corrupt(_)) =
+        record.decode(record.encode(invalid))
+    },
+  )
 }

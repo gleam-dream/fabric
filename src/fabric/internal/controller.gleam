@@ -1391,6 +1391,7 @@ pub fn model_content(action_state: ActionState) -> Result(String, Nil) {
     | run.Uncertain(_)
     | run.NotStarted
     | run.Delegated
+    | run.ChildSettled(_)
     | run.Faulted(_) -> Error(Nil)
   }
 }

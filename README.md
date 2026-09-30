@@ -316,15 +316,23 @@ history and effects; llm_wire validates and interprets the provider data.
 Application models return `model.ToolRequest(turn, usage)` and use
 `model.AssistantTurn(text, calls, None)` when they have no provider data.
 
-Rolling upgrades: the default agent-record writer is version 5; readers accept
-versions 1–5. Writers 2–4 remain available for representable states.
+Rolling upgrades: the default agent-record writer is version 6; readers accept
+versions 1–6. Writers 2–5 remain available for representable states.
 Assistant provider data requires at least version 4; graph parent attachments
-require version 5. Older writers refuse unrepresentable records before
+require version 5; settled child evidence requires version 6. Older writers refuse unrepresentable records before
 dispatching work. Configure the store before
 starting it and use the returned value for every handle and sweeper.
 Existing values and runners keep their setting; this does not migrate rows.
 See the [rollout procedure](integrations/fabric_postgres/README.md#record-versions)
 for compatibility and rollback limits.
+
+After cancellation, `fabric.reconcile_stored(store, effect, content)` records
+evidence for an uncertain tool without resuming the agent. Then
+`fabric.settle_stored(store, agent_root)` verifies saved child outcomes and
+propagates settlement through finished delegations. Both return a snapshot
+with any remaining uncertain actions and need no deployed agent definition.
+For a graph-owned agent, recover the graph parent afterward; it stays canceled
+and records the child's settlement without invoking a route.
 
 A Saga workflow is one typed tool too, from the separate package
 `integrations/fabric_saga`: `fabric_saga.tool(definition, workflow,

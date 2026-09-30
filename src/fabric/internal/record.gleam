@@ -38,6 +38,9 @@
 ////
 //// Version 5 distinguishes agent-action and graph-activation parents. An
 //// agent parent can still be written in versions 2–4; a graph parent cannot.
+//// Version 6 adds `child_settled`, retained evidence on a finished parent's
+//// delegation. Earlier writers refuse this state instead of inventing a
+//// model-visible result.
 ////
 //// An outcome's budget is written under its own tag (`turn_limit`,
 //// `token_limit`). The tag `budget_exhausted`, which wraps a budget, is
@@ -68,7 +71,7 @@ import gleam/string
 
 pub const format = "fabric.run"
 
-pub const version = 5
+pub const version = 6
 
 /// The writer window is narrower than the reader's accepted versions.
 pub type WriteVersion {
@@ -76,6 +79,7 @@ pub type WriteVersion {
   V3
   V4
   V5
+  V6
 }
 
 pub fn writer(version: Int) -> Result(WriteVersion, Nil) {
@@ -84,6 +88,7 @@ pub fn writer(version: Int) -> Result(WriteVersion, Nil) {
     3 -> Ok(V3)
     4 -> Ok(V4)
     5 -> Ok(V5)
+    6 -> Ok(V6)
     _ -> Error(Nil)
   }
 }
@@ -99,7 +104,7 @@ pub fn encode_as(
   target: WriteVersion,
 ) -> Result(String, EncodeError) {
   use Nil <- result.try(case target, state.parent {
-    V5, _ -> Ok(Nil)
+    V5, _ | V6, _ -> Ok(Nil)
     _, Some(run.GraphParent(..)) ->
       Error(Unrepresentable(
         case target {
@@ -107,10 +112,37 @@ pub fn encode_as(
           V3 -> 3
           V4 -> 4
           V5 -> 5
+          V6 -> 6
         },
         "a graph parent requires version 5",
       ))
     _, _ -> Ok(Nil)
+  })
+  use Nil <- result.try(case target {
+    V6 -> Ok(Nil)
+    _ -> {
+      let settled =
+        list.any(state_actions(state), fn(action) {
+          case action.state {
+            run.ChildSettled(_) -> True
+            _ -> False
+          }
+        })
+      case settled {
+        False -> Ok(Nil)
+        True ->
+          Error(Unrepresentable(
+            case target {
+              V2 -> 2
+              V3 -> 3
+              V4 -> 4
+              V5 -> 5
+              V6 -> 6
+            },
+            "settled child evidence requires version 6",
+          ))
+      }
+    }
   })
   let has_data =
     list.any(state.transcript, fn(message) {
@@ -127,7 +159,8 @@ pub fn encode_as(
     _, _ -> Ok(Nil)
   })
   case target, state.phase, state.transcript {
-    V5, _, _ -> Ok(encode(state))
+    V6, _, _ -> Ok(encode(state))
+    V5, _, _ -> Ok(encode_version(state, 5, state.phase))
     V4, _, _ -> Ok(encode_version(state, 4, state.phase))
     V3, _, _ -> Ok(encode_version(state, 3, state.phase))
     V2, controller.NeverStarted, [] ->
@@ -333,6 +366,8 @@ fn action_state(state: ActionState) -> Json {
       tag("uncertain", [#("evidence", json.string(evidence))])
     run.Reconciled(content) ->
       tag("reconciled", [#("content", json.string(content))])
+    run.ChildSettled(outcome) ->
+      tag("child_settled", [#("outcome", outcome_json(outcome))])
     run.NotStarted -> tag("not_started", [])
     run.Faulted(detail) -> tag("faulted", [#("detail", json.string(detail))])
     run.Delegated -> tag("delegated", [])
@@ -469,13 +504,7 @@ fn linked(state: State) -> Result(State, DecodeError) {
       && state.run == child.reserved_id(run.id_to_string(parent), activation)
     None -> True
   }
-  let actions = case state.phase {
-    controller.Acting(_, actions) | controller.Stopping(actions:, ..) ->
-      list.append(state.history, actions)
-    controller.AwaitingModel(_)
-    | controller.Ended(_)
-    | controller.NeverStarted -> state.history
-  }
+  let actions = state_actions(state)
   let children =
     list.all(actions, fn(action) {
       case action.child {
@@ -483,6 +512,23 @@ fn linked(state: State) -> Result(State, DecodeError) {
         None -> True
       }
     })
+  use Nil <- result.try(
+    case
+      list.all(actions, fn(action) {
+        case action.state, action.child, state.phase {
+          run.ChildSettled(_), Some(_), controller.Ended(_) -> True
+          run.ChildSettled(_), _, _ -> False
+          _, _, _ -> True
+        }
+      })
+    {
+      True -> Ok(Nil)
+      False ->
+        Error(Corrupt(
+          "settled child evidence requires a finished parent and child reference",
+        ))
+    },
+  )
   case parent, children {
     True, True -> Ok(state)
     False, _ ->
@@ -493,6 +539,16 @@ fn linked(state: State) -> Result(State, DecodeError) {
       Error(Corrupt(
         "a child of the run " <> state.run <> " does not extend its id",
       ))
+  }
+}
+
+fn state_actions(state: State) -> List(ActionRecord) {
+  case state.phase {
+    controller.Acting(_, actions) | controller.Stopping(actions:, ..) ->
+      list.append(state.history, actions)
+    controller.AwaitingModel(_)
+    | controller.Ended(_)
+    | controller.NeverStarted -> state.history
   }
 }
 
@@ -735,7 +791,7 @@ fn requirement_decoder() -> Decoder(Requirement) {
 fn action_decoder(found: Int) -> Decoder(ActionRecord) {
   use id <- decode.field("id", action_id_decoder())
   use call <- decode.field("call", tool_call_decoder())
-  use state <- decode.field("state", action_state_decoder())
+  use state <- decode.field("state", action_state_decoder(found))
   use approvals <- decode.field("approvals", decode.list(approval_decoder()))
   use child <- since_2(found, "child", None, decode.optional(run_id_decoder()))
   decode.success(ActionRecord(id, call, state, approvals, child))
@@ -756,7 +812,7 @@ fn approval_decoder() -> Decoder(Approval) {
   decode.success(run.Approval(required, revision, answer, reviewer))
 }
 
-fn action_state_decoder() -> Decoder(ActionState) {
+fn action_state_decoder(version: Int) -> Decoder(ActionState) {
   use found <- tagged(run.NotStarted)
   case found {
     "queued" -> Ok(decode.success(run.Queued))
@@ -775,6 +831,11 @@ fn action_state_decoder() -> Decoder(ActionState) {
     "unknown_tool" -> Ok(decode.success(run.UnknownTool))
     "uncertain" -> Ok(string_field("evidence", run.Uncertain))
     "reconciled" -> Ok(string_field("content", run.Reconciled))
+    "child_settled" if version >= 6 ->
+      Ok({
+        use outcome <- decode.field("outcome", outcome_decoder())
+        decode.success(run.ChildSettled(outcome))
+      })
     "not_started" -> Ok(decode.success(run.NotStarted))
     "faulted" -> Ok(string_field("detail", run.Faulted))
     "delegated" -> Ok(decode.success(run.Delegated))

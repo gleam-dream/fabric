@@ -394,3 +394,56 @@ pub fn a_managed_agent_keeps_its_approval_and_identity_after_postgres_restart_te
   released(settings, id, 200) |> should.be_true
   released(settings, reference.child, 200) |> should.be_true
 }
+
+pub fn canceled_agent_evidence_settles_after_postgres_restart_test() {
+  let settings =
+    support.migrated(support.pool(4), "agent-settlement", support.schema())
+    |> fabric_postgres.with_lease(600)
+  let gate = agents.gate()
+  let assert Ok(id) = run.parse_id("postgres-canceled-agent")
+  let #(owner, #(handle, worker)) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("cancel-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let #(parent, worker) = managed_agent(runs, gate)
+      let assert Ok(handle) = graph.start(parent, id, 41)
+      #(handle, worker)
+    })
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.Child(reference, child.AgentInput([approval], [])) =
+    waiting.status
+  let assert Ok(worker) = agent_node.child(handle, reference.activation, worker)
+  let assert Ok(_) = fabric.approve(worker, approval.reference, None, Nil)
+  let _started = agents.arrival(gate)
+  let assert Ok(_) = graph.cancel(handle)
+  let assert Ok(done) = graph.await(handle, 5000)
+  let assert graph.Cancelled(graph.ChildUnresolved(_, _)) = done.status
+  let assert Ok(before) = fabric.snapshot(worker)
+  let assert [action] = before.actions
+  let effect = run.ActionRef(reference.child, action.id)
+  released(settings, id, 200) |> should.be_true
+  released(settings, reference.child, 200) |> should.be_true
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("cancel-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let assert Ok(settled) =
+    fabric.reconcile_stored(runs, effect, "effect confirmed")
+  settled.status |> should.equal(run.Finished(run.Cancelled))
+  fabric.settle_stored(runs, reference.child) |> should.be_ok
+  let #(parent, worker) = managed_agent(runs, gate)
+  let handle = graph.attach(parent, id)
+  let assert Ok(done) = graph.recover(handle)
+  done.status |> should.equal(graph.Cancelled(graph.ChildSettled(reference)))
+  done.receipts |> should.equal([])
+  let assert Ok(worker) = agent_node.child(handle, reference.activation, worker)
+  let assert Ok(after) = fabric.snapshot(worker)
+  after.status |> should.equal(before.status)
+  after.transcript |> should.equal(before.transcript)
+  after.turns_used |> should.equal(before.turns_used)
+  after.usage |> should.equal(before.usage)
+  agents.another(gate, 0) |> should.be_false
+  released(settings, id, 200) |> should.be_true
+  released(settings, reference.child, 200) |> should.be_true
+}

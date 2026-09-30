@@ -64,6 +64,7 @@ import fabric/agent.{type Agent}
 import fabric/internal/controller.{type State}
 import fabric/internal/family
 import fabric/internal/runner
+import fabric/internal/settlement
 import fabric/internal/sweeper
 import fabric/run.{
   type ActionRef, type Answer, type ApprovalRef, type Incompatibility,
@@ -112,14 +113,18 @@ pub type RecordError {
 }
 
 pub type CommandError {
-  /// The run has finished (completed, failed, or cancelled); nothing more
-  /// can change it. A pending approval of a cancelled run is void. Also
+  /// The run has finished (completed, failed, or cancelled); execution
+  /// cannot continue. Terminal evidence can still be settled through
+  /// `reconcile_stored` and `settle_stored`. A pending approval is void. Also
   /// returned for a sub-agent run one of whose ancestors is stopping or has
   /// ended: cancelling an ancestor wins over answering or reconciling its
   /// descendants.
   RunEnded
-  /// No approval request, or no action of the current tool batch, of this
-  /// run matches the reference.
+  /// Terminal evidence commands require a finished run. Cancel or finish
+  /// it first; these commands never stop or resume execution themselves.
+  RunNotFinished
+  /// No approval request or eligible action of this run matches the
+  /// reference (the current batch, or history for terminal settlement).
   WrongReference
   /// The action's approval request has another revision or requirement.
   StaleReference
@@ -668,6 +673,55 @@ pub fn cancel_stored(store: Store, id: RunId) -> Result(Status, CommandError) {
   |> result.map_error(command_error)
 }
 
+/// Records evidence for an uncertain tool of a finished run, without an
+/// agent definition or any execution callbacks. The outcome, transcript,
+/// usage and counters stay unchanged. The same content is an idempotent
+/// acknowledgement; different content cannot overwrite a saved result.
+/// Active runs return `RunNotFinished`; use `reconcile` to continue them.
+/// A delegation cannot be reconciled by supplying content: settle its child
+/// and then use `settle_stored` on the parent. Returns this run's updated
+/// snapshot, including any remaining uncertain actions.
+pub fn reconcile_stored(
+  store: Store,
+  effect: ActionRef,
+  content: String,
+) -> Result(Snapshot, CommandError) {
+  settlement.reconcile(store, effect, content)
+  |> result.map(controller.snapshot)
+  |> result.map_error(settlement_error)
+}
+
+/// Settles uncertain delegations of a finished agent family from their saved
+/// child outcomes. Descendants must name the exact parent action. Missing or
+/// unreadable children return an error; active or uncertain children leave
+/// the delegation uncertain. No agent code runs and no work resumes.
+/// The returned root snapshot retains every unresolved action; successful
+/// observation does not imply that every effect has been settled.
+///
+/// Each record commits independently, from the leaves outward. A failed
+/// parent write may follow successful descendant writes; repeat this command
+/// to finish propagation. Repeating an unchanged walk performs no writes.
+/// For a graph-owned family, settle this agent root, then recover its graph
+/// parent to observe the saved outcome. The graph remains cancelled.
+pub fn settle_stored(
+  store: Store,
+  id: RunId,
+) -> Result(Snapshot, CommandError) {
+  settlement.settle(store, id_to_string(id))
+  |> result.map(controller.snapshot)
+  |> result.map_error(settlement_error)
+}
+
+fn settlement_error(error: settlement.Error) -> CommandError {
+  case error {
+    settlement.NotFinished -> RunNotFinished
+    settlement.UnknownAction -> WrongReference
+    settlement.NotReconcilable -> NotReconcilable
+    settlement.Unreadable(error) -> Unreadable(record_error(error))
+    settlement.Contended -> Contended
+  }
+}
+
 /// Records what actually happened for an uncertain effect of the run or of
 /// one of its sub-agents (`UncertainAction.reference` names both the run and
 /// the action; it is routed through the family like `approve`). `content`
@@ -680,6 +734,8 @@ pub fn cancel_stored(store: Store, id: RunId) -> Result(Status, CommandError) {
 /// `WrongReference`; an action that is not uncertain, or a run whose model
 /// is being called, with `NotReconcilable`. A sub-agent run whose ancestor
 /// is stopping or has ended accepts none (`RunEnded`).
+/// After a run has finished, use `reconcile_stored` to retain evidence
+/// without resuming work, then `settle_stored` for its finished ancestors.
 pub fn reconcile(
   run: Run(context),
   effect: ActionRef,
