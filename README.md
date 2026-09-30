@@ -35,6 +35,9 @@ retaining typed answers, raw JSON and usage without a chat continuation. See the
 [adapter contract](docs/implementation/graph-flow/decision-adapters.md).
 Live provider acceptance, classifier/MCP adapters and the agent-recipe
 evaluation remain open in the implementation program.
+The optional [MCP package](integrations/fabric_mcp/README.md) now has a bounded
+stdio connection proven against a real local service; its typed graph binding
+is the next adapter slice.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
 

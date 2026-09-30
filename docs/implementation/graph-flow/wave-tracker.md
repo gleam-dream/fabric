@@ -19,8 +19,9 @@
   Its offline protocol gate passes; the live command stopped before I/O because
   no non-empty OpenAI key was available. Anthropic and TypeSafe keys are also
   absent or empty. The user has been asked to identify an existing provider setup.
-  Live LLM acceptance, a classifier producer and an MCP operation adapter remain
-  open. No new paid infrastructure is selected.
+  The optional MCP package now has a native stdio connection proven against a
+  real SQLite service. Live LLM acceptance, a classifier producer and the typed
+  MCP graph binding remain open. No new paid infrastructure is selected.
   Stage 4 now includes typed pairs and bounded maps, isolated results, cyclic
   and sibling identity, shared budgets, persistent discovery and retained
   cancellation/expiration through nested cleanup. Its acceptance evidence is
@@ -29,9 +30,12 @@
   [managed composition contract](managed-composition.md) own stages 2–3.
 - Temporary substitutions: scripted decisions remain in tests and the earlier
   graph example. The new decision consumer has a real llm_wire entry point;
-  live acceptance is still pending. Classifier/MCP adapters are still required.
+  live acceptance is still pending. The MCP transport has real local evidence;
+  its typed graph binding and the classifier adapter are still required.
   The synchronous authoring driver has been replaced by the persistent runner.
-- Gate status: 616 root tests, one decision consumer test, five graph consumer
+- Gate status: the MCP package passes 11 client scenarios and four independent
+  service tests. The current root gate passes 616 tests. Earlier consumer gates
+  pass one decision consumer test, five graph consumer
   tests, 15 app consumer tests, 19 external-job scenarios and five independent
   service tests pass on the current adapter source. Builds use warnings as
   errors. The 57-test PostgreSQL gate passed for the stage-4 checkpoint;
@@ -46,10 +50,11 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: inspect the native `mcp_client` candidate and current protocol
-  lifecycle, then implement and exercise the smallest supported adapter against
-  a real local server. Classifier protocol work can proceed independently of
-  missing live credentials. Retry the LLM live consumer only when usable provider
+- Next action: bind native inputs/results and retained tool schemas to the
+  tested MCP connection, then prove policy and graph recovery against its real
+  local service. The published client candidate was inspected and rejected for
+  the schema, correlation and lifecycle gaps documented in [the MCP contract](mcp-adapter.md).
+  Classifier protocol work can proceed independently of missing live credentials. Retry the LLM live consumer only when usable provider
   configuration is supplied. Stages 5–6 remain open; stage-4 acceptance does not
   complete the full goal.
 - Resume note: the user requested another checkpoint commit and continued
@@ -1590,3 +1595,39 @@ six-step goal remains active, with wave 3 next.
   behavior before adoption, implement the classifier and MCP slices, prove
   actual provider/local-server boundaries, then evaluate the agent-loop recipe.
   The complete unbounded six-stage goal remains active.
+
+### Wave 5: bounded application-owned MCP connection
+
+- Governing rules: G6/G10 and [the MCP adapter contract](mcp-adapter.md).
+  The optional `fabric_mcp` package contains the stdio transport; core has no
+  MCP, Saga or Grind dependency. Native Blueprint parsing admits every outbound
+  value and incoming envelope before dispatching more work. The selected
+  protocol is MCP 2026-07-28 with per-request metadata. Older initialization,
+  HTTP and multi-round-trip interactions are outside this first slice.
+- Ownership: one application-owned connection outlives its operation tasks.
+  Caller loss or deadline sends cancellation without claiming rollback.
+  Queue time counts against deadlines; known expired work never dispatches.
+  Responses must match the increasing request ID, late replies cannot complete
+  another request, and malformed streams close. No request retries or reconnects
+  occur automatically. Byte, notification and duration bounds are explicit.
+- Red/green: public tests exposed nested duplicate keys reaching the actual
+  counter and malformed replies leaving the connection eligible for another
+  request. Both are now rejected at the transport boundary. Method-specific
+  schemas and native graph receipts remain the next slice, not a transport claim.
+- Evidence: 11 public client scenarios exercise a separate SQLite-backed Python
+  server. Four independent service tests verify stdio contracts and persistence.
+  The service commits a counter before simulated response loss; another process
+  reads exactly that committed effect, with no automatic repeat. The tests also
+  cover application/caller loss, cancellation receipt, stale replies, expired
+  queue entries, invalid configuration, JSON errors and bounded noise/bytes.
+- Gate: MCP warnings-as-errors build, 11 Gleam scenarios and four Python service
+  scenarios pass (`/tmp/fabric-mcp-client-final.log`). The root gate passes all
+  616 tests (`/tmp/fabric-mcp-root-gate.log`). `nix fmt`, `nix flake check` and
+  `git diff --check` pass on this host.
+  No backend, graph record or dependency protocol changes are made to Fabric.
+- Acceptance: the connection's selected contracts and interface hold; behavior
+  is checked through public client calls and an independent service. The source
+  preserves effect uncertainty and package boundaries without another runtime.
+  No design-ledger entry is cleared. This is a checkpoint toward stage 5, which
+  remains active. Typed MCP graph binding, classifier/live LLM acceptance and
+  stage 6 remain required; the full six-stage unbounded goal is confirmed active.
