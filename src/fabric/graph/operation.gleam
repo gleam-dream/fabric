@@ -232,9 +232,9 @@ pub fn identity(operation: Operation(context, input, output)) -> run.Identity {
   operation.identity
 }
 
-/// Bound an admitted signal, job or managed-child wait in milliseconds. The backend clock
+/// Bound an admitted signal, job, managed child or fork in milliseconds. The backend clock
 /// starts the duration after policy approval; the due time survives restart.
-/// Owned jobs and children retain cleanup progress after expiration.
+/// Owned jobs, children and forks retain cleanup progress after expiration.
 pub fn with_deadline(
   operation: Operation(context, input, output),
   within: Int,
@@ -245,12 +245,14 @@ pub fn with_deadline(
     | OwnedJob(_), True
     | Subgraph, True
     | Agent, True
+    | Fork(..), True
     -> Ok(Operation(..operation, deadline: Some(within)))
     Signal, False
     | Job(_), False
     | OwnedJob(_), False
     | Subgraph, False
     | Agent, False
+    | Fork(..), False
     -> Error(InvalidDeadline(within))
     _, _ -> Error(DeadlineRequiresWait)
   }

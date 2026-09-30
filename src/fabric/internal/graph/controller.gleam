@@ -376,6 +376,13 @@ pub fn step(
       use _ <- result.try(matches(state, a, ref))
       expire_job(state, a, now, job.Pending)
     }
+    ExpireWait(ref, now), PreparingFork(a)
+    | ExpireWait(ref, now), Forking(a, JoiningFork)
+    | ExpireWait(ref, now), WaitingFork(a, JoiningFork)
+    -> {
+      use _ <- result.try(matches(state, a, ref))
+      expire_fork(state, a, now)
+    }
     ExpireWait(ref, now), Joining(a, id)
     | ExpireWait(ref, now), WaitingChild(a, id)
     | ExpireWait(ref, now), ChildBlocked(a, id, _)
@@ -385,7 +392,10 @@ pub fn step(
     }
     ExpireWait(ref, now), Blocked(a, InvalidResult(_, _)) -> {
       use _ <- result.try(matches(state, a, ref))
-      expire_child(state, a, child.reserved_id(state.run, a.id), now)
+      case a.prepared.kind {
+        operation.Fork(..) -> expire_fork(state, a, now)
+        _ -> expire_child(state, a, child.reserved_id(state.run, a.id), now)
+      }
     }
     JobExpired(ref, now, progress), WaitingJob(a) -> {
       use _ <- result.try(matches(state, a, ref))
@@ -710,9 +720,6 @@ fn inspect(
 
 fn queue(state: State, activation: Activation) -> #(State, List(Effect)) {
   case activation.prepared.kind {
-    operation.Fork(..) -> #(State(..state, phase: PreparingFork(activation)), [
-      PrepareFork(activation),
-    ])
     operation.Activity -> #(State(..state, phase: Queued(activation)), [
       Dispatch(activation),
     ])
@@ -720,7 +727,8 @@ fn queue(state: State, activation: Activation) -> #(State, List(Effect)) {
     | operation.Job(_)
     | operation.OwnedJob(_)
     | operation.Subgraph
-    | operation.Agent ->
+    | operation.Agent
+    | operation.Fork(..) ->
       case activation.prepared.deadline {
         None -> waiting(state, activation)
         Some(_) -> #(State(..state, phase: ArmingWait(activation)), [
@@ -732,6 +740,9 @@ fn queue(state: State, activation: Activation) -> #(State, List(Effect)) {
 
 fn waiting(state: State, a: Activation) -> #(State, List(Effect)) {
   case a.prepared.kind {
+    operation.Fork(..) -> #(State(..state, phase: PreparingFork(a)), [
+      PrepareFork(a),
+    ])
     operation.Subgraph | operation.Agent -> {
       let id = child.reserved_id(state.run, a.id)
       #(State(..state, phase: Joining(a, id)), [ObserveChild(a, id)])
@@ -822,6 +833,33 @@ fn expire_child(
         ),
       )
     _, _ -> Error(WrongPhase)
+  }
+}
+
+fn expire_fork(
+  state: State,
+  a: Activation,
+  now: Int,
+) -> Result(#(State, List(Effect)), Rejection) {
+  use due <- result.try(case a.deadline {
+    Some(due) if now >= due -> Ok(due)
+    _ -> Error(WrongPhase)
+  })
+  let cause = operation.DeadlineReached(due)
+  case state.phase {
+    PreparingFork(_) -> Ok(stopped_operation(state, a, cause, BeforeStart))
+    _ -> {
+      use fork <- result.try(current_fork(state, a.id))
+      use fork <- result.try(
+        scope.expire(fork, due) |> result.map_error(fn(_) { WrongPhase }),
+      )
+      let state = save_fork(state, fork)
+      Ok(
+        #(State(..state, phase: Forking(a, ClosingFork(cause))), [
+          ObserveFork(a),
+        ]),
+      )
+    }
   }
 }
 
@@ -1083,6 +1121,7 @@ pub fn check_prepared(prepared: Prepared) -> Result(Nil, Rejection) {
     | Some(ms), operation.OwnedJob(_)
     | Some(ms), operation.Subgraph
     | Some(ms), operation.Agent
+    | Some(ms), operation.Fork(..)
       if ms > 0 && ms <= 4_294_967_295
     -> Ok(Nil)
     _, _ -> Error(InvalidPrepared("invalid wait deadline"))

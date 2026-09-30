@@ -444,6 +444,7 @@ fn perform(runner: Runner, effects: List(g.Effect)) -> Result(Runner, Error) {
       | g.ObserveFork(_), True
       -> Ok(runner)
       g.PrepareFork(a), False -> {
+        use <- with_wait_deadline(runner, a, False)
         let prepared =
           bounded.call(runner.options.callback_timeout, fn() {
             use driver <- result.try(checked_fork(runner.runs, runner.work, a))
@@ -451,6 +452,7 @@ fn perform(runner: Runner, effects: List(g.Effect)) -> Result(Runner, Error) {
           })
           |> result.map_error(string.inspect)
           |> result.flatten
+        use <- with_wait_deadline(runner, a, False)
         apply(runner, g.ForkPrepared(g.reference(runner.state, a), prepared))
       }
       g.ObserveFork(_), False -> {
@@ -664,7 +666,7 @@ fn receive(runner: Runner) -> Nil {
   }
 }
 
-fn with_child_deadline(
+fn with_wait_deadline(
   runner: Runner,
   a: g.Activation,
   stopping: Bool,
@@ -687,7 +689,7 @@ fn poll_child(runner: Runner) -> Result(Runner, Error) {
     g.StoppingChild(a, id, _) -> Ok(#(a, id, True))
     _ -> Error(Refused(g.WrongPhase))
   })
-  use <- with_child_deadline(runner, a, stopping)
+  use <- with_wait_deadline(runner, a, stopping)
   let parent = child.Parent(state.run, a.id)
   let checked =
     bounded.call(runner.options.callback_timeout, fn() {
@@ -705,7 +707,7 @@ fn poll_child(runner: Runner) -> Result(Runner, Error) {
     })
     |> result.map_error(string.inspect)
     |> result.flatten
-  use <- with_child_deadline(runner, a, stopping)
+  use <- with_wait_deadline(runner, a, stopping)
   let ref = g.reference(state, a)
   case checked, stopping {
     Ok(child.Approval(_)), False
@@ -732,7 +734,7 @@ fn poll_child(runner: Runner) -> Result(Runner, Error) {
         bounded.call(runner.options.callback_timeout, fn() {
           runner.work.accept(state, a, output)
         })
-      use <- with_child_deadline(runner, a, False)
+      use <- with_wait_deadline(runner, a, False)
       case accepted {
         Ok(Ok(decision)) ->
           apply(runner, g.ChildReturned(ref, id, output, decision))
@@ -809,8 +811,8 @@ pub fn checked_fork(
 }
 
 fn poll_fork(runner: Runner) -> Result(Runner, Error) {
-  use #(a, mode) <- result.try(case runner.state.phase {
-    g.Forking(a, mode) -> Ok(#(a, mode))
+  use a <- result.try(case runner.state.phase {
+    g.Forking(a, _) -> Ok(a)
     _ -> Error(Refused(g.WrongPhase))
   })
   use driver <- result.try(
@@ -837,6 +839,8 @@ fn poll_fork(runner: Runner) -> Result(Runner, Error) {
     driver,
     working,
   ))
+  use runner <- result.try(expire_fork_if_due(runner, a))
+  let assert g.Forking(_, mode) = runner.state.phase
   use members <- result.try(
     g.current_fork(runner.state, a.id) |> result.map_error(Refused),
   )
@@ -850,18 +854,20 @@ fn poll_fork(runner: Runner) -> Result(Runner, Error) {
         })
         |> result.map_error(string.inspect)
         |> result.flatten
+      use <- with_wait_deadline(runner, a, False)
       case encoded {
         Error(reason) ->
           apply(
             runner,
             g.ForkMappingFailed(g.reference(runner.state, a), "", reason),
           )
-        Ok(output) ->
-          case
+        Ok(output) -> {
+          let accepted =
             bounded.call(runner.options.callback_timeout, fn() {
               runner.work.accept(runner.state, a, output)
             })
-          {
+          use <- with_wait_deadline(runner, a, False)
+          case accepted {
             Ok(Ok(decision)) ->
               apply(
                 runner,
@@ -877,6 +883,7 @@ fn poll_fork(runner: Runner) -> Result(Runner, Error) {
                 ),
               )
           }
+        }
       }
     }
     _, _ ->
@@ -896,6 +903,7 @@ fn admit_fork_members(
   driver: fork_driver.Driver,
   working: Bool,
 ) -> Result(#(Runner, Bool), Error) {
+  use runner <- result.try(expire_fork_if_due(runner, a))
   use members <- result.try(
     g.current_fork(runner.state, a.id) |> result.map_error(Refused),
   )
@@ -931,17 +939,23 @@ fn admit_fork_members(
               Error(CallbackFailed(reason))
           }
         Ok(_) -> {
-          use runner <- result.try(apply(
-            runner,
-            g.ForkAdmitted(g.reference(runner.state, a), member),
-          ))
-          use #(runner, active) <- result.try(observe_fork_member(
-            runner,
-            a,
-            driver,
-            member,
-          ))
-          admit_fork_members(runner, a, driver, working || active)
+          use runner <- result.try(expire_fork_if_due(runner, a))
+          case runner.state.phase {
+            g.Forking(_, g.ClosingFork(_)) -> Ok(#(runner, True))
+            _ -> {
+              use runner <- result.try(apply(
+                runner,
+                g.ForkAdmitted(g.reference(runner.state, a), member),
+              ))
+              use #(runner, active) <- result.try(observe_fork_member(
+                runner,
+                a,
+                driver,
+                member,
+              ))
+              admit_fork_members(runner, a, driver, working || active)
+            }
+          }
         }
       }
     }
@@ -954,6 +968,7 @@ fn observe_fork_member(
   driver: fork_driver.Driver,
   reference: fork.Reference,
 ) -> Result(#(Runner, Bool), Error) {
+  use runner <- result.try(expire_fork_if_due(runner, a))
   use members <- result.try(
     g.current_fork(runner.state, a.id) |> result.map_error(Refused),
   )
@@ -1010,6 +1025,19 @@ fn observe_fork_member(
       Error(_) -> False
     }
   #(runner, progress == child.Working || stopped_now)
+}
+
+/// Close admission before inspecting or starting another member. A recorded
+/// first member failure does not replace the parent's eventual deadline cause.
+fn expire_fork_if_due(
+  runner: Runner,
+  a: g.Activation,
+) -> Result(Runner, Error) {
+  case runner.state.phase {
+    g.Forking(_, g.JoiningFork) ->
+      with_wait_deadline(runner, a, False, fn() { Ok(runner) })
+    _ -> Ok(runner)
+  }
 }
 
 fn park_fork(
@@ -1216,7 +1244,7 @@ pub fn discover(
     }
   use due <- result.try(case driven(entry, state) {
     True -> Ok(None)
-    False -> child_due(runs, state)
+    False -> managed_due(runs, state)
   })
   let outcome = case due {
     Some(_) -> recover_abandoned(runs, work, options, entry, state, 1)
@@ -1729,7 +1757,7 @@ fn recover_driven_child(
   options: Options,
   state: g.State,
 ) -> Result(g.State, Error) {
-  use due <- result.try(child_due(runs, state))
+  use due <- result.try(managed_due(runs, state))
   case due {
     Some(_) -> Ok(state)
     None ->
@@ -1774,7 +1802,7 @@ fn recover_abandoned(
   state: g.State,
   tries: Int,
 ) -> Result(g.State, Error) {
-  use due <- result.try(child_due(runs, state))
+  use due <- result.try(managed_due(runs, state))
   case due {
     Some(#(a, now)) -> {
       use #(next, effects) <- result.try(
@@ -1853,17 +1881,20 @@ fn recover_abandoned(
   }
 }
 
-pub fn child_due(
+pub fn managed_due(
   runs: store.Store,
   state: g.State,
 ) -> Result(Option(#(g.Activation, Int)), Error) {
   let current = case state.phase {
+    g.PreparingFork(a)
+    | g.Forking(a, g.JoiningFork)
+    | g.WaitingFork(a, g.JoiningFork) -> Some(a)
     g.Joining(a, _)
     | g.WaitingChild(a, _)
     | g.ChildBlocked(a, _, _)
     | g.Blocked(a, g.InvalidResult(_, _)) ->
       case a.prepared.kind {
-        operation.Agent | operation.Subgraph -> Some(a)
+        operation.Agent | operation.Subgraph | operation.Fork(..) -> Some(a)
         _ -> None
       }
     _ -> None
@@ -1883,9 +1914,13 @@ pub fn child_due(
               |> result.replace(Nil)
               |> result.map_error(StoreFailed)
             g.Blocked(_, g.InvalidResult(_, _)) ->
-              store.get(runs, child.reserved_id(state.run, a.id))
-              |> result.replace(Nil)
-              |> result.map_error(StoreFailed)
+              case a.prepared.kind {
+                operation.Fork(..) -> Ok(Nil)
+                _ ->
+                  store.get(runs, child.reserved_id(state.run, a.id))
+                  |> result.replace(Nil)
+                  |> result.map_error(StoreFailed)
+              }
             _ -> Ok(Nil)
           })
           Ok(Some(#(a, now)))

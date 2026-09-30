@@ -1347,7 +1347,7 @@ fn reconcile_with(
     case cancelled {
       True -> Ok(None)
       False ->
-        runner.child_due(runtime.store, state)
+        runner.managed_due(runtime.store, state)
         |> result.map(fn(due) { option.map(due, fn(entry) { entry.1 }) })
         |> result.map_error(from_runner)
     }

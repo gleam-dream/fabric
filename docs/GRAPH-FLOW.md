@@ -1,8 +1,8 @@
 # Fabric graph flow: design exploration
 
 2026-09-30. **Serial runtime, durable signals, managed children and external-job
-ownership are implemented, including retained deadlines and cleanup.
-Parallel composition, real decision adapters and agent-recipe evaluation remain open.**
+ownership and typed parallel composition are implemented, including retained
+deadlines and cleanup. Real decision adapters and agent-recipe evaluation remain open.**
 The user has authorized the six-step implementation program. Progress,
 executable contracts and acceptance evidence are retained in the
 [wave tracker](implementation/graph-flow/wave-tracker.md). The API sketches
@@ -220,8 +220,10 @@ can loop forever without a model turn. Reserve activation/fan-out budgets
 before creating work, and define child depth/count, active work and resource
 accounting. Shared family work/child/depth budgets are implemented through
 root `start_with_budget` APIs and one persistent reservation ledger. These are
-additional to per-run activation and chat limits; elapsed-time limits remain
-wave 3 work. See the [reservation contract](implementation/graph-flow/managed-composition.md#shared-family-reservations).
+additional to per-run activation and chat limits. Admitted signals, jobs,
+children and fork scopes support retained deadlines. See the
+[reservation contract](implementation/graph-flow/managed-composition.md#shared-family-reservations)
+and [fork deadline contract](implementation/graph-flow/parallel-composition.md#fork-deadlines).
 
 ## Parallel composition without shared writes
 
