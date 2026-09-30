@@ -283,6 +283,43 @@ version change refresh metadata again. This establishes PostgreSQL retention,
 not a pruning API for the development directory backend or shared execution
 budgets.
 
+## Shared family reservations
+
+One ledger per root retains monotonically spent capacity separately from the
+execution records. Updating the ledger must not invalidate a live parent
+runner's execution revision. A successful compare-and-set is the reservation
+boundary; an unconfirmed write grants no permission to dispatch. The existing
+ancestry, ownership and policy checks remain necessary after a grant.
+
+The initial dimensions are work admissions, child starts and nesting depth.
+A graph activation attempt, agent model attempt or agent tool action spends
+one work unit. Child starts spend a separate child unit, with root depth zero.
+Graph attempts use run/activation/attempt identity; model attempts also include
+the runner incarnation and turn; tool actions use run/turn/call identity. A
+child identity retains its checked depth. Repeating exactly the same claim
+acknowledges its original grant, including when capacity is exhausted; reusing
+a child identity with a different depth is a conflict. Explicit activity
+retries, new model attempts and new cycle visits spend new capacity. A failed,
+uncertain or unused reservation is not refunded implicitly. These bounds do
+not predict token charges or bound concurrent in-flight slots.
+
+Limits are nonnegative, with depth at most 63 under the existing 64-hop ancestry
+guard. Zero denies the corresponding new work. Limits cannot change once the
+ledger exists. Stored usage is reconstructed from validated claims; duplicate,
+invalid or excessive claims, future formats and mismatched roots fail closed.
+Independent stores share the same CAS record. A lost acknowledgment is confirmed
+by exact write-token readback; a later retry adopts an already persisted claim.
+CAS conflicts retry at most five times, then report contention without granting
+capacity. Missing or unreadable ledgers never become unlimited admission.
+
+The internal ledger and its storage tests implement this reservation contract.
+Runtime enforcement remains pending: root records must retain immutable limits,
+creation/recovery must establish the ledger before work, both runners must
+reserve at their admission boundaries, and typed refusals must preserve started
+effects and child tombstones. The retention projection must attach the ledger
+to its root before this becomes a public feature. No public budget API or
+runner currently calls the ledger. G7 remains open for those integration proofs.
+
 ## External jobs and deadlines
 
 Submission intent, accepted receipt and business completion are distinct

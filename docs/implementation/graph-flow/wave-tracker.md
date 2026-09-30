@@ -14,8 +14,9 @@
 - Last closed wave: 2, public durable serial graph runtime.
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's shared family budgets and job/deadline
-  contracts are being refined. Shared parent identities and manual signal
+- Open decisions: wave 3's budget admission integration and job/deadline
+  contracts are being refined. The durable reservation contract is implemented
+  internally; runner enforcement remains open. Shared parent identities and manual signal
   contracts are implemented.
   Native authoring, serial lifecycle, compatibility and public control are now
   concrete in the [durable sequential contract](durable-sequential.md).
@@ -24,7 +25,7 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: mixed-family retention passes 459 root tests, 40 PostgreSQL tests,
+- Gate status: family reservation storage passes 471 root tests, 40 PostgreSQL tests,
   four graph consumer tests and 15 existing app consumer tests. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -35,7 +36,7 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: reserve shared family budgets across graph/agent admissions, then jobs
+- Next action: wire shared family reservations into graph/agent admissions, then jobs
   and deadlines under the [managed composition contract](managed-composition.md).
   These remain runtime states rather than blocking operation wrappers.
 - Resume note: the user requested a checkpoint commit and resumed implementation
@@ -699,3 +700,31 @@ six-step goal remains active, with wave 3 next.
 - Next: define and reserve shared family budgets before graph/agent work is
   admitted, retaining the reservations across restarts and cancellation;
   continue with external jobs and durable deadlines.
+
+### Wave 3 — durable family reservation storage
+
+- Status: the internal family ledger implements the reservation contract in
+  [managed composition](managed-composition.md#shared-family-reservations).
+  It stores immutable work/child/depth limits and stable claims in a separate
+  CAS record, preserving live workflow revisions. No runner or public budget
+  API uses it yet; this checkpoint does not enforce family budgets.
+- Behavior: exact duplicate claims reuse capacity; distinct graph attempts,
+  model attempts and tool actions spend new work units. Child identities retain
+  their depth. Exhausted limits, changed limits, conflicting identities,
+  unreadable records and unconfirmed writes grant nothing. Reservations are
+  monotonic, including failed or ambiguous attempts. Usage is reconstructed
+  from validated stored claims rather than trusted serialized counters.
+- Evidence: 12 focused tests cover independent work/child limits, depth/zero
+  bounds, invalid claims, codecs and future formats, duplicate/conflicting
+  stored identities, failed/lost/late write acknowledgements, concurrent
+  creators and last-slot competition across stores, and directory restart.
+- Gate: 471 root tests, 40 PostgreSQL tests, four graph consumer tests and 15
+  app consumer tests pass with warnings as errors. Formatting, `nix flake check`
+  and `git diff --check` pass on this host.
+- Conformance: this proves the storage prerequisite of G7, not admission
+  enforcement. G1–G6 remain green. The six-step goal remains active; wave 3
+  still requires budget integration, graph recovery scanning, external jobs
+  and durable deadlines. Waves 4–6 remain unchanged.
+- Next: persist immutable root budget configuration, attach ledger retention,
+  reserve before dispatch in both runtimes, and prove typed denial with
+  cancellation/recovery and mixed children before exposing public configuration.
