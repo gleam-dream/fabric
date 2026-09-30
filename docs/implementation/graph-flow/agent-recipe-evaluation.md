@@ -169,7 +169,7 @@ Logs: `/tmp/fabric-agent-recipe-focused.log`,
 `git diff --check` pass on this host. Stage 6 is accepted as a negative
 replacement evaluation; the supported composition remains the managed agent.
 
-Stage 5 still requires actual LLM and TypeSafe inference with usable existing
-credentials. The implemented entry points stop before I/O when those keys are
-missing; protocol fixtures do not satisfy that acceptance. This separate live
-requirement must remain open even when the stage-6 evaluation is accepted.
+Stage 5 subsequently passed actual OpenAI and TypeSafe inference with the
+user-provided local configuration. The [completion audit](completion-audit.md)
+records that separate live evidence and accepts the full six-step program.
+This does not change the stage-6 decision to retain managed ordinary agents.

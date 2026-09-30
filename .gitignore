@@ -2,3 +2,4 @@ build/
 erl_crash.dump
 *.beam
 .direnv/
+.env.local

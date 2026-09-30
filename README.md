@@ -39,8 +39,8 @@ responses and restoring saved results without replay. Its stdio client and graph
 binding are exercised against a real local service.
 The optional [TypeSafe package](integrations/fabric_typesafe/README.md) provides
 non-generative yes/no, enum and rubric-score decisions with durable typed receipts.
-Its protocol tests and shared routing consumer pass; live LLM/classifier
-acceptance remains open. The [agent-recipe evaluation](docs/implementation/graph-flow/agent-recipe-evaluation.md)
+Its protocol tests, shared routing consumer and actual OpenAI/TypeSafe
+[validation](docs/implementation/graph-flow/completion-audit.md) pass. The [agent-recipe evaluation](docs/implementation/graph-flow/agent-recipe-evaluation.md)
 retains ordinary agents as managed graph nodes, preserving per-tool approval,
 recovery and cancellation while sharing execution mechanisms.
 

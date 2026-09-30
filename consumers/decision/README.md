@@ -55,3 +55,11 @@ usage. Credentials stay in process configuration. Missing keys, provider
 failures and invalid results fail the live command. Neither command retries or
 falls back to a script. A live run is accepted only when the actual provider
 returns a validated answer that reaches the expected route.
+
+## Accepted live execution
+
+Both entry points completed against their actual providers on 2026-09-30 and
+selected `publish` for the synthetic statement. OpenAI used
+`gpt-4.1-nano-2025-04-14`; TypeSafe resolved `jev-latest` to `jev-1.13.0` and
+returned the three typed answers. See the [completion audit and sanitized output](../../docs/implementation/graph-flow/completion-audit.md)
+for observed values, usage, scope and the broader regression evidence.

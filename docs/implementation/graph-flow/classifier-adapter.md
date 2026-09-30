@@ -107,3 +107,14 @@ Logs: `/tmp/fabric-classifier-final.log`,
 failure; it is not a passing live gate. `nix fmt`, `nix flake check` and
 `git diff --check` pass on this host. Core/backend source and durable formats
 are unchanged.
+
+## Actual provider acceptance, 2026-09-30
+
+The user subsequently supplied `.env.local` settings. The existing live consumer
+completed without a production change or retry: `jev-latest` resolved to
+`jev-1.13.0`, with yes probability 0.99, Choice `Approve`, Score 2.0 on the three
+requested levels, and usage of 384 input / 62 output tokens. The graph reached
+`publish` and decoded its retained receipt. The [completion audit](completion-audit.md)
+retains the exact observed distributions and sanitized command output alongside
+the independent offline recovery/error evidence. This closes the prior live
+blocker without treating fixture output as inference.

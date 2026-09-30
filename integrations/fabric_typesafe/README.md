@@ -59,5 +59,6 @@ nix develop -c sh -c 'cd integrations/fabric_typesafe && gleam build --warnings-
 ```
 
 The separate consumer has an opt-in live command using `TYPESAFE_API_KEY`.
-No provider key is read by offline tests. Live classifier acceptance remains
-pending until the actual service can be exercised.
+No provider key is read by offline tests. The
+[live acceptance record](../../docs/implementation/graph-flow/completion-audit.md)
+includes an actual Jev batch and its resolved model, typed answers and usage.
