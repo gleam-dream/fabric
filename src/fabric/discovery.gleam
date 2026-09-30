@@ -1,4 +1,4 @@
-//// Storage-owned discovery of idle graph dependencies and scheduled job reads.
+//// Storage-owned discovery of idle dependencies, job reads and signal deadlines.
 //// This projection is a
 //// scheduling hint, never permission to execute. Recovery must revalidate the
 //// stored attachment and deployed definition through the registered root.
@@ -16,11 +16,13 @@ import gleam/result
 
 /// Bump when a record format or state changes discovery eligibility or keys.
 /// Backends must refresh older projections before using them for scheduling.
-pub const version = 4
+pub const version = 5
 
 pub type Trigger {
   Changed(dependency: run.RunId)
   Poll(every: Int)
+  /// Absolute UTC Unix milliseconds; backend time alone judges eligibility.
+  At(due: Int)
 }
 
 /// `key` identifies one observation scope. It excludes run incarnation and
@@ -42,6 +44,25 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
       |> result.map(fn(metadata) { #(metadata.run, None) })
     Ok(state) -> {
       let wait = case state.phase {
+        graph.WaitingSignal(activation) ->
+          case activation.deadline {
+            None -> None
+            Some(due) ->
+              Some(Wait(
+                run.issued(state.run),
+                json.array(
+                  [
+                    json.string("signal_deadline"),
+                    json.int(activation.id),
+                    json.int(activation.attempt),
+                    json.int(due),
+                  ],
+                  fn(value) { value },
+                )
+                  |> json.to_string,
+                At(due),
+              ))
+          }
         graph.StoppingJob(_, job.RequestQueued)
         | graph.StoppingJob(_, job.RequestStarted) -> None
         graph.WaitingJob(activation) | graph.StoppingJob(activation, _) ->
@@ -125,6 +146,7 @@ pub fn encode(stored_id: String, encoded: String) -> String {
                   json.string(run.id_to_string(id)),
                 )
                 Poll(every) -> #("every", json.int(every))
+                At(due) -> #("due", json.int(due))
               }
               json.object([#("key", json.string(wait.key)), trigger])
             }),

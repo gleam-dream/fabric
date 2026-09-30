@@ -133,22 +133,25 @@ enforce work, child and depth reservations across restarts. Initialization
 creates/adopts the ledger and commits a root marker before any dispatch; an
 initialized root with a missing ledger refuses recovery. Retention projection
 version 3 introduced marker validation and attaches the ledger with matching
-limits. The current retention projection is version 6; it also understands graph
-job waits, detached cancellation and pending owned cancellation. Run `refresh_retention` for existing
+limits. The current retention projection is version 7; it also understands graph
+job waits, owned cancellation and signal deadlines. Run `refresh_retention` for existing
 rows before they can be pruned by the current projection.
 
-Graph records now write version 9 and read versions 5–9. Version 7 adds a retained
+Graph records now write version 10 and read versions 5–10. Version 7 adds a retained
 read-only job wait. Explicit `graph.poll_job` records its checked outcome;
 canceling the wait detaches observation without canceling remote work. Deploy
-version-9 graph readers before writing new records. Version 8 retains optional
+version-10 graph readers before writing new records. Version 8 retains optional
 polling intervals, including completed activation history. Missing intervals in
 older records mean manual observation. Scheduled intervals cannot be hidden in
 older record versions. PostgreSQL schema version 4 indexes scheduled polls along
 with dependencies. Version 9 retains owned jobs and their fenced cancellation
 requests. Accepted, refused and uncertain requests remain retained until an
 authoritative observation settles the job. They share the poll index without
-a new schema migration. Discovery projection version 4 schedules them; run
-`refresh_discovery` to refresh existing metadata.
+a new schema migration. Version 10 retains signal deadline configuration,
+arming, absolute due times and expiration outcomes. The current discovery
+projection is version 5; schema migration 5 adds absolute due waits to the ready
+index. Run `refresh_discovery` to refresh existing metadata. Deadline contracts
+and due times cannot be hidden in older record versions.
 
 Existing values and runners retain their setting. The setting affects
 future writes only: it neither rewrites rows nor makes an existing
@@ -184,7 +187,8 @@ A state that cannot retain its meaning in version 2 fails before writing.
 `clock_timestamp()`, using the same clock as leases and scheduled discovery.
 This read changes no execution records, leases or scheduling metadata. Errors
 propagate without using the caller's clock. No migration is needed for this
-clock API; durable graph wait expiration remains under development.
+clock API. Signal deadlines use it when arming and when accepting delivery or
+recovering a wait; deadline support for other operation kinds remains open.
 
 ## Migrations
 
@@ -289,7 +293,7 @@ is unset. Fabric's own gate (the root package, `nix flake check`, CI) does
 not run these tests and needs no PostgreSQL. The suite includes an isolated
 Erlang VM killed with SIGKILL to verify automatic recovery without tool replay.
 
-## Idle dependency and scheduled-job discovery
+## Idle dependency, scheduled-job and deadline discovery
 
 Schema version 3 stores Fabric's validated discovery projection beside each
 execution and maintains it atomically on normal writes. `claim_ready` leases
@@ -312,6 +316,15 @@ key and `discovery_checked_at` with its lease; further ready claims wait until
 that timestamp plus the interval, using `clock_timestamp()`. Same-key record
 writes and metadata refresh preserve this timestamp. A new activation is
 eligible independently. Scans may be later than the due time under load.
+
+Schema version 5 includes signal waits with an absolute due time. A ready claim
+requires database time at or beyond that timestamp. Claims do not consume the
+deadline: recovery validates the definition and samples time again before
+committing expiration. If a clock correction makes the wait early again,
+recovery releases the lease while retaining its original due time. It remains
+discoverable when time reaches the deadline. Expiration records no accepted
+signal value or successor route; completed signal deadlines can be pruned with
+their settled family. Reads alone do not expire waits.
 
 Register the graph with the shared sweeper. Only a claimed job is observed;
 recovery does not poll unclaimed relatives. Pending reads release their lease.

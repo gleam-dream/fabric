@@ -14,7 +14,7 @@
 - Last closed wave: 2, public durable serial graph runtime.
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's deadline outcome contracts are being refined.
+- Open decisions: wave 3's job/child deadline outcome contracts remain to be refined.
   Submission, receipt recovery, retained read-only
   job waits and scheduled observation are proven against an independently
   retained service. An explicit cancellation workflow now proves stop admission,
@@ -22,8 +22,9 @@
   that service. The managed owned binding now retains fenced stop requests and
   resolves accepted, refused and uncertain requests through terminal observation.
   Backend-owned due intervals survive store loss. The public backend clock now
-  supplies UTC Unix milliseconds for future persisted wait deadlines; expiration
-  lifecycle and discovery remain to be implemented.
+  supplies UTC Unix milliseconds for persisted signal deadlines. Signal arming,
+  expiration arbitration and automatic overdue discovery are implemented;
+  job/child expiration and its cleanup remain open.
   Idle dependency discovery is implemented. Public shared work/child/depth budgets, mixed-family admission,
   root initialization and ledger retention are implemented. Registered graph
   sweeping recovers expired work and changed idle dependencies through mixed attachments. Shared parent
@@ -35,9 +36,9 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: 537 root tests, four graph consumer tests, 15 app consumer tests,
+- Gate status: 548 root tests, four graph consumer tests, 15 app consumer tests,
   17 external-job consumer scenarios and five independent service tests pass.
-  The PostgreSQL gate passes 51 tests, including database time, owned cancellation, scheduled job recovery and pruning,
+  The PostgreSQL gate passes 52 tests, including overdue signal recovery, database time, owned cancellation, scheduled job recovery and pruning,
   migration and concurrent index refresh. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -48,7 +49,7 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: add durable deadline outcomes under the
+- Next action: extend deadline outcomes to jobs and managed children under the
   [managed composition contract](managed-composition.md).
   Keep deadline expiration distinct from remote cancellation and terminal evidence.
 - Resume note: the user requested another checkpoint commit and continued
@@ -1154,3 +1155,46 @@ six-step goal remains active, with wave 3 next.
 - Next: add activation-scoped signal deadlines and durable discovery, then
   extend expiration to managed children and external jobs while preserving
   owned cancellation progress and terminal evidence.
+
+### Wave 3 — durable signal deadlines
+
+- Status: `operation.with_deadline` bounds an admitted signal wait. Approval
+  time does not consume the interval. A retained arming phase samples backend
+  time, then commits an absolute due time before exposing a delivery reference.
+  Interrupted arming recovers without repeating policy; saved deadlines never
+  reset. This delivers D4–D8 for signals, not yet jobs or managed children.
+- Outcome: recovery or delivery at a due wait commits
+  `Failed(DeadlineExpired(due))` without an accepted value or successor route.
+  Delivery checks time before acceptance and after its successful pure callback.
+  The final sample determines eligibility; the subsequent revision check
+  arbitrates concurrent delivery, cancellation and expiration. Clock sampling
+  and writing remain separate operations, so this is not a strict database
+  transaction-time cutoff. Identical consumed deliveries remain acknowledged.
+- Discovery: `At(due)` uses the backend's UTC clock. Free overdue waits are
+  recoverable by the registered sweeper after store loss. A backward clock
+  correction releases a claim without changing its deadline or consuming future
+  eligibility. Expiration is settled signal evidence and can be pruned with its
+  family. Unleased stores require explicit recovery or delivery.
+- Evidence: ten public scenarios cover approval, restart, automatic discovery,
+  late delivery, repeated visits, definition changes, unavailable clocks,
+  interrupted arming, a callback crossing its deadline, clock correction and a
+  concurrent expiration/delivery race. A record scenario verifies arming, due
+  times, expiration, accepted history, corrupt combinations and downgrade refusal.
+  Shared backend checks prove absolute eligibility, preserved execution bytes
+  and disjoint live claims. PostgreSQL proves actual database-time expiration
+  after store loss, release and pruning without rewriting the saved due time.
+- Compatibility: graph records write 10/read 5–10; agent records remain 7.
+  Retention projection 7 and discovery projection 5 require metadata refresh.
+  PostgreSQL migration 5 expands the ready index to include absolute deadlines;
+  packaged and runtime SQL match. Custom backends must implement `At` eligibility.
+  Existing definitions without deadlines retain their structural manifest.
+- Gate: warnings-as-errors builds and all 548 root tests pass. Graph/app
+  consumers pass four/15 tests; the real job service passes 17 Gleam scenarios
+  and five Python tests. The temporary PostgreSQL gate passes 52 tests. Source
+  formatting, `nix fmt`, `nix flake check` and `git diff --check` pass.
+- Conformance: the six-stage goal stays active. This closes the signal deadline
+  slice; stage 3 still needs job and managed-child expiration that retains
+  unfinished cleanup. Stages 4–6 remain unchanged.
+- Next: separate deadline intent from cancellation evidence for owned jobs,
+  retain cleanup through restart, and combine due discovery with job observation.
+  Apply the same distinction to child execution deadlines before closing stage 3.

@@ -56,5 +56,11 @@ pub fn all() -> List(Migration) {
       "CREATE INDEX fabric_runs_discovery ON fabric_runs (discovery_checked_at, run_id) WHERE lease_owner IS NULL AND (dependency_id IS NOT NULL OR discovery #>> '{wait,every}' IS NOT NULL)",
       "INSERT INTO fabric_schema_migrations (version) VALUES (4)",
     ]),
+    Migration(5, "20260930020000-fabric_postgres_v5.sql", [
+      lock,
+      "DROP INDEX fabric_runs_discovery",
+      "CREATE INDEX fabric_runs_discovery ON fabric_runs (discovery_checked_at, run_id) WHERE lease_owner IS NULL AND (dependency_id IS NOT NULL OR discovery #>> '{wait,every}' IS NOT NULL OR discovery #>> '{wait,due}' IS NOT NULL)",
+      "INSERT INTO fabric_schema_migrations (version) VALUES (5)",
+    ]),
   ]
 }

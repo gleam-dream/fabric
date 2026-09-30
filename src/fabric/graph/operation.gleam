@@ -6,6 +6,7 @@ import fabric/graph/job
 import fabric/graph/signal
 import fabric/internal/graph/child_driver
 import fabric/run
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import json/blueprint/codec.{type Codec}
@@ -61,12 +62,15 @@ pub opaque type Operation(context, input, output) {
     output: Codec(output),
     recovery: Recovery,
     implementation: Implementation(context, input, output),
+    deadline: Option(Int),
   )
 }
 
 pub type ConfigurationError {
   InvalidAttemptBound(Int)
   ReplayRequiresActivity
+  InvalidDeadline(Int)
+  DeadlineRequiresSignal
 }
 
 pub type Error {
@@ -98,6 +102,7 @@ pub fn new(
     Perform(fn(context, invocation, value) {
       perform(context, invocation, value) |> result.map_error(classify)
     }),
+    None,
   )
 }
 
@@ -114,6 +119,7 @@ pub fn await_signal(
     signal.output(signal),
     RequireReconciliation,
     WaitForSignal,
+    None,
   )
 }
 
@@ -128,6 +134,7 @@ pub fn await_job(
     job.output_codec(observer),
     RequireReconciliation,
     WaitForJob(job.polling(observer), job.reader(observer)),
+    None,
   )
 }
 
@@ -151,6 +158,7 @@ pub fn own_job(
         request(context, invocation, receipt) |> result.map_error(classify)
       },
     ),
+    None,
   )
 }
 
@@ -209,6 +217,25 @@ pub fn identity(operation: Operation(context, input, output)) -> run.Identity {
   operation.identity
 }
 
+/// Bound an admitted signal wait in milliseconds. The backend clock starts
+/// the duration after policy approval; the due time survives restart. Job and
+/// managed-child deadlines are not supported by this binding yet.
+pub fn with_deadline(
+  operation: Operation(context, input, output),
+  within: Int,
+) -> Result(Operation(context, input, output), ConfigurationError) {
+  case kind(operation), within > 0 && within <= 4_294_967_295 {
+    Signal, True -> Ok(Operation(..operation, deadline: Some(within)))
+    Signal, False -> Error(InvalidDeadline(within))
+    _, _ -> Error(DeadlineRequiresSignal)
+  }
+}
+
+@internal
+pub fn deadline(operation: Operation(context, input, output)) -> Option(Int) {
+  operation.deadline
+}
+
 @internal
 pub fn subgraph(
   identity: run.Identity,
@@ -222,6 +249,7 @@ pub fn subgraph(
     output,
     RequireReconciliation,
     Managed(Subgraph, driver),
+    None,
   )
 }
 
@@ -238,6 +266,7 @@ pub fn agent(
     output,
     RequireReconciliation,
     Managed(Agent, driver),
+    None,
   )
 }
 

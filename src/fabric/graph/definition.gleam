@@ -16,6 +16,7 @@ import fabric/run
 import gleam/dict.{type Dict}
 import gleam/json
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import json/blueprint/codec.{type Codec}
@@ -35,6 +36,7 @@ pub opaque type Node(context, state, answer) {
     operation: run.Identity,
     kind: operation.Kind,
     recovery: operation.Recovery,
+    deadline: Option(Int),
     destinations: List(NodeId),
     prepare: fn(state) -> Result(String, Error),
     invoke: fn(context, Invocation, String) -> Result(String, Error),
@@ -138,6 +140,7 @@ pub fn node(
     operation: operation.identity(op),
     kind: operation.kind(op),
     recovery: operation.recovery(op),
+    deadline: operation.deadline(op),
     destinations:,
     prepare: fn(state) {
       use value <- result.try(
@@ -240,6 +243,11 @@ fn manifest(spec: Spec(context, state, answer)) -> String {
           ]
           _ -> []
         }
+        let schedule =
+          list.append(schedule, case node.deadline {
+            None -> []
+            Some(ms) -> [#("deadline_after", json.int(ms))]
+          })
         json.object(list.append(
           [
             #("node", json.string(node_name(node.id))),
@@ -303,6 +311,7 @@ fn prepare_node(
     input,
     node.recovery,
     node.kind,
+    node.deadline,
   ))
 }
 
@@ -361,6 +370,7 @@ fn check_prepared(
       prepared.operation == node.operation
       && prepared.recovery == node.recovery
       && prepared.kind == node.kind
+      && prepared.deadline == node.deadline
     {
       True -> Ok(Nil)
       False -> Error(OperationChanged(id))
@@ -480,6 +490,7 @@ pub fn validate(
     | control.Running(a)
     | control.AwaitingApproval(a, _)
     | control.WaitingSignal(a)
+    | control.ArmingSignal(a)
     | control.WaitingJob(a)
     | control.StoppingJob(a, _)
     | control.Joining(a, _)

@@ -426,11 +426,18 @@ fn perform(runner: Runner, effects: List(g.Effect)) -> Result(Runner, Error) {
     let runner = draining(runner)
     case effect, runner.draining {
       g.Inspect(_), True
+      | g.ArmSignal(_), True
       | g.Dispatch(_), True
       | g.ObserveChild(_, _), True
       | g.CancelChild(_, _), True
       | g.RequestJobStop(_), True
       -> Ok(runner)
+      g.ArmSignal(activation), False -> {
+        use now <- result.try(
+          store.now(runner.runs) |> result.map_error(StoreFailed),
+        )
+        apply(runner, g.SignalArmed(g.reference(runner.state, activation), now))
+      }
       g.Inspect(activation), False -> {
         use #(event, body) <- result.try(
           case
@@ -853,6 +860,11 @@ pub fn discover(
       _ -> False
     }
   let outcome = case state.phase {
+    g.WaitingSignal(_) ->
+      case driven(entry, state) {
+        True -> Ok(state)
+        False -> recover_abandoned(runs, work, options, entry, state, 1)
+      }
     g.StoppingJob(_, job.RequestQueued)
     | g.StoppingJob(_, job.RequestStarted) ->
       case driven(entry, state) {
@@ -1188,6 +1200,29 @@ fn recover_abandoned(
   tries: Int,
 ) -> Result(g.State, Error) {
   case state.phase {
+    g.WaitingSignal(a) -> {
+      use due <- result.try(signal_due(runs, a))
+      case due {
+        None if entry.holding == store.HeldHere ->
+          commit_recovery(
+            runs,
+            work,
+            options,
+            entry,
+            g.State(..state, incarnation: state.incarnation + 1),
+            [],
+            tries,
+          )
+        None -> Ok(state)
+        Some(now) -> {
+          use #(next, effects) <- result.try(
+            g.step(state, g.ExpireSignal(g.reference(state, a), now))
+            |> result.map_error(Refused),
+          )
+          commit_recovery(runs, work, options, entry, next, effects, tries)
+        }
+      }
+    }
     g.WaitingChild(a, child) -> {
       // A retained wait proves its child was created. Never recreate a
       // missing record after earlier child activities may have acted.
@@ -1225,6 +1260,24 @@ fn recover_abandoned(
       }
     -> recover_cancelled_child(runs, work, options, entry, state, a, tries)
     _ -> recover_work(runs, work, options, entry, state, tries)
+  }
+}
+
+/// A time sample is only an input to a revision-checked transition. A missing
+/// clock never grants delivery permission or substitutes a local timestamp.
+pub fn signal_due(
+  runs: store.Store,
+  activation: g.Activation,
+) -> Result(Option(Int), Error) {
+  case activation.deadline {
+    None -> Ok(None)
+    Some(due) -> {
+      use now <- result.map(store.now(runs) |> result.map_error(StoreFailed))
+      case now >= due {
+        True -> Some(now)
+        False -> None
+      }
+    }
   }
 }
 

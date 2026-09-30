@@ -118,6 +118,7 @@ pub type Problem {
 }
 
 pub type Failure {
+  DeadlineExpired(due: Int)
   Denied(String)
   PolicyFailed(String)
   OperationFailed(String)
@@ -180,6 +181,8 @@ pub type Snapshot(state, answer) {
     status: Status(answer),
     current: option.Option(Action),
     receipts: List(Receipt),
+    /// UTC Unix milliseconds for a current signal wait or its expired outcome.
+    deadline: option.Option(Int),
   )
 }
 
@@ -754,6 +757,8 @@ pub fn reject(
 /// Supply a native value for the exact committed wait. An identical encoded
 /// value for an already consumed reference is acknowledged without routing
 /// again. A conflicting value or canceled/uncommitted wait is refused.
+/// A due wait instead commits and returns `Failed(DeadlineExpired(due))`;
+/// that snapshot acknowledges expiration, not acceptance of the supplied value.
 pub fn deliver(
   handle: Handle(context, state, answer),
   reference: SignalReference,
@@ -845,20 +850,17 @@ fn deliver_with(
           }
         _ -> Error(CommandRefused("no signal is awaited"))
       })
-      use accepted <- result.try(
-        bounded.call(runtime.options.callback_timeout, fn() {
-          runtime.work.accept(state, activation, output)
-        })
-        |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
+      use due <- result.try(
+        runner.signal_due(runtime.store, activation)
+        |> result.map_error(from_runner),
       )
-      use decision <- result.try(
-        accepted |> result.map_error(DefinitionRejected),
-      )
+      use event <- result.try(case due {
+        Some(now) ->
+          Ok(control.ExpireSignal(control.reference(state, activation), now))
+        None -> signal_event(runtime, state, activation, output)
+      })
       use #(next, effects) <- result.try(
-        control.step(
-          state,
-          control.Signaled(activation.id, activation.attempt, output, decision),
-        )
+        control.step(state, event)
         |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
       )
       case
@@ -879,6 +881,30 @@ fn deliver_with(
         Error(error) -> Error(from_runner(error))
       }
     }
+  }
+}
+
+fn signal_event(
+  runtime: Runtime(context, state, answer),
+  state: control.State,
+  activation: control.Activation,
+  output: String,
+) -> Result(control.Event, Error) {
+  use accepted <- result.try(
+    bounded.call(runtime.options.callback_timeout, fn() {
+      runtime.work.accept(state, activation, output)
+    })
+    |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
+  )
+  use decision <- result.try(accepted |> result.map_error(DefinitionRejected))
+  use due <- result.map(
+    runner.signal_due(runtime.store, activation)
+    |> result.map_error(from_runner),
+  )
+  case due {
+    Some(now) -> control.ExpireSignal(control.reference(state, activation), now)
+    None ->
+      control.Signaled(activation.id, activation.attempt, output, decision)
   }
 }
 
@@ -1139,6 +1165,7 @@ fn snapshot(
         }
       })
     control.Ready(_)
+    | control.ArmingSignal(_)
     | control.Queued(_)
     | control.Running(_)
     | control.Stopping(_) ->
@@ -1253,6 +1280,7 @@ fn snapshot(
     | control.Running(a)
     | control.AwaitingApproval(a, _)
     | control.WaitingSignal(a)
+    | control.ArmingSignal(a)
     | control.WaitingJob(a)
     | control.StoppingJob(a, _)
     | control.Joining(a, _)
@@ -1274,33 +1302,42 @@ fn snapshot(
     control.Ended(control.Completed(_)) | control.Ended(control.Exhausted(_)) ->
       None
   }
-  Ok(Snapshot(
-    entry.revision,
-    value,
-    status,
-    current,
-    list.map(state.receipts, fn(receipt) {
-      let a = receipt.activation
-      Receipt(
-        a.id,
-        a.attempt,
-        a.prepared.node,
-        a.prepared.operation,
-        a.prepared.input,
-        receipt.output,
-        receipt.state,
-        case receipt.route {
-          control.Next(node) -> Next(node)
-          control.Finished -> Finished
-          control.Canceled -> Canceled
-        },
-      )
-    }),
-  ))
+  Ok(
+    Snapshot(
+      entry.revision,
+      value,
+      status,
+      current,
+      list.map(state.receipts, fn(receipt) {
+        let a = receipt.activation
+        Receipt(
+          a.id,
+          a.attempt,
+          a.prepared.node,
+          a.prepared.operation,
+          a.prepared.input,
+          receipt.output,
+          receipt.state,
+          case receipt.route {
+            control.Next(node) -> Next(node)
+            control.Finished -> Finished
+            control.Canceled -> Canceled
+          },
+        )
+      }),
+      case state.phase {
+        control.WaitingSignal(a)
+        | control.Ended(control.Failed(a, control.DeadlineExpired(_))) ->
+          a.deadline
+        _ -> None
+      },
+    ),
+  )
 }
 
 fn failure(fault: control.Fault) -> Failure {
   case fault {
+    control.DeadlineExpired(due) -> DeadlineExpired(due)
     control.Denied(reason) -> Denied(reason)
     control.PolicyFailed(reason) -> PolicyFailed(reason)
     control.OperationFailed(reason) -> OperationFailed(reason)
