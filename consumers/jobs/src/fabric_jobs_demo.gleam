@@ -94,6 +94,24 @@ pub fn waiting_runtime(
   submit: Submit,
   url: String,
 ) -> graph.Runtime(Nil, State, String) {
+  wait_with(runs, submit, url, job.Manual)
+}
+
+/// The registered sweeper can observe this graph's saved job every 100 ms.
+pub fn scheduled_runtime(
+  runs: store.Store,
+  submit: Submit,
+  url: String,
+) -> graph.Runtime(Nil, State, String) {
+  wait_with(runs, submit, url, job.Every(100))
+}
+
+fn wait_with(
+  runs: store.Store,
+  submit: Submit,
+  url: String,
+  polling: job.Polling,
+) -> graph.Runtime(Nil, State, String) {
   let assert Ok(submit_id) = definition.node_id("submit")
   let assert Ok(wait_id) = definition.node_id("wait")
   let submit =
@@ -133,6 +151,13 @@ pub fn waiting_runtime(
         })
       },
     )
+  let observer = case polling {
+    job.Manual -> observer
+    job.Every(ms) -> {
+      let assert Ok(scheduled) = job.with_poll_interval(observer, ms)
+      scheduled
+    }
+  }
   let waiting =
     definition.node(
       wait_id,

@@ -5,6 +5,7 @@
 
 import fabric/budget as quota
 import fabric/graph/child
+import fabric/graph/job
 import fabric/graph/operation.{
   type Recovery, ReplayInterrupted, RequireReconciliation,
 }
@@ -419,7 +420,7 @@ fn queue(state: State, activation: Activation) -> #(State, List(Effect)) {
       Dispatch(activation),
     ])
     operation.Signal -> #(State(..state, phase: WaitingSignal(activation)), [])
-    operation.Job -> #(State(..state, phase: WaitingJob(activation)), [])
+    operation.Job(_) -> #(State(..state, phase: WaitingJob(activation)), [])
     operation.Subgraph | operation.Agent -> {
       let id = child.reserved_id(state.run, activation.id)
       #(State(..state, phase: Joining(activation, id)), [
@@ -587,6 +588,14 @@ pub fn check_definition(definition: Definition) -> Result(Nil, Rejection) {
 }
 
 pub fn check_prepared(prepared: Prepared) -> Result(Nil, Rejection) {
+  use _ <- result.try(case prepared.kind {
+    operation.Job(polling) ->
+      case job.valid_polling(polling) {
+        True -> Ok(Nil)
+        False -> Error(InvalidPrepared("invalid job polling interval"))
+      }
+    _ -> Ok(Nil)
+  })
   let attempts = case prepared.recovery {
     RequireReconciliation -> 1
     ReplayInterrupted(max) -> max

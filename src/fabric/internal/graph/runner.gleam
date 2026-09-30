@@ -110,7 +110,7 @@ pub fn admit(
       use _ <- result.try(case activation.prepared.kind {
         operation.Subgraph | operation.Agent ->
           checked_child(runs, work, activation) |> result.replace(Nil)
-        operation.Activity | operation.Signal | operation.Job -> Ok(Nil)
+        operation.Activity | operation.Signal | operation.Job(_) -> Ok(Nil)
       })
       work.admit(state.run, activation)
     })
@@ -796,6 +796,40 @@ pub fn discover(
       _ -> False
     }
   let outcome = case state.phase {
+    g.WaitingJob(a) ->
+      case a.prepared.kind, entry.holding {
+        operation.Job(job.Every(_)), store.HeldHere -> {
+          use observed <- result.try(observe_job(
+            runs,
+            work,
+            options,
+            job.Reference(
+              run.issued(state.run),
+              a.id,
+              a.attempt,
+              a.prepared.operation,
+            ),
+            1,
+          ))
+          case observed.phase {
+            g.WaitingJob(_) -> {
+              // Pending observation changes no business data. A conditional
+              // release acknowledges this claim; the backend retains its due time.
+              commit_recovery(
+                runs,
+                work,
+                options,
+                entry,
+                g.State(..observed, incarnation: observed.incarnation + 1),
+                [],
+                1,
+              )
+            }
+            _ -> Ok(observed)
+          }
+        }
+        _, _ -> Ok(state)
+      }
     g.Joining(a, child)
       | g.WaitingChild(a, child)
       | g.ChildBlocked(a, child, _)
@@ -971,7 +1005,10 @@ fn job_matches(ref: job.Reference, a: g.Activation) -> Bool {
   ref.activation == a.id
   && ref.attempt == a.attempt
   && ref.operation == a.prepared.operation
-  && a.prepared.kind == operation.Job
+  && case a.prepared.kind {
+    operation.Job(_) -> True
+    _ -> False
+  }
 }
 
 pub fn recover(

@@ -1,4 +1,5 @@
 import fabric/graph/child
+import fabric/graph/job
 import fabric/graph/operation
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record
@@ -421,7 +422,7 @@ pub fn job_records_require_version_seven_and_cannot_claim_owned_effect_states_te
   let a =
     graph.Activation(
       ..a,
-      prepared: graph.Prepared(..a.prepared, kind: operation.Job),
+      prepared: graph.Prepared(..a.prepared, kind: operation.Job(job.Manual)),
     )
   let ready = graph.State(..initial, phase: graph.Ready(a))
   let waiting =
@@ -429,7 +430,7 @@ pub fn job_records_require_version_seven_and_cannot_claim_owned_effect_states_te
   waiting.phase |> should.equal(graph.WaitingJob(a))
   let assert Ok(encoded) = record.encode(waiting)
   record.decode(encoded) |> should.equal(Ok(waiting))
-  record.decode(string.replace(encoded, "\"version\":7", "\"version\":6"))
+  record.decode(string.replace(encoded, "\"version\":8", "\"version\":6"))
   |> should.be_error
   let cancelled = next(waiting, graph.Cancel)
   cancelled.phase
@@ -463,8 +464,63 @@ pub fn job_records_require_version_seven_and_cannot_claim_owned_effect_states_te
     fn(state) { record.encode(state) |> should.be_error },
   )
   let assert Ok(encoded) = record.encode(initial)
-  record.decode(string.replace(encoded, "\"version\":7", "\"version\":6"))
+  record.decode(string.replace(encoded, "\"version\":8", "\"version\":6"))
   |> should.equal(Ok(initial))
-  record.decode(string.replace(encoded, "\"version\":7", "\"version\":5"))
+  record.decode(string.replace(encoded, "\"version\":8", "\"version\":5"))
   |> should.equal(Ok(initial))
+}
+
+pub fn scheduled_job_intervals_roundtrip_and_require_version_eight_test() {
+  let initial = initial()
+  let assert graph.Ready(a) = initial.phase
+  let a =
+    graph.Activation(
+      ..a,
+      prepared: graph.Prepared(
+        ..a.prepared,
+        kind: operation.Job(job.Every(1000)),
+      ),
+    )
+  let ready = graph.State(..initial, phase: graph.Ready(a))
+  let waiting =
+    next(ready, graph.Inspected(graph.reference(ready, a), Ok(policy.Allow)))
+  let assert Ok(encoded) = record.encode(waiting)
+  record.decode(encoded) |> should.equal(Ok(waiting))
+  record.decode(string.replace(encoded, "\"version\":8", "\"version\":7"))
+  |> should.be_error
+  record.decode(string.replace(
+    encoded,
+    "\"poll_every\":1000",
+    "\"poll_every\":0",
+  ))
+  |> should.be_error
+  record.decode(string.replace(
+    encoded,
+    "\"poll_every\":1000",
+    "\"poll_every\":4294967296",
+  ))
+  |> should.be_error
+  record.decode(string.replace(
+    encoded,
+    "\"kind\":\"job\"",
+    "\"kind\":\"activity\"",
+  ))
+  |> should.be_error
+  let assert graph.WaitingJob(a) = waiting.phase
+  let manual =
+    graph.State(
+      ..waiting,
+      phase: graph.WaitingJob(
+        graph.Activation(
+          ..a,
+          prepared: graph.Prepared(
+            ..a.prepared,
+            kind: operation.Job(job.Manual),
+          ),
+        ),
+      ),
+    )
+  let assert Ok(manual_bytes) = record.encode(manual)
+  record.decode(string.replace(manual_bytes, "\"version\":8", "\"version\":7"))
+  |> should.equal(Ok(manual))
 }

@@ -232,31 +232,38 @@ fn manifest(spec: Spec(context, state, answer)) -> String {
           |> list.map(node_name)
           |> list.unique
           |> list.sort(string.compare)
-        json.object([
-          #("node", json.string(node_name(node.id))),
-          #("operation", json.string(node.operation.name)),
-          #("version", json.int(node.operation.version)),
-          #(
-            "kind",
-            json.string(case node.kind {
-              operation.Activity -> "activity"
-              operation.Signal -> "signal"
-              operation.Job -> "job"
-              operation.Subgraph -> "subgraph"
-              operation.Agent -> "agent"
+        let schedule = case node.kind {
+          operation.Job(job.Every(ms)) -> [#("poll_every", json.int(ms))]
+          _ -> []
+        }
+        json.object(list.append(
+          [
+            #("node", json.string(node_name(node.id))),
+            #("operation", json.string(node.operation.name)),
+            #("version", json.int(node.operation.version)),
+            #(
+              "kind",
+              json.string(case node.kind {
+                operation.Activity -> "activity"
+                operation.Signal -> "signal"
+                operation.Job(_) -> "job"
+                operation.Subgraph -> "subgraph"
+                operation.Agent -> "agent"
+              }),
+            ),
+            #("recovery", case node.recovery {
+              operation.RequireReconciliation ->
+                json.object([#("tag", json.string("reconcile"))])
+              operation.ReplayInterrupted(max) ->
+                json.object([
+                  #("tag", json.string("replay")),
+                  #("max_attempts", json.int(max)),
+                ])
             }),
-          ),
-          #("recovery", case node.recovery {
-            operation.RequireReconciliation ->
-              json.object([#("tag", json.string("reconcile"))])
-            operation.ReplayInterrupted(max) ->
-              json.object([
-                #("tag", json.string("replay")),
-                #("max_attempts", json.int(max)),
-              ])
-          }),
-          #("destinations", json.array(destinations, json.string)),
-        ])
+            #("destinations", json.array(destinations, json.string)),
+          ],
+          schedule,
+        ))
       }),
     ),
   ])

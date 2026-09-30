@@ -14,9 +14,10 @@
 - Last closed wave: 2, public durable serial graph runtime.
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's owned remote cancellation, automatic observation and
-  deadline contracts are being refined. Submission, receipt recovery and retained
-  read-only job waits are proven against an independently retained service.
+- Open decisions: wave 3's owned remote cancellation and deadline outcome
+  contracts are being refined. Submission, receipt recovery, retained read-only
+  job waits and scheduled observation are proven against an independently
+  retained service. Backend-owned due intervals survive store loss.
   Idle dependency discovery is implemented. Public shared work/child/depth budgets, mixed-family admission,
   root initialization and ledger retention are implemented. Registered graph
   sweeping recovers expired work and changed idle dependencies through mixed attachments. Shared parent
@@ -28,9 +29,9 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: 520 root tests, four graph consumer tests, 15 app consumer tests,
-  seven external-job consumer scenarios and two independent service tests pass.
-  The PostgreSQL gate passes 47 tests, including job-wait recovery and pruning,
+- Gate status: 526 root tests, four graph consumer tests, 15 app consumer tests,
+  eight external-job consumer scenarios and two independent service tests pass.
+  The PostgreSQL gate passes 49 tests, including scheduled job recovery and pruning,
   migration and concurrent index refresh. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
@@ -41,9 +42,8 @@
   PostgreSQL prunes complete settled graph/agent families from their saved
   attachments, preserving unresolved effects and incomplete membership. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: add durable due-time observation to the retained job wait using
-  the real service in `consumers/jobs`, followed by owned remote cancellation
-  and explicit deadline outcomes under the
+- Next action: add an explicit owned remote-cancellation contract using the real
+  service in `consumers/jobs`, followed by durable deadline outcomes under the
   [managed composition contract](managed-composition.md).
   These remain runtime states rather than blocking operation wrappers.
 - Resume note: the user requested another checkpoint commit and continued
@@ -988,3 +988,46 @@ six-step goal remains active, with wave 3 next.
 - Next: make a retained job wait discoverable when its next observation is due,
   using storage-owned time and the registered sweeper, without holding an idle
   runner or spending a new work grant for every observation.
+
+### Wave 3 — scheduled external-job observation
+
+- Status: `job.with_poll_interval` opts an observer into the existing registered
+  sweeper. The interval is retained in the operation contract. A scheduled wait
+  is first eligible immediately; subsequent ready claims use the backend's last
+  claim time and clock. Manual observation remains the default. This delivers
+  J11–J13 without a new runtime dependency or scheduling service.
+- Storage and ownership: ready claims atomically retain the key, dependency
+  revision where applicable, claim time and lease. Concurrent claimers select
+  disjoint work without changing execution bytes or revisions. Same-key writes
+  and metadata refresh retain poll time. Recovery observes only a locally
+  claimed wait; traversing an unclaimed child does not poll it early. Pending
+  observation releases its lease; a failed callback retains the expired-lease
+  recovery path. Polls reuse the wait's admitted work grant.
+- Completion: successive visits are independently eligible. Business completion
+  still commits output/state/route before successor work. Sweep diagnostics
+  count an accepted route even when it advances without a new incarnation;
+  a regression first exposed that missing progress count and then passed.
+- Evidence: five public schedule scenarios cover due intervals, bounded and
+  incompatible configuration, failed observations followed by store loss,
+  nested discovery and repeated visits. A format scenario checks scheduled
+  intervals and legacy manual records. The shared leased-backend conformance
+  suite now checks concurrent poll claims and retained due intervals on memory
+  and PostgreSQL. PostgreSQL scenarios prove restart and metadata-refresh
+  preservation. The real HTTP consumer restarts Fabric and completes its
+  independently produced artifact through the sweeper, with no manual poll or
+  repeat submission.
+- Compatibility: graph records write 8/read 5–8; older job records remain manual.
+  Retention projection 5 and discovery projection 3 require refresh. PostgreSQL
+  migration 4 expands the existing ready index to include scheduled waits;
+  migration and packaged SQL agree. Deploy new graph readers before new writes.
+- Gate: `gleam build --warnings-as-errors` and full root tests pass (526);
+  temporary PostgreSQL tests pass (49); graph/app consumers pass (four/15);
+  the job service gate passes eight Gleam and two Python scenarios. Source
+  formatting, `nix fmt`, `nix flake check` and `git diff --check` pass.
+- Conformance: this supplies automatic job observation and due-interval recovery,
+  not remote cancellation authority or deadline outcomes. Wave 3 stays open.
+  Waves 4–6 and the active six-stage objective remain intact.
+- Next: represent owned cancellation intent, request acknowledgement, confirmed
+  cancellation and uncertainty distinctly. Exercise that contract against the
+  real service before adding deadline-triggered behavior. Keep read-only
+  detachment available for jobs that Fabric does not own.

@@ -54,9 +54,12 @@
 ////   runs whose lease is held and expired, and returns them. It changes
 ////   no revision, and concurrent calls never return the same run.
 //// - `claim_ready(owner, ttl, limit)` claims free runs whose validated idle
-////   dependency is unseen or changed. Save the observation key and dependency
-////   revision together with the lease; a concurrent child write remains
-////   discoverable. Preserve observations across same-key record writes.
+////   dependency is unseen/changed or whose scheduled observation is due.
+////   Save the observation key, dependency revision and backend claim time
+////   together with the lease; a concurrent child write remains discoverable.
+////   A scheduled wait is first due immediately, then after its saved interval
+////   from the last ready claim. Preserve its key/time across same-key writes
+////   and metadata refresh. Only the backend's clock determines eligibility.
 ////   Claims are disjoint and bounded, change no execution bytes/revisions or
 ////   retention ages, and refuse stale source revisions/projection versions.
 ////   Use `fabric/discovery` to derive metadata from supported records.
@@ -172,9 +175,9 @@ pub type LeasedBackend {
     renew: fn(String, List(String), Int) -> Result(List(String), StoreError),
     /// `claim_expired(owner, ttl, limit)`: returns the runs claimed.
     claim_expired: fn(String, Int, Int) -> Result(List(String), StoreError),
-    /// Claims free runs with an unseen or changed validated dependency.
-    /// Atomically save the observed key/dependency revision and acquire its
-    /// lease. Claims never change execution revisions or retention ages.
+    /// Claims free runs with a changed dependency or due scheduled observation.
+    /// Atomically save the observed key, dependency revision and backend claim
+    /// time with its lease. Claims change no execution revision or retention age.
     claim_ready: fn(String, Int, Int) -> Result(List(String), StoreError),
   )
 }

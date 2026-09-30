@@ -102,7 +102,7 @@ pub fn job_observation_requires_admission_and_a_current_reference_test() {
       support.store(),
       read,
       fn(_, action) {
-        action.kind |> should.equal(operation.Job)
+        action.kind |> should.equal(operation.Job(job.Manual))
         Ok(policy.RequireApproval(run.Requirement("observe", 1)))
       },
       fn(receipt, output) { Ok(definition.Finish(receipt, output)) },

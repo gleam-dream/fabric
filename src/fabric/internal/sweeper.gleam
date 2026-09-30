@@ -190,16 +190,21 @@ fn scan(store: Store, recoveries: Dict(record.Key, Recovery)) -> o.Sweep {
           let before =
             list.filter_map(candidates, fn(id) {
               record.load(store, id)
-              |> result.map(fn(loaded) { #(id, record.incarnation(loaded)) })
+              |> result.map(fn(loaded) {
+                #(id, record.incarnation(loaded), record.revision(loaded))
+              })
             })
           case bounded.call(30_000, fn() { recovery.restore(store, root) }) {
             Ok(Ok(Nil)) -> {
               let recovered =
                 list.count(before, fn(candidate) {
-                  let #(id, incarnation) = candidate
+                  let #(id, incarnation, revision) = candidate
                   case record.load(store, id) {
                     Ok(state) ->
                       record.incarnation(state) > incarnation
+                      // A scheduled observation may accept a route without
+                      // restarting the run. Its committed revision is progress.
+                      || record.revision(state) > revision
                       || record.release_acknowledged(store, state)
                     Error(_) -> False
                   }

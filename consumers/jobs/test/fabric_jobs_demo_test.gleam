@@ -1,9 +1,12 @@
 //// J1–J5: public Fabric APIs against a separate durable HTTP job service.
 
+import fabric
+import fabric/budget
 import fabric/graph
 import fabric/graph/operation
 import fabric/run
 import fabric/store
+import fabric/testing
 import fabric_jobs_demo as demo
 import fabric_jobs_demo/client
 import fabric_jobs_demo/support
@@ -15,6 +18,76 @@ import json/blueprint/codec
 
 pub fn main() -> Nil {
   gleeunit.main()
+}
+
+pub fn a_restarted_sweeper_observes_the_real_job_without_manual_polling_test() {
+  let storage = testing.leased_memory()
+  let #(owner, #(runs, handle)) =
+    support.owned(fn() {
+      let runs = leased(storage.backend, "before")
+      let runtime = demo.scheduled_runtime(runs, send, support.url())
+      let assert Ok(handle) =
+        graph.start_with_budget(
+          runtime,
+          id("scheduled-real-job"),
+          demo.Submitting(client.Request("scheduled result", 1000)),
+          budget.Limits(2, 1, 1),
+        )
+      #(runs, handle)
+    })
+  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert graph.AwaitingJob(_) = waiting.status
+  let assert demo.Accepted(receipt) = waiting.value
+  client.read(support.url(), receipt) |> should.equal(Ok(client.Queued))
+  support.crash(owner, runs)
+  let runs = leased(storage.backend, "after")
+  let build = fn(runs) {
+    demo.scheduled_runtime(
+      runs,
+      fn(_, _) { panic as "saved submission must not repeat" },
+      support.url(),
+    )
+  }
+  let handle = graph.attach(build(runs), id("scheduled-real-job"))
+  let assert Ok(spec) =
+    fabric.sweeper(
+      runs,
+      [graph.recovery(run.Identity("artifact-submit-and-wait", 1), build)],
+      every: 20,
+    )
+  let assert Ok(sweeper) = spec.start()
+  let done = await_scheduled(handle, 200)
+  done.status
+  |> should.equal(graph.Completed(support.sha256("SCHEDULED RESULT")))
+  list.length(done.receipts) |> should.equal(2)
+  client.artifact(support.url(), receipt)
+  |> should.equal(Ok("SCHEDULED RESULT"))
+  process.unlink(sweeper.pid)
+  process.kill(sweeper.pid)
+}
+
+fn leased(backend, node) {
+  let assert Ok(runs) =
+    store.leased(
+      process.new_name("scheduled-service-job"),
+      node:,
+      lease: 1000,
+      backend:,
+    )
+  let assert Ok(Nil) = store.start(runs)
+  runs
+}
+
+fn await_scheduled(handle, left) {
+  let assert Ok(snapshot) = graph.read(handle)
+  case snapshot.status, left {
+    graph.Completed(_), _ -> snapshot
+    _, n if n > 0 -> {
+      process.sleep(20)
+      await_scheduled(handle, n - 1)
+    }
+    _, _ -> panic as "the registered sweeper did not complete the job"
+  }
 }
 
 fn id(name) {

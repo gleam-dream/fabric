@@ -21,7 +21,7 @@ import gleam/result
 
 /// Change this version whenever a new record format or state changes the
 /// projection, so storage integrations can refresh their retained indexes.
-pub const version = 4
+pub const version = 5
 
 /// The run at the other end of a link and an opaque attachment key. A child's
 /// parent key must equal the key its parent retained for that child. The key
@@ -170,7 +170,7 @@ fn graph_child(state: graph.State, activation: graph.Activation) -> List(Link) {
         key(run.GraphParent(run.issued(state.run), activation.id)),
       ),
     ]
-    operation.Activity | operation.Signal | operation.Job -> []
+    operation.Activity | operation.Signal | operation.Job(_) -> []
   }
 }
 

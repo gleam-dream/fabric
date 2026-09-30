@@ -16,12 +16,14 @@ and [graph implementation tracker](docs/implementation/graph-flow/wave-tracker.m
 The [external-job consumer](consumers/jobs/README.md) proves durable submission,
 receipt recovery and retained read-only job observation against a separate local
 service. `operation.await_job` retains the receipt without holding a runner;
-`graph.poll_job` records completion. Canceling this binding detaches observation.
+`graph.poll_job` records completion. Opt in with `job.with_poll_interval` to let
+the registered sweeper observe due jobs on a leased store, including after
+restart. Canceling either binding detaches observation.
 Terminal agent uncertainty settlement, complete-family PostgreSQL retention and
 shared work/child/depth budgets are implemented. Registered graph sweeping recovers
 expired work and changed idle dependencies after local wakeups are lost.
-Automatic job observation, owned remote cancellation, durable deadlines, parallel
-composition and real decision adapters remain in that implementation program.
+Owned remote cancellation, durable deadlines, parallel composition and real
+decision adapters remain in that implementation program.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
 
@@ -355,8 +357,11 @@ attachments to the correct agent or graph root and recovers expired work
 without taking a live parent's lease. An interrupted effect keeps its recovery
 contract. Registrations are distinct by runtime kind and definition version.
 Free managed waits remain discoverable when their child changes, including
-after local wakeups are lost. PostgreSQL schema version 3 maintains this index;
-refresh existing rows with `fabric_postgres.refresh_discovery` after migration.
+after local wakeups are lost. Scheduled job waits share this scan. PostgreSQL
+schema version 4 indexes both kinds of wait; refresh existing rows with
+`fabric_postgres.refresh_discovery` after migration. Only the backend's clock
+determines when a polling interval is due. Failed observations retry after lease
+expiry. Polls reuse the admitted wait's work grant.
 Signal waits without a deadline require explicit delivery.
 
 After cancellation, `fabric.reconcile_stored(store, effect, content)` records
