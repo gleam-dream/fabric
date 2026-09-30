@@ -14,7 +14,7 @@
 - Last closed wave: 2, public durable serial graph runtime.
 - Active wave: 3, managed agents/subgraphs, durable signals and external jobs.
 - Next wave: 4, typed fork/map/join with explicit failure handling.
-- Open decisions: wave 3's terminal agent settlement, family budget/retention and job/deadline
+- Open decisions: wave 3's family budget/retention and job/deadline
   contracts are being refined. Shared parent identities and manual signal
   contracts are implemented.
   Native authoring, serial lifecycle, compatibility and public control are now
@@ -24,16 +24,16 @@
 - Temporary substitutions: scripted decisions remain in tests and examples;
   real decision/protocol adapters are required in wave 5. The synchronous
   authoring driver has been replaced by the production persistent runner.
-- Gate status: the managed-agent checkpoint passes 447 root tests, 33 PostgreSQL tests,
+- Gate status: terminal agent settlement passes 456 root tests, 34 PostgreSQL tests,
   four graph consumer tests and 15 existing app consumer tests. Builds use
   warnings as errors. Explicit source formatting, `nix fmt`, `nix flake check`
   and `git diff --check` pass on this host.
 - Current evidence: typed native operations and commands run through public
   start/read/await/recover/approval/reconciliation/cancellation APIs. Directory
-  and PostgreSQL scenarios retain work over store-process loss. Shared host
+  and PostgreSQL scenarios retain work over store-process loss. Terminal tool
+  evidence and delegated outcomes settle without resuming canceled work. Shared host
   startup and the executor preserve current agent behavior.
-- Next action: add settlement for canceled agent uncertainty without restarting
-  work, including delegated families; then family budgeting/retention, jobs
+- Next action: establish family budgeting/retention, then jobs
   and deadlines under the [managed composition contract](managed-composition.md).
   These remain runtime states rather than blocking operation wrappers.
 - Resume note: the user requested a checkpoint commit and resumed implementation
@@ -616,3 +616,43 @@ six-step goal remains active, with wave 3 next.
   next. This checkpoint does not claim complete cancellation reconciliation,
   shared family budgets/retention, graph recovery scanning, jobs or deadlines.
   Wave 3 and all later waves remain active parts of the full six-step goal.
+
+### Wave 3 — terminal agent evidence and delegated settlement
+
+- Status: `fabric.reconcile_stored` retains evidence for an uncertain direct
+  tool of a finished agent; `fabric.settle_stored` verifies and propagates
+  saved child outcomes through finished delegated families. Both return the
+  updated snapshot with unresolved actions. Neither needs a deployed agent
+  definition, changes the outcome, nor calls execution callbacks.
+- Evidence ownership: a parent cannot replace an uncertain child outcome with
+  caller-supplied text. The settlement walk validates the exact reciprocal
+  parent action before visiting the child. A missing or unreadable child is
+  an error; active and uncertain children remain unresolved. A saved
+  never-started tombstone establishes `NotStarted`.
+- Recovery: writes commit independently from leaves outward. Duplicate tool
+  evidence and unchanged family walks write nothing; different evidence is
+  refused. Compare-and-set prevents competing writes from replacing a saved
+  result. Exact write-token readback confirms lost acknowledgements. Repeating
+  a walk finishes propagation after a parent write failed. Then graph recovery
+  observes the settled agent while retaining canceled graph state and receipts.
+- Compatibility: agent record version 6 adds `run.ChildSettled(outcome)` as
+  terminal evidence, separate from a model-visible tool result. Decoding
+  requires a finished parent and retained child reference. Readers accept
+  1–6; writers 2–5 refuse this new state. Direct reconciliation uses the
+  existing `Reconciled` representation. Graph format stays at version 5.
+- Evidence: nine new root scenarios cover terminal record validation,
+  duplicate/conflicting tool evidence, recursive families, interrupted
+  propagation, missing/mismatched/active children, competing writes, old-writer
+  refusal, saved tombstones and directory restart of a graph with two delegated
+  levels. The existing running-agent cancellation test now proves later
+  settlement. PostgreSQL adds cancellation, store restart and settlement with
+  unchanged transcript/usage and no second effect; both leases are released.
+- Gate: 456 root tests, 34 PostgreSQL tests, four graph consumer tests and 15
+  existing app consumer tests pass, with warning-free builds. Source formatting,
+  `nix fmt`, `nix flake check` and `git diff --check` pass on this host.
+- Conformance: this extends G7's cancellation recovery and preserves G1–G6.
+  Wave 3 remains open for family budgets/retention, recovery scanning, external
+  jobs and deadlines. Waves 4–6 and the full six-step objective remain active.
+- Next: make shared family limits and retention explicit across graph/agent
+  boundaries, including PostgreSQL metadata for hashed graph reservations;
+  then add external-job attachments and durable deadlines.

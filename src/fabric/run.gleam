@@ -195,6 +195,9 @@ pub type ActionState {
   /// reconciliation.
   Uncertain(evidence: String)
   Reconciled(content: String)
+  /// A finished parent's uncertain delegation was settled from the child's
+  /// saved outcome. This is evidence only, never a model-visible tool result.
+  ChildSettled(outcome: Outcome)
   /// Withdrawn before it started (cancellation, a budget, or a host failure).
   NotStarted
   /// A sub-agent run (`ActionRecord.child`) is working on it; its outcome

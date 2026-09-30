@@ -154,14 +154,37 @@ agent's existing cancellation path. A known completed child can settle a cancele
 graph even when its answer adapter is broken: settlement observes the retained
 outcome and never invokes application reply conversion or parent routing.
 A canceled agent with uncertain tool effects remains `ChildUnresolved`.
-The ordinary agent API currently refuses reconciliation after its terminal
-outcome; adding terminal settlement without resuming work is still required in
-wave 3, including propagation through canceled delegated families. This checkpoint
-preserves the uncertainty rather than inventing a settled result.
+`fabric.reconcile_stored(store, effect, content)` records evidence for a
+finished agent's direct tool. It needs no deployed agent definition and never
+resumes execution. Repeating the same content acknowledges the saved evidence;
+different content, a definite action or a delegation is refused. An active
+agent returns `RunNotFinished`; its existing `fabric.reconcile` command can
+continue execution under the usual ancestry checks.
+Both terminal commands return the updated run snapshot, including unresolved
+actions; a successful read and commit is not a claim that every effect settled.
+
+`fabric.settle_stored(store, agent_root)` propagates settlement through a
+finished delegated family. It follows retained uncertain child links and checks
+each child's reciprocal parent action. A definite saved child outcome becomes
+`run.ChildSettled(outcome)`; a saved never-started tombstone becomes `NotStarted`.
+An absent or unreadable child is an error. An active or uncertain child leaves
+the parent uncertain. Callers cannot supply a result on a parent's behalf.
+
+Each record commits independently from descendants outward. Repeating the walk
+repairs a failed parent write after successful child writes, and unchanged
+records are not rewritten. Compare-and-set resolves competing writes; the
+store's exact write-token readback handles lost acknowledgements. These updates
+change only history: outcome, transcript, counters and usage are preserved. No
+model, tool, policy, prompt, reply converter or delegation mapper is invoked.
+After settling the agent root, `graph.recover(parent)` reads its saved outcome
+and changes `ChildUnresolved` to `ChildSettled`, preserving canceled graph state
+and receipts. Observation alone does not implicitly amend either family.
 
 Graph format version 5 adds the `agent` operation kind. Earlier unreleased graph
-formats are refused explicitly. Agent records continue to use their separate
-version-5 parent contract and existing writer window.
+formats are refused explicitly. Agent record version 6 adds terminal child
+settlement; readers accept 1–6, writers 2–5 refuse this new evidence. The
+version-5 parent representation is unchanged. Upgrade readers before changing
+the store's writer setting.
 
 ### Cancellation settlement
 

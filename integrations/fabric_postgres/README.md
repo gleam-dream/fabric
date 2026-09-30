@@ -80,10 +80,10 @@ committed outcome.
 
 ## Record versions
 
-The current runtime reads agent record versions 1–5 and writes version 5 by
-default. Versions 2–4 remain writable for representable states. Assistant
+The current runtime reads agent record versions 1–6 and writes version 6 by
+default. Versions 2–5 remain writable for representable states. Assistant
 provider data requires at least version 4; a graph parent attachment requires
-version 5. For a deployment that must still write version 3:
+version 5; settled child evidence requires version 6. For a deployment that must still write version 3:
 
 ```gleam
 let assert Ok(runs) =
@@ -92,8 +92,8 @@ let assert Ok(runs) = store.with_record_version(runs, 3)
 ```
 
 Configure before starting the store, and use this returned value for all
-run handles and the sweeper. Versions outside 2–5 return
-`UnwritableVersion(requested, oldest, newest)`. Reads still accept 1–5.
+run handles and the sweeper. Versions outside 2–6 return
+`UnwritableVersion(requested, oldest, newest)`. Reads still accept 1–6.
 
 Deploy version-4 readers everywhere before enabling the new llm_wire tool
 turns, then restart with writer 4. Those turns preserve
@@ -102,11 +102,17 @@ the response commit before dispatching tools, leaving the run unattended;
 recover with writer 4 to continue. A mixed-version deployment must keep
 these new tool turns disabled until the reader upgrade is complete.
 
-Deploy version-5 readers before selecting the new default writer. Version 5
+Deploy version-5 readers before selecting writer 5. Version 5
 distinguishes an agent-action parent from a graph-activation parent. Writers
 2–4 retain ordinary agent parent links in their historical shape, but refuse
 a graph attachment before inserting it or starting its model call. Graph
 records have a separate version contract; this setting controls agent records.
+
+Deploy version-6 readers before selecting writer 6. Terminal agent-family
+settlement retains the child's outcome as `child_settled`, without invoking
+the delegation's result mapper or resuming the parent. Writers 2–5 refuse
+that evidence before changing the parent record. Direct terminal tool
+reconciliation retains the existing `reconciled` representation.
 
 Existing values and runners retain their setting. The setting affects
 future writes only: it neither rewrites rows nor makes an existing

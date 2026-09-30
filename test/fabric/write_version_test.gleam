@@ -19,9 +19,9 @@ import gleeunit/should
 
 pub fn unsupported_write_versions_are_refused_before_startup_test() {
   let runs = store.in_memory(process.new_name("version-window"))
-  list.each([-1, 0, 1, 6], fn(version) {
+  list.each([-1, 0, 1, 7], fn(version) {
     store.with_record_version(runs, version)
-    |> should.equal(Error(store.UnwritableVersion(version, 2, 5)))
+    |> should.equal(Error(store.UnwritableVersion(version, 2, 6)))
   })
 }
 
@@ -84,7 +84,7 @@ pub fn configured_writes_remain_readable_by_the_version_2_decoder_test() {
 
 pub fn the_write_target_does_not_restrict_what_can_be_read_test() {
   list.each(
-    [#(5, 2), #(2, 5), #(5, 3), #(3, 5), #(5, 4), #(4, 5)],
+    [#(6, 2), #(2, 6), #(6, 3), #(3, 6), #(6, 4), #(4, 6), #(6, 5), #(5, 6)],
     fn(versions) {
       let memory = testing.leased_memory()
       let body = probe.new()

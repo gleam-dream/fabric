@@ -272,6 +272,23 @@ pub fn canceling_a_running_agent_retains_uncertain_tool_effects_test() {
   // Inspect through the actual store as well: the parent's result is not a
   // manufactured success while the child owns an uncertain operation.
   let assert Ok(_) = store.get(runs, run.id_to_string(reference.child))
+  let before = snapshot
+  let assert Ok(_) =
+    fabric.reconcile_stored(
+      runs,
+      run.ActionRef(reference.child, action.id),
+      "charge confirmed",
+    )
+  let assert Ok(settled) = graph.recover(handle)
+  settled.status |> should.equal(graph.Cancelled(graph.ChildSettled(reference)))
+  settled.value |> should.equal(done.value)
+  settled.receipts |> should.equal(done.receipts)
+  let assert Ok(after) = fabric.snapshot(agent)
+  after.status |> should.equal(before.status)
+  after.transcript |> should.equal(before.transcript)
+  after.usage |> should.equal(before.usage)
+  after.turns_used |> should.equal(before.turns_used)
+  probe.entries(body) |> should.equal(["start:charge"])
 }
 
 pub fn agent_uncertainty_is_reconciled_in_the_child_before_graph_routing_test() {
@@ -346,6 +363,67 @@ fn delegating(child, children, depth) {
     ),
   )
   |> support.agent
+}
+
+pub fn canceled_delegated_agent_evidence_survives_restart_and_settles_outward_test() {
+  let dir = restart.temp_dir()
+  let body = probe.new()
+  let leaf =
+    agent.new(
+      "leaf",
+      scripted.plan([scripted.slow("effect", "charge")]),
+      [scripted.gated_tool(body)],
+      policy.always_allow(),
+    )
+    |> support.agent
+  let worker = delegating(delegating(leaf, 1, 2), 1, 2)
+  let #(owner, #(runs, handle)) =
+    restart.owned(fn() {
+      let runs = support.directory(dir)
+      let runtime = runtime(runs, worker)
+      let assert Ok(handle) =
+        graph.start(parent(runs, runtime), support.id("cancel-family"), 41)
+      #(runs, handle)
+    })
+  let _started = probe.arrival(body)
+  let assert Ok(_) = graph.cancel(handle)
+  let assert Ok(before) = graph.await(handle, 5000)
+  let assert graph.Cancelled(graph.ChildUnresolved(reference, _)) =
+    before.status
+  let leaf_id = support.child_id(support.child_id(reference.child, 1), 1)
+  restart.crash(owner, runs)
+  let runs = support.directory(dir)
+  let runtime = runtime(runs, worker)
+  let handle = graph.attach(parent(runs, runtime), support.id("cancel-family"))
+  let assert Ok(root) = node.child(handle, reference.activation, runtime)
+  let assert Ok(leaf) = fabric.child(root, leaf_id)
+  let assert Ok(leaf_before) = fabric.snapshot(leaf)
+  let assert [action] = leaf_before.actions
+  let assert Ok(_) =
+    fabric.reconcile_stored(
+      runs,
+      run.ActionRef(leaf_id, action.id),
+      "charge confirmed",
+    )
+  // The parent must observe each saved child; a leaf write alone does not
+  // claim that the entire family is already settled.
+  let assert Ok(unresolved) = graph.recover(handle)
+  unresolved.status |> should.equal(before.status)
+  let assert Ok(_) = fabric.settle_stored(runs, reference.child)
+  let assert Ok(after) = graph.recover(handle)
+  after.status |> should.equal(graph.Cancelled(graph.ChildSettled(reference)))
+  after.value |> should.equal(before.value)
+  after.receipts |> should.equal(before.receipts)
+  let assert Ok(root_after) = fabric.snapshot(root)
+  root_after.status |> should.equal(run.Finished(run.Cancelled))
+  let assert [delegation] = root_after.actions
+  delegation.state |> should.equal(run.ChildSettled(run.Cancelled))
+  let assert Ok(leaf_after) = fabric.snapshot(leaf)
+  leaf_after.transcript |> should.equal(leaf_before.transcript)
+  leaf_after.usage |> should.equal(leaf_before.usage)
+  leaf_after.turns_used |> should.equal(leaf_before.turns_used)
+  probe.entries(body) |> should.equal(["start:charge"])
+  restart.remove_dir(dir)
 }
 
 fn wrap(runs, inner) {
