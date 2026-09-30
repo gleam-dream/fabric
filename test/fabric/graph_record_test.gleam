@@ -196,6 +196,8 @@ pub fn foreign_formats_and_future_versions_are_refused_before_state_decode_test(
   |> should.equal(Error(record.UnsupportedVersion(2)))
   record.decode("{\"format\":\"fabric.graph\",\"version\":3}")
   |> should.equal(Error(record.UnsupportedVersion(3)))
+  record.decode("{\"format\":\"fabric.graph\",\"version\":4}")
+  |> should.equal(Error(record.UnsupportedVersion(4)))
   let assert Error(record.Corrupt(_)) =
     record.decode("{\"format\":\"fabric.run\",\"version\":1}")
   let assert Error(record.Corrupt(_)) = record.decode("not JSON")

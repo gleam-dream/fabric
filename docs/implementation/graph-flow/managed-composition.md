@@ -30,7 +30,7 @@ encoded payload exactly, including JSON whitespace; acknowledgement uses the
 saved bytes rather than rerunning codecs to normalize historical results.
 
 Record version 2 introduced execution modes and the waiting phase. The current
-version 4 also retains subgraph attachments, initial input and idle child waits. Earlier versions
+version 5 also retains subgraph and agent attachments, initial input and idle child waits. Earlier versions
 are rejected explicitly; no migration or compatibility shim is provided for
 unreleased formats. The mode participates in definition
 compatibility, preventing a stored wait from becoming an executable activity.
@@ -81,8 +81,8 @@ to name the exact descendant and action/activation. A stopped, unrelated,
 unreadable or excessively deep chain admits no new work. Agent model attempts
 (including retries), tool fences, child starts and approval commands use this
 contract, as do graph admission and effect fences. The existing agent sweeper
-stops at a graph parent: graph recovery owns that boundary. This does not yet
-provide a public managed-agent operation or automatic graph recovery.
+stops at a graph parent: graph recovery owns that boundary. Automatic graph
+recovery remains separate work.
 
 The first managed-child implementation is a subgraph in the same store. Its
 typed operation is constructed from a child graph runtime, with the child
@@ -105,16 +105,63 @@ Canceling an attachment retains intent until child cancellation is recorded;
 an absent child gets a terminal record before a competing start can win.
 No parent continuation follows an uncertain child. Each graph's activation
 bound limits the children it can reserve, and ancestry checks cap nesting.
-Agent adapters and family-wide budgeting/retention remain separate work in
-this wave rather than being inferred from a passing subgraph scenario.
+Family-wide budgeting/retention remains separate work in this wave rather
+than being inferred from a passing child scenario.
 
 The first subgraph checkpoint proves creation, lost acknowledgements,
 recovery, child approval, child reconciliation and cancellation races through
 public APIs, including a PostgreSQL restart. It does not complete managed
 composition. Subsequent checkpoints implement idle child waits, local wakeups,
 nested approval/signal propagation and cancellation settlement, including nested
-cancellation across restart. Managed agents, family retention, shared budgets,
-jobs and deadlines remain unaccepted.
+cancellation across restart. Managed agent nodes are described below. Family
+retention, shared budgets, jobs and deadlines remain unaccepted.
+
+### Managed ordinary agents
+
+`fabric/graph/agent.Definition` binds a validated ordinary agent, native input
+and output codecs, a pure prompt builder and a pure final-reply converter.
+`new` binds its store and context factory; `as_operation` makes a normal typed
+graph node. The declared binding identity must change when its prompt, reply
+meaning or deployed agent changes. Construction rejects agent trees whose
+declared descendant IDs could exceed 128 characters below a graph reservation.
+
+The parent commits the agent activation and reserved child ID before dispatch.
+The child stores an ordinary agent record with `GraphParent`; repeated start
+adopts only the same attachment, compatible agent and prompt. Context is rebuilt
+for start/recovery. Models, tools and delegated agents use the existing agent
+runner and its ancestry fences. Parent scheduling and child tool policies both
+apply. Managed operations cannot request activity replay.
+
+`agent.child(parent, activation, runtime)` returns the child's ordinary Fabric
+handle after checking the store and reciprocal attachment. It also opens
+completed visits. An idle family is exposed as
+`child.AgentInput(approvals, uncertain)`, preserving every agent action reference,
+including references to delegated descendants. Applications use ordinary
+`fabric.approve`, `reject`, `pending`, `child` and `reconcile` APIs. The graph
+parks while the family needs input and wakes on its root's committed progress.
+Nested graph observation preserves these references and each graph's own route.
+
+A completed agent's raw reply stays in its transcript. The pure adapter converts
+that reply into the node's native output; encoding, acceptance and routing use
+the normal graph contract. An invalid conversion records `InvalidResult` and
+releases no successor. Recovery never repeats the model merely to parse its
+saved answer. Agent refusals, limits and failures remain definite child failures;
+a terminal agent retaining uncertain effects remains uncertain.
+
+Cancellation uses stored agent state and can insert a never-started tombstone
+without running prompt, answer or context callbacks. It propagates through the
+agent's existing cancellation path. A known completed child can settle a canceled
+graph even when its answer adapter is broken: settlement observes the retained
+outcome and never invokes application reply conversion or parent routing.
+A canceled agent with uncertain tool effects remains `ChildUnresolved`.
+The ordinary agent API currently refuses reconciliation after its terminal
+outcome; adding terminal settlement without resuming work is still required in
+wave 3, including propagation through canceled delegated families. This checkpoint
+preserves the uncertainty rather than inventing a settled result.
+
+Graph format version 5 adds the `agent` operation kind. Earlier unreleased graph
+formats are refused explicitly. Agent records continue to use their separate
+version-5 parent contract and existing writer window.
 
 ### Cancellation settlement
 

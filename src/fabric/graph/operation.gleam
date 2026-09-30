@@ -33,12 +33,13 @@ pub type Kind {
   Activity
   Signal
   Subgraph
+  Agent
 }
 
 type Implementation(context, input, output) {
   Perform(fn(context, Invocation, input) -> Result(output, Failure))
   WaitForSignal
-  Managed(child_driver.Driver)
+  Managed(Kind, child_driver.Driver)
 }
 
 pub opaque type Operation(context, input, output) {
@@ -107,7 +108,7 @@ pub fn kind(operation: Operation(context, input, output)) -> Kind {
   case operation.implementation {
     Perform(_) -> Activity
     WaitForSignal -> Signal
-    Managed(_) -> Subgraph
+    Managed(kind, _) -> kind
   }
 }
 
@@ -116,7 +117,7 @@ pub fn with_replay(
   max_attempts: Int,
 ) -> Result(Operation(context, input, output), ConfigurationError) {
   case kind(operation), max_attempts >= 1 {
-    Signal, _ | Subgraph, _ -> Error(ReplayRequiresActivity)
+    Signal, _ | Subgraph, _ | Agent, _ -> Error(ReplayRequiresActivity)
     Activity, True ->
       Ok(Operation(..operation, recovery: ReplayInterrupted(max_attempts)))
     Activity, False -> Error(InvalidAttemptBound(max_attempts))
@@ -134,7 +135,29 @@ pub fn subgraph(
   output: Codec(output),
   driver: child_driver.Driver,
 ) -> Operation(context, input, output) {
-  Operation(identity, input, output, RequireReconciliation, Managed(driver))
+  Operation(
+    identity,
+    input,
+    output,
+    RequireReconciliation,
+    Managed(Subgraph, driver),
+  )
+}
+
+@internal
+pub fn agent(
+  identity: run.Identity,
+  input: Codec(input),
+  output: Codec(output),
+  driver: child_driver.Driver,
+) -> Operation(context, input, output) {
+  Operation(
+    identity,
+    input,
+    output,
+    RequireReconciliation,
+    Managed(Agent, driver),
+  )
 }
 
 @internal
@@ -142,7 +165,7 @@ pub fn child_driver(
   operation: Operation(context, input, output),
 ) -> Result(child_driver.Driver, Error) {
   case operation.implementation {
-    Managed(driver) -> Ok(driver)
+    Managed(_, driver) -> Ok(driver)
     _ -> Error(NotExecutable)
   }
 }
@@ -175,7 +198,7 @@ pub fn invoker(
     Perform(_) -> fn(context, invocation, text) {
       invoke(operation, context, invocation, text)
     }
-    WaitForSignal | Managed(_) -> fn(_, _, _) { Error(NotExecutable) }
+    WaitForSignal | Managed(..) -> fn(_, _, _) { Error(NotExecutable) }
   }
 }
 
@@ -227,7 +250,7 @@ pub fn invoke(
 ) -> Result(String, Error) {
   use perform <- result.try(case operation.implementation {
     Perform(perform) -> Ok(perform)
-    WaitForSignal | Managed(_) -> Error(NotExecutable)
+    WaitForSignal | Managed(..) -> Error(NotExecutable)
   })
   use input <- result.try(decode_input(operation, text))
   use output <- result.try(

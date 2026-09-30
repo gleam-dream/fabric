@@ -8,11 +8,14 @@ Behavioural oracle: BeamWeaver (partial migration of its agent loop).
 
 Serial agentic graphs are available through `fabric/graph`: typed operations,
 conditional routing, bounded cycles, durable records, approval, recovery,
-reconciliation, typed durable signals and managed subgraphs with idle/nested waits.
+reconciliation, typed durable signals, managed subgraphs and managed ordinary
+agents with idle/nested waits. `fabric/graph/agent` binds a native input,
+prompt and typed reply conversion to the existing agent runner.
 See the [runnable public graph consumer](consumers/graph/README.md)
 and [graph implementation tracker](docs/implementation/graph-flow/wave-tracker.md).
-Managed agent nodes, durable deadlines, external-job attachment, parallel
-composition and real decision adapters remain in that implementation program.
+Terminal agent uncertainty settlement, shared family budgets/retention, durable
+deadlines, external-job attachment, parallel composition and real decision
+adapters remain in that implementation program.
 
 Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
 

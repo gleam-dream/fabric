@@ -29,7 +29,7 @@ routes must still be allowed. These checks never rerun selection, operation or
 acceptance callbacks. The manifest does not identify callback implementations:
 applications must bump versions for changes to code or codec meaning.
 
-The graph record uses format `fabric.graph`, currently version 4. Wave 3's
+The graph record uses format `fabric.graph`, currently version 5. Wave 3's
 signal support added an explicit execution mode and waiting phase; managed
 subgraphs add initial input, reciprocal parent links and child lifecycle phases,
 including a stored wait that releases the parent runner and lease.
