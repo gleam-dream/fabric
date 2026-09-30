@@ -96,8 +96,42 @@ recovery, child approval, child reconciliation and cancellation races through
 public APIs, including a PostgreSQL restart. It does not complete managed
 composition. Parents still poll while children await approval or signals;
 releasing those idle parents and repairing lost wakeups remains work. Nested
-wait propagation, settlement of canceled uncertain children, managed agents,
-family retention and shared budgets also remain unaccepted.
+wait propagation, managed agents, family retention and shared budgets also
+remain unaccepted. The subsequent cancellation-settlement checkpoint implements
+the contract below, including nested cancellation across restart.
+
+### Cancellation settlement
+
+While cancellation is committed but its child has not yet settled, the parent
+exposes `CancellingChild(reference)`. `await` continues through that state
+until the child settles or the caller's deadline expires; an old child approval
+or uncertainty does not hide the parent's accepted cancellation intent.
+
+A canceled subgraph attachment with uncertain effects exposes its child
+reference as `Cancelled(ChildUnresolved(reference, problem))`. An application
+reconciles the uncertain operation in that child. It cannot replace the
+child's recorded outcome by supplying an answer to the parent.
+
+`graph.recover` on this canceled parent checks the same child's retained
+outcome. A completed or definitely failed child, or a canceled child whose
+effects are settled, permits a conditional parent commit to
+`Cancelled(ChildSettled(reference))`. This is terminal bookkeeping: it invokes
+no child start/cancel command, policy, body or routing callback, and changes
+neither parent state nor receipts. An uncertain, absent or nonterminal child
+leaves cancellation unresolved; an unreadable or foreign child is an error.
+Repeated recovery of a settled parent is a read-only acknowledgement.
+
+For nested cancellations, reconcile the leaf and recover canceled attachments
+from the leaf outward. Lost or failed settlement acknowledgements use the
+ordinary CAS confirmation/retry contract. They cannot turn cancellation into
+successful graph completion or release successor work. This adds no persisted
+variant: the existing canceled and child-settled outcomes retain the result.
+
+Deployed graph callbacks retain each descendant runtime once. Codec, input
+selection and route callbacks carry only the parent's native contracts; they
+do not capture managed children. This matters on the BEAM, where passing work
+to a process copies closure environments. Nested composition must not multiply
+copies of the complete descendant graph at every callback boundary.
 
 ## External jobs and deadlines
 

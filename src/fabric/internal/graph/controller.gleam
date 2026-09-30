@@ -132,6 +132,7 @@ pub type Event {
   ChildUnavailable(Reference, child: String, reason: String)
   ChildMappingFailed(Reference, child: String, output: String, reason: String)
   ChildStopped(Reference, child: String, uncertain: Bool)
+  ChildCancellationSettled(Reference, child: String)
   Cancel
   Stopped
 }
@@ -185,6 +186,17 @@ pub fn step(
   event: Event,
 ) -> Result(#(State, List(Effect)), Rejection) {
   case event, state.phase {
+    ChildCancellationSettled(ref, id),
+      Ended(Cancelled(a, UnresolvedCancellation(_)))
+      if a.prepared.kind == operation.Subgraph
+    -> {
+      use _ <- result.try(matches(state, a, ref))
+      use _ <- result.try(case id == child.reserved_id(state.run, a.id) {
+        True -> Ok(Nil)
+        False -> Error(StaleInvocation)
+      })
+      Ok(ended(state, Cancelled(a, AfterChild(id))))
+    }
     ChildUnavailable(ref, id, reason), Joining(a, current) if id == current -> {
       use _ <- result.try(matches(state, a, ref))
       Ok(#(State(..state, phase: ChildBlocked(a, id, reason)), []))
@@ -229,6 +241,7 @@ pub fn step(
     CancelledResult(ref, output), Stopping(activation)
     | CancelledResult(ref, output),
       Ended(Cancelled(activation, UnresolvedCancellation(_)))
+      if activation.prepared.kind == operation.Activity
     -> {
       use _ <- result.try(matches(state, activation, ref))
       Ok(cancelled_result(state, activation, output))

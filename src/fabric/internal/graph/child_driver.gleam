@@ -4,11 +4,16 @@
 import fabric/graph/child
 import gleam/erlang/process.{type Pid}
 
+pub type Reservation {
+  Start
+  Cancel
+}
+
 pub type Driver {
   Driver(
     store: fn() -> Result(Pid, Nil),
-    start: fn(child.Parent, String, String) -> Result(Nil, String),
+    reserve: fn(child.Parent, String, String, Reservation) ->
+      Result(Nil, String),
     read: fn(child.Parent, String) -> Result(child.Progress, String),
-    cancel: fn(child.Parent, String, String) -> Result(Nil, String),
   )
 }

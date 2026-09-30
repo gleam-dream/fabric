@@ -152,6 +152,34 @@ pub fn recovery(operation: Operation(context, input, output)) -> Recovery {
 }
 
 @internal
+pub fn input_codec(
+  operation: Operation(context, input, output),
+) -> Codec(input) {
+  operation.input
+}
+
+@internal
+pub fn output_codec(
+  operation: Operation(context, input, output),
+) -> Codec(output) {
+  operation.output
+}
+
+/// A non-activity callback must not capture its managed child runtime. BEAM
+/// copies closure environments when handing work to another process.
+@internal
+pub fn invoker(
+  operation: Operation(context, input, output),
+) -> fn(context, Invocation, String) -> Result(String, Error) {
+  case operation.implementation {
+    Perform(_) -> fn(context, invocation, text) {
+      invoke(operation, context, invocation, text)
+    }
+    WaitForSignal | Managed(_) -> fn(_, _, _) { Error(NotExecutable) }
+  }
+}
+
+@internal
 pub fn encode_input(
   operation: Operation(context, input, output),
   input: input,
