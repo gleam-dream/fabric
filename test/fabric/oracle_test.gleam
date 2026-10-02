@@ -17,6 +17,7 @@ import fabric/policy
 import fabric/run
 import fabric/support
 import fabric/support/agent_recipe as recipe
+import fabric/support/codecs
 import fabric/support/probe.{type Probe}
 import fabric/support/restart
 import fabric/support/scripted
@@ -208,7 +209,7 @@ fn lookup(probe: Probe) -> tool.Tool(Nil) {
   tool.define(
     "lookup",
     "Weather lookup",
-    codec.field("city", codec.string()),
+    codecs.one_field("city", codec.string()),
     codec.string(),
   )
   |> tool.bind(
@@ -227,7 +228,7 @@ fn pay(probe: Probe) -> tool.Tool(Nil) {
   tool.define(
     "pay",
     "Payment",
-    codec.field("to", codec.string()),
+    codecs.one_field("to", codec.string()),
     codec.string(),
   )
   |> tool.bind(
@@ -240,7 +241,12 @@ fn pay(probe: Probe) -> tool.Tool(Nil) {
 }
 
 fn step(probe: Probe) -> tool.Tool(Nil) {
-  tool.define("step", "One step", codec.field("n", codec.int()), codec.string())
+  tool.define(
+    "step",
+    "One step",
+    codecs.one_field("n", codec.int()),
+    codec.string(),
+  )
   |> tool.bind(
     fn(_, n: Int) -> Result(String, Nil) {
       probe.record(probe, "tool:step:" <> int.to_string(n))
@@ -550,14 +556,19 @@ pub type Task {
 /// child's prompt and the child's final text its result. Starting the
 /// child needs a review, as `interrupt_on: %{"task" => true}` does.
 fn delegation_agent(probe: Probe) -> agent.Agent(Nil) {
-  let assert Ok(task_codec) =
-    codec.record2(
-      codec.required("subagent_type", codec.string()),
-      codec.required("description", codec.string()),
-      Task,
-      fn(task) { task.subagent_type },
-      fn(task) { task.description },
+  let task_codec = {
+    use subagent_type <- codec.field(
+      "subagent_type",
+      codec.string(),
+      fn(task: Task) { task.subagent_type },
     )
+    use description <- codec.field(
+      "description",
+      codec.string(),
+      fn(task: Task) { task.description },
+    )
+    codec.success(Task(subagent_type:, description:))
+  }
   let researcher =
     agent.new(
       "researcher",

@@ -26,30 +26,26 @@ pub type Context {
 }
 
 pub fn draft_codec() -> Codec(Draft) {
-  codec.pair(codec.int(), codec.string())
-  |> codec.imap(fn(pair) { Draft(pair.0, pair.1) }, fn(draft) {
-    #(draft.revision, draft.text)
+  use revision <- codec.field("revision", codec.int(), fn(draft: Draft) {
+    draft.revision
   })
+  use text <- codec.field("text", codec.string(), fn(draft: Draft) {
+    draft.text
+  })
+  codec.success(Draft(revision:, text:))
 }
 
 pub fn state_codec() -> Codec(State) {
-  let assert Ok(encoded) =
-    codec.tagged("drafting", codec.int(), "reviewing", draft_codec())
-  codec.imap(
-    encoded,
-    fn(value) {
-      case value {
-        codec.Left(revision) -> Drafting(revision)
-        codec.Right(draft) -> Reviewing(draft)
-      }
-    },
-    fn(state) {
+  codec.union({
+    use drafting <- codec.variant("drafting", codec.int(), Drafting)
+    use reviewing <- codec.variant("reviewing", draft_codec(), Reviewing)
+    codec.match(fn(state) {
       case state {
-        Drafting(revision) -> codec.Left(revision)
-        Reviewing(draft) -> codec.Right(draft)
+        Drafting(revision) -> drafting(revision)
+        Reviewing(draft) -> reviewing(draft)
       }
-    },
-  )
+    })
+  })
 }
 
 pub fn definition(
@@ -57,7 +53,7 @@ pub fn definition(
 ) -> Result(graph.Graph(Context, State, Draft), graph.BuildError) {
   let assert Ok(generate) = graph.node_id("draft.generate")
   let assert Ok(review) = graph.node_id("draft.review")
-  let assert Ok(review_codec) =
+  let review_codec =
     codec.string_enum([#("revise", Revise), #("accept", Accept)])
   let generate_operation =
     graph.operation(

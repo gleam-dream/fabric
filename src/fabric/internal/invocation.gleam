@@ -1,10 +1,7 @@
 //// What one erased tool invocation reports, and the canonical model-visible
 //// encoding of failures.
 
-import gleam/int
 import gleam/json
-import gleam/string
-import json/blueprint/codec
 
 pub type Outcome {
   /// The handler succeeded; `content` is the encoded output.
@@ -34,14 +31,4 @@ pub fn error_detail_content(kind: String, detail: String) -> String {
       #("detail", json.string(detail)),
     ]),
   )
-}
-
-pub fn describe_encode_error(error: codec.EncodeError) -> String {
-  case error {
-    codec.EncodeAtField(field, inner) ->
-      field <> ": " <> describe_encode_error(inner)
-    codec.EncodeAtIndex(index, inner) ->
-      int.to_string(index) <> ": " <> describe_encode_error(inner)
-    codec.CannotEncode(reason) -> string.inspect(reason)
-  }
 }

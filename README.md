@@ -101,17 +101,17 @@ pub type TransferError {
 /// A tool's definition owns its name and its input and output codecs: the
 /// declaration the model sees and the decoder of its arguments.
 pub fn transfer_definition() -> tool.Definition(Transfer, Receipt) {
-  let assert Ok(input) =
-    codec.record2(
-      codec.required("to", codec.string()),
-      codec.required("amount", codec.int()),
-      Transfer,
-      fn(transfer) { transfer.to },
-      fn(transfer) { transfer.amount },
-    )
-  let output =
-    codec.field("receipt", codec.string())
-    |> codec.imap(Receipt, fn(receipt) { receipt.id })
+  let input = {
+    use to <- codec.field("to", codec.string(), fn(t: Transfer) { t.to })
+    use amount <- codec.field("amount", codec.int(), fn(t: Transfer) {
+      t.amount
+    })
+    codec.success(Transfer(to:, amount:))
+  }
+  let output = {
+    use id <- codec.field("receipt", codec.string(), fn(r: Receipt) { r.id })
+    codec.success(Receipt(id:))
+  }
   tool.define("transfer_funds", "Transfer an amount.", input, output)
 }
 
@@ -281,10 +281,16 @@ pub fn front_desk(
     tool.define(
       "research",
       "Research a topic.",
-      codec.field("topic", codec.string())
-        |> codec.imap(Topic, fn(topic) { topic.name }),
-      codec.field("summary", codec.string())
-        |> codec.imap(Summary, fn(summary) { summary.text }),
+      {
+        use name <- codec.field("topic", codec.string(), fn(t: Topic) { t.name })
+        codec.success(Topic(name:))
+      },
+      {
+        use text <- codec.field("summary", codec.string(), fn(s: Summary) {
+          s.text
+        })
+        codec.success(Summary(text:))
+      },
     )
   agent.new("front-desk", model, [], desk_policy)
   |> agent.with_sub_agent(

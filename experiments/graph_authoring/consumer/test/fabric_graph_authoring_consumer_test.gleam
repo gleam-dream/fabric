@@ -28,8 +28,8 @@ pub fn exact_limit_stops_before_next_review_test() {
 }
 
 pub fn boolean_score_and_enum_use_the_same_control_contract_test() {
-  let assert Ok(score_codec) = codec.integer_between(0, 4)
-  let assert Ok(enum_codec) =
+  let score_codec = codec.integer_between(0, 4)
+  let enum_codec =
     codec.string_enum([
       #("accept", example.Accept),
       #("revise", example.Revise),
@@ -79,7 +79,7 @@ pub fn negative_decision_selects_revision_test() {
 }
 
 pub fn score_outside_the_rubric_never_reaches_a_route_test() {
-  let assert Ok(score_codec) = codec.integer_between(0, 4)
+  let score_codec = codec.integer_between(0, 4)
   let assert Ok(definition) =
     example.decision_graph(score_codec, fn(_, _) { Ok(5) }, fn(_) {
       example.Accept

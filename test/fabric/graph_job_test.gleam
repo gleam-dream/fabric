@@ -26,7 +26,7 @@ fn runtime(runs, read) {
 }
 
 fn runtime_with(runs, read, gate, accept) {
-  let assert Ok(output) = codec.integer_between(0, 100)
+  let output = codec.integer_between(0, 100)
   let observer =
     job.observe(
       run.Identity("external-job", 1),

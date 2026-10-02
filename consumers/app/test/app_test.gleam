@@ -311,19 +311,16 @@ pub fn an_interlibrary_loan_runs_as_one_tool_test() {
 pub fn observations_show_what_a_run_did_test() {
   let assert Ok(observation) = app.start_observation()
   let events = process.new_subject()
-  let assert Ok(started_id) = sinal.handler_id("app-started")
-  let assert Ok(started) =
-    sinal.observe(started_id, observation.run_started(), fn(_, meta) {
+  let started =
+    sinal.observe(observation.run_started(), fn(_, meta) {
       process.send(events, "started " <> meta.agent)
     })
-  let assert Ok(child_id) = sinal.handler_id("app-child")
-  let assert Ok(child) =
-    sinal.observe(child_id, observation.child_started(), fn(_, meta) {
+  let child =
+    sinal.observe(observation.child_started(), fn(_, meta) {
       process.send(events, "delegated " <> meta.action.tool)
     })
-  let assert Ok(finished_id) = sinal.handler_id("app-finished")
-  let assert Ok(finished) =
-    sinal.observe(finished_id, observation.run_finished(), fn(totals, meta) {
+  let finished =
+    sinal.observe(observation.run_finished(), fn(totals, meta) {
       process.send(
         events,
         "finished "

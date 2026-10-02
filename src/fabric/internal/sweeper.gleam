@@ -17,7 +17,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/result
-import sinal/forwarder
+import sinal
 
 pub opaque type Recovery {
   Recovery(key: record.Key, restore: fn(Store, String) -> Result(Nil, Nil))
@@ -134,9 +134,7 @@ fn start(
             // Contain synchronous handlers too; they cannot accumulate
             // an unbounded number of blocked emitters across scans.
             let _ =
-              bounded.call(1000, fn() {
-                forwarder.emit_routed(o.sweep(), summary, Nil)
-              })
+              bounded.call(1000, fn() { sinal.emit(o.sweep(), summary, Nil) })
             process.send(state.self, Finished(summary))
           })
         process.monitor(worker)

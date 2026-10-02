@@ -14,6 +14,7 @@ import fabric/run.{type RunId, ActionId}
 import fabric/store.{type Store}
 import fabric/support
 import fabric/support/apps
+import fabric/support/codecs
 import fabric/support/flaky
 import fabric/support/probe.{type Probe}
 import fabric/support/restart
@@ -431,7 +432,7 @@ pub fn recovery_refuses_a_tool_that_no_longer_accepts_pending_arguments_test() {
     tool.define(
       "transfer_funds",
       "Transfer with a memo.",
-      codec.field("memo", codec.string()),
+      codecs.one_field("memo", codec.string()),
       codec.string(),
     )
     |> tool.bind(fn(_, memo) { Ok(memo) }, fn(_: Nil) { tool.Explain("no") })

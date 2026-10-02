@@ -30,30 +30,40 @@ pub type TransferError {
 }
 
 pub fn city_codec() -> Codec(City) {
-  codec.field("city", codec.describe(codec.string(), "City to look up"))
-  |> codec.imap(City, fn(city) { city.name })
+  use name <- codec.field(
+    "city",
+    codec.describe(codec.string(), "City to look up"),
+    fn(city: City) { city.name },
+  )
+  codec.success(City(name))
 }
 
 pub fn forecast_codec() -> Codec(Forecast) {
-  codec.field("summary", codec.string())
-  |> codec.imap(Forecast, fn(forecast) { forecast.summary })
+  use summary <- codec.field("summary", codec.string(), fn(forecast: Forecast) {
+    forecast.summary
+  })
+  codec.success(Forecast(summary))
 }
 
 pub fn transfer_codec() -> Codec(Transfer) {
-  let assert Ok(transfer) =
-    codec.record2(
-      codec.required("to", codec.describe(codec.string(), "Recipient account")),
-      codec.required("amount", codec.describe(codec.int(), "Amount in cents")),
-      Transfer,
-      fn(t) { t.to },
-      fn(t) { t.amount },
-    )
-  transfer
+  use to <- codec.field(
+    "to",
+    codec.describe(codec.string(), "Recipient account"),
+    fn(t: Transfer) { t.to },
+  )
+  use amount <- codec.field(
+    "amount",
+    codec.describe(codec.int(), "Amount in cents"),
+    fn(t: Transfer) { t.amount },
+  )
+  codec.success(Transfer(to:, amount:))
 }
 
 pub fn receipt_codec() -> Codec(Receipt) {
-  codec.field("receipt", codec.string())
-  |> codec.imap(Receipt, fn(receipt) { receipt.id })
+  use id <- codec.field("receipt", codec.string(), fn(receipt: Receipt) {
+    receipt.id
+  })
+  codec.success(Receipt(id))
 }
 
 pub fn weather_definition() -> tool.Definition(City, Forecast) {

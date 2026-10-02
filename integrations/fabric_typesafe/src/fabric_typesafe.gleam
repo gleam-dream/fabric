@@ -7,10 +7,10 @@ import fabric_typesafe/internal/wire
 import fabric_typesafe/question
 import gleam/int
 import gleam/list
+import gleam/option.{None}
 import gleam/result
 import gleam/string
 import json/blueprint/codec
-import json/blueprint/json_text
 import json/blueprint/value.{type Value}
 
 pub type Request {
@@ -89,7 +89,7 @@ fn prepare(
     "classifier model must be nonempty",
   ))
   use state <- result.map(wire.content(request.state))
-  json_text.render_value(
+  value.to_string(
     value.Object([
       #("model", value.String(request.model)),
       #("state", state),
@@ -103,18 +103,18 @@ fn prepare(
 pub fn receipt_codec(
   questions: question.Batch(answer),
 ) -> codec.Codec(Receipt(answer)) {
-  codec.new(
-    fn(receipt: Receipt(answer)) {
+  codec.custom(
+    encode: fn(receipt: Receipt(answer)) {
       use reconstructed <- result.try(
         restore(questions, receipt.request_json, receipt.response_json)
-        |> result.map_error(encode_error),
+        |> result.map_error(codec.encode_failure),
       )
       use Nil <- result.map(
         wire.require(
           reconstructed == receipt,
           "native classifier receipt differs from its protocol evidence",
         )
-        |> result.map_error(encode_error),
+        |> result.map_error(codec.encode_failure),
       )
       value.Array([
         value.String("fabric.typesafe.receipt.v1"),
@@ -122,7 +122,7 @@ pub fn receipt_codec(
         value.String(receipt.response_json),
       ])
     },
-    fn(saved) {
+    decode: fn(saved) {
       case saved {
         value.Array([
           value.String("fabric.typesafe.receipt.v1"),
@@ -130,10 +130,19 @@ pub fn receipt_codec(
           value.String(response),
         ]) ->
           restore(questions, request, response)
-          |> result.map_error(decode_error)
-        _ -> Error(decode_error("invalid classifier receipt format"))
+          |> result.map_error(codec.decode_failure)
+        _ -> Error(codec.decode_failure("invalid classifier receipt format"))
       }
     },
+    schema: None,
+    placeholder: Receipt(
+      question.placeholder(questions),
+      "",
+      "",
+      Usage(0, 0),
+      "",
+      "",
+    ),
   )
 }
 
@@ -186,12 +195,4 @@ fn restore(
     request,
     response,
   )
-}
-
-fn encode_error(reason: String) -> codec.EncodeError {
-  codec.CannotEncode(codec.CustomEncodeReason(reason))
-}
-
-fn decode_error(reason: String) -> codec.DecodeError {
-  codec.CannotDecode(codec.CustomDecodeReason(reason))
 }

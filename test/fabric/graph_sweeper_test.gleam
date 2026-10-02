@@ -79,12 +79,8 @@ fn expire(runs, backend: store.LeasedBackend, id) {
 
 fn capture() {
   let events = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id("graph-sweep-" <> int.to_string(int.random(1_000_000_000)))
-  let assert Ok(attachment) =
-    sinal.observe(id, o.sweep(), fn(summary, _) {
-      process.send(events, summary)
-    })
+  let attachment =
+    sinal.observe(o.sweep(), fn(summary, _) { process.send(events, summary) })
   #(events, attachment)
 }
 

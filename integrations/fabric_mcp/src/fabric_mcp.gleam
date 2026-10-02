@@ -3,21 +3,22 @@
 import fabric/graph/operation
 import fabric/run
 import fabric_mcp/client
+import gleam/dynamic
+import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import json/blueprint/codec
-import json/blueprint/document
-import json/blueprint/runtime
+import json/blueprint/contract.{type Contract}
 import json/blueprint/value.{type Value}
 
 pub opaque type Tool {
   Tool(
     server: String,
     name: String,
-    input: runtime.RuntimeContract,
-    output: Option(runtime.RuntimeContract),
+    input: Contract,
+    output: Option(Contract),
     input_schema: Value,
     output_schema: Option(Value),
   )
@@ -34,8 +35,8 @@ pub type Receipt(output) {
 /// Store a pinned descriptor in application configuration. Restoring it validates
 /// the schemas without contacting the server, including during graph recovery.
 pub fn tool_codec() -> codec.Codec(Tool) {
-  codec.new(
-    fn(tool: Tool) {
+  codec.custom(
+    encode: fn(tool: Tool) {
       Ok(
         value.Array([
           value.String("fabric.mcp.tool.v1"),
@@ -49,7 +50,7 @@ pub fn tool_codec() -> codec.Codec(Tool) {
         ]),
       )
     },
-    fn(saved) {
+    decode: fn(saved) {
       case saved {
         value.Array([
           value.String("fabric.mcp.tool.v1"),
@@ -62,11 +63,21 @@ pub fn tool_codec() -> codec.Codec(Tool) {
             value.Null -> None
             schema -> Some(schema)
           })
-          |> result.map_error(decode_error)
-        _ -> Error(decode_error("invalid MCP tool descriptor format"))
+          |> result.map_error(codec.decode_failure)
+        _ -> Error(codec.decode_failure("invalid MCP tool descriptor format"))
       }
     },
+    schema: None,
+    placeholder: placeholder_tool(),
   )
+}
+
+/// A descriptor value for `codec.custom`, which needs one of the type; no
+/// operation reads it.
+fn placeholder_tool() -> Tool {
+  // An empty object schema is always a valid contract.
+  let assert Ok(empty) = contract.from_schema(codec.ObjectSchema([]))
+  Tool("", "", empty, None, value.Object([]), None)
 }
 
 /// Read one remote tool's contracts. No tool is invoked by discovery.
@@ -193,7 +204,7 @@ fn read_tool(
   Ok(Tool(server, name, input_contract, output_contract, input, output))
 }
 
-fn schema(raw: Value) -> Result(runtime.RuntimeContract, String) {
+fn schema(raw: Value) -> Result(Contract, String) {
   use fields <- result.try(object(raw))
   let document = case field(fields, "$schema") {
     None ->
@@ -206,7 +217,7 @@ fn schema(raw: Value) -> Result(runtime.RuntimeContract, String) {
       ])
     Some(_) -> raw
   }
-  document.load(document) |> result.map_error(string.inspect)
+  contract.load(document) |> result.map_error(contract.describe_document_error)
 }
 
 /// Bind a descriptor to a versioned application operation. The connection comes
@@ -221,10 +232,10 @@ pub fn bind(
   convert: fn(ToolResult) -> Result(output, String),
 ) -> Result(operation.Operation(context, input, Receipt(output)), String) {
   use native <- result.try(
-    runtime.from_codec(input) |> result.map_error(string.inspect),
+    contract.from_codec(input) |> result.map_error(string.inspect),
   )
   use Nil <- result.try(require(
-    runtime.same_schema(native, tool.input),
+    contract.same_schema(native, tool.input),
     "native input codec differs from MCP input schema",
   ))
   Ok(
@@ -240,7 +251,7 @@ pub fn bind(
           }),
         )
         use _ <- result.try(
-          runtime.validate(tool.input, arguments)
+          contract.validate(tool.input, arguments)
           |> result.map_error(fn(_) {
             operation.DefiniteFailure("MCP input violates its retained schema")
           }),
@@ -303,10 +314,10 @@ fn call_failure(error: client.Error) -> operation.Failure {
 fn same_tool(left: Tool, right: Tool) -> Bool {
   left.server == right.server
   && left.name == right.name
-  && runtime.same_schema(left.input, right.input)
+  && contract.same_schema(left.input, right.input)
   && case left.output, right.output {
     None, None -> True
-    Some(left), Some(right) -> runtime.same_schema(left, right)
+    Some(left), Some(right) -> contract.same_schema(left, right)
     _, _ -> False
   }
 }
@@ -329,7 +340,7 @@ fn tool_result(tool: Tool, payload: Value) -> Result(ToolResult, String) {
     None, _ -> Ok(Nil)
     Some(_), None -> Error("MCP output schema requires structured content")
     Some(contract), Some(value) ->
-      runtime.validate(contract, value)
+      contract.validate(contract, value)
       |> result.map(fn(_) { Nil })
       |> result.map_error(fn(_) {
         "MCP structured result violates its output schema"
@@ -372,18 +383,18 @@ pub fn receipt_codec(
   output: codec.Codec(output),
   convert: fn(ToolResult) -> Result(output, String),
 ) -> codec.Codec(Receipt(output)) {
-  codec.new(
-    fn(receipt: Receipt(output)) {
+  codec.custom(
+    encode: fn(receipt: Receipt(output)) {
       use Nil <- result.try(
         require(
           receipt.server == tool.server && receipt.tool == tool.name,
           "MCP receipt identity mismatch",
         )
-        |> result.map_error(encode_error),
+        |> result.map_error(codec.encode_failure),
       )
       use restored <- result.try(
         restore_result(tool, receipt.raw_response, output, convert)
-        |> result.map_error(encode_error),
+        |> result.map_error(codec.encode_failure),
       )
       use actual <- result.try(codec.encode(output, receipt.value))
       use expected <- result.try(codec.encode(output, restored))
@@ -392,7 +403,7 @@ pub fn receipt_codec(
           actual == expected,
           "MCP native value differs from its original result",
         )
-        |> result.map_error(encode_error),
+        |> result.map_error(codec.encode_failure),
       )
       Ok(
         value.Array([
@@ -408,7 +419,7 @@ pub fn receipt_codec(
         ]),
       )
     },
-    fn(saved) {
+    decode: fn(saved) {
       case saved {
         value.Array([
           value.String("fabric.mcp.receipt.v1"),
@@ -423,25 +434,39 @@ pub fn receipt_codec(
               value.Null -> None
               other -> Some(other)
             })
-            |> result.map_error(decode_error),
+            |> result.map_error(codec.decode_failure),
           )
           use Nil <- result.try(
             require(
               same_tool(tool, saved_tool),
               "MCP receipt contract differs from deployed binding",
             )
-            |> result.map_error(decode_error),
+            |> result.map_error(codec.decode_failure),
           )
           use native <- result.map(
             restore_result(tool, raw, output, convert)
-            |> result.map_error(decode_error),
+            |> result.map_error(codec.decode_failure),
           )
           Receipt(server, name, native, raw)
         }
-        _ -> Error(decode_error("invalid MCP receipt format"))
+        _ -> Error(codec.decode_failure("invalid MCP receipt format"))
       }
     },
+    schema: None,
+    placeholder: Receipt("", "", placeholder(output), ""),
   )
+}
+
+/// A value of `output`'s type for `codec.custom`, which needs one; no
+/// operation reads it. A codec's decoder fails with its placeholder, so
+/// dropping the errors exposes it.
+fn placeholder(output: codec.Codec(output)) -> output {
+  let assert Ok(value) =
+    decode.run(
+      dynamic.nil(),
+      codec.decoder(output) |> decode.map_errors(fn(_) { [] }),
+    )
+  value
 }
 
 fn restore_result(
@@ -507,12 +532,4 @@ fn require(condition: Bool, reason: String) -> Result(Nil, String) {
     True -> Ok(Nil)
     False -> Error(reason)
   }
-}
-
-fn encode_error(reason: String) -> codec.EncodeError {
-  codec.CannotEncode(codec.CustomEncodeReason(reason))
-}
-
-fn decode_error(reason: String) -> codec.DecodeError {
-  codec.CannotDecode(codec.CustomDecodeReason(reason))
 }

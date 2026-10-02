@@ -10,6 +10,7 @@ import gleam/result
 import gleam/string
 import http_gun
 import json/blueprint/codec
+import json/blueprint/value
 import llm_wire/config
 import llm_wire/session
 import llm_wire/types
@@ -118,114 +119,191 @@ fn describe(error: types.WireError) -> String {
 /// A versioned durable receipt, independent of the provider's output schema.
 /// Native answers must agree with the original JSON. Restoration decodes that
 /// JSON with the deployed output codec; it never contacts the provider.
+///
+/// A receipt is written as the `fabric.graph.llm.v2` object
+/// `{"format", "model", "outcome", "usage"}`. A `fabric.graph.llm.v1`
+/// receipt, the nested array an earlier release wrote, still decodes.
 pub fn receipt_codec(
   output: codec.Codec(output),
 ) -> codec.Codec(Receipt(output)) {
   // Compose the envelope inside the callback. Capturing the nested combinators
   // here amplifies their closure environments when OTP copies a graph's work
   // into its owned tasks. Only the application's output codec crosses that seam.
-  codec.new(
-    fn(receipt) { codec.encode(receipt_fields(output), receipt) },
-    fn(saved) { codec.decode(receipt_fields(output), saved) },
+  codec.custom(
+    encode: fn(receipt) { codec.encode(receipt_fields(output), receipt) },
+    decode: fn(saved) {
+      case saved {
+        value.Array(_) -> codec.decode(legacy_receipt_fields(output), saved)
+        _ -> codec.decode(receipt_fields(output), saved)
+      }
+    },
+    schema: None,
+    placeholder: Receipt("", Refusal(""), None),
   )
 }
 
 fn receipt_fields(output: codec.Codec(output)) -> codec.Codec(Receipt(output)) {
-  let fields =
-    codec.pair(
-      codec.string(),
-      codec.pair(
-        codec.string(),
-        codec.pair(outcome_codec(output), usage_codec()),
-      ),
+  {
+    use Nil <- codec.field(
+      "format",
+      codec.string_enum([#("fabric.graph.llm.v2", Nil)]),
+      fn(_: Receipt(output)) { Nil },
     )
-  codec.try_imap(
-    fields,
-    fn(saved) {
-      let #(format, #(model, #(outcome, usage))) = saved
-      use Nil <- result.try(case format {
-        "fabric.graph.llm.v1" -> Ok(Nil)
-        _ -> Error(decode_error("unsupported LLM receipt format"))
-      })
-      let receipt = Receipt(model, outcome, usage)
-      use Nil <- result.map(
-        check_receipt(receipt) |> result.map_error(decode_error),
-      )
-      receipt
-    },
-    fn(receipt) {
-      use Nil <- result.map(
-        check_receipt(receipt) |> result.map_error(encode_error),
-      )
-      #(
-        "fabric.graph.llm.v1",
-        #(receipt.model, #(receipt.outcome, receipt.usage)),
-      )
-    },
+    use model <- codec.field("model", codec.string(), fn(r: Receipt(output)) {
+      r.model
+    })
+    use outcome <- codec.field(
+      "outcome",
+      outcome_codec(output),
+      fn(r: Receipt(output)) { r.outcome },
+    )
+    use usage <- codec.field(
+      "usage",
+      codec.nullable(usage_codec()),
+      fn(r: Receipt(output)) { r.usage },
+    )
+    codec.success(Receipt(model:, outcome:, usage:))
+  }
+  |> codec.try_map(
+    decode: checked_receipt,
+    encode: checked_receipt,
+    placeholder: Receipt("", Refusal(""), None),
   )
+}
+
+fn checked_receipt(
+  receipt: Receipt(output),
+) -> Result(Receipt(output), String) {
+  check_receipt(receipt) |> result.replace(receipt)
 }
 
 fn outcome_codec(output: codec.Codec(output)) -> codec.Codec(Outcome(output)) {
-  codec.try_imap(
-    codec.pair(codec.string(), codec.string()),
-    fn(saved) {
-      case saved {
-        #("answer", raw) ->
-          codec.decode_json(output, raw)
-          |> result.map(fn(value) { Answer(value, raw) })
-          |> result.map_error(fn(error) {
-            decode_error(codec.render_json_decode_error(error))
-          })
-        #("refusal", reason) -> Ok(Refusal(reason))
-        #("output_limited", partial) -> Ok(OutputLimited(partial))
-        #(tag, _) -> Error(codec.CannotDecode(codec.DecodeUnknownTag(tag)))
-      }
-    },
-    fn(outcome) {
+  codec.union({
+    use answer <- codec.variant("answer", answer_codec(output), fn(answer) {
+      answer
+    })
+    use refusal <- codec.variant("refusal", codec.string(), Refusal)
+    use limited <- codec.variant(
+      "output_limited",
+      codec.string(),
+      OutputLimited,
+    )
+    codec.match(fn(outcome) {
       case outcome {
-        Answer(value, raw) -> {
-          use encoded <- result.try(codec.encode(output, value))
-          use restored <- result.try(
-            codec.decode_json(output, raw)
-            |> result.map_error(fn(error) {
-              encode_error(codec.render_json_decode_error(error))
-            }),
-          )
-          use restored <- result.try(codec.encode(output, restored))
-          case encoded == restored {
-            True -> Ok(#("answer", raw))
-            False ->
-              Error(encode_error("answer differs from original output JSON"))
-          }
-        }
-        Refusal(reason) -> Ok(#("refusal", reason))
-        OutputLimited(partial) -> Ok(#("output_limited", partial))
+        Answer(..) -> answer(outcome)
+        Refusal(reason) -> refusal(reason)
+        OutputLimited(partial) -> limited(partial)
+      }
+    })
+  })
+}
+
+/// An `Answer` as its original JSON text, checked against the output codec
+/// in both directions.
+fn answer_codec(output: codec.Codec(output)) -> codec.Codec(Outcome(output)) {
+  codec.try_map(
+    codec.string(),
+    decode: fn(raw) { decode_answer(output, raw) },
+    encode: fn(outcome) {
+      case outcome {
+        Answer(value, raw) -> encode_answer(output, value, raw)
+        Refusal(_) | OutputLimited(_) -> Error("not an answer")
       }
     },
+    placeholder: Refusal(""),
   )
 }
 
-fn usage_codec() -> codec.Codec(Option(types.Usage)) {
+fn decode_answer(
+  output: codec.Codec(output),
+  raw: String,
+) -> Result(Outcome(output), String) {
+  codec.decode_json(output, raw)
+  |> result.map(fn(value) { Answer(value, raw) })
+  |> result.map_error(codec.describe_decode_error)
+}
+
+/// The original JSON, provided the native value encodes as that JSON does.
+fn encode_answer(
+  output: codec.Codec(output),
+  value: output,
+  raw: String,
+) -> Result(String, String) {
+  use encoded <- result.try(
+    codec.encode(output, value) |> result.map_error(codec.describe_encode_error),
+  )
+  use restored <- result.try(
+    codec.decode_json(output, raw)
+    |> result.map_error(codec.describe_decode_error),
+  )
+  use restored <- result.try(
+    codec.encode(output, restored)
+    |> result.map_error(codec.describe_encode_error),
+  )
+  case encoded == restored {
+    True -> Ok(raw)
+    False -> Error("answer differs from original output JSON")
+  }
+}
+
+fn usage_codec() -> codec.Codec(types.Usage) {
+  use input_tokens <- codec.field(
+    "input_tokens",
+    codec.int(),
+    fn(usage: types.Usage) { usage.input_tokens },
+  )
+  use output_tokens <- codec.field(
+    "output_tokens",
+    codec.int(),
+    fn(usage: types.Usage) { usage.output_tokens },
+  )
+  use total_tokens <- codec.field(
+    "total_tokens",
+    codec.int(),
+    fn(usage: types.Usage) { usage.total_tokens },
+  )
+  codec.success(types.Usage(input_tokens, output_tokens, total_tokens))
+}
+
+/// The `fabric.graph.llm.v1` receipt, read only:
+/// `[format, [model, [[tag, text], usage]]]` with `usage` either `null` or
+/// `[input, [output, total]]`.
+fn legacy_receipt_fields(
+  output: codec.Codec(output),
+) -> codec.Codec(Receipt(output)) {
   let counts = codec.pair(codec.int(), codec.pair(codec.int(), codec.int()))
-  codec.imap(
-    codec.nullable(counts),
-    fn(usage) {
-      case usage {
-        codec.Null -> None
-        codec.NonNull(#(input, #(output, total))) ->
-          Some(types.Usage(input, output, total))
-      }
+  codec.pair(
+    codec.string(),
+    codec.pair(
+      codec.string(),
+      codec.pair(
+        codec.pair(codec.string(), codec.string()),
+        codec.nullable(counts),
+      ),
+    ),
+  )
+  |> codec.try_map(
+    decode: fn(saved) {
+      let #(format, #(model, #(#(tag, text), usage))) = saved
+      use Nil <- result.try(case format {
+        "fabric.graph.llm.v1" -> Ok(Nil)
+        _ -> Error("unsupported LLM receipt format")
+      })
+      use outcome <- result.try(case tag {
+        "answer" -> decode_answer(output, text)
+        "refusal" -> Ok(Refusal(text))
+        "output_limited" -> Ok(OutputLimited(text))
+        _ -> Error("unknown LLM receipt outcome")
+      })
+      let usage =
+        option.map(usage, fn(counts) {
+          let #(input, #(generated, total)) = counts
+          types.Usage(input, generated, total)
+        })
+      checked_receipt(Receipt(model, outcome, usage))
     },
-    fn(usage) {
-      case usage {
-        None -> codec.Null
-        Some(usage) ->
-          codec.NonNull(#(
-            usage.input_tokens,
-            #(usage.output_tokens, usage.total_tokens),
-          ))
-      }
-    },
+    encode: fn(_) { Error("fabric.graph.llm.v1 receipts are read only") },
+    placeholder: Receipt("", Refusal(""), None),
   )
 }
 
@@ -244,12 +322,4 @@ fn check_receipt(receipt: Receipt(output)) -> Result(Nil, String) {
     -> Error("negative provider usage")
     Some(_) | None -> Ok(Nil)
   }
-}
-
-fn decode_error(reason: String) -> codec.DecodeError {
-  codec.CannotDecode(codec.CustomDecodeReason(reason))
-}
-
-fn encode_error(reason: String) -> codec.EncodeError {
-  codec.CannotEncode(codec.CustomEncodeReason(reason))
 }

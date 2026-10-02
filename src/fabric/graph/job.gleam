@@ -115,7 +115,7 @@ pub fn reader(
   fn(context, encoded) {
     use receipt <- result.try(
       codec.decode_json(observer.receipt, encoded)
-      |> result.map_error(codec.render_json_decode_error),
+      |> result.map_error(codec.describe_decode_error),
     )
     use progress <- result.try(observer.read(context, receipt))
     case progress {

@@ -17,7 +17,7 @@ import fabric/support/restart
 import fabric/support/scripted
 import fabric/testing
 import fabric/tool
-import gleam/dynamic
+import gleam/dynamic.{type Dynamic}
 import gleam/erlang/atom
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
@@ -34,10 +34,8 @@ import sinal/forwarder
 /// Attaches a capture handler to every Fabric event; each event arrives at
 /// `subject` as one line.
 fn capture(subject: Subject(String)) -> List(sinal.Attachment) {
-  let suffix = int.to_string(int.random(1_000_000_000))
-  let attach = fn(name) { #(subject, suffix, name) }
   [
-    attach_line(attach("started"), o.run_started(), fn(_, m: o.RunStarted) {
+    attach_line(subject, o.run_started(), fn(_, m: o.RunStarted) {
       "run_started "
       <> m.run
       <> " "
@@ -45,22 +43,14 @@ fn capture(subject: Subject(String)) -> List(sinal.Attachment) {
       <> " parent="
       <> option_text(m.parent)
     }),
+    attach_line(subject, o.run_recovered(), fn(_, m: o.RunRecovered) {
+      "run_recovered " <> m.run <> " " <> int.to_string(m.incarnation)
+    }),
+    attach_line(subject, o.run_handed_off(), fn(_, m: o.RunHandedOff) {
+      "run_handed_off " <> m.run <> " " <> int.to_string(m.incarnation)
+    }),
     attach_line(
-      attach("recovered"),
-      o.run_recovered(),
-      fn(_, m: o.RunRecovered) {
-        "run_recovered " <> m.run <> " " <> int.to_string(m.incarnation)
-      },
-    ),
-    attach_line(
-      attach("handed-off"),
-      o.run_handed_off(),
-      fn(_, m: o.RunHandedOff) {
-        "run_handed_off " <> m.run <> " " <> int.to_string(m.incarnation)
-      },
-    ),
-    attach_line(
-      attach("model"),
+      subject,
       o.model_turn(),
       fn(t: option.Option(model.Usage), m: o.ModelTurn) {
         "model_turn "
@@ -76,95 +66,91 @@ fn capture(subject: Subject(String)) -> List(sinal.Attachment) {
         }
       },
     ),
-    attach_line(
-      attach("requested"),
-      o.approval_requested(),
-      fn(_, m: o.ApprovalRequested) {
-        "approval_requested "
-        <> action_text(m.action)
-        <> " "
-        <> m.requirement
-        <> " rev="
-        <> int.to_string(m.revision)
-      },
-    ),
-    attach_line(
-      attach("answered"),
-      o.approval_answered(),
-      fn(_, m: o.ApprovalAnswered) {
-        "approval_answered "
-        <> action_text(m.action)
-        <> " "
-        <> string.inspect(m.answer)
-      },
-    ),
-    attach_line(
-      attach("dispatched"),
-      o.tool_dispatched(),
-      fn(_, m: o.ToolDispatched) { "tool_dispatched " <> action_text(m.action) },
-    ),
-    attach_line(attach("settled"), o.tool_settled(), fn(_, m: o.ToolSettled) {
+    attach_line(subject, o.approval_requested(), fn(_, m: o.ApprovalRequested) {
+      "approval_requested "
+      <> action_text(m.action)
+      <> " "
+      <> m.requirement
+      <> " rev="
+      <> int.to_string(m.revision)
+    }),
+    attach_line(subject, o.approval_answered(), fn(_, m: o.ApprovalAnswered) {
+      "approval_answered "
+      <> action_text(m.action)
+      <> " "
+      <> string.inspect(m.answer)
+    }),
+    attach_line(subject, o.tool_dispatched(), fn(_, m: o.ToolDispatched) {
+      "tool_dispatched " <> action_text(m.action)
+    }),
+    attach_line(subject, o.tool_settled(), fn(_, m: o.ToolSettled) {
       "tool_settled "
       <> action_text(m.action)
       <> " "
       <> string.inspect(m.disposition)
     }),
-    attach_line(
-      attach("child_started"),
-      o.child_started(),
-      fn(_, m: o.ChildStarted) {
-        "child_started " <> action_text(m.action) <> " " <> m.child
-      },
-    ),
-    attach_line(
-      attach("child_settled"),
-      o.child_settled(),
-      fn(_, m: o.ChildSettled) {
-        "child_settled "
-        <> action_text(m.action)
-        <> " "
-        <> m.child
-        <> " "
-        <> string.inspect(m.disposition)
-      },
-    ),
-    attach_line(
-      attach("cancelled"),
-      o.run_cancelled(),
-      fn(_, m: o.RunCancelled) { "run_cancelled " <> m.run },
-    ),
-    attach_line(
-      attach("finished"),
-      o.run_finished(),
-      fn(t: o.RunTotals, m: o.RunFinished) {
-        "run_finished "
-        <> m.run
-        <> " "
-        <> string.inspect(m.outcome)
-        <> " turns="
-        <> int.to_string(t.turns)
-        <> " tokens="
-        <> int.to_string(t.input_tokens + t.output_tokens)
-        <> " unreported="
-        <> int.to_string(t.unreported_replies)
-      },
-    ),
+    attach_line(subject, o.child_started(), fn(_, m: o.ChildStarted) {
+      "child_started " <> action_text(m.action) <> " " <> m.child
+    }),
+    attach_line(subject, o.child_settled(), fn(_, m: o.ChildSettled) {
+      "child_settled "
+      <> action_text(m.action)
+      <> " "
+      <> m.child
+      <> " "
+      <> string.inspect(m.disposition)
+    }),
+    attach_line(subject, o.run_cancelled(), fn(_, m: o.RunCancelled) {
+      "run_cancelled " <> m.run
+    }),
+    attach_line(subject, o.run_finished(), fn(t: o.RunTotals, m: o.RunFinished) {
+      "run_finished "
+      <> m.run
+      <> " "
+      <> string.inspect(m.outcome)
+      <> " turns="
+      <> int.to_string(t.turns)
+      <> " tokens="
+      <> int.to_string(t.input_tokens + t.output_tokens)
+      <> " unreported="
+      <> int.to_string(t.unreported_replies)
+    }),
   ]
 }
 
 fn attach_line(
-  at: #(Subject(String), String, String),
+  subject: Subject(String),
   event: sinal.Event(m, d),
   line: fn(m, d) -> String,
 ) -> sinal.Attachment {
-  let #(subject, suffix, name) = at
-  let assert Ok(id) = sinal.handler_id("fabric-capture-" <> name <> suffix)
-  let assert Ok(attachment) =
-    sinal.observe(id, event, fn(measurements, metadata) {
-      process.send(subject, line(measurements, metadata))
-    })
-  attachment
+  sinal.observe(event, fn(measurements, metadata) {
+    process.send(subject, line(measurements, metadata))
+  })
 }
+
+/// The native measurement map a plain `:telemetry` handler receives when
+/// `event` is emitted.
+fn native_measurements(
+  event: sinal.Event(m, d),
+  measurements: m,
+  metadata: d,
+) -> Dynamic {
+  let name = list.map(sinal.name(event), atom.create)
+  let id = native_attach(name)
+  sinal.emit(event, measurements, metadata)
+  let assert Ok(raw) = native_received(name, 1000)
+  native_detach(id)
+  raw
+}
+
+@external(erlang, "fabric_test_ffi", "native_attach")
+fn native_attach(name: List(atom.Atom)) -> Dynamic
+
+@external(erlang, "fabric_test_ffi", "native_received")
+fn native_received(name: List(atom.Atom), timeout: Int) -> Result(Dynamic, Nil)
+
+@external(erlang, "fabric_test_ffi", "native_detach")
+fn native_detach(id: Dynamic) -> Nil
 
 fn release(attachments: List(sinal.Attachment)) -> Nil {
   list.each(attachments, fn(attachment) {
@@ -315,8 +301,8 @@ pub fn unreported_usage_is_observed_as_unknown_not_zero_test() {
   ])
   // An unreported attempt carries no token keys at all, so a plain
   // `:telemetry` handler cannot mistake it for a reported zero.
-  let assert Ok(#(_, raw, _)) =
-    sinal.encode_event(o.model_turn(), None, o.ModelTurn("r", 1, o.Retry))
+  let raw =
+    native_measurements(o.model_turn(), None, o.ModelTurn("r", 1, o.Retry))
   raw |> should.equal(dynamic.properties([]))
 }
 
@@ -326,19 +312,16 @@ pub fn unreported_usage_is_observed_as_unknown_not_zero_test() {
 pub fn a_failing_handler_does_not_affect_the_run_test() {
   let events = process.new_subject()
   let attachments = capture(events)
-  let assert Ok(failing_id) = sinal.handler_id("fabric-failing-handler")
   let assert Ok(failing) =
     sinal.attach(
-      failing_id,
-      o.model_turn(),
-      fn(_, _, _) { Error("the handler failed") },
-      fn(_, _) { Nil },
+      sinal.handler(
+        [o.model_turn()],
+        fn(_, _, _) { Error("the handler failed") },
+        fn(_, _) { Nil },
+      ),
     )
-  let assert Ok(crashing_id) = sinal.handler_id("fabric-crashing-handler")
-  let assert Ok(crashing) =
-    sinal.observe(crashing_id, o.tool_settled(), fn(_, _) {
-      panic as "the handler crashed"
-    })
+  let crashing =
+    sinal.observe(o.tool_settled(), fn(_, _) { panic as "the handler crashed" })
   let agent =
     agent.new(
       "agent",
@@ -391,8 +374,12 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
     tool.define(
       "research",
       "Research a topic.",
-      codec.field("topic", codec.string())
-        |> codec.imap(Topic, fn(t) { t.topic }),
+      {
+        use topic <- codec.field("topic", codec.string(), fn(t: Topic) {
+          t.topic
+        })
+        codec.success(Topic(topic))
+      },
       codec.string(),
     )
   let assert Ok(call) = testing.call(research, "r", Topic("gleam"))
@@ -504,14 +491,13 @@ fn of_run(lines: List(String), id: String, root: String) -> List(String) {
 
 /// A `model_turn` handler that announces the run, the process it runs in,
 /// and a release subject, then blocks until the test releases it.
-fn blocking_model_turn(
-  name: String,
-) -> #(Subject(#(String, Pid, Subject(Nil))), sinal.Attachment) {
+fn blocking_model_turn() -> #(
+  Subject(#(String, Pid, Subject(Nil))),
+  sinal.Attachment,
+) {
   let entered = process.new_subject()
-  let suffix = int.to_string(int.random(1_000_000_000))
-  let assert Ok(id) = sinal.handler_id("fabric-blocking-" <> name <> suffix)
-  let assert Ok(attachment) =
-    sinal.observe(id, o.model_turn(), fn(_, m: o.ModelTurn) {
+  let attachment =
+    sinal.observe(o.model_turn(), fn(_, m: o.ModelTurn) {
       let gate = process.new_subject()
       process.send(entered, #(m.run, process.self(), gate))
       process.receive_forever(gate)
@@ -553,12 +539,13 @@ fn weather_agent() -> agent.Agent(Nil) {
 /// first model turn is still blocked, and that handler runs in the
 /// forwarder's process.
 pub fn a_routed_handler_runs_in_the_forwarder_and_does_not_stall_the_run_test() {
-  let assert Ok(fwd) =
-    forwarder.new(process.new_name("fabric-observation-forwarder"), 64)
+  let fwd =
+    forwarder.new(process.new_name("fabric-observation-forwarder"))
+    |> forwarder.with_capacity(64)
   let assert Ok(started) = forwarder.supervised(fwd).start()
-  let prefix = [atom.create("fabric")]
+  let prefix = ["fabric"]
   forwarder.route(prefix, fwd)
-  let #(entered, attachment) = blocking_model_turn("routed")
+  let #(entered, attachment) = blocking_model_turn()
 
   let assert Ok(run) =
     fabric.start(support.store(), weather_agent(), Nil, "weather")
@@ -583,7 +570,7 @@ pub fn a_routed_handler_runs_in_the_forwarder_and_does_not_stall_the_run_test() 
 /// the commit: a model turn's handler runs in the run's runner, which waits
 /// for it.
 pub fn an_unrouted_handler_runs_in_the_runner_test() {
-  let #(entered, attachment) = blocking_model_turn("unrouted")
+  let #(entered, attachment) = blocking_model_turn()
   let memory = support.store()
   let assert Ok(run) = fabric.start(memory, weather_agent(), Nil, "weather")
   let #(handler, gate) = entered_by(entered, support.text(fabric.id(run)))
@@ -614,12 +601,8 @@ pub fn an_unrouted_handler_runs_in_the_runner_test() {
 pub fn a_handler_commanding_its_own_run_is_refused_test() {
   let memory = support.store()
   let results = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id(
-      "fabric-self-command-" <> int.to_string(int.random(1_000_000_000)),
-    )
-  let assert Ok(attachment) =
-    sinal.observe(id, o.tool_dispatched(), fn(_, m: o.ToolDispatched) {
+  let attachment =
+    sinal.observe(o.tool_dispatched(), fn(_, m: o.ToolDispatched) {
       let assert Ok(own) =
         fabric.recover(memory, weather_agent(), Nil, support.id(m.action.run))
       process.send(
@@ -649,12 +632,8 @@ pub fn a_handler_commanding_its_own_run_is_refused_test() {
 pub fn a_handler_cancelling_its_own_run_commits_the_cancellation_test() {
   let memory = support.store()
   let results = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id(
-      "fabric-self-cancel-" <> int.to_string(int.random(1_000_000_000)),
-    )
-  let assert Ok(attachment) =
-    sinal.observe(id, o.tool_dispatched(), fn(_, m: o.ToolDispatched) {
+  let attachment =
+    sinal.observe(o.tool_dispatched(), fn(_, m: o.ToolDispatched) {
       process.send(
         results,
         fabric.cancel_stored(memory, support.id(m.action.run)),
@@ -675,12 +654,8 @@ pub fn a_handler_cancelling_its_own_run_commits_the_cancellation_test() {
 pub fn a_command_returns_before_its_handlers_run_test() {
   let probe = probe.new()
   let entered = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id(
-      "fabric-blocking-cancel-" <> int.to_string(int.random(1_000_000_000)),
-    )
-  let assert Ok(attachment) =
-    sinal.observe(id, o.run_cancelled(), fn(_, m: o.RunCancelled) {
+  let attachment =
+    sinal.observe(o.run_cancelled(), fn(_, m: o.RunCancelled) {
       let gate = process.new_subject()
       process.send(entered, #(m.run, gate))
       process.receive_forever(gate)
@@ -710,7 +685,7 @@ pub fn a_command_returns_before_its_handlers_run_test() {
 /// command (other than a cancellation) is refused as busy and never applied
 /// later.
 pub fn a_command_to_a_runner_held_by_a_handler_is_refused_test() {
-  let #(entered, attachment) = blocking_model_turn("busy")
+  let #(entered, attachment) = blocking_model_turn()
   let agent =
     weather_agent_spec()
     |> agent.with_limits(

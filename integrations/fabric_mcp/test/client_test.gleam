@@ -31,7 +31,10 @@ fn read(connection: client.Client, name: String) -> Int {
     ])
   let assert Ok(answer) =
     codec.decode(
-      codec.field("value", codec.int()),
+      {
+        use value <- codec.field("value", codec.int(), fn(value) { value })
+        codec.success(value)
+      },
       field(response.result, "structuredContent"),
     )
   answer
@@ -277,7 +280,7 @@ fn temp_dir() -> String
 fn remove_dir(path: String) -> Nil
 
 fn integer(n: Int) -> value.Value {
-  let assert Ok(value) = codec.encode_int_value(n)
+  let assert Ok(value) = codec.encode(codec.int(), n)
   value
 }
 

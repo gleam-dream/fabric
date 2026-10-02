@@ -11,6 +11,7 @@ import fabric/policy
 import fabric/run.{Requirement}
 import fabric/store
 import fabric/support
+import fabric/support/codecs
 import fabric/support/probe.{type Probe}
 import fabric/support/restart
 import fabric/support/scripted
@@ -294,7 +295,7 @@ pub fn a_child_run_drains_on_its_own_and_is_recovered_with_its_parent_test() {
     tool.define(
       "research",
       "Delegate research on a topic.",
-      codec.field("topic", codec.string()),
+      codecs.one_field("topic", codec.string()),
       codec.string(),
     )
   let researcher =
@@ -354,7 +355,7 @@ fn research() -> tool.Definition(String, String) {
   tool.define(
     "research",
     "Delegate research on a topic.",
-    codec.field("topic", codec.string()),
+    codecs.one_field("topic", codec.string()),
     codec.string(),
   )
 }
@@ -616,7 +617,7 @@ pub fn a_tool_body_starting_a_run_during_the_stop_does_not_hold_up_the_drain_tes
     tool.define(
       "starter",
       "Starts a run.",
-      codec.field("x", codec.string()),
+      codecs.one_field("x", codec.string()),
       codec.string(),
     )
     |> tool.bind(

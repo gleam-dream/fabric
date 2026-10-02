@@ -12,7 +12,6 @@ import fabric/support/apps
 import fabric/support/scripted
 import fabric/tool
 import gleam/erlang/process.{type Subject}
-import gleam/int
 import gleam/option.{None}
 import gleeunit/should
 import sinal
@@ -49,10 +48,8 @@ pub fn a_runner_started_by_a_command_works_while_its_handlers_run_test() {
   let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
 
   let seen = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id("command-path-" <> int.to_string(int.random(1_000_000)))
-  let assert Ok(attached) =
-    sinal.observe(id, o.approval_answered(), fn(_, answered) {
+  let attached =
+    sinal.observe(o.approval_answered(), fn(_, answered) {
       case answered.action.run == support.text(fabric.id(run)) {
         // Runs in the caller of `answer`, which owns `started`.
         True -> process.send(seen, process.receive(started, 2000))
@@ -86,10 +83,8 @@ pub fn a_command_with_no_runner_emits_its_events_in_the_caller_test() {
     fabric.start(support.store(), approval_agent(), Nil, "pay")
   let assert Ok(run.Suspended(_, _)) = fabric.await(run, 5000)
   let ran_in = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id("command-caller-" <> int.to_string(int.random(1_000_000)))
-  let assert Ok(attached) =
-    sinal.observe(id, o.run_cancelled(), fn(_, cancelled: o.RunCancelled) {
+  let attached =
+    sinal.observe(o.run_cancelled(), fn(_, cancelled: o.RunCancelled) {
       case cancelled.run == support.text(fabric.id(run)) {
         True -> process.send(ran_in, process.self())
         False -> Nil
@@ -133,12 +128,8 @@ pub fn a_handler_in_a_commands_caller_can_command_the_run_test() {
   let assert Ok(run) = fabric.start(memory, agent, Nil, "pay")
   let assert Ok(run.Suspended([pending], _)) = fabric.await(run, 5000)
   let outcome = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id(
-      "command-in-caller-" <> int.to_string(int.random(1_000_000)),
-    )
-  let assert Ok(attached) =
-    sinal.observe(id, o.approval_answered(), fn(_, answered) {
+  let attached =
+    sinal.observe(o.approval_answered(), fn(_, answered) {
       case answered.action.run == support.text(fabric.id(run)) {
         True ->
           process.send(outcome, fabric.cancel_stored(memory, fabric.id(run)))

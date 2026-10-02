@@ -1,9 +1,9 @@
 //// Emits Fabric's Sinal events for one committed transition, derived from
 //// the state before and after the commit (see `fabric/observation`). The
-//// runtime calls it after every successful commit. Events go through
-//// `forwarder.emit_routed`, so the application decides whether `[fabric]`
-//// handlers run in the committing process or in a forwarder; emit errors
-//// (a dropped event) are ignored, because observation never controls a run.
+//// runtime calls it after every successful commit. `sinal.emit` follows
+//// forwarder routes, so the application decides whether `[fabric]`
+//// handlers run in the committing process or in a forwarder; a dropped
+//// event is ignored, because observation never controls a run.
 
 import fabric/internal/controller.{type State}
 import fabric/internal/invocation
@@ -15,7 +15,6 @@ import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import sinal
-import sinal/forwarder
 
 pub fn committed(before: Option(State), after: State) -> Nil {
   started(before, after)
@@ -374,6 +373,5 @@ pub fn settlement_refused(
 }
 
 fn emit(event: sinal.Event(m, d), measurements: m, metadata: d) -> Nil {
-  let _ = forwarder.emit_routed(event, measurements, metadata)
-  Nil
+  sinal.emit(event, measurements, metadata)
 }

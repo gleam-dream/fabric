@@ -15,7 +15,6 @@ import fabric/support/restart
 import fabric/support/scripted
 import fabric/testing
 import gleam/erlang/process
-import gleam/int
 import gleam/list
 import gleeunit/should
 import sinal
@@ -65,12 +64,8 @@ fn stop(pid: process.Pid) {
 
 fn capture() {
   let events = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id("sweep-test-" <> int.to_string(int.random(1_000_000_000)))
-  let assert Ok(attachment) =
-    sinal.observe(id, o.sweep(), fn(summary, _) {
-      process.send(events, summary)
-    })
+  let attachment =
+    sinal.observe(o.sweep(), fn(summary, _) { process.send(events, summary) })
   #(events, attachment)
 }
 

@@ -1,21 +1,19 @@
 import gleam/float
 import gleam/list
+import gleam/order
 import gleam/result
 import gleam/string
 import json/blueprint/codec
-import json/blueprint/json_text
 import json/blueprint/number
-import json/blueprint/parser
-import json/blueprint/parser_limits
 import json/blueprint/value.{type Value}
 
 pub fn parse(raw: String) -> Result(Value, String) {
-  parser.parse_value_from_string(parser_limits.default(), raw)
+  value.parse(raw, value.default_limits())
   |> result.map_error(fn(_) { "invalid or unbounded classifier JSON" })
 }
 
 pub fn content(raw: Value) -> Result(Value, String) {
-  use value <- result.try(parse(json_text.render_value(raw)))
+  use value <- result.try(parse(value.to_string(raw)))
   case value {
     value.String(_) | value.Object(_) | value.Array(_) -> Ok(value)
     _ -> Error("classifier content must be text, an object or an array")
@@ -25,7 +23,7 @@ pub fn content(raw: Value) -> Result(Value, String) {
 pub fn object(raw: Value) -> Result(List(#(String, Value)), String) {
   case raw {
     value.Object(fields) ->
-      value.object(fields, value.RejectDuplicates)
+      value.object(fields)
       |> result.map(fn(_) { fields })
       |> result.map_error(fn(_) { "duplicate classifier object key" })
     _ -> Error("expected classifier object")
@@ -50,7 +48,7 @@ pub fn text(raw: Value) -> Result(String, String) {
 }
 
 pub fn integer(raw: Value) -> Result(Int, String) {
-  codec.decode_int_value(raw)
+  codec.decode(codec.int(), raw)
   |> result.map_error(fn(_) { "expected classifier integer" })
 }
 
@@ -72,11 +70,10 @@ pub fn between(
     |> result.map_error(fn(_) { "invalid numeric upper bound" }),
   )
   use Nil <- result.try(require(
-    number.compare(n, low) != number.LessThan
-      && number.compare(n, high) != number.GreaterThan,
+    number.compare(n, low) != order.Lt && number.compare(n, high) != order.Gt,
     "classifier number is outside its valid range",
   ))
-  let text = number.number_text(n)
+  let text = number.to_string(n)
   let native_text = case string.split(text, "e") {
     [coefficient, exponent] -> decimal(coefficient) <> "e" <> exponent
     _ -> decimal(text)
@@ -88,11 +85,7 @@ pub fn between(
     }),
   )
   use Nil <- result.map(require(
-    !{
-      minimum == 0
-      && projected == 0.0
-      && number.compare(n, low) == number.GreaterThan
-    },
+    !{ minimum == 0 && projected == 0.0 && number.compare(n, low) == order.Gt },
     "classifier number underflows native precision",
   ))
   projected

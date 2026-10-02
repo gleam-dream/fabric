@@ -5,6 +5,7 @@ import fabric/model.{
   type Message, type Model, type Reply, type ToolCall, FinalAnswer, ToolRequest,
   ToolResultMessage, Usage,
 }
+import fabric/support/codecs
 import fabric/support/probe.{type Probe}
 import fabric/tool
 import gleam/list
@@ -48,7 +49,7 @@ pub fn gated_tool(probe: Probe) -> tool.Tool(ctx) {
   tool.define(
     "slow",
     "Waits for the test.",
-    codec.field("x", codec.string()),
+    codecs.one_field("x", codec.string()),
     codec.string(),
   )
   |> tool.bind(
@@ -71,7 +72,7 @@ pub fn crashing_tool(probe: Probe) -> tool.Tool(ctx) {
   tool.define(
     "crash",
     "Crashes after its effect.",
-    codec.field("x", codec.string()),
+    codecs.one_field("x", codec.string()),
     codec.string(),
   )
   |> tool.bind(

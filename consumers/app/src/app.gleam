@@ -38,8 +38,8 @@ pub opaque type Observation {
   Observation(supervisor: Pid)
 }
 
-fn fabric_events() -> List(atom.Atom) {
-  [atom.create("fabric")]
+fn fabric_events() -> List(String) {
+  ["fabric"]
 }
 
 /// Application start: supervises a forwarder, then routes every `[fabric]`
@@ -47,8 +47,7 @@ fn fabric_events() -> List(atom.Atom) {
 /// forwarder's process; when it is full, events are dropped and counted
 /// rather than holding up a run.
 pub fn start_observation() -> Result(Observation, actor.StartError) {
-  let assert Ok(events) =
-    forwarder.new(process.new_name("app-fabric-observation"), 1024)
+  let events = forwarder.new(process.new_name("app-fabric-observation"))
   let started =
     static_supervisor.new(static_supervisor.OneForOne)
     |> static_supervisor.add(forwarder.supervised(events))
@@ -112,30 +111,38 @@ pub fn member_with_scan_gate(
 
 // --- codecs ---------------------------------------------------------------------
 
+/// An object with the one string property `name`, read as its text.
+fn text_field(name: String) -> Codec(String) {
+  use text <- codec.field(name, codec.string(), fn(text) { text })
+  codec.success(text)
+}
+
 fn title_codec() -> Codec(String) {
-  codec.field("title", codec.string())
+  text_field("title")
 }
 
 pub fn book_codec() -> Codec(Book) {
-  let assert Ok(book) =
-    codec.record2(
-      codec.required("isbn", codec.string()),
-      codec.required("title", codec.string()),
-      Book,
-      fn(book) { book.isbn },
-      fn(book) { book.title },
-    )
-  book
+  use isbn <- codec.field("isbn", codec.string(), fn(book: Book) { book.isbn })
+  use title <- codec.field("title", codec.string(), fn(book: Book) {
+    book.title
+  })
+  codec.success(Book(isbn:, title:))
 }
 
 fn reservation_codec() -> Codec(Reservation) {
-  codec.field("isbn", codec.string())
-  |> codec.imap(Reservation, fn(reservation) { reservation.isbn })
+  use isbn <- codec.field("isbn", codec.string(), fn(reservation: Reservation) {
+    reservation.isbn
+  })
+  codec.success(Reservation(isbn))
 }
 
 fn confirmation_codec() -> Codec(Confirmation) {
-  codec.field("confirmation", codec.string())
-  |> codec.imap(Confirmation, fn(confirmation) { confirmation.code })
+  use code <- codec.field(
+    "confirmation",
+    codec.string(),
+    fn(confirmation: Confirmation) { confirmation.code },
+  )
+  codec.success(Confirmation(code))
 }
 
 // --- tools --------------------------------------------------------------------
@@ -200,7 +207,7 @@ pub fn tools() -> List(tool.Tool(Member)) {
     tool.define(
       "scan_inventory",
       "Count the books on a shelf.",
-      codec.field("shelf", codec.string()),
+      text_field("shelf"),
       codec.int(),
     )
       |> tool.bind(scan_inventory, fn(_) { tool.Explain("scan failed") }),
@@ -332,13 +339,17 @@ pub type Order {
 }
 
 fn purchase_codec() -> Codec(Purchase) {
-  codec.field("title", codec.string())
-  |> codec.imap(Purchase, fn(purchase) { purchase.title })
+  use title <- codec.field("title", codec.string(), fn(purchase: Purchase) {
+    purchase.title
+  })
+  codec.success(Purchase(title))
 }
 
 fn order_codec() -> Codec(Order) {
-  codec.field("order", codec.string())
-  |> codec.imap(Order, fn(order) { order.summary })
+  use summary <- codec.field("order", codec.string(), fn(order: Order) {
+    order.summary
+  })
+  codec.success(Order(summary))
 }
 
 /// Delegating an acquisition starts the purchaser as a sub-agent.
@@ -368,7 +379,7 @@ pub fn order_definition() -> tool.Definition(Purchase, String) {
     "order_book",
     "Place a purchase order for a title.",
     purchase_codec(),
-    codec.field("po", codec.string()),
+    text_field("po"),
   )
 }
 
@@ -457,9 +468,13 @@ pub fn loan_tool() -> tool.Tool(Member) {
       tool.define(
         "interlibrary_loan",
         "Borrow a book from a partner library.",
-        codec.field("title", codec.string())
-          |> codec.imap(Loan, fn(loan) { loan.title }),
-        codec.field("delivery", codec.string()),
+        {
+          use title <- codec.field("title", codec.string(), fn(loan: Loan) {
+            loan.title
+          })
+          codec.success(Loan(title))
+        },
+        text_field("delivery"),
       ),
       loan_workflow(),
       execution.config(),

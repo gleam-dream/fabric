@@ -8,6 +8,7 @@ import fabric/policy
 import fabric/run
 import fabric/store
 import fabric/support
+import fabric/support/codecs
 import fabric/support/fake_provider
 import fabric/support/probe
 import fabric/support/restart
@@ -40,7 +41,10 @@ fn calculation(
   ledger: probe.Probe,
 ) -> tool.Tool(Nil) {
   let input =
-    codec.field("x", codec.describe(codec.int(), "Integer to calculate with"))
+    codecs.one_field(
+      "x",
+      codec.describe(codec.int(), "Integer to calculate with"),
+    )
     |> codec.describe("A calculation request")
   tool.define(name, "Calculate a number", input, codec.int())
   |> tool.bind(

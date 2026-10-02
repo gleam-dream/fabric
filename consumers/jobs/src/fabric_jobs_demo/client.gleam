@@ -36,53 +36,33 @@ pub type CancellationOutcome {
 }
 
 pub fn cancel_reply_codec() -> codec.Codec(CancelReply) {
-  let assert Ok(tagged) =
-    codec.tagged(
-      "requested",
-      codec.object(codec.empty()),
+  codec.union({
+    use requested <- codec.unit_variant("requested", StopRequested)
+    use completed <- codec.variant(
       "completed",
       codec.string(),
+      AlreadyCompleted,
     )
-  codec.imap(
-    tagged,
-    fn(value) {
-      case value {
-        codec.Left(Nil) -> StopRequested
-        codec.Right(digest) -> AlreadyCompleted(digest)
+    codec.match(fn(reply) {
+      case reply {
+        StopRequested -> requested
+        AlreadyCompleted(digest) -> completed(digest)
       }
-    },
-    fn(value) {
-      case value {
-        StopRequested -> codec.Left(Nil)
-        AlreadyCompleted(digest) -> codec.Right(digest)
-      }
-    },
-  )
+    })
+  })
 }
 
 pub fn cancellation_outcome_codec() -> codec.Codec(CancellationOutcome) {
-  let assert Ok(tagged) =
-    codec.tagged(
-      "stopped",
-      codec.object(codec.empty()),
-      "finished",
-      codec.string(),
-    )
-  codec.imap(
-    tagged,
-    fn(value) {
-      case value {
-        codec.Left(Nil) -> Stopped
-        codec.Right(digest) -> Finished(digest)
+  codec.union({
+    use stopped <- codec.unit_variant("stopped", Stopped)
+    use finished <- codec.variant("finished", codec.string(), Finished)
+    codec.match(fn(outcome) {
+      case outcome {
+        Stopped -> stopped
+        Finished(digest) -> finished(digest)
       }
-    },
-    fn(value) {
-      case value {
-        Stopped -> codec.Left(Nil)
-        Finished(digest) -> codec.Right(digest)
-      }
-    },
-  )
+    })
+  })
 }
 
 pub type Error {
@@ -91,28 +71,30 @@ pub type Error {
 }
 
 pub fn request_codec() -> codec.Codec(Request) {
-  codec.pair(codec.string(), codec.int())
-  |> codec.imap(fn(pair) { Request(pair.0, pair.1) }, fn(value) {
-    #(value.text, value.delay_ms)
+  use text <- codec.field("text", codec.string(), fn(request: Request) {
+    request.text
   })
+  use delay_ms <- codec.field("delay_ms", codec.int(), fn(request: Request) {
+    request.delay_ms
+  })
+  codec.success(Request(text:, delay_ms:))
 }
 
 pub fn receipt_codec() -> codec.Codec(Receipt) {
-  codec.field("id", codec.string())
-  |> codec.try_imap(
-    fn(id) {
-      case valid_id(id) {
-        True -> Ok(Receipt(id))
-        False ->
-          Error(
-            codec.CannotDecode(codec.CustomDecodeReason(
-              "expected a job identifier",
-            )),
-          )
-      }
-    },
-    fn(receipt) { Ok(receipt.id) },
-  )
+  let id =
+    codec.string()
+    |> codec.try_map(
+      decode: fn(id) {
+        case valid_id(id) {
+          True -> Ok(id)
+          False -> Error("expected a job identifier")
+        }
+      },
+      encode: Ok,
+      placeholder: "",
+    )
+  use id <- codec.field("id", id, fn(receipt: Receipt) { receipt.id })
+  codec.success(Receipt(id))
 }
 
 fn valid_id(id: String) -> Bool {
@@ -153,7 +135,7 @@ pub fn submit(
     202 ->
       codec.decode_json(receipt_codec(), body)
       |> result.map_error(fn(error) {
-        Uncertain(codec.render_json_decode_error(error))
+        Uncertain(codec.describe_decode_error(error))
       })
     400 | 409 -> Error(Rejected(status, body))
     _ ->

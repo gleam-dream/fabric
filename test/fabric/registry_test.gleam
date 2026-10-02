@@ -7,6 +7,7 @@ import fabric/policy
 import fabric/run
 import fabric/support
 import fabric/support/apps
+import fabric/support/codecs
 import fabric/support/scripted
 import fabric/testing
 import fabric/tool
@@ -15,6 +16,7 @@ import gleam/result
 import gleam/string
 import gleeunit/should
 import json/blueprint/codec
+import json/blueprint/value
 
 pub fn registry_rejects_duplicate_names_test() {
   registry.new([apps.weather_tool(), apps.weather_tool()])
@@ -31,7 +33,12 @@ pub fn registry_rejects_provider_incompatible_names_test() {
 
 pub fn registry_rejects_codecs_without_schema_test() {
   let schemaless =
-    codec.new(fn(_) { codec.encode_string_value("x") }, fn(_) { Ok(Nil) })
+    codec.custom(
+      encode: fn(_) { Ok(value.String("x")) },
+      decode: fn(_) { Ok(Nil) },
+      schema: None,
+      placeholder: Nil,
+    )
   let custom =
     tool.define("custom", "", schemaless, codec.string())
     |> tool.bind(fn(_, _) { Ok("ok") }, fn(_: Nil) { tool.Explain("failed") })
@@ -45,10 +52,15 @@ pub fn declarations_derive_from_the_input_codec_test() {
   let assert Ok(city_schema) = codec.schema(apps.city_codec())
   let assert Ok(transfer_schema) = codec.schema(apps.transfer_codec())
   city_schema
-  |> should.equal(codec.FieldSchema(
-    "city",
-    codec.DescribedSchema("City to look up", codec.StringSchema),
-  ))
+  |> should.equal(
+    codec.ObjectSchema([
+      codec.PropertySchema(
+        "city",
+        True,
+        codec.DescribedSchema("City to look up", codec.StringSchema),
+      ),
+    ]),
+  )
   registry.declarations(tools)
   |> should.equal([
     model.ToolSpec(
@@ -74,7 +86,8 @@ pub fn admission_distinguishes_unknown_tools_and_malformed_arguments_test() {
     registry.admit(tools, "lookup_weather", "{\"city\":")
   let assert Error(registry.MalformedArguments(detail)) =
     registry.admit(tools, "lookup_weather", "{\"town\":\"Paris\"}")
-  detail |> should.equal("$: unknown property")
+  // A record reads its fields before it reports an unknown key.
+  detail |> should.equal("$[\"city\"]: missing field")
   registry.admit(tools, "lookup_weather", "{\"city\":42}")
   |> should.equal(
     Error(registry.MalformedArguments("$[\"city\"]: expected a string")),
@@ -135,9 +148,11 @@ pub fn handler_receives_context_separately_from_input_test() {
 pub fn unencodable_output_is_a_host_failure_test() {
   let refusing =
     codec.string()
-    |> codec.try_imap(Ok, fn(_: String) {
-      Error(codec.CannotEncode(codec.CustomEncodeReason("no")))
-    })
+    |> codec.try_map(
+      decode: Ok,
+      encode: fn(_: String) { Error("no") },
+      placeholder: "",
+    )
   let broken =
     tool.define("broken", "", apps.city_codec(), refusing)
     |> tool.bind(fn(_, _) { Ok("anything") }, fn(_: Nil) {
@@ -205,7 +220,7 @@ pub fn a_drifted_definition_fails_the_policy_closed_test() {
     tool.define(
       "transfer_funds",
       "An older transfer.",
-      codec.field("iban", codec.string()),
+      codecs.one_field("iban", codec.string()),
       codec.string(),
     )
   let gate = fn(_context: Nil, action: policy.Action) {

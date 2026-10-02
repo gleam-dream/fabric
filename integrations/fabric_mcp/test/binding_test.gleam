@@ -18,21 +18,21 @@ type Increment {
 }
 
 fn increment_codec() -> codec.Codec(Increment) {
-  let assert Ok(fields) =
-    codec.record2(
-      codec.required("name", codec.string()),
-      codec.required("amount", codec.int()),
-      Increment,
-      fn(v) { v.name },
-      fn(v) { v.amount },
-    )
-  fields
+  use name <- codec.field("name", codec.string(), fn(v: Increment) { v.name })
+  use amount <- codec.field("amount", codec.int(), fn(v: Increment) { v.amount })
+  codec.success(Increment(name:, amount:))
+}
+
+/// The object `{"value": n}`, read as `n`.
+fn counter_codec() -> codec.Codec(Int) {
+  use value <- codec.field("value", codec.int(), fn(value) { value })
+  codec.success(value)
 }
 
 fn value(result: fabric_mcp.ToolResult) -> Result(Int, String) {
   case result.structured {
     Some(value) ->
-      case codec.decode(codec.field("value", codec.int()), value) {
+      case codec.decode(counter_codec(), value) {
         Ok(value) -> Ok(value)
         Error(_) -> Error("expected structured counter value")
       }
@@ -475,7 +475,7 @@ fn read(connection: client.Client, name: String) -> Int {
     ])
   let assert json.Object(fields) = response.result
   let assert Ok(raw) = list.key_find(fields, "structuredContent")
-  let assert Ok(answer) = codec.decode(codec.field("value", codec.int()), raw)
+  let assert Ok(answer) = codec.decode(counter_codec(), raw)
   answer
 }
 

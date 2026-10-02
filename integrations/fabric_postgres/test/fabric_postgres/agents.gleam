@@ -49,9 +49,14 @@ fn definition() -> tool.Definition(Int, Int) {
   tool.define(
     "work",
     "Works on an amount.",
-    codec.field("amount", codec.int()),
-    codec.field("done", codec.int()),
+    one_field("amount"),
+    one_field("done"),
   )
+}
+
+fn one_field(name: String) -> codec.Codec(Int) {
+  use value <- codec.field(name, codec.int(), fn(value) { value })
+  codec.success(value)
 }
 
 /// The agent whose model asks for `work` with `amount`.

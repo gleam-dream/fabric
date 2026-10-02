@@ -16,7 +16,6 @@ import fabric/support/probe
 import fabric/support/restart
 import fabric/testing
 import gleam/erlang/process
-import gleam/int
 import gleam/result
 import gleeunit/should
 import json/blueprint/codec
@@ -54,12 +53,8 @@ fn runtime(runs, every, read) {
 
 fn scan(runs, build) {
   let events = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id("job-scan-" <> int.to_string(int.random(1_000_000_000)))
-  let assert Ok(attachment) =
-    sinal.observe(id, o.sweep(), fn(summary, _) {
-      process.send(events, summary)
-    })
+  let attachment =
+    sinal.observe(o.sweep(), fn(summary, _) { process.send(events, summary) })
   let assert Ok(spec) =
     fabric.sweeper(
       runs,

@@ -159,7 +159,7 @@ pub fn bind(
     invoke: fn(context, arguments, _late) {
       case codec.decode_json(input, arguments) {
         Error(error) ->
-          invocation.ArgumentsRejected(codec.render_json_decode_error(error))
+          invocation.ArgumentsRejected(codec.describe_decode_error(error))
         Ok(value) ->
           case handler(context, value) {
             Ok(value) -> encode(output, value)
@@ -194,7 +194,7 @@ pub fn bind_settling(
     invoke: fn(context, arguments, late) {
       case codec.decode_json(input, arguments) {
         Error(error) ->
-          invocation.ArgumentsRejected(codec.render_json_decode_error(error))
+          invocation.ArgumentsRejected(codec.describe_decode_error(error))
         Ok(value) ->
           case handler(context, value, Settlement(output, late)) {
             Ok(value) -> encode(output, value)
@@ -229,7 +229,7 @@ fn checker(input: Codec(input)) -> fn(String) -> Result(Nil, String) {
   fn(arguments) {
     codec.decode_json(input, arguments)
     |> result.replace(Nil)
-    |> result.map_error(codec.render_json_decode_error)
+    |> result.map_error(codec.describe_decode_error)
   }
 }
 
@@ -245,7 +245,7 @@ fn encode(output: Codec(output), value: output) -> Outcome {
   case codec.encode_json(output, value) {
     Ok(content) -> invocation.Returned(content)
     Error(error) ->
-      invocation.OutputUnencodable(invocation.describe_encode_error(error))
+      invocation.OutputUnencodable(codec.describe_encode_error(error))
   }
 }
 
@@ -278,7 +278,7 @@ pub fn delegation(
       prompt: fn(arguments) {
         codec.decode_json(input, arguments)
         |> result.map(prompt)
-        |> result.map_error(codec.render_json_decode_error)
+        |> result.map_error(codec.describe_decode_error)
       },
       settle: fn(outcome) { delegated(outcome, parse, output) },
     ),
@@ -353,7 +353,7 @@ pub fn input(
         "the arguments of "
         <> definition.name
         <> " do not decode with the policy's definition: "
-        <> codec.render_json_decode_error(error)
+        <> codec.describe_decode_error(error)
       })
   }
 }

@@ -14,7 +14,6 @@ import fabric/support/apps.{type City, type Forecast, Forecast}
 import fabric/support/scripted
 import fabric/tool
 import gleam/erlang/process.{type Subject}
-import gleam/int
 import gleam/list
 import gleam/string
 import gleeunit/should
@@ -311,12 +310,8 @@ pub fn a_settlement_is_accepted_once_per_action_test() {
 /// refused and changes nothing.
 pub fn a_settlement_after_the_bound_is_refused_while_stopping_test() {
   let lapsed = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id(
-      "settlement-lapsed-" <> int.to_string(int.random(1_000_000)),
-    )
-  let assert Ok(attached) =
-    sinal.observe(id, o.tool_settled(), fn(_, settled: o.ToolSettled) {
+  let attached =
+    sinal.observe(o.tool_settled(), fn(_, settled: o.ToolSettled) {
       case settled.action.tool, settled.disposition {
         "wa", o.EffectUncertain -> process.send(lapsed, Nil)
         _, _ -> Nil
@@ -339,12 +334,8 @@ pub fn a_settlement_after_the_bound_is_refused_while_stopping_test() {
 /// gave `settle` for a person.
 pub fn a_refused_settlement_is_observed_test() {
   let refused = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id(
-      "settlement-refused-" <> int.to_string(int.random(1_000_000)),
-    )
-  let assert Ok(attached) =
-    sinal.observe(id, o.settlement_refused(), fn(_, refusal) {
+  let attached =
+    sinal.observe(o.settlement_refused(), fn(_, refusal) {
       process.send(refused, refusal)
     })
   let #(run, handed) = start(process.new_subject(), Wait, 20)

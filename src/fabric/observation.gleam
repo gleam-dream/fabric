@@ -11,8 +11,8 @@
 //// emitted after a scan in a separate process with a 1-second deadline;
 //// a blocked synchronous handler is stopped, so scans cannot accumulate
 //// blocked emitters. Shutdown emits `drain` or `drain_unavailable` with
-//// the same bound before the store closes. Every event uses
-//// `sinal/forwarder.emit_routed`, so the application chooses where
+//// the same bound before the store closes. Every event uses `sinal.emit`,
+//// which follows forwarder routes, so the application chooses where
 //// handlers run:
 ////
 //// - By default, synchronously in the committing process. A handler that
@@ -114,10 +114,6 @@
 //// identify an action only within its `run`.
 
 import fabric/model.{type Usage, Usage}
-import gleam/dynamic
-import gleam/dynamic/decode
-import gleam/erlang/atom
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import sinal.{type Event}
 import sinal/fields.{type Fields}
@@ -297,23 +293,27 @@ pub type RunTotals {
 // ---------------------------------------------------------------
 
 pub fn run_started() -> Event(Nil, RunStarted) {
-  let assert Ok(parent) = fields.optional(text("parent"))
   event(
     ["run", "start"],
     fields.empty(),
-    both(both(text("run"), text("agent")), both(int("agent_version"), parent))
-      |> fields.imap(
-        fn(values) {
-          let #(#(run, agent), #(version, parent)) = values
-          RunStarted(run, agent, version, parent)
-        },
-        fn(started) {
-          #(
-            #(started.run, started.agent),
-            #(started.agent_version, started.parent),
-          )
-        },
-      ),
+    fields.record({
+      use run <- fields.parameter
+      use agent <- fields.parameter
+      use agent_version <- fields.parameter
+      use parent <- fields.parameter
+      RunStarted(run:, agent:, agent_version:, parent:)
+    })
+      |> fields.and(fields.string("run"), fn(started: RunStarted) {
+        started.run
+      })
+      |> fields.and(fields.string("agent"), fn(started) { started.agent })
+      |> fields.and(fields.int("agent_version"), fn(started) {
+        started.agent_version
+      })
+      |> fields.and(fields.optional(fields.string("parent")), fn(started) {
+        started.parent
+      })
+      |> fields.build,
   )
 }
 
@@ -321,11 +321,18 @@ pub fn run_recovered() -> Event(Nil, RunRecovered) {
   event(
     ["run", "recover"],
     fields.empty(),
-    both(text("run"), int("incarnation"))
-      |> fields.imap(
-        fn(values) { RunRecovered(values.0, values.1) },
-        fn(recovered) { #(recovered.run, recovered.incarnation) },
-      ),
+    fields.record({
+      use run <- fields.parameter
+      use incarnation <- fields.parameter
+      RunRecovered(run:, incarnation:)
+    })
+      |> fields.and(fields.string("run"), fn(recovered: RunRecovered) {
+        recovered.run
+      })
+      |> fields.and(fields.int("incarnation"), fn(recovered) {
+        recovered.incarnation
+      })
+      |> fields.build,
   )
 }
 
@@ -333,11 +340,16 @@ pub fn run_handed_off() -> Event(Nil, RunHandedOff) {
   event(
     ["run", "hand_off"],
     fields.empty(),
-    both(text("run"), int("incarnation"))
-      |> fields.imap(
-        fn(values) { RunHandedOff(values.0, values.1) },
-        fn(handed) { #(handed.run, handed.incarnation) },
-      ),
+    fields.record({
+      use run <- fields.parameter
+      use incarnation <- fields.parameter
+      RunHandedOff(run:, incarnation:)
+    })
+      |> fields.and(fields.string("run"), fn(handed: RunHandedOff) {
+        handed.run
+      })
+      |> fields.and(fields.int("incarnation"), fn(handed) { handed.incarnation })
+      |> fields.build,
   )
 }
 
@@ -345,14 +357,18 @@ pub fn run_taken_over() -> Event(Nil, RunTakenOver) {
   event(
     ["run", "take_over"],
     fields.empty(),
-    both(text("run"), both(int("incarnation"), text("previous_owner")))
-      |> fields.imap(
-        fn(values) {
-          let #(run, #(incarnation, previous)) = values
-          RunTakenOver(run, incarnation, previous)
-        },
-        fn(taken) { #(taken.run, #(taken.incarnation, taken.previous_owner)) },
-      ),
+    fields.record({
+      use run <- fields.parameter
+      use incarnation <- fields.parameter
+      use previous_owner <- fields.parameter
+      RunTakenOver(run:, incarnation:, previous_owner:)
+    })
+      |> fields.and(fields.string("run"), fn(taken: RunTakenOver) { taken.run })
+      |> fields.and(fields.int("incarnation"), fn(taken) { taken.incarnation })
+      |> fields.and(fields.string("previous_owner"), fn(taken) {
+        taken.previous_owner
+      })
+      |> fields.build,
   )
 }
 
@@ -360,17 +376,19 @@ pub fn lease_lost() -> Event(Nil, LeaseLost) {
   event(
     ["lease", "lose"],
     fields.empty(),
-    both(
-      both(text("run"), text("owner")),
-      kind("reason", lease_loss_name, [Revoked, Unrenewed]),
-    )
-      |> fields.imap(
-        fn(values) {
-          let #(#(run, owner), reason) = values
-          LeaseLost(run, owner, reason)
-        },
-        fn(lost) { #(#(lost.run, lost.owner), lost.reason) },
-      ),
+    fields.record({
+      use run <- fields.parameter
+      use owner <- fields.parameter
+      use reason <- fields.parameter
+      LeaseLost(run:, owner:, reason:)
+    })
+      |> fields.and(fields.string("run"), fn(lost: LeaseLost) { lost.run })
+      |> fields.and(fields.string("owner"), fn(lost) { lost.owner })
+      |> fields.and(
+        fields.enum("reason", [Revoked, Unrenewed], lease_loss_name),
+        fn(lost) { lost.reason },
+      )
+      |> fields.build,
   )
 }
 
@@ -385,11 +403,16 @@ pub fn renewal_failed() -> Event(Nil, RenewalFailed) {
   event(
     ["lease", "renew", "fail"],
     fields.empty(),
-    both(text("owner"), int("runs"))
-      |> fields.imap(
-        fn(values) { RenewalFailed(values.0, values.1) },
-        fn(failed) { #(failed.owner, failed.runs) },
-      ),
+    fields.record({
+      use owner <- fields.parameter
+      use runs <- fields.parameter
+      RenewalFailed(owner:, runs:)
+    })
+      |> fields.and(fields.string("owner"), fn(failed: RenewalFailed) {
+        failed.owner
+      })
+      |> fields.and(fields.int("runs"), fn(failed) { failed.runs })
+      |> fields.build,
   )
 }
 
@@ -402,26 +425,32 @@ pub fn model_turn() -> Event(Option(Usage), ModelTurn) {
   event(
     ["model", "stop"],
     tokens(),
-    both(
-      both(text("run"), int("turn")),
-      kind("result", turn_result_name, [
-        ToolRequest,
-        FinalAnswer,
-        Refusal,
-        Truncated,
-        Retry,
-        ModelFailure,
-        ProtocolViolation,
-        BudgetStop,
-      ]),
-    )
-      |> fields.imap(
-        fn(values) {
-          let #(#(run, turn), result) = values
-          ModelTurn(run, turn, result)
-        },
-        fn(turn) { #(#(turn.run, turn.turn), turn.result) },
-      ),
+    fields.record({
+      use run <- fields.parameter
+      use turn <- fields.parameter
+      use result <- fields.parameter
+      ModelTurn(run:, turn:, result:)
+    })
+      |> fields.and(fields.string("run"), fn(turn: ModelTurn) { turn.run })
+      |> fields.and(fields.int("turn"), fn(turn) { turn.turn })
+      |> fields.and(
+        fields.enum(
+          "result",
+          [
+            ToolRequest,
+            FinalAnswer,
+            Refusal,
+            Truncated,
+            Retry,
+            ModelFailure,
+            ProtocolViolation,
+            BudgetStop,
+          ],
+          turn_result_name,
+        ),
+        fn(turn) { turn.result },
+      )
+      |> fields.build,
   )
 }
 
@@ -429,28 +458,24 @@ pub fn approval_requested() -> Event(Nil, ApprovalRequested) {
   event(
     ["approval", "request"],
     fields.empty(),
-    both(
-      action_fields(),
-      both(
-        text("requirement"),
-        both(int("requirement_version"), int("revision")),
-      ),
-    )
-      |> fields.imap(
-        fn(values) {
-          let #(action, #(requirement, #(version, revision))) = values
-          ApprovalRequested(action, requirement, version, revision)
-        },
-        fn(requested) {
-          #(
-            requested.action,
-            #(
-              requested.requirement,
-              #(requested.requirement_version, requested.revision),
-            ),
-          )
-        },
-      ),
+    fields.record({
+      use action <- fields.parameter
+      use requirement <- fields.parameter
+      use requirement_version <- fields.parameter
+      use revision <- fields.parameter
+      ApprovalRequested(action:, requirement:, requirement_version:, revision:)
+    })
+      |> fields.and(action_fields(), fn(requested: ApprovalRequested) {
+        requested.action
+      })
+      |> fields.and(fields.string("requirement"), fn(requested) {
+        requested.requirement
+      })
+      |> fields.and(fields.int("requirement_version"), fn(requested) {
+        requested.requirement_version
+      })
+      |> fields.and(fields.int("revision"), fn(requested) { requested.revision })
+      |> fields.build,
   )
 }
 
@@ -458,19 +483,21 @@ pub fn approval_answered() -> Event(Nil, ApprovalAnswered) {
   event(
     ["approval", "answer"],
     fields.empty(),
-    both(
-      action_fields(),
-      both(int("revision"), kind("answer", answered_name, [Approved, Rejected])),
-    )
-      |> fields.imap(
-        fn(values) {
-          let #(action, #(revision, answer)) = values
-          ApprovalAnswered(action, revision, answer)
-        },
-        fn(answered) {
-          #(answered.action, #(answered.revision, answered.answer))
-        },
-      ),
+    fields.record({
+      use action <- fields.parameter
+      use revision <- fields.parameter
+      use answer <- fields.parameter
+      ApprovalAnswered(action:, revision:, answer:)
+    })
+      |> fields.and(action_fields(), fn(answered: ApprovalAnswered) {
+        answered.action
+      })
+      |> fields.and(fields.int("revision"), fn(answered) { answered.revision })
+      |> fields.and(
+        fields.enum("answer", [Approved, Rejected], answered_name),
+        fn(answered) { answered.answer },
+      )
+      |> fields.build,
   )
 }
 
@@ -478,7 +505,12 @@ pub fn tool_dispatched() -> Event(Nil, ToolDispatched) {
   event(
     ["tool", "start"],
     fields.empty(),
-    action_fields() |> fields.imap(ToolDispatched, fn(tool) { tool.action }),
+    fields.record({
+      use action <- fields.parameter
+      ToolDispatched(action:)
+    })
+      |> fields.and(action_fields(), fn(tool: ToolDispatched) { tool.action })
+      |> fields.build,
   )
 }
 
@@ -486,11 +518,16 @@ pub fn tool_settled() -> Event(Nil, ToolSettled) {
   event(
     ["tool", "stop"],
     fields.empty(),
-    both(action_fields(), disposition())
-      |> fields.imap(
-        fn(values) { ToolSettled(values.0, values.1) },
-        fn(settled) { #(settled.action, settled.disposition) },
-      ),
+    fields.record({
+      use action <- fields.parameter
+      use disposition <- fields.parameter
+      ToolSettled(action:, disposition:)
+    })
+      |> fields.and(action_fields(), fn(settled: ToolSettled) { settled.action })
+      |> fields.and(disposition("disposition"), fn(settled) {
+        settled.disposition
+      })
+      |> fields.build,
   )
 }
 
@@ -498,11 +535,16 @@ pub fn child_started() -> Event(Nil, ChildStarted) {
   event(
     ["child", "start"],
     fields.empty(),
-    both(action_fields(), text("child"))
-      |> fields.imap(
-        fn(values) { ChildStarted(values.0, values.1) },
-        fn(started) { #(started.action, started.child) },
-      ),
+    fields.record({
+      use action <- fields.parameter
+      use child <- fields.parameter
+      ChildStarted(action:, child:)
+    })
+      |> fields.and(action_fields(), fn(started: ChildStarted) {
+        started.action
+      })
+      |> fields.and(fields.string("child"), fn(started) { started.child })
+      |> fields.build,
   )
 }
 
@@ -510,14 +552,20 @@ pub fn child_settled() -> Event(Nil, ChildSettled) {
   event(
     ["child", "stop"],
     fields.empty(),
-    both(action_fields(), both(text("child"), disposition()))
-      |> fields.imap(
-        fn(values) {
-          let #(action, #(child, disposition)) = values
-          ChildSettled(action, child, disposition)
-        },
-        fn(settled) { #(settled.action, #(settled.child, settled.disposition)) },
-      ),
+    fields.record({
+      use action <- fields.parameter
+      use child <- fields.parameter
+      use disposition <- fields.parameter
+      ChildSettled(action:, child:, disposition:)
+    })
+      |> fields.and(action_fields(), fn(settled: ChildSettled) {
+        settled.action
+      })
+      |> fields.and(fields.string("child"), fn(settled) { settled.child })
+      |> fields.and(disposition("disposition"), fn(settled) {
+        settled.disposition
+      })
+      |> fields.build,
   )
 }
 
@@ -525,28 +573,27 @@ pub fn settlement_refused() -> Event(Nil, SettlementRefused) {
   event(
     ["tool", "settlement", "refuse"],
     fields.empty(),
-    both(
-      action_fields(),
-      both(
-        disposition(),
-        both(
-          kind("reason", refusal_name, [AlreadyRecorded, NotAwaited, NotReached]),
-          text("summary"),
+    fields.record({
+      use action <- fields.parameter
+      use offered <- fields.parameter
+      use reason <- fields.parameter
+      use summary <- fields.parameter
+      SettlementRefused(action:, offered:, reason:, summary:)
+    })
+      |> fields.and(action_fields(), fn(refused: SettlementRefused) {
+        refused.action
+      })
+      |> fields.and(disposition("disposition"), fn(refused) { refused.offered })
+      |> fields.and(
+        fields.enum(
+          "reason",
+          [AlreadyRecorded, NotAwaited, NotReached],
+          refusal_name,
         ),
-      ),
-    )
-      |> fields.imap(
-        fn(values) {
-          let #(action, #(offered, #(reason, evidence))) = values
-          SettlementRefused(action, offered, reason, evidence)
-        },
-        fn(refused) {
-          #(
-            refused.action,
-            #(refused.offered, #(refused.reason, refused.summary)),
-          )
-        },
-      ),
+        fn(refused) { refused.reason },
+      )
+      |> fields.and(fields.string("summary"), fn(refused) { refused.summary })
+      |> fields.build,
   )
 }
 
@@ -554,47 +601,63 @@ pub fn run_cancelled() -> Event(Nil, RunCancelled) {
   event(
     ["run", "cancel"],
     fields.empty(),
-    text("run") |> fields.imap(RunCancelled, fn(cancelled) { cancelled.run }),
+    fields.record({
+      use run <- fields.parameter
+      RunCancelled(run:)
+    })
+      |> fields.and(fields.string("run"), fn(cancelled: RunCancelled) {
+        cancelled.run
+      })
+      |> fields.build,
   )
 }
 
 pub fn run_finished() -> Event(RunTotals, RunFinished) {
-  let totals =
-    both(
-      both(int("turns"), int("unreported_replies")),
-      both(int("input_tokens"), int("output_tokens")),
-    )
   event(
     ["run", "stop"],
-    totals
-      |> fields.imap(
-        fn(values) {
-          let #(#(turns, unreported), #(input, output)) = values
-          RunTotals(turns, input, output, unreported)
-        },
-        fn(totals) {
-          #(
-            #(totals.turns, totals.unreported_replies),
-            #(totals.input_tokens, totals.output_tokens),
-          )
-        },
-      ),
-    both(
-      text("run"),
-      kind("outcome", outcome_name, [
-        Completed,
-        Refused,
-        OutputLimited,
-        BudgetExhausted,
-        BudgetUnverifiable,
-        Cancelled,
-        Failed,
-      ]),
-    )
-      |> fields.imap(
-        fn(values) { RunFinished(values.0, values.1) },
-        fn(finished) { #(finished.run, finished.outcome) },
-      ),
+    fields.record({
+      use turns <- fields.parameter
+      use input_tokens <- fields.parameter
+      use output_tokens <- fields.parameter
+      use unreported_replies <- fields.parameter
+      RunTotals(turns:, input_tokens:, output_tokens:, unreported_replies:)
+    })
+      |> fields.and(fields.int("turns"), fn(totals: RunTotals) { totals.turns })
+      |> fields.and(fields.int("input_tokens"), fn(totals) {
+        totals.input_tokens
+      })
+      |> fields.and(fields.int("output_tokens"), fn(totals) {
+        totals.output_tokens
+      })
+      |> fields.and(fields.int("unreported_replies"), fn(totals) {
+        totals.unreported_replies
+      })
+      |> fields.build,
+    fields.record({
+      use run <- fields.parameter
+      use outcome <- fields.parameter
+      RunFinished(run:, outcome:)
+    })
+      |> fields.and(fields.string("run"), fn(finished: RunFinished) {
+        finished.run
+      })
+      |> fields.and(
+        fields.enum(
+          "outcome",
+          [
+            Completed,
+            Refused,
+            OutputLimited,
+            BudgetExhausted,
+            BudgetUnverifiable,
+            Cancelled,
+            Failed,
+          ],
+          outcome_name,
+        ),
+        fn(finished) { finished.outcome },
+      )
+      |> fields.build,
   )
 }
 
@@ -606,88 +669,52 @@ fn event(
   measurements: Fields(m),
   metadata: Fields(d),
 ) -> Event(m, d) {
-  // The names are constant and non-empty, so this cannot fail.
-  let assert Ok(event) =
-    sinal.event(
-      [atom.create("fabric"), ..list.map(name, atom.create)],
-      measurements,
-      metadata,
-    )
-  event
-}
-
-fn text(key: String) -> Fields(String) {
-  fields.string(atom.create(key))
-}
-
-fn int(key: String) -> Fields(Int) {
-  fields.int(atom.create(key))
-}
-
-/// Pairs field groups with distinct keys (the keys here are constant).
-fn both(left: Fields(a), right: Fields(b)) -> Fields(#(a, b)) {
-  let assert Ok(pair) = fields.pair(left, right)
-  pair
+  sinal.event(["fabric", ..name], measurements, metadata)
 }
 
 fn action_fields() -> Fields(ActionRef) {
-  both(both(text("run"), int("turn")), both(text("call_id"), text("tool")))
-  |> fields.imap(
-    fn(values) {
-      let #(#(run, turn), #(call_id, tool)) = values
-      ActionRef(run, turn, call_id, tool)
-    },
-    fn(action) { #(#(action.run, action.turn), #(action.call_id, action.tool)) },
-  )
+  fields.record({
+    use run <- fields.parameter
+    use turn <- fields.parameter
+    use call_id <- fields.parameter
+    use tool <- fields.parameter
+    ActionRef(run:, turn:, call_id:, tool:)
+  })
+  |> fields.and(fields.string("run"), fn(action: ActionRef) { action.run })
+  |> fields.and(fields.int("turn"), fn(action) { action.turn })
+  |> fields.and(fields.string("call_id"), fn(action) { action.call_id })
+  |> fields.and(fields.string("tool"), fn(action) { action.tool })
+  |> fields.build
 }
 
 /// Both keys present, or both absent for an unreported attempt. A map with
 /// only one of them is a partial report and decodes as `None` too.
 fn tokens() -> Fields(Option(Usage)) {
-  let assert Ok(input) = fields.optional(int("input_tokens"))
-  let assert Ok(output) = fields.optional(int("output_tokens"))
-  both(input, output)
-  |> fields.imap(
-    fn(values) {
-      case values {
-        #(Some(input), Some(output)) -> Some(Usage(input, output))
-        _ -> None
-      }
-    },
-    fn(tokens) {
-      case tokens {
-        Some(Usage(input, output)) -> #(Some(input), Some(output))
-        None -> #(None, None)
-      }
+  fields.record({
+    use input <- fields.parameter
+    use output <- fields.parameter
+    case input, output {
+      Some(input), Some(output) -> Some(Usage(input, output))
+      _, _ -> None
+    }
+  })
+  |> fields.and(
+    fields.optional(fields.int("input_tokens")),
+    fn(tokens: Option(Usage)) {
+      option.map(tokens, fn(usage) { usage.input_tokens })
     },
   )
+  |> fields.and(fields.optional(fields.int("output_tokens")), fn(tokens) {
+    option.map(tokens, fn(usage) { usage.output_tokens })
+  })
+  |> fields.build
 }
 
-fn disposition() -> Fields(Disposition) {
-  kind("disposition", disposition_name, [
-    ModelVisible,
-    EffectUncertain,
-    HostFailure,
-    Withdrawn,
-  ])
-}
-
-/// A closed kind carried as a string, decoded back by name.
-fn kind(key: String, name: fn(a) -> String, all: List(a)) -> Fields(a) {
-  fields.field(
-    atom.create(key),
-    fn(value) { Ok(dynamic.string(name(value))) },
-    fn(raw) {
-      case decode.run(raw, decode.string) {
-        Error(_) -> Error(fields.FieldDecodeError("expected a string"))
-        Ok(found) ->
-          case list.find(all, fn(value) { name(value) == found }) {
-            Ok(value) -> Ok(value)
-            Error(Nil) ->
-              Error(fields.FieldDecodeError("unknown " <> key <> ": " <> found))
-          }
-      }
-    },
+fn disposition(key: String) -> Fields(Disposition) {
+  fields.enum(
+    key,
+    [ModelVisible, EffectUncertain, HostFailure, Withdrawn],
+    disposition_name,
   )
 }
 
@@ -750,16 +777,18 @@ pub type Sweep {
 pub fn sweep() -> Event(Sweep, Nil) {
   event(
     ["sweep", "stop"],
-    both(
-      both(int("claimed"), int("recovered")),
-      both(int("unmatched"), int("failed")),
-    )
-      |> fields.imap(
-        fn(values) { Sweep(values.0.0, values.0.1, values.1.0, values.1.1) },
-        fn(sweep) {
-          #(#(sweep.claimed, sweep.recovered), #(sweep.unmatched, sweep.failed))
-        },
-      ),
+    fields.record({
+      use claimed <- fields.parameter
+      use recovered <- fields.parameter
+      use unmatched <- fields.parameter
+      use failed <- fields.parameter
+      Sweep(claimed:, recovered:, unmatched:, failed:)
+    })
+      |> fields.and(fields.int("claimed"), fn(sweep: Sweep) { sweep.claimed })
+      |> fields.and(fields.int("recovered"), fn(sweep) { sweep.recovered })
+      |> fields.and(fields.int("unmatched"), fn(sweep) { sweep.unmatched })
+      |> fields.and(fields.int("failed"), fn(sweep) { sweep.failed })
+      |> fields.build,
     fields.empty(),
   )
 }
@@ -789,44 +818,44 @@ pub type Drain {
 pub fn drain() -> Event(Drain, String) {
   event(
     ["drain", "stop"],
-    both(
-      both(
-        both(int("runners"), int("handed_off")),
-        both(int("failed_handoffs"), int("pending_handoffs")),
-      ),
-      both(
-        both(int("killed"), int("exited")),
-        both(int("unobserved"), int("elapsed_ms")),
-      ),
-    )
-      |> fields.imap(
-        fn(v) {
-          Drain(
-            v.0.0.0,
-            v.0.0.1,
-            v.0.1.0,
-            v.0.1.1,
-            v.1.0.0,
-            v.1.0.1,
-            v.1.1.0,
-            v.1.1.1,
-          )
-        },
-        fn(d) {
-          #(
-            #(
-              #(d.runners, d.handed_off),
-              #(d.failed_handoffs, d.pending_handoffs),
-            ),
-            #(#(d.killed, d.exited), #(d.unobserved, d.elapsed_ms)),
-          )
-        },
-      ),
-    text("store"),
+    fields.record({
+      use runners <- fields.parameter
+      use handed_off <- fields.parameter
+      use failed_handoffs <- fields.parameter
+      use pending_handoffs <- fields.parameter
+      use killed <- fields.parameter
+      use exited <- fields.parameter
+      use unobserved <- fields.parameter
+      use elapsed_ms <- fields.parameter
+      Drain(
+        runners:,
+        handed_off:,
+        failed_handoffs:,
+        pending_handoffs:,
+        killed:,
+        exited:,
+        unobserved:,
+        elapsed_ms:,
+      )
+    })
+      |> fields.and(fields.int("runners"), fn(drain: Drain) { drain.runners })
+      |> fields.and(fields.int("handed_off"), fn(drain) { drain.handed_off })
+      |> fields.and(fields.int("failed_handoffs"), fn(drain) {
+        drain.failed_handoffs
+      })
+      |> fields.and(fields.int("pending_handoffs"), fn(drain) {
+        drain.pending_handoffs
+      })
+      |> fields.and(fields.int("killed"), fn(drain) { drain.killed })
+      |> fields.and(fields.int("exited"), fn(drain) { drain.exited })
+      |> fields.and(fields.int("unobserved"), fn(drain) { drain.unobserved })
+      |> fields.and(fields.int("elapsed_ms"), fn(drain) { drain.elapsed_ms })
+      |> fields.build,
+    fields.string("store"),
   )
 }
 
 /// Shutdown accounting could not be read. No zero-run success is inferred.
 pub fn drain_unavailable() -> Event(Nil, String) {
-  event(["drain", "unavailable"], fields.empty(), text("store"))
+  event(["drain", "unavailable"], fields.empty(), fields.string("store"))
 }

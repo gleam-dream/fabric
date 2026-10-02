@@ -22,7 +22,6 @@ import fabric/tool
 import fabric_saga
 import fabric_saga/support/watched
 import gleam/erlang/process.{type Subject}
-import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
@@ -142,20 +141,26 @@ fn book_trip(
 }
 
 fn trip_definition() -> tool.Definition(Trip, Itinerary) {
-  let assert Ok(itinerary) =
-    codec.record3(
-      codec.required("flight", codec.string()),
-      codec.required("hotel", codec.string()),
-      codec.required("charge", codec.string()),
-      Itinerary,
-      fn(i) { i.flight },
-      fn(i) { i.hotel },
-      fn(i) { i.charge },
-    )
+  let itinerary = {
+    use flight <- codec.field("flight", codec.string(), fn(i: Itinerary) {
+      i.flight
+    })
+    use hotel <- codec.field("hotel", codec.string(), fn(i: Itinerary) {
+      i.hotel
+    })
+    use charge <- codec.field("charge", codec.string(), fn(i: Itinerary) {
+      i.charge
+    })
+    codec.success(Itinerary(flight:, hotel:, charge:))
+  }
+  let trip = {
+    use city <- codec.field("city", codec.string(), fn(t: Trip) { t.city })
+    codec.success(Trip(city:))
+  }
   tool.define(
     "book_trip",
     "Book a flight, a hotel, and the charge for a trip.",
-    codec.field("city", codec.string()) |> codec.imap(Trip, fn(t) { t.city }),
+    trip,
     itinerary,
   )
 }
@@ -394,10 +399,8 @@ pub fn an_outcome_after_the_run_ended_is_refused_test() {
 
   let read = watched.notify_reads(backend)
   let refused = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id("trip-refused-" <> int.to_string(int.random(1_000_000)))
-  let assert Ok(attached) =
-    sinal.observe(id, o.settlement_refused(), fn(_, refusal) {
+  let attached =
+    sinal.observe(o.settlement_refused(), fn(_, refusal) {
       process.send(refused, refusal)
     })
   process.send(undo.release, Nil)

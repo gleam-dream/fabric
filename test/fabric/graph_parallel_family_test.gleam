@@ -62,7 +62,7 @@ fn mapped(
       fn(state, values) { Ok(definition.Finish(state, values)) },
       [],
     )
-  let assert Ok(output) = fork.result_codec(codec.list(output))
+  let output = fork.result_codec(codec.list(output))
   let assert Ok(spec) =
     definition.build(definition.Spec(
       run.Identity(name, 1),
@@ -80,13 +80,13 @@ fn inner(runs: store.Store) {
 }
 
 fn outer(runs: store.Store) {
-  let assert Ok(answer) = fork.result_codec(codec.list(codec.int()))
+  let answer = fork.result_codec(codec.list(codec.int()))
   mapped(runs, "outer", inner(runs), codec.list(codec.int()), answer)
 }
 
 fn repeated(runs: store.Store) {
   let values = codec.list(codec.int())
-  let assert Ok(answer) = fork.result_codec(values)
+  let answer = fork.result_codec(values)
   let assert Ok(op) =
     graph.map(run.Identity("repeated-map", 1), leaf(runs), 2, 2)
   let node =
