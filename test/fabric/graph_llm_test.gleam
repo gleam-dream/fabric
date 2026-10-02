@@ -6,14 +6,19 @@ import fabric/policy
 import fabric/run
 import fabric/store
 import fabric/support
+import fabric/support/fake_provider
 import fabric/support/restart
+import gleam/dynamic/decode
+import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
+import http_gun
+import http_gun/config as http_config
+import http_gun/testing as http_testing
 import json/blueprint/codec
 import llm_wire/config
-import llm_wire/provider/openai
 import llm_wire/testing
 import llm_wire/types
 
@@ -23,14 +28,17 @@ fn decision_codec() -> codec.Codec(Bool) {
 
 fn runtime(
   runs: store.Store,
-  script: testing.Script,
+  fake: fake_provider.Fake,
 ) -> graph.Runtime(Nil, String, llm.Receipt(Bool)) {
-  runtime_with(runs, decision(testing.config(script)), fn(_, _) {
-    Ok(policy.Allow)
-  })
+  runtime_with(
+    runs,
+    decision(fake.client, fake_provider.scripted(fake)),
+    fn(_, _) { Ok(policy.Allow) },
+  )
 }
 
 fn decision(
+  client: http_gun.Client,
   settings: config.Config,
 ) -> operation.Operation(Nil, String, llm.Receipt(Bool)) {
   let assert Ok(model) = types.model_id("review-model")
@@ -40,9 +48,21 @@ fn decision(
     decision_codec(),
     "review",
     fn(_, text) {
-      #(settings, types.new_request(model, [types.UserMessage(text)]))
+      #(client, settings, types.new_request(model, [types.UserMessage(text)]))
     },
   )
+}
+
+/// The (role, content) pairs a scripted request carries.
+fn messages(body: String) -> List(#(String, String)) {
+  let message = {
+    use role <- decode.field("role", decode.string)
+    use content <- decode.field("content", decode.string)
+    decode.success(#(role, content))
+  }
+  let assert Ok(messages) =
+    json.parse(body, decode.at(["messages"], decode.list(message)))
+  messages
 }
 
 fn runtime_with(
@@ -74,8 +94,9 @@ fn runtime_with(
 pub fn a_structured_decision_retains_native_answer_raw_output_and_usage_test() {
   let raw = "{\"approve\": true}"
   let usage = types.Usage(7, 3, 10)
-  let script = testing.start([testing.text(raw) |> testing.with_usage(usage)])
-  let runtime = runtime(support.store(), script)
+  let fake =
+    fake_provider.start([testing.text(raw) |> testing.with_usage(usage)])
+  let runtime = runtime(support.store(), fake)
   let assert Ok(handle) =
     graph.start(runtime, support.id("decision"), "review this")
   let assert Ok(done) = graph.await(handle, 5000)
@@ -92,23 +113,20 @@ pub fn a_structured_decision_retains_native_answer_raw_output_and_usage_test() {
   |> should.equal(
     Ok(llm.Receipt("review-model", llm.Answer(True, raw), Some(usage))),
   )
-  let assert [sent] = testing.requests(script)
-  sent.request.messages |> should.equal([types.UserMessage("review this")])
-  testing.remaining(script) |> should.equal(0)
+  let assert [sent] = fake_provider.bodies(fake)
+  messages(sent) |> should.equal([#("user", "review this")])
+  fake_provider.remaining(fake) |> should.equal(0)
+  fake_provider.stop(fake)
 }
 
 pub fn saved_structured_receipt_is_reused_after_store_process_loss_test() {
   let dir = restart.temp_dir()
-  let script = testing.start([testing.text("{\"approve\":false}")])
+  let fake = fake_provider.start([testing.text("{\"approve\":false}")])
   let #(owner, #(runs, handle)) =
     restart.owned(fn() {
       let runs = support.directory(dir)
       let assert Ok(handle) =
-        graph.start(
-          runtime(runs, script),
-          support.id("saved-decision"),
-          "draft",
-        )
+        graph.start(runtime(runs, fake), support.id("saved-decision"), "draft")
       #(runs, handle)
     })
   let assert Ok(before) = graph.await(handle, 5000)
@@ -116,22 +134,23 @@ pub fn saved_structured_receipt_is_reused_after_store_process_loss_test() {
   restart.crash(owner, runs)
   let restored =
     graph.attach(
-      runtime(support.directory(dir), script),
+      runtime(support.directory(dir), fake),
       support.id("saved-decision"),
     )
   let assert Ok(after) = graph.recover(restored)
   after.status |> should.equal(before.status)
   after.receipts |> should.equal(before.receipts)
-  list.length(testing.requests(script)) |> should.equal(1)
+  list.length(fake_provider.bodies(fake)) |> should.equal(1)
+  fake_provider.stop(fake)
   restart.remove_dir(dir)
 }
 
 pub fn policy_approval_precedes_the_provider_request_test() {
-  let script = testing.start([testing.text("{\"approve\":true}")])
+  let fake = fake_provider.start([testing.text("{\"approve\":true}")])
   let runtime =
     runtime_with(
       support.store(),
-      decision(testing.config(script)),
+      decision(fake.client, fake_provider.scripted(fake)),
       fn(_, action) {
         action.operation |> should.equal(run.Identity("structured-review", 1))
         Ok(policy.RequireApproval(run.Requirement("external-model", 1)))
@@ -141,11 +160,12 @@ pub fn policy_approval_precedes_the_provider_request_test() {
     graph.start(runtime, support.id("approval-decision"), "draft")
   let assert Ok(waiting) = graph.await(handle, 5000)
   let assert graph.AwaitingApproval(approval) = waiting.status
-  testing.requests(script) |> should.equal([])
+  fake_provider.bodies(fake) |> should.equal([])
   graph.approve(handle, approval) |> should.be_ok
   let assert Ok(done) = graph.await(handle, 5000)
   let assert graph.Completed(_) = done.status
-  list.length(testing.requests(script)) |> should.equal(1)
+  list.length(fake_provider.bodies(fake)) |> should.equal(1)
+  fake_provider.stop(fake)
 }
 
 pub fn refusal_and_output_limit_are_distinct_from_a_valid_answer_test() {
@@ -163,10 +183,10 @@ pub fn refusal_and_output_limit_are_distinct_from_a_valid_answer_test() {
     ),
   ]
   |> list.each(fn(example) {
-    let script = testing.start([example.0])
+    let fake = fake_provider.start([example.0])
     let assert Ok(handle) =
       graph.start(
-        runtime(support.store(), script),
+        runtime(support.store(), fake),
         support.id("non-answer"),
         "draft",
       )
@@ -178,20 +198,22 @@ pub fn refusal_and_output_limit_are_distinct_from_a_valid_answer_test() {
     let assert [saved] = done.receipts
     codec.decode_json(llm.receipt_codec(decision_codec()), saved.output_json)
     |> should.equal(Ok(llm.Receipt("review-model", example.1, example.2)))
+    fake_provider.stop(fake)
   })
 }
 
 pub fn invalid_output_interrupted_transport_and_http_failures_never_route_or_retry_test() {
   [
     #(testing.text("{\"approve\":\"yes\"}"), "OutputValidationError"),
-    #(testing.Interrupted([]), "TransportError"),
+    #(testing.Interrupted([]), "HttpFailure(RequestFailed(PeerClosed))"),
     #(testing.Status(429, "private response body"), "HTTP status 429"),
   ]
   |> list.each(fn(example) {
-    let script = testing.start([example.0, testing.text("{\"approve\":true}")])
+    let fake =
+      fake_provider.start([example.0, testing.text("{\"approve\":true}")])
     let assert Ok(handle) =
       graph.start(
-        runtime(support.store(), script),
+        runtime(support.store(), fake),
         support.id("invalid-decision"),
         "draft",
       )
@@ -201,13 +223,14 @@ pub fn invalid_output_interrupted_transport_and_http_failures_never_route_or_ret
     string.contains(detail, "private response body") |> should.be_false
     blocked.receipts |> should.equal([])
     graph.recover(handle) |> should.be_ok
-    list.length(testing.requests(script)) |> should.equal(1)
-    testing.remaining(script) |> should.equal(1)
+    list.length(fake_provider.bodies(fake)) |> should.equal(1)
+    fake_provider.remaining(fake) |> should.equal(1)
+    fake_provider.stop(fake)
   })
 }
 
 pub fn tool_catalog_is_rejected_before_network_io_test() {
-  let script = testing.start([testing.text("{\"approve\":true}")])
+  let fake = fake_provider.start([testing.text("{\"approve\":true}")])
   let assert Ok(model) = types.model_id("review-model")
   let assert Ok(name) = types.tool_name("lookup")
   let assert Ok(tool) =
@@ -220,7 +243,8 @@ pub fn tool_catalog_is_rejected_before_network_io_test() {
       "review",
       fn(_, text) {
         #(
-          testing.config(script),
+          fake.client,
+          fake_provider.scripted(fake),
           types.new_request(model, [types.UserMessage(text)])
             |> types.with_tools([tool]),
         )
@@ -233,17 +257,19 @@ pub fn tool_catalog_is_rejected_before_network_io_test() {
   let assert graph.Failed(graph.OperationFailed(detail)) = done.status
   string.contains(detail, "cannot declare tools") |> should.be_true
   done.receipts |> should.equal([])
-  testing.requests(script) |> should.equal([])
+  fake_provider.bodies(fake) |> should.equal([])
+  fake_provider.stop(fake)
 }
 
 pub fn preparation_and_proven_unsent_failures_are_definite_test() {
-  let script = testing.start([])
+  // Offline playback with no exchanges proves the second request unsent.
+  let assert Ok(client) = http_testing.start(http_config.default(), [])
   let invalid =
-    config.with_deadlines(testing.config(script), types.Deadlines(0, 1, 1))
-  [invalid, testing.config(script)]
+    config.with_deadlines(testing.config(), types.Deadlines(0, 1, 1))
+  [invalid, testing.config()]
   |> list.each(fn(settings) {
     let runtime =
-      runtime_with(support.store(), decision(settings), fn(_, _) {
+      runtime_with(support.store(), decision(client, settings), fn(_, _) {
         Ok(policy.Allow)
       })
     let assert Ok(handle) =
@@ -252,8 +278,7 @@ pub fn preparation_and_proven_unsent_failures_are_definite_test() {
     let assert graph.Failed(graph.OperationFailed(_)) = done.status
     done.receipts |> should.equal([])
   })
-  // The second request reached the script but no transport was opened.
-  list.length(testing.requests(script)) |> should.equal(1)
+  let assert Ok(Nil) = http_gun.stop(client)
 }
 
 pub fn receipt_codec_rejects_changed_contracts_corruption_and_mismatched_native_values_test() {
@@ -296,8 +321,8 @@ pub fn receipt_codec_rejects_changed_contracts_corruption_and_mismatched_native_
 }
 
 pub fn openai_projection_uses_the_output_schema_and_preserves_actual_sse_usage_test() {
-  let script =
-    testing.start([
+  let fake =
+    fake_provider.start([
       testing.Events([
         "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"msg\",\"type\":\"message\"}}\n\n"
         <> "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"msg\",\"delta\":\"{\\\"approve\\\":true}\"}\n\n"
@@ -305,13 +330,12 @@ pub fn openai_projection_uses_the_output_schema_and_preserves_actual_sse_usage_t
         <> "event: response.completed\ndata: {\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":4,\"total_tokens\":14}}}\n\n",
       ]),
     ])
-  let assert Ok(key) = types.api_key("sk-scripted")
-  let settings =
-    config.openai(openai.options(key)) |> testing.with_script(script)
   let runtime =
-    runtime_with(support.store(), decision(settings), fn(_, _) {
-      Ok(policy.Allow)
-    })
+    runtime_with(
+      support.store(),
+      decision(fake.client, fake_provider.openai(fake)),
+      fn(_, _) { Ok(policy.Allow) },
+    )
   let assert Ok(handle) =
     graph.start(runtime, support.id("openai-decision"), "draft")
   let assert Ok(done) = graph.await(handle, 5000)
@@ -323,8 +347,9 @@ pub fn openai_projection_uses_the_output_schema_and_preserves_actual_sse_usage_t
       Some(types.Usage(10, 4, 14)),
     )),
   )
-  let assert [sent] = testing.requests(script)
-  string.contains(sent.body, "json_schema") |> should.be_true
-  string.contains(sent.body, "\"approve\"") |> should.be_true
-  string.contains(sent.body, "fabric.graph.llm") |> should.be_false
+  let assert [sent] = fake_provider.bodies(fake)
+  string.contains(sent, "json_schema") |> should.be_true
+  string.contains(sent, "\"approve\"") |> should.be_true
+  string.contains(sent, "fabric.graph.llm") |> should.be_false
+  fake_provider.stop(fake)
 }

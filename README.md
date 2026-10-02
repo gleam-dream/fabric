@@ -50,7 +50,7 @@ revision and durable approval. Its tests exercise restart and an interrupted
 save; an explicit live runner compares both reviewers on the same frozen cases
 and verifies a full workflow across separate VMs.
 
-Dependencies on `llm_wire`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
+Dependencies on `llm_wire`, `http_gun`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../http_gun`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The LLM adapters take the application's started `http_gun.Client`; Fabric never starts or stops one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
 
 Run all maintained packages, consumers and local service/database checks with
 `nix develop -c python3 scripts/check.py full`. See [verification](docs/VERIFICATION.md)
@@ -149,7 +149,8 @@ pub fn desk_policy(
 }
 
 /// An agent is described, then built once: `build` reports every problem.
-/// A provider's model comes from `fabric/llm.model(settings, model_id)`.
+/// A provider's model comes from `fabric/llm.model(client, settings, model_id)`,
+/// given the application's started HTTP Gun client.
 pub fn desk(
   model: Model,
   pay: fn(Transfer) -> Result(Receipt, TransferError),

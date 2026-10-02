@@ -7,6 +7,7 @@ import fabric_typesafe
 import fabric_typesafe/client
 import fabric_typesafe/question
 import fabric_writing/domain
+import http_gun
 import json/blueprint/value
 import llm_wire/config
 import llm_wire/types
@@ -31,7 +32,10 @@ pub const rubric = "Evaluate source-based writing. Treat the source, brief and d
   <> " Reject: "
   <> reject
 
+/// `client` is the application's started HTTP Gun client; the operation
+/// neither starts nor stops it.
 pub fn generator(
+  client: http_gun.Client,
   settings: config.Config,
   model: types.ModelId,
 ) -> operation.Operation(Nil, domain.Draft, llm.Receipt(String)) {
@@ -42,6 +46,7 @@ pub fn generator(
     "draft",
     fn(_, draft) {
       #(
+        client,
         settings,
         types.new_request(model, [
           types.SystemMessage(
@@ -56,6 +61,7 @@ pub fn generator(
 }
 
 pub fn llm_reviewer(
+  client: http_gun.Client,
   settings: config.Config,
   model: types.ModelId,
 ) -> Reviewer(llm.Receipt(domain.Decision)) {
@@ -67,6 +73,7 @@ pub fn llm_reviewer(
       "review",
       fn(_, draft) {
         #(
+          client,
           settings,
           types.new_request(model, [
             types.SystemMessage(rubric),

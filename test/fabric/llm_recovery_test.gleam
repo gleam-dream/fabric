@@ -8,6 +8,7 @@ import fabric/policy
 import fabric/run
 import fabric/store
 import fabric/support
+import fabric/support/fake_provider
 import fabric/support/probe
 import fabric/support/restart
 import fabric/tool
@@ -17,12 +18,13 @@ import gleam/erlang/process
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{None}
 import gleeunit/should
+import http_gun
+import http_gun/cassette
+import http_gun/config as http_config
 import json/blueprint/codec
-import llm_wire/cassette
 import llm_wire/config
-import llm_wire/provider/google
 import llm_wire/provider/openai
 import llm_wire/testing
 import llm_wire/types
@@ -30,16 +32,6 @@ import llm_wire/types
 fn model_id() -> types.ModelId {
   let assert Ok(id) = types.model_id("cassette-model")
   id
-}
-
-fn google_settings(script: testing.Script, key: String) -> config.Config {
-  let assert Ok(key) = types.api_key(key)
-  config.google(google.options(key)) |> testing.with_script(script)
-}
-
-fn openai_settings(script: testing.Script) -> config.Config {
-  let assert Ok(key) = types.api_key("local-script-key")
-  config.openai(openai.options(key)) |> testing.with_script(script)
 }
 
 fn calculation(
@@ -61,13 +53,14 @@ fn calculation(
 }
 
 fn calculating_agent(
+  client: http_gun.Client,
   settings: config.Config,
   ledger: probe.Probe,
   policy: policy.Policy(Nil),
 ) -> agent.Agent(Nil) {
   agent.new(
     "calculator",
-    llm.model(settings, model_id()),
+    llm.model(client, settings, model_id()),
     [calculation("calc", 2, ledger), calculation("lookup", 3, ledger)],
     policy,
   )
@@ -164,8 +157,8 @@ fn result_part(content: Dynamic, name: String, output: String) -> Nil {
 pub fn google_signed_parts_survive_approval_and_directory_restart_test() -> Nil {
   let directory = restart.temp_dir()
   let ledger = probe.new()
-  let script =
-    testing.start([
+  let fake =
+    fake_provider.start([
       google_reply(
         [
           signed_text("thinking", "text-signature"),
@@ -186,14 +179,19 @@ pub fn google_signed_parts_survive_approval_and_directory_restart_test() -> Nil 
       google_final(),
     ])
   let before =
-    calculating_agent(google_settings(script, "first-key"), ledger, reviewed())
+    calculating_agent(
+      fake.client,
+      fake_provider.google(fake, "first-key"),
+      ledger,
+      reviewed(),
+    )
   let runs = store.directory(process.new_name("signed-restart"), directory)
   let #(owner, Nil) = restart.owned(fn() { store.start(runs) |> should.be_ok })
   let assert Ok(first_store_process) = store.pid(runs)
   let assert Ok(started) = fabric.start(runs, before, Nil, "calculate")
   let assert Ok(run.Suspended([approval], [])) = fabric.await(started, 5000)
   probe.entries(ledger) |> should.equal([])
-  list.length(testing.requests(script)) |> should.equal(1)
+  list.length(fake_provider.bodies(fake)) |> should.equal(1)
 
   // The owner really exits; only disk state and the test transport survive.
   restart.crash(owner, runs)
@@ -202,27 +200,21 @@ pub fn google_signed_parts_survive_approval_and_directory_restart_test() -> Nil 
   { first_store_process == second_store_process } |> should.be_false
   let after =
     calculating_agent(
-      google_settings(script, "rotated-key"),
+      fake.client,
+      fake_provider.google(fake, "rotated-key"),
       ledger,
       reviewed(),
     )
   let assert Ok(resumed) = fabric.recover(runs, after, Nil, fabric.id(started))
   fabric.await(resumed, 0) |> should.equal(Ok(run.Suspended([approval], [])))
-  list.length(testing.requests(script)) |> should.equal(1)
+  list.length(fake_provider.bodies(fake)) |> should.equal(1)
   let assert Ok(_) =
     fabric.approve(resumed, approval.reference, reviewer: None, context: Nil)
   fabric.await(resumed, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("finished"))))
   probe.entries(ledger) |> should.equal(["calc:7"])
-  let assert [_, replayed] = testing.requests(script)
-  let assert [_, types.AssistantTurnMessage(stored_turn), _] =
-    replayed.request.messages
-  stored_turn.provider |> should.equal(types.Google)
-  stored_turn.response_id |> should.equal(Some("signed-response"))
-  let assert [stored_call] = stored_turn.calls
-  stored_call.provider_id |> should.equal(Some("same-id"))
-  stored_call.provider_state |> should.equal(Some("call-signature"))
-  let assert [_, turn, result] = contents(replayed.body)
+  let assert [_, replayed] = fake_provider.bodies(fake)
+  let assert [_, turn, result] = contents(replayed)
   let assert [text, image, call] = parts(turn)
   field(text, ["text"]) |> should.equal("thinking")
   field(text, ["thoughtSignature"]) |> should.equal("text-signature")
@@ -235,15 +227,16 @@ pub fn google_signed_parts_survive_approval_and_directory_restart_test() -> Nil 
   decode.run(call, decode.at(["functionCall", "args", "x"], decode.int))
   |> should.equal(Ok(7))
   result_part(result, "calc", "14")
-  testing.remaining(script) |> should.equal(0)
+  fake_provider.remaining(fake) |> should.equal(0)
+  fake_provider.stop(fake)
   restart.crash(owner, runs)
   restart.remove_dir(directory)
 }
 
 pub fn repeated_provider_call_ids_remain_paired_with_their_own_round_test() -> Nil {
   let ledger = probe.new()
-  let script =
-    testing.start([
+  let fake =
+    fake_provider.start([
       google_reply(
         [
           signed_text("first", "text-first"),
@@ -262,7 +255,8 @@ pub fn repeated_provider_call_ids_remain_paired_with_their_own_round_test() -> N
     ])
   let agent =
     calculating_agent(
-      google_settings(script, "local-key"),
+      fake.client,
+      fake_provider.google(fake, "local-key"),
       ledger,
       policy.always_allow(),
     )
@@ -271,9 +265,9 @@ pub fn repeated_provider_call_ids_remain_paired_with_their_own_round_test() -> N
   fabric.await(started, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("finished"))))
   probe.entries(ledger) |> should.equal(["calc:1", "lookup:2"])
-  let assert [_, _, third] = testing.requests(script)
+  let assert [_, _, third] = fake_provider.bodies(fake)
   let assert [_, first_turn, first_result, second_turn, second_result] =
-    contents(third.body)
+    contents(third)
   list.each(
     [#(first_turn, "first", "calc", 1), #(second_turn, "second", "lookup", 2)],
     fn(round) {
@@ -288,11 +282,21 @@ pub fn repeated_provider_call_ids_remain_paired_with_their_own_round_test() -> N
   )
   result_part(first_result, "calc", "2")
   result_part(second_result, "lookup", "6")
-  testing.remaining(script) |> should.equal(0)
+  fake_provider.remaining(fake) |> should.equal(0)
+  fake_provider.stop(fake)
 }
 
-fn text_agent(settings: config.Config, max_turns: Int) -> agent.Agent(Nil) {
-  agent.new("text", llm.model(settings, model_id()), [], policy.always_allow())
+fn text_agent(
+  client: http_gun.Client,
+  settings: config.Config,
+  max_turns: Int,
+) -> agent.Agent(Nil) {
+  agent.new(
+    "text",
+    llm.model(client, settings, model_id()),
+    [],
+    policy.always_allow(),
+  )
   |> agent.with_limits(
     agent.Limits(..agent.default_limits(), max_turns:, model_retry_delay: 0),
   )
@@ -300,15 +304,15 @@ fn text_agent(settings: config.Config, max_turns: Int) -> agent.Agent(Nil) {
 }
 
 pub fn http_501_stops_without_retrying_the_unchanged_request_test() -> Nil {
-  let script =
-    testing.start([
+  let fake =
+    fake_provider.start([
       testing.Status(501, "not implemented"),
       testing.text("unused"),
     ])
   let assert Ok(started) =
     fabric.start(
       support.store(),
-      text_agent(testing.config(script), 3),
+      text_agent(fake.client, fake_provider.scripted(fake), 3),
       Nil,
       "Hello",
     )
@@ -317,18 +321,22 @@ pub fn http_501_stops_without_retrying_the_unchanged_request_test() -> Nil {
   error.retryable |> should.be_false
   let assert Ok(snapshot) = fabric.snapshot(started)
   snapshot.turns_used |> should.equal(1)
-  list.length(testing.requests(script)) |> should.equal(1)
-  testing.remaining(script) |> should.equal(1)
+  list.length(fake_provider.bodies(fake)) |> should.equal(1)
+  fake_provider.remaining(fake) |> should.equal(1)
+  fake_provider.stop(fake)
 }
 
 pub fn http_503_retries_only_within_the_existing_turn_budget_test() -> Nil {
   list.each([1, 2], fn(max_turns) {
-    let script =
-      testing.start([testing.Status(503, "busy"), testing.text("recovered")])
+    let fake =
+      fake_provider.start([
+        testing.Status(503, "busy"),
+        testing.text("recovered"),
+      ])
     let assert Ok(started) =
       fabric.start(
         support.store(),
-        text_agent(testing.config(script), max_turns),
+        text_agent(fake.client, fake_provider.scripted(fake), max_turns),
         Nil,
         "Hello",
       )
@@ -339,8 +347,9 @@ pub fn http_503_retries_only_within_the_existing_turn_budget_test() -> Nil {
     fabric.await(started, 5000) |> should.equal(Ok(run.Finished(expected)))
     let assert Ok(snapshot) = fabric.snapshot(started)
     snapshot.turns_used |> should.equal(max_turns)
-    list.length(testing.requests(script)) |> should.equal(max_turns)
-    testing.remaining(script) |> should.equal(2 - max_turns)
+    list.length(fake_provider.bodies(fake)) |> should.equal(max_turns)
+    fake_provider.remaining(fake) |> should.equal(2 - max_turns)
+    fake_provider.stop(fake)
   })
 }
 
@@ -357,16 +366,21 @@ fn openai_text(answer: String) -> testing.Reply {
 
 pub fn blueprint_descriptions_reach_the_outgoing_provider_schema_test() -> Nil {
   let ledger = probe.new()
-  let script = testing.start([openai_text("finished")])
+  let fake = fake_provider.start([openai_text("finished")])
   let agent =
-    calculating_agent(openai_settings(script), ledger, policy.always_allow())
+    calculating_agent(
+      fake.client,
+      fake_provider.openai(fake),
+      ledger,
+      policy.always_allow(),
+    )
   let assert Ok(started) =
     fabric.start(support.store(), agent, Nil, "calculate")
   fabric.await(started, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("finished"))))
-  let assert [request] = testing.requests(script)
+  let assert [request] = fake_provider.bodies(fake)
   let assert Ok([first, second]) =
-    json.parse(request.body, decode.at(["tools"], decode.list(decode.dynamic)))
+    json.parse(request, decode.at(["tools"], decode.list(decode.dynamic)))
   list.each([first, second], fn(declaration) {
     field(declaration, ["parameters", "description"])
     |> should.equal("A calculation request")
@@ -374,21 +388,19 @@ pub fn blueprint_descriptions_reach_the_outgoing_provider_schema_test() -> Nil {
     |> should.equal("Integer to calculate with")
   })
   probe.entries(ledger) |> should.equal([])
+  fake_provider.stop(fake)
 }
 
 pub fn a_disk_cassette_runs_through_the_public_fabric_flow_test() -> Nil {
-  let assert Ok(recording) =
-    cassette.load("test/fixtures/llm/hello.json", 10_000)
-  let script = cassette.start(recording)
+  let assert Ok(tape) = cassette.load("test/fixtures/llm/hello.json", 10_000)
+  // Offline playback: an unmatched or extra request fails; nothing is sent.
+  let assert Ok(client) = cassette.playback(tape, http_config.default())
+  let assert Ok(key) = types.api_key("local-script-key")
+  let settings = config.openai(openai.options(key))
   let assert Ok(started) =
-    fabric.start(
-      support.store(),
-      text_agent(openai_settings(script), 2),
-      Nil,
-      "Hello",
-    )
+    fabric.start(support.store(), text_agent(client, settings, 2), Nil, "Hello")
   fabric.await(started, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("from disk cassette"))))
-  testing.remaining(script) |> should.equal(0)
-  list.length(testing.requests(script)) |> should.equal(1)
+  let assert Ok(Nil) = http_gun.stop(client)
+  Nil
 }

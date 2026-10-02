@@ -81,7 +81,8 @@ pub fn desk_policy(
 }
 
 /// An agent is described, then built once: `build` reports every problem.
-/// A provider's model comes from `fabric/llm.model(settings, model_id)`.
+/// A provider's model comes from `fabric/llm.model(client, settings, model_id)`,
+/// given the application's started HTTP Gun client.
 pub fn desk(
   model: Model,
   pay: fn(Transfer) -> Result(Receipt, TransferError),

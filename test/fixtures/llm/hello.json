@@ -1,21 +1,46 @@
 {
-  "version": 1,
+  "http_gun": 1,
   "exchanges": [
     {
       "request": {
+        "url": "https://api.openai.com:443/v1/responses",
         "method": "POST",
-        "endpoint": "https://api.openai.com/v1",
-        "path": "/v1/responses",
-        "body": "{\"model\":\"cassette-model\",\"input\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"stream\":true}"
+        "headers": [
+          ["accept", "text/event-stream"],
+          ["accept-encoding", "identity"],
+          ["content-type", "application/json"]
+        ],
+        "body": {
+          "bytes": 84,
+          "base64": "eyJtb2RlbCI6ImNhc3NldHRlLW1vZGVsIiwiaW5wdXQiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IkhlbGxvIn1dLCJzdHJlYW0iOnRydWV9"
+        }
       },
       "reply": {
-        "kind": "events",
+        "kind": "response",
+        "status": 200,
+        "headers": [["content-type", "text/event-stream"]],
         "chunks": [
-          "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"text\",\"type\":\"message\"}}\n\n",
-          "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"text\",\"delta\":\"from disk cassette\"}\n\n",
-          "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"text\",\"type\":\"message\"}}\n\n",
-          "event: response.completed\ndata: {\"response\":{\"id\":\"final\",\"status\":\"completed\"}}\n\n"
-        ]
+          {
+            "bytes": 98,
+            "base64": "ZXZlbnQ6IHJlc3BvbnNlLm91dHB1dF9pdGVtLmFkZGVkCmRhdGE6IHsib3V0cHV0X2luZGV4IjowLCJpdGVtIjp7ImlkIjoidGV4dCIsInR5cGUiOiJtZXNzYWdlIn19Cgo="
+          },
+          {
+            "bytes": 106,
+            "base64": "ZXZlbnQ6IHJlc3BvbnNlLm91dHB1dF90ZXh0LmRlbHRhCmRhdGE6IHsib3V0cHV0X2luZGV4IjowLCJpdGVtX2lkIjoidGV4dCIsImRlbHRhIjoiZnJvbSBkaXNrIGNhc3NldHRlIn0KCg=="
+          },
+          {
+            "bytes": 97,
+            "base64": "ZXZlbnQ6IHJlc3BvbnNlLm91dHB1dF9pdGVtLmRvbmUKZGF0YTogeyJvdXRwdXRfaW5kZXgiOjAsIml0ZW0iOnsiaWQiOiJ0ZXh0IiwidHlwZSI6Im1lc3NhZ2UifX0KCg=="
+          },
+          {
+            "bytes": 82,
+            "base64": "ZXZlbnQ6IHJlc3BvbnNlLmNvbXBsZXRlZApkYXRhOiB7InJlc3BvbnNlIjp7ImlkIjoiZmluYWwiLCJzdGF0dXMiOiJjb21wbGV0ZWQifX0KCg=="
+          }
+        ],
+        "ending": {
+          "kind": "complete",
+          "trailers": []
+        }
       }
     }
   ]
