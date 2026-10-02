@@ -6,6 +6,7 @@
 import fabric/graph/llm as graph_llm
 import fabric/llm
 import fabric/run
+import fabric/support/codecs
 import fabric/support/fake_provider
 import gleam/string
 import gleeunit/should
@@ -27,7 +28,7 @@ pub fn inspecting_an_llm_model_or_operation_never_prints_the_key_test() {
     graph_llm.new(
       run.Identity("inspect-decision", 1),
       codec.string(),
-      codec.field("approve", codec.bool()),
+      codecs.one_field("approve", codec.bool()),
       "decision",
       fn(_: Nil, text) {
         #(

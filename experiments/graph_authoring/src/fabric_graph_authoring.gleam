@@ -261,9 +261,7 @@ fn decode(
   error: fn(String) -> NodeError,
 ) -> Result(value, NodeError) {
   codec.decode_json(contract, json)
-  |> result.map_error(fn(reason) {
-    error(codec.render_json_decode_error(reason))
-  })
+  |> result.map_error(fn(reason) { error(codec.describe_decode_error(reason)) })
 }
 
 /// Wave 1 deliberately runs only synchronous scripted operations. Never use

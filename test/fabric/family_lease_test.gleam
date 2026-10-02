@@ -8,6 +8,7 @@ import fabric/policy
 import fabric/run
 import fabric/store
 import fabric/support
+import fabric/support/codecs
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
@@ -147,7 +148,7 @@ pub fn a_stopping_child_is_recovered_beneath_a_live_cancelling_parent_test() {
     tool.define(
       "slow",
       "Work with late settlement",
-      codec.field("x", codec.string()),
+      codecs.one_field("x", codec.string()),
       codec.string(),
     )
   let child_tool =

@@ -2,8 +2,6 @@ import fabric_typesafe/question
 import gleam/list
 import gleam/option.{None}
 import gleeunit/should
-import json/blueprint/parser
-import json/blueprint/parser_limits
 import json/blueprint/value
 
 type Decision {
@@ -50,8 +48,7 @@ pub fn typed_batch_preserves_boolean_choice_and_rubric_evidence_test() {
 }
 
 fn json(raw: String) -> value.Value {
-  let assert Ok(value) =
-    parser.parse_value_from_string(parser_limits.default(), raw)
+  let assert Ok(value) = value.parse(raw, value.default_limits())
   value
 }
 

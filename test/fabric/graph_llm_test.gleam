@@ -6,6 +6,7 @@ import fabric/policy
 import fabric/run
 import fabric/store
 import fabric/support
+import fabric/support/codecs
 import fabric/support/fake_provider
 import fabric/support/restart
 import gleam/dynamic/decode
@@ -23,7 +24,7 @@ import llm_wire/testing
 import llm_wire/types
 
 fn decision_codec() -> codec.Codec(Bool) {
-  codec.field("approve", codec.bool())
+  codecs.one_field("approve", codec.bool())
 }
 
 fn runtime(
@@ -234,7 +235,11 @@ pub fn tool_catalog_is_rejected_before_network_io_test() {
   let assert Ok(model) = types.model_id("review-model")
   let assert Ok(name) = types.tool_name("lookup")
   let assert Ok(tool) =
-    types.tool_from_codec(name, "lookup", codec.field("query", codec.string()))
+    types.tool_from_codec(
+      name,
+      "lookup",
+      codecs.one_field("query", codec.string()),
+    )
   let op =
     llm.new(
       run.Identity("structured-review", 1),
@@ -290,6 +295,13 @@ pub fn receipt_codec_rejects_changed_contracts_corruption_and_mismatched_native_
       Some(types.Usage(2, 1, 3)),
     )
   let assert Ok(saved) = codec.encode_json(codec, good)
+  saved
+  |> should.equal(
+    "{\"format\":\"fabric.graph.llm.v2\",\"model\":\"review-model\","
+    <> "\"outcome\":{\"tag\":\"answer\",\"value\":\"{\\\"approve\\\":true}\"},"
+    <> "\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}",
+  )
+  codec.decode_json(codec, saved) |> should.equal(Ok(good))
   codec.encode_json(
     codec,
     llm.Receipt(..good, outcome: llm.Answer(False, "{\"approve\":true}")),
@@ -303,7 +315,7 @@ pub fn receipt_codec_rejects_changed_contracts_corruption_and_mismatched_native_
   |> should.be_error
   codec.decode_json(
     codec,
-    string.replace(saved, "fabric.graph.llm.v1", "fabric.graph.llm.v2"),
+    string.replace(saved, "fabric.graph.llm.v2", "fabric.graph.llm.v3"),
   )
   |> should.be_error
   codec.decode_json(
@@ -311,11 +323,68 @@ pub fn receipt_codec_rejects_changed_contracts_corruption_and_mismatched_native_
     string.replace(saved, "\"answer\"", "\"unexpected\""),
   )
   |> should.be_error
-  codec.decode_json(codec, string.replace(saved, "[2,[1,3]]", "[-1,[1,3]]"))
+  codec.decode_json(
+    codec,
+    string.replace(saved, "\"input_tokens\":2", "\"input_tokens\":-1"),
+  )
   |> should.be_error
   codec.decode_json(
-    llm.receipt_codec(codec.field("approve", codec.string())),
+    llm.receipt_codec(codecs.one_field("approve", codec.string())),
     saved,
+  )
+  |> should.be_error
+}
+
+/// Receipts an earlier release stored as `fabric.graph.llm.v1` nested
+/// arrays still decode, with the same checks.
+pub fn receipt_codec_reads_v1_receipts_test() {
+  let codec = llm.receipt_codec(decision_codec())
+  let answer =
+    "[\"fabric.graph.llm.v1\",[\"review-model\","
+    <> "[[\"answer\",\"{\\\"approve\\\":true}\"],[2,[1,3]]]]]"
+  codec.decode_json(codec, answer)
+  |> should.equal(
+    Ok(llm.Receipt(
+      "review-model",
+      llm.Answer(True, "{\"approve\":true}"),
+      Some(types.Usage(2, 1, 3)),
+    )),
+  )
+  codec.decode_json(
+    codec,
+    "[\"fabric.graph.llm.v1\",[\"review-model\",[[\"refusal\",\"no\"],null]]]",
+  )
+  |> should.equal(Ok(llm.Receipt("review-model", llm.Refusal("no"), None)))
+  codec.decode_json(
+    codec,
+    "[\"fabric.graph.llm.v1\",[\"review-model\",[[\"output_limited\",\"par\"],null]]]",
+  )
+  |> should.equal(
+    Ok(llm.Receipt("review-model", llm.OutputLimited("par"), None)),
+  )
+  codec.decode_json(
+    codec,
+    string.replace(answer, "fabric.graph.llm.v1", "fabric.graph.llm.v2"),
+  )
+  |> should.be_error
+  codec.decode_json(
+    codec,
+    string.replace(answer, "\"answer\"", "\"unexpected\""),
+  )
+  |> should.be_error
+  codec.decode_json(codec, string.replace(answer, "[2,[1,3]]", "[-1,[1,3]]"))
+  |> should.be_error
+  codec.decode_json(codec, string.replace(answer, "true", "false"))
+  |> should.equal(
+    Ok(llm.Receipt(
+      "review-model",
+      llm.Answer(False, "{\"approve\":false}"),
+      Some(types.Usage(2, 1, 3)),
+    )),
+  )
+  codec.decode_json(
+    llm.receipt_codec(codecs.one_field("approve", codec.string())),
+    answer,
   )
   |> should.be_error
 }

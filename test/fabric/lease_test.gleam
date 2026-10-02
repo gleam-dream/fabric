@@ -308,10 +308,8 @@ pub fn a_slow_lease_event_handler_does_not_hold_up_the_store_test() {
     })
   let a = nodes.node(unreachable, "a", 1000)
   let entered = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id("lease-test-slow" <> int.to_string(int.random(1_000_000)))
-  let assert Ok(attachment) =
-    sinal.observe(id, o.renewal_failed(), fn(_, _failed) {
+  let attachment =
+    sinal.observe(o.renewal_failed(), fn(_, _failed) {
       process.send(entered, Nil)
       process.sleep(2000)
     })
@@ -661,12 +659,10 @@ pub fn a_tool_start_is_refused_once_another_owner_claimed_the_lease_test() {
   let memory = testing.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let replies = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id("lease-test-claim" <> int.to_string(int.random(1_000_000)))
   // The handler runs in the runner right after the model reply that queues
   // the tool is committed, before the tool starts, and holds it there.
-  let assert Ok(attachment) =
-    sinal.observe(id, o.model_turn(), fn(_, turn: o.ModelTurn) {
+  let attachment =
+    sinal.observe(o.model_turn(), fn(_, turn: o.ModelTurn) {
       let go = process.new_subject()
       process.send(replies, #(turn.run, process.self(), go))
       let _ = process.receive(go, 5000)
@@ -728,62 +724,40 @@ type Capture {
 /// Captures the lease events and takeovers, one line each.
 fn capture() -> Capture {
   let lines = process.new_subject()
-  let suffix = int.to_string(int.random(1_000_000_000))
   Capture(lines, [
-    attach_line(
-      lines,
-      "lease-lost" <> suffix,
-      o.lease_lost(),
-      fn(lost: o.LeaseLost) {
-        let assert Ok(#(node, _)) = string.split_once(lost.owner, "/")
-        "lease_lost "
-        <> lost.run
-        <> " "
-        <> node
-        <> " "
-        <> case lost.reason {
-          o.Revoked -> "revoked"
-          o.Unrenewed -> "unrenewed"
-        }
-      },
-    ),
-    attach_line(
-      lines,
-      "lease-taken" <> suffix,
-      o.run_taken_over(),
-      fn(taken: o.RunTakenOver) {
-        let assert Ok(#(node, _)) = string.split_once(taken.previous_owner, "/")
-        "run_taken_over "
-        <> taken.run
-        <> " "
-        <> int.to_string(taken.incarnation)
-        <> " "
-        <> node
-      },
-    ),
-    attach_line(
-      lines,
-      "lease-failed" <> suffix,
-      o.renewal_failed(),
-      fn(failed: o.RenewalFailed) {
-        "renewal_failed " <> int.to_string(failed.runs)
-      },
-    ),
+    attach_line(lines, o.lease_lost(), fn(lost: o.LeaseLost) {
+      let assert Ok(#(node, _)) = string.split_once(lost.owner, "/")
+      "lease_lost "
+      <> lost.run
+      <> " "
+      <> node
+      <> " "
+      <> case lost.reason {
+        o.Revoked -> "revoked"
+        o.Unrenewed -> "unrenewed"
+      }
+    }),
+    attach_line(lines, o.run_taken_over(), fn(taken: o.RunTakenOver) {
+      let assert Ok(#(node, _)) = string.split_once(taken.previous_owner, "/")
+      "run_taken_over "
+      <> taken.run
+      <> " "
+      <> int.to_string(taken.incarnation)
+      <> " "
+      <> node
+    }),
+    attach_line(lines, o.renewal_failed(), fn(failed: o.RenewalFailed) {
+      "renewal_failed " <> int.to_string(failed.runs)
+    }),
   ])
 }
 
 fn attach_line(
   lines: process.Subject(String),
-  name: String,
   event: sinal.Event(Nil, d),
   line: fn(d) -> String,
 ) -> sinal.Attachment {
-  let assert Ok(id) = sinal.handler_id(name)
-  let assert Ok(attachment) =
-    sinal.observe(id, event, fn(_, metadata) {
-      process.send(lines, line(metadata))
-    })
-  attachment
+  sinal.observe(event, fn(_, metadata) { process.send(lines, line(metadata)) })
 }
 
 /// The next `count` captured lines.

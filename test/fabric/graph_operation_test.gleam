@@ -2,6 +2,7 @@ import fabric/graph/operation
 import fabric/graph/signal
 import fabric/run
 import gleam/erlang/process
+import gleam/option.{None}
 import gleeunit/should
 import json/blueprint/codec
 
@@ -60,8 +61,14 @@ pub fn undecodable_input_does_not_enter_the_native_body_test() {
 }
 
 pub fn unusable_output_retains_evidence_of_the_returned_value_test() {
-  let reason = codec.CannotEncode(codec.CustomEncodeReason("not persistable"))
-  let output = codec.new(fn(_n: Int) { Error(reason) }, codec.decode_int_value)
+  let reason = codec.encode_failure("not persistable")
+  let output =
+    codec.custom(
+      encode: fn(_n: Int) { Error(reason) },
+      decode: codec.decode(codec.int(), _),
+      schema: None,
+      placeholder: 0,
+    )
   let op =
     operation.new(
       run.Identity("counter", 1),

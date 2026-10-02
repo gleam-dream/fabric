@@ -144,7 +144,7 @@ pub fn node(
     codec.decode_json(input, text)
     |> result.map_error(fn(error) {
       OperationRejected(
-        operation.InputDecodingFailed(codec.render_json_decode_error(error)),
+        operation.InputDecodingFailed(codec.describe_decode_error(error)),
       )
     })
   }
@@ -152,7 +152,7 @@ pub fn node(
     codec.decode_json(output, text)
     |> result.map_error(fn(error) {
       OperationRejected(
-        operation.OutputDecodingFailed(codec.render_json_decode_error(error)),
+        operation.OutputDecodingFailed(codec.describe_decode_error(error)),
       )
     })
   }
@@ -370,7 +370,7 @@ pub fn decode_state(
 ) -> Result(state, Error) {
   codec.decode_json(definition.state, text)
   |> result.map_error(fn(error) {
-    StateDecodingFailed(codec.render_json_decode_error(error))
+    StateDecodingFailed(codec.describe_decode_error(error))
   })
 }
 
@@ -381,7 +381,7 @@ pub fn decode_answer(
 ) -> Result(answer, Error) {
   codec.decode_json(definition.answer, text)
   |> result.map_error(fn(error) {
-    AnswerDecodingFailed(codec.render_json_decode_error(error))
+    AnswerDecodingFailed(codec.describe_decode_error(error))
   })
 }
 

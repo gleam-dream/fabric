@@ -15,7 +15,6 @@ import fabric/tool
 import fabric_saga
 import fabric_saga/support/watched
 import gleam/erlang/process.{type Subject}
-import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
@@ -32,12 +31,12 @@ pub type Failure {
 }
 
 fn definition() -> tool.Definition(String, String) {
-  tool.define(
-    "workflow",
-    "Runs the workflow.",
-    codec.field("x", codec.string()),
-    codec.field("y", codec.string()),
-  )
+  tool.define("workflow", "Runs the workflow.", one_field("x"), one_field("y"))
+}
+
+fn one_field(name: String) -> codec.Codec(String) {
+  use value <- codec.field(name, codec.string(), fn(value) { value })
+  codec.success(value)
 }
 
 /// Calls the tool once, then answers with every result it saw.
@@ -152,10 +151,8 @@ pub fn a_sibling_that_crashed_while_settling_is_uncertain_test() {
   // Release `b` only once Saga has recorded `a`'s failure, so that `b`
   // crashes while the run settles.
   let a_failed = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id("sibling-crash-" <> int.to_string(int.random(1_000_000)))
-  let assert Ok(attached) =
-    sinal.observe(id, observation.step_stopped(), fn(_, stopped) {
+  let attached =
+    sinal.observe(observation.step_stopped(), fn(_, stopped) {
       case stopped.workflow, stopped.step, stopped.result {
         "sibling_crash", "a", observation.AttemptFailed ->
           process.send(a_failed, Nil)

@@ -12,6 +12,7 @@ import fabric/model.{ToolCall, ToolRequest}
 import fabric/policy
 import fabric/run.{ActionId}
 import fabric/support
+import fabric/support/codecs
 import fabric/support/scripted
 import fabric/tool
 import gleam/list
@@ -44,7 +45,12 @@ fn env() -> controller.Env(Nil) {
 }
 
 fn scripted_slow() -> tool.Tool(Nil) {
-  tool.define("slow", "Slow.", codec.field("x", codec.string()), codec.string())
+  tool.define(
+    "slow",
+    "Slow.",
+    codecs.one_field("x", codec.string()),
+    codec.string(),
+  )
   |> tool.bind(fn(_, x) { Ok(x) }, fn(_: Nil) { tool.Explain("no") })
 }
 

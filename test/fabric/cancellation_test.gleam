@@ -21,7 +21,6 @@ import fabric/support/probe.{type Probe}
 import fabric/support/scripted
 import fabric/tool
 import gleam/erlang/process.{type Pid, type Subject}
-import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -43,10 +42,20 @@ fn research() -> tool.Definition(Topic, Summary) {
   tool.define(
     "research",
     "Delegate research.",
-    codec.field("topic", codec.string())
-      |> codec.imap(Topic, fn(topic) { topic.topic }),
-    codec.field("summary", codec.string())
-      |> codec.imap(Summary, fn(summary) { summary.summary }),
+    {
+      use topic <- codec.field("topic", codec.string(), fn(topic: Topic) {
+        topic.topic
+      })
+      codec.success(Topic(topic))
+    },
+    {
+      use summary <- codec.field(
+        "summary",
+        codec.string(),
+        fn(summary: Summary) { summary.summary },
+      )
+      codec.success(Summary(summary))
+    },
   )
 }
 
@@ -139,10 +148,8 @@ fn hold_runner(
   matches: fn(String) -> Bool,
 ) -> #(Subject(Held), sinal.Attachment) {
   let held = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id("held-runner-" <> int.to_string(int.random(1_000_000_000)))
-  let assert Ok(attached) =
-    sinal.observe(id, o.tool_dispatched(), fn(_, dispatched: o.ToolDispatched) {
+  let attached =
+    sinal.observe(o.tool_dispatched(), fn(_, dispatched: o.ToolDispatched) {
       case matches(dispatched.action.run), dispatched.action.call_id {
         True, "t1" -> {
           let release = process.new_subject()
@@ -244,12 +251,8 @@ pub fn a_held_run_is_cancelled_through_its_record_test() {
 /// for the next model turn), until the test releases it.
 fn hold_on_settled() -> #(Subject(Held), sinal.Attachment) {
   let held = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id(
-      "settled-hold-" <> int.to_string(int.random(1_000_000_000)),
-    )
-  let assert Ok(attached) =
-    sinal.observe(id, o.tool_settled(), fn(_, settled: o.ToolSettled) {
+  let attached =
+    sinal.observe(o.tool_settled(), fn(_, settled: o.ToolSettled) {
       case settled.action.call_id {
         "t1" -> {
           let release = process.new_subject()
@@ -338,10 +341,8 @@ pub fn a_runner_whose_handler_cancelled_its_run_calls_no_model_test() {
   let probe = probe.new()
   let memory = support.store()
   let runners = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id("self-cancel-" <> int.to_string(int.random(1_000_000_000)))
-  let assert Ok(attached) =
-    sinal.observe(id, o.tool_settled(), fn(_, settled: o.ToolSettled) {
+  let attached =
+    sinal.observe(o.tool_settled(), fn(_, settled: o.ToolSettled) {
       let cancelled =
         fabric.cancel_stored(memory, support.id(settled.action.run))
       process.send(runners, #(process.self(), cancelled))
@@ -561,10 +562,8 @@ pub fn a_start_racing_an_ancestor_cancellation_never_runs_test() {
   let probe = probe.new()
   let backend = flaky.new()
   let starts = process.new_subject()
-  let assert Ok(id) =
-    sinal.handler_id("fence-race-" <> int.to_string(int.random(1_000_000_000)))
-  let assert Ok(attached) =
-    sinal.observe(id, o.model_turn(), fn(_, turn: o.ModelTurn) {
+  let attached =
+    sinal.observe(o.model_turn(), fn(_, turn: o.ModelTurn) {
       case string.ends_with(turn.run, "-1"), turn.turn {
         // The child's first turn queued `t1`: its next write stores the
         // start of `t1`. The test holds that write before the runner goes

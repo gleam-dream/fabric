@@ -64,28 +64,20 @@ pub type State {
 }
 
 fn state_codec() -> codec.Codec(State) {
-  let assert Ok(tagged) =
-    codec.tagged(
+  codec.union({
+    use submitting <- codec.variant(
       "submitting",
       client.request_codec(),
-      "accepted",
-      client.receipt_codec(),
+      Submitting,
     )
-  codec.imap(
-    tagged,
-    fn(value) {
-      case value {
-        codec.Left(request) -> Submitting(request)
-        codec.Right(receipt) -> Accepted(receipt)
-      }
-    },
-    fn(state) {
+    use accepted <- codec.variant("accepted", client.receipt_codec(), Accepted)
+    codec.match(fn(state) {
       case state {
-        Submitting(request) -> codec.Left(request)
-        Accepted(receipt) -> codec.Right(receipt)
+        Submitting(request) -> submitting(request)
+        Accepted(receipt) -> accepted(receipt)
       }
-    },
-  )
+    })
+  })
 }
 
 /// Submission saves the receipt before the graph enters its read-only wait.

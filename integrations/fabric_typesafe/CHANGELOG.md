@@ -17,6 +17,14 @@ package uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A bounded HTTPS client (`fabric_typesafe/client`) that never follows
   redirects and admits plain HTTP only on loopback.
 
+### Changed
+
+- Builds on json_blueprint wave 2: classifier JSON is parsed with
+  `value.parse` and written with `value.to_string`, which writes a decimal
+  with an exponent from -7 to 20 in plain form (`12.5`, not `1.25e1`). A
+  receipt compares parsed values, so `fabric.typesafe.receipt.v1` receipts
+  written before still decode.
+
 ### Fixed
 
 - `client.Config` keeps the API key as a closure, so `string.inspect` of a

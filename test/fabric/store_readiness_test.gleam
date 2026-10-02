@@ -12,7 +12,6 @@ import fabric/support/restart
 import fabric/support/scripted
 import fabric/testing
 import gleam/erlang/process
-import gleam/int
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
@@ -58,12 +57,8 @@ pub fn claims_cover_initial_work_and_only_successful_renewals_refresh_age_test()
   let failures = probe.new()
   let renewals = probe.new()
   let failed = process.new_subject()
-  let assert Ok(listener) =
-    sinal.handler_id(
-      "readiness-renewal-" <> int.to_string(int.random(1_000_000_000)),
-    )
-  let assert Ok(attachment) =
-    sinal.observe(listener, observation.renewal_failed(), fn(_, failure) {
+  let attachment =
+    sinal.observe(observation.renewal_failed(), fn(_, failure) {
       case string.starts_with(failure.owner, "readiness/") {
         True -> process.send(failed, Nil)
         False -> Nil

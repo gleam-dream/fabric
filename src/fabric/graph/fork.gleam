@@ -4,7 +4,6 @@
 
 import fabric/run
 import gleam/option.{type Option}
-import gleam/result
 import json/blueprint/codec
 
 pub type Occurrence {
@@ -66,29 +65,25 @@ pub type Failure {
 }
 
 /// Codec for a typed fork result, including its explicit failure alternative.
+/// The JSON is `{"tag": "ok", "value": output}` or
+/// `{"tag": "error", "value": [member, reason]}`.
 pub fn result_codec(
   success: codec.Codec(output),
-) -> Result(codec.Codec(Result(output, Failure)), codec.UnionError) {
+) -> codec.Codec(Result(output, Failure)) {
   let failure =
-    codec.imap(
-      codec.pair(codec.int(), codec.string()),
-      fn(pair) { Failure(pair.0, pair.1) },
-      fn(failure) { #(failure.member, failure.reason) },
+    codec.pair(codec.int(), codec.string())
+    |> codec.map(
+      decode: fn(pair) { Failure(pair.0, pair.1) },
+      encode: fn(failure: Failure) { #(failure.member, failure.reason) },
     )
-  use tagged <- result.map(codec.tagged("ok", success, "error", failure))
-  codec.imap(
-    tagged,
-    fn(value) {
+  codec.union({
+    use ok <- codec.variant("ok", success, Ok)
+    use error <- codec.variant("error", failure, Error)
+    codec.match(fn(value) {
       case value {
-        codec.Left(value) -> Ok(value)
-        codec.Right(failure) -> Error(failure)
+        Ok(value) -> ok(value)
+        Error(failure) -> error(failure)
       }
-    },
-    fn(value) {
-      case value {
-        Ok(value) -> codec.Left(value)
-        Error(failure) -> codec.Right(failure)
-      }
-    },
-  )
+    })
+  })
 }

@@ -40,13 +40,18 @@ pub type Score {
 }
 
 pub opaque type Question(a) {
-  Question(definition: Value, decode: fn(Value) -> Result(a, String))
+  Question(
+    definition: Value,
+    decode: fn(Value) -> Result(a, String),
+    placeholder: a,
+  )
 }
 
 pub opaque type Batch(a) {
   Batch(
     definitions: List(#(String, Value)),
     decode: fn(List(#(String, Value))) -> Result(a, String),
+    placeholder: a,
   )
 }
 
@@ -64,20 +69,19 @@ pub fn noul(
       [#("criteria", value.Object([#("true", yes), #("false", no)]))]
     }
   })
-  Ok(
-    Question(
-      value.Object([
-        #("type", value.String("noul")),
-        #("instructions", instructions),
-        ..criteria
-      ]),
-      fn(raw) {
-        use fields <- result.try(answer_fields(raw, "noul"))
-        use raw <- result.try(wire.required(fields, "noul"))
-        wire.between(raw, 0, 1) |> result.map(Noul)
-      },
-    ),
-  )
+  Ok(Question(
+    value.Object([
+      #("type", value.String("noul")),
+      #("instructions", instructions),
+      ..criteria
+    ]),
+    fn(raw) {
+      use fields <- result.try(answer_fields(raw, "noul"))
+      use raw <- result.try(wire.required(fields, "noul"))
+      wire.between(raw, 0, 1) |> result.map(Noul)
+    },
+    Noul(0.0),
+  ))
 }
 
 /// Labels map to application-native values. The original labels and complete
@@ -105,55 +109,58 @@ pub fn choice(
     }),
   )
   use _ <- result.try(
-    value.object(criteria, value.RejectDuplicates)
+    value.object(criteria)
     |> result.map_error(fn(_) { "duplicate Choice label" }),
   )
   let labels =
     list.map(alternatives, fn(option) { #(option.label, option.value) })
-  Ok(
-    Question(
-      value.Object([
-        #("type", value.String("choice")),
-        #("instructions", instructions),
-        #("criteria", value.Object(criteria)),
-      ]),
-      fn(raw) {
-        use fields <- result.try(answer_fields(raw, "choice"))
-        use selected <- result.try(
-          wire.required(fields, "choice") |> result.try(wire.text),
-        )
-        use selected_value <- result.try(
-          list.key_find(labels, selected)
-          |> result.map_error(fn(_) { "unknown selected Choice label" }),
-        )
-        use probabilities <- result.try(distribution(fields, wire.keys(labels)))
-        use selected_probability <- result.try(
-          list.key_find(probabilities, selected)
-          |> result.map_error(fn(_) { "missing selected Choice probability" }),
-        )
-        use Nil <- result.try(wire.require(
-          list.all(probabilities, fn(p) {
-            p.1 <=. selected_probability +. 0.00001
-          }),
-          "selected Choice label is not maximal",
-        ))
-        use confidence <- result.try(
-          wire.required(fields, "confidence")
-          |> result.try(fn(n) { wire.between(n, 0, 1) }),
-        )
-        use typed <- result.map(
-          list.try_map(labels, fn(label) {
-            use probability <- result.map(
-              list.key_find(probabilities, label.0)
-              |> result.map_error(fn(_) { "missing Choice probability" }),
-            )
-            Probability(label.0, label.1, probability)
-          }),
-        )
-        Choice(selected_value, selected, typed, confidence)
-      },
-    ),
+  use first <- result.try(
+    list.first(alternatives)
+    |> result.replace_error("a Choice requires 2–255 options"),
   )
+  Ok(Question(
+    value.Object([
+      #("type", value.String("choice")),
+      #("instructions", instructions),
+      #("criteria", value.Object(criteria)),
+    ]),
+    fn(raw) {
+      use fields <- result.try(answer_fields(raw, "choice"))
+      use selected <- result.try(
+        wire.required(fields, "choice") |> result.try(wire.text),
+      )
+      use selected_value <- result.try(
+        list.key_find(labels, selected)
+        |> result.map_error(fn(_) { "unknown selected Choice label" }),
+      )
+      use probabilities <- result.try(distribution(fields, wire.keys(labels)))
+      use selected_probability <- result.try(
+        list.key_find(probabilities, selected)
+        |> result.map_error(fn(_) { "missing selected Choice probability" }),
+      )
+      use Nil <- result.try(wire.require(
+        list.all(probabilities, fn(p) {
+          p.1 <=. selected_probability +. 0.00001
+        }),
+        "selected Choice label is not maximal",
+      ))
+      use confidence <- result.try(
+        wire.required(fields, "confidence")
+        |> result.try(fn(n) { wire.between(n, 0, 1) }),
+      )
+      use typed <- result.map(
+        list.try_map(labels, fn(label) {
+          use probability <- result.map(
+            list.key_find(probabilities, label.0)
+            |> result.map_error(fn(_) { "missing Choice probability" }),
+          )
+          Probability(label.0, label.1, probability)
+        }),
+      )
+      Choice(selected_value, selected, typed, confidence)
+    },
+    Choice(first.value, first.label, [], 0.0),
+  ))
 }
 
 /// The position belongs to the authored rubric, from 0 through levels - 1.
@@ -169,47 +176,45 @@ pub fn score(
   use levels <- result.try(list.try_map(levels, wire.content))
   let legend =
     list.index_map(levels, fn(level, index) { #(int.to_string(index), level) })
-  Ok(
-    Question(
-      value.Object([
-        #("type", value.String("score")),
-        #("instructions", instructions),
-        #("criteria", value.Array(levels)),
-      ]),
-      fn(raw) {
-        use fields <- result.try(answer_fields(raw, "score"))
-        use returned_legend <- result.try(wire.required(fields, "legend"))
-        use _ <- result.try(wire.object(returned_legend))
-        use Nil <- result.try(wire.require(
-          wire.canonical(returned_legend)
-            == wire.canonical(value.Object(legend)),
-          "Score legend differs from the sent rubric",
-        ))
-        use probabilities <- result.try(distribution(fields, wire.keys(legend)))
-        use position <- result.try(
-          wire.required(fields, "score")
-          |> result.try(fn(n) { wire.between(n, 0, list.length(levels) - 1) }),
-        )
-        // The distribution is in rubric order after admission.
-        let indexed =
-          list.index_map(probabilities, fn(p, index) { #(index, p.1) })
-        let expected =
-          list.fold(indexed, 0.0, fn(total, p) {
-            total +. int.to_float(p.0) *. p.1
-          })
-        use Nil <- result.try(wire.require(
-          float.absolute_value(position -. expected)
-            <=. 0.00001 *. int.to_float(list.length(levels)),
-          "Score disagrees with its distribution",
-        ))
-        use confidence <- result.map(
-          wire.required(fields, "confidence")
-          |> result.try(fn(n) { wire.between(n, 0, 1) }),
-        )
-        Score(position, indexed, confidence, levels)
-      },
-    ),
-  )
+  Ok(Question(
+    value.Object([
+      #("type", value.String("score")),
+      #("instructions", instructions),
+      #("criteria", value.Array(levels)),
+    ]),
+    fn(raw) {
+      use fields <- result.try(answer_fields(raw, "score"))
+      use returned_legend <- result.try(wire.required(fields, "legend"))
+      use _ <- result.try(wire.object(returned_legend))
+      use Nil <- result.try(wire.require(
+        wire.canonical(returned_legend) == wire.canonical(value.Object(legend)),
+        "Score legend differs from the sent rubric",
+      ))
+      use probabilities <- result.try(distribution(fields, wire.keys(legend)))
+      use position <- result.try(
+        wire.required(fields, "score")
+        |> result.try(fn(n) { wire.between(n, 0, list.length(levels) - 1) }),
+      )
+      // The distribution is in rubric order after admission.
+      let indexed =
+        list.index_map(probabilities, fn(p, index) { #(index, p.1) })
+      let expected =
+        list.fold(indexed, 0.0, fn(total, p) {
+          total +. int.to_float(p.0) *. p.1
+        })
+      use Nil <- result.try(wire.require(
+        float.absolute_value(position -. expected)
+          <=. 0.00001 *. int.to_float(list.length(levels)),
+        "Score disagrees with its distribution",
+      ))
+      use confidence <- result.map(
+        wire.required(fields, "confidence")
+        |> result.try(fn(n) { wire.between(n, 0, 1) }),
+      )
+      Score(position, indexed, confidence, levels)
+    },
+    Score(0.0, [], 0.0, levels),
+  ))
 }
 
 pub fn ask(id: String, question: Question(a)) -> Result(Batch(a), String) {
@@ -218,9 +223,11 @@ pub fn ask(id: String, question: Question(a)) -> Result(Batch(a), String) {
     "empty classifier question ID",
   ))
   let decode = question.decode
-  Batch([#(id, question.definition)], fn(fields) {
-    wire.required(fields, id) |> result.try(decode)
-  })
+  Batch(
+    [#(id, question.definition)],
+    fn(fields) { wire.required(fields, id) |> result.try(decode) },
+    question.placeholder,
+  )
 }
 
 /// Independent questions share one state and HTTP request, with native answers.
@@ -234,18 +241,29 @@ pub fn combine(
     "classifier question count exceeds 256",
   ))
   use _ <- result.try(
-    value.object(entries, value.RejectDuplicates)
+    value.object(entries)
     |> result.map_error(fn(_) { "duplicate classifier question ID" }),
   )
   let decode_left = left.decode
   let decode_right = right.decode
   Ok(
-    Batch(entries, fn(fields) {
-      use left <- result.try(decode_left(fields))
-      use right <- result.map(decode_right(fields))
-      #(left, right)
-    }),
+    Batch(
+      entries,
+      fn(fields) {
+        use left <- result.try(decode_left(fields))
+        use right <- result.map(decode_right(fields))
+        #(left, right)
+      },
+      #(left.placeholder, right.placeholder),
+    ),
   )
+}
+
+/// An answer of the batch's type, for a codec that needs one; it is not a
+/// real answer.
+@internal
+pub fn placeholder(batch: Batch(a)) -> a {
+  batch.placeholder
 }
 
 pub fn definitions(batch: Batch(a)) -> Value {

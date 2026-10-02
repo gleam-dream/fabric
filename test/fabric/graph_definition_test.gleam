@@ -5,6 +5,7 @@ import fabric/internal/graph/record
 import fabric/policy
 import fabric/run
 import gleam/list
+import gleam/option.{None}
 import gleam/result
 import gleeunit/should
 import json/blueprint/codec
@@ -257,7 +258,13 @@ pub fn runtime_routes_must_be_declared_even_if_the_destination_exists_test() {
 }
 
 pub fn codecs_without_provider_schema_are_sufficient_for_durable_values_test() {
-  let native = codec.new(codec.encode_int_value, codec.decode_int_value)
+  let native =
+    codec.custom(
+      encode: codec.encode(codec.int(), _),
+      decode: codec.decode(codec.int(), _),
+      schema: None,
+      placeholder: 0,
+    )
   codec.schema(native) |> result.is_error |> should.be_true
   let op =
     operation.new(

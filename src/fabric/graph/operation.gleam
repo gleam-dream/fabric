@@ -181,7 +181,7 @@ pub fn job_canceller(
       use receipt <- result.try(
         codec.decode_json(operation.input, encoded)
         |> result.map_error(fn(error) {
-          InputDecodingFailed(codec.render_json_decode_error(error))
+          InputDecodingFailed(codec.describe_decode_error(error))
         }),
       )
       request(context, invocation, receipt) |> result.map_error(BodyFailed)
@@ -396,7 +396,7 @@ fn decode_input(
 ) -> Result(input, Error) {
   codec.decode_json(operation.input, text)
   |> result.map_error(fn(error) {
-    InputDecodingFailed(codec.render_json_decode_error(error))
+    InputDecodingFailed(codec.describe_decode_error(error))
   })
 }
 
@@ -407,7 +407,7 @@ pub fn decode_output(
 ) -> Result(output, Error) {
   codec.decode_json(operation.output, text)
   |> result.map_error(fn(error) {
-    OutputDecodingFailed(codec.render_json_decode_error(error))
+    OutputDecodingFailed(codec.describe_decode_error(error))
   })
 }
 

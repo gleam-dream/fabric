@@ -327,8 +327,7 @@ pub fn cancel_after_join_failure_keeps_both_completed_members_test() {
   let assert graph.Blocked(reference, graph.InvalidResult(_, _)) =
     blocked.status
   blocked.receipts |> should.equal([])
-  let assert Ok(output) =
-    fork.result_codec(codec.pair(codec.int(), codec.string()))
+  let output = fork.result_codec(codec.pair(codec.int(), codec.string()))
   let assert Ok(forged) = codec.encode_json(output, Ok(#(99, "changed")))
   graph.reconcile(handle, reference, forged) |> should.be_error
   let assert Ok(_) = graph.recover(handle)

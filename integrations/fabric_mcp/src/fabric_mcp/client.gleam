@@ -6,9 +6,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import json/blueprint/codec
-import json/blueprint/json_text
-import json/blueprint/parser
-import json/blueprint/parser_limits
 import json/blueprint/value.{type Value}
 
 pub const protocol_version = "2026-07-28"
@@ -127,32 +124,31 @@ pub fn request_with_timeout(
     },
   )
   use params <- result.try(
-    value.object(
-      [
-        #(
-          "_meta",
-          value.Object([
-            #(
-              "io.modelcontextprotocol/protocolVersion",
-              value.String(protocol_version),
-            ),
-            #(
-              "io.modelcontextprotocol/clientInfo",
-              value.Object([
-                #("name", value.String("fabric_mcp")),
-                #("version", value.String("0.1.0")),
-              ]),
-            ),
-            #("io.modelcontextprotocol/clientCapabilities", value.Object([])),
-          ]),
-        ),
-        ..parameters
-      ],
-      value.RejectDuplicates,
-    )
-    |> result.map_error(fn(error) { BeforeSend(string.inspect(error)) }),
+    value.object([
+      #(
+        "_meta",
+        value.Object([
+          #(
+            "io.modelcontextprotocol/protocolVersion",
+            value.String(protocol_version),
+          ),
+          #(
+            "io.modelcontextprotocol/clientInfo",
+            value.Object([
+              #("name", value.String("fabric_mcp")),
+              #("version", value.String("0.1.0")),
+            ]),
+          ),
+          #("io.modelcontextprotocol/clientCapabilities", value.Object([])),
+        ]),
+      ),
+      ..parameters
+    ])
+    |> result.map_error(fn(error) {
+      BeforeSend("duplicate request parameter: " <> error.key)
+    }),
   )
-  let raw = json_text.render_value(params)
+  let raw = value.to_string(params)
   use Nil <- result.try(
     case
       bit_array.byte_size(bit_array.from_string(raw)) > client.options.max_bytes
@@ -164,7 +160,7 @@ pub fn request_with_timeout(
   // Value constructors allow nested duplicate object keys. Validate the exact
   // outbound bytes before they can cause an external effect.
   use _ <- result.try(
-    parser.parse_value_from_string(parser_limits.default(), raw)
+    value.parse(raw, value.default_limits())
     |> result.map_error(fn(_) {
       BeforeSend("request is not valid bounded JSON")
     }),
@@ -175,7 +171,7 @@ pub fn request_with_timeout(
 /// Called by the native port owner before another request can be dispatched.
 @internal
 pub fn admit_frame(raw: String) -> Frame {
-  case parser.parse_value_from_string(parser_limits.default(), raw) {
+  case value.parse(raw, value.default_limits()) {
     Error(_) -> InvalidFrame("invalid or unbounded JSON response")
     Ok(value.Object(fields)) -> admit_envelope(fields, raw)
     Ok(_) -> InvalidFrame("JSON-RPC message must be an object")
@@ -190,7 +186,7 @@ fn admit_envelope(fields: List(#(String, Value)), raw: String) -> Frame {
     field(fields, "params")
   {
     Some(value.String("2.0")), Some(wire_id), None, None ->
-      case codec.decode_int_value(wire_id) {
+      case codec.decode(codec.int(), wire_id) {
         Ok(id) if id > 0 && id <= 9_007_199_254_740_991 ->
           case decode_payload(id, fields, raw) {
             Error(InvalidResponse(reason)) -> InvalidFrame(reason)
@@ -227,7 +223,7 @@ fn decode_payload(
     None, Some(value.Object(error)) ->
       case field(error, "code"), field(error, "message") {
         Some(code), Some(value.String(message)) ->
-          case codec.decode_int_value(code) {
+          case codec.decode(codec.int(), code) {
             Ok(code) -> Error(RemoteError(code, message, field(error, "data")))
             Error(_) ->
               Error(InvalidResponse("JSON-RPC error code must be an integer"))

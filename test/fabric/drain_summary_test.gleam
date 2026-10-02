@@ -14,7 +14,6 @@ import fabric/support/restart
 import fabric/support/scripted
 import fabric/testing
 import gleam/erlang/process
-import gleam/int
 import gleam/option.{None}
 import gleeunit/should
 import json/blueprint/codec
@@ -52,18 +51,12 @@ fn slow(ledger: probe.Probe) -> agent.Agent(Nil) {
   |> support.agent
 }
 
-fn handler_id() -> sinal.HandlerId {
-  let assert Ok(id) =
-    sinal.handler_id("drain-" <> int.to_string(int.random(1_000_000_000)))
-  id
-}
-
 fn capture(
   name: process.Name(store.Message),
 ) -> #(process.Subject(o.Drain), sinal.Attachment) {
   let events = process.new_subject()
-  let assert Ok(attached) =
-    sinal.observe(handler_id(), o.drain(), fn(summary, store_name) {
+  let attached =
+    sinal.observe(o.drain(), fn(summary, store_name) {
       case store_name == name_text(name) {
         True -> process.send(events, summary)
         False -> Nil
@@ -202,8 +195,8 @@ pub fn a_handoff_can_be_confirmed_even_if_its_runner_is_then_killed_test() {
   let application = restart.application(runs)
   let assert Ok(handle) = fabric.start(runs, slow(ledger), Nil, "go")
   let held = probe.arrival(ledger)
-  let assert Ok(blocked) =
-    sinal.observe(handler_id(), o.run_handed_off(), fn(_, meta) {
+  let blocked =
+    sinal.observe(o.run_handed_off(), fn(_, meta) {
       case meta.run == support.text(fabric.id(handle)) {
         True -> probe.gate(observations, "handoff observer")
         False -> Nil
@@ -222,8 +215,8 @@ pub fn a_handoff_can_be_confirmed_even_if_its_runner_is_then_killed_test() {
 pub fn a_blocked_summary_observer_does_not_hold_shutdown_test() {
   let name = process.new_name("drain-observer")
   let observations = probe.new()
-  let assert Ok(attached) =
-    sinal.observe(handler_id(), o.drain(), fn(_, meta) {
+  let attached =
+    sinal.observe(o.drain(), fn(_, meta) {
       case meta == name_text(name) {
         True -> probe.gate(observations, "summary observer")
         False -> Nil
@@ -350,8 +343,8 @@ pub fn store_loss_during_drain_reports_unavailable_accounting_test() {
   let name = process.new_name("drain-store-loss")
   let assert Ok(runs) = store.with_drain(store.in_memory(name), 100)
   let unavailable = process.new_subject()
-  let assert Ok(attached) =
-    sinal.observe(handler_id(), o.drain_unavailable(), fn(_, meta) {
+  let attached =
+    sinal.observe(o.drain_unavailable(), fn(_, meta) {
       case meta == name_text(name) {
         True -> process.send(unavailable, Nil)
         False -> Nil

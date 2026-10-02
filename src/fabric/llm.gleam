@@ -28,7 +28,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import http_gun
-import json/blueprint/runtime
+import json/blueprint/contract
 import llm_wire/config
 import llm_wire/retry
 import llm_wire/session
@@ -84,7 +84,7 @@ fn declaration(
     types.tool_name(spec.name) |> result.map_error(name_failure(spec.name, _)),
   )
   use contract <- result.map(
-    runtime.from_schema(spec.schema)
+    contract.from_schema(spec.schema)
     |> result.map_error(fn(error) {
       model.ModelError(
         "tool "

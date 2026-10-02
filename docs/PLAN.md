@@ -189,7 +189,7 @@ an idle run is data in the store with no process holding it.
   active. An end that arrives after that is refused.
 - **Observations are derived from committed transitions.** The runtime
   compares the state before and after every successful commit and emits
-  Sinal events with `sinal/forwarder.emit_routed`; the controller emits
+  Sinal events with `sinal.emit`, which follows forwarder routes; the controller emits
   nothing. Handlers run in the committing process unless the application
   routes `[fabric]` through a forwarder. A command is answered before its
   commit's events are emitted, and a runner that does not take a command
@@ -1663,7 +1663,8 @@ changed):
 - **json_blueprint descriptions and decode-error rendering** (resolved in
   `129c963`). `codec.describe` annotates schemas without changing validation;
   llm_wire `cc79a69` preserves those annotations in provider schemas.
-  Fabric uses `codec.render_json_decode_error`, adopted in `dffdfda`.
+  Fabric used `codec.render_json_decode_error`, adopted in `dffdfda`; since
+  json_blueprint wave 2 it uses `codec.describe_decode_error`.
 - **Unpublished path dependencies.** json_blueprint reports version 1.7.1 on
   its unreleased 2.0 branch; llm_wire, json_blueprint, and sinal resolve only
   as `../` path dependencies, so `.github/workflows/ci.yml` cannot build Fabric
@@ -1698,26 +1699,29 @@ adopted here:
   them for every outcome; `fabric_saga` classifies from it
   (`a_crash_retried_to_success_is_uncertain_test`, `verdict_test`).
 - **Sinal: a handler that blocks holds up the emitter** (resolved in sinal
-  `c886825`). `forwarder.emit_routed` follows the application's routes;
-  Fabric emits with it, and `consumers/app` routes `[fabric]` at start
+  `c886825`). `forwarder.emit_routed`, and since sinal wave 2
+  `sinal.emit` itself, follows the application's routes; Fabric emits with it, and `consumers/app` routes `[fabric]` at start
   (`a_routed_handler_runs_in_the_forwarder_and_does_not_stall_the_run_test`,
   `an_unrouted_handler_runs_in_the_runner_test`).
 
 ## Tested sibling revisions
 
 Fabric resolves its siblings as `../` path dependencies, each checked out on
-its default branch. The HTTP Gun client migration gates on 2026-10-01 passed
-against these revisions, each with a clean working tree level with its
-remote:
+its default branch. The Sinal and Blueprint wave 2 migration gate on
+2026-10-02 passed against these local revisions, each with a clean working
+tree; the wave is pushed only after every package passes:
 
 | Package        | Revision  | Relationship                                                                     |
 | -------------- | --------- | -------------------------------------------------------------------------------- |
-| llm_wire       | `220b134` | Direct dependency (`fabric/llm`, `fabric/graph/llm`); first client API `1c0ad61` |
-| http_gun       | `369da4f` | Direct dependency: the caller-owned client the LLM adapters run on               |
-| json_blueprint | `129c963` | Direct dependency (tool and output codecs)                                       |
-| sinal          | `8acec45` | Direct dependency (`fabric/observation`)                                         |
-| saga           | `2c9992e` | Dependency of `integrations/fabric_saga` and the consumer only; not of Fabric    |
+| llm_wire       | `bc5d626` | Direct dependency (`fabric/llm`, `fabric/graph/llm`); first client API `1c0ad61` |
+| http_gun       | `1dc20a1` | Direct dependency: the caller-owned client the LLM adapters run on               |
+| json_blueprint | `f55ec09` | Direct dependency (tool and output codecs); wave 2 API                           |
+| sinal          | `5aef827` | Direct dependency (`fabric/observation`); wave 2 API                             |
+| saga           | `43ae141` | Dependency of `integrations/fabric_saga` and the consumer only; not of Fabric    |
 
+The HTTP Gun client migration gates on 2026-10-01 passed against llm_wire
+`220b134`, http_gun `369da4f`, json_blueprint `129c963`, sinal `8acec45` and
+saga `2c9992e`.
 The 2026-09-29 library adoption gates passed against llm_wire `cc79a69`
 plus then-pending working-tree changes (SHA-256
 `250c885b15ba7d61371105e76cde10b5d8b8dec54ce609e144df70d92ff3f84d`), with

@@ -17,7 +17,6 @@ import fabric/support/probe
 import fabric/support/restart
 import fabric/testing
 import gleam/erlang/process
-import gleam/int
 import gleam/option.{None, Some}
 import gleeunit/should
 import json/blueprint/codec
@@ -176,12 +175,8 @@ pub fn a_failed_read_cannot_extend_a_deadline_and_cleanup_ignores_clock_failure_
 
 fn scan(runs, build) {
   let events = process.new_subject()
-  let assert Ok(handler) =
-    sinal.handler_id(
-      "job-deadline-" <> int.to_string(int.random(1_000_000_000)),
-    )
-  let assert Ok(attached) =
-    sinal.observe(handler, observation.sweep(), fn(summary, _) {
+  let attached =
+    sinal.observe(observation.sweep(), fn(summary, _) {
       process.send(events, summary)
     })
   let assert Ok(spec) =

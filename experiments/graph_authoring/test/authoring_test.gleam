@@ -1,5 +1,6 @@
 import fabric_graph_authoring as graph
 import gleam/list
+import gleam/option.{None}
 import gleeunit/should
 import json/blueprint/codec
 
@@ -123,7 +124,13 @@ pub fn pure_cycle_is_bounded_and_preserves_distinct_visits_test() {
 
 // G1: an internal codec need not advertise provider JSON Schema.
 pub fn schema_independent_codecs_and_receipts_test() {
-  let internal = codec.new(codec.encode_int_value, codec.decode_int_value)
+  let internal =
+    codec.custom(
+      encode: codec.encode(codec.int(), _),
+      decode: codec.decode(codec.int(), _),
+      schema: None,
+      placeholder: 0,
+    )
   let assert Error(_) = codec.schema(internal)
   let node =
     graph.node(
@@ -152,14 +159,16 @@ pub fn schema_independent_codecs_and_receipts_test() {
 }
 
 fn rejects_encode() -> codec.Codec(Int) {
-  codec.new(
-    fn(_) { Error(codec.CannotEncode(codec.CustomEncodeReason("rejected"))) },
-    codec.decode_int_value,
+  codec.custom(
+    encode: fn(_) { Error(encoding_rejection()) },
+    decode: codec.decode(codec.int(), _),
+    schema: None,
+    placeholder: 0,
   )
 }
 
 fn encoding_rejection() -> codec.EncodeError {
-  codec.CannotEncode(codec.CustomEncodeReason("rejected"))
+  codec.encode_failure("rejected")
 }
 
 // G4: the failing stage is public evidence, not a generic failed operation.
@@ -258,7 +267,7 @@ pub fn initial_state_and_final_answer_must_encode_test() {
 }
 
 pub fn state_encoding_failure_does_not_apply_update_test() {
-  let assert Ok(only_initial) = codec.integer_between(0, 0)
+  let only_initial = codec.integer_between(0, 0)
   let node = counter(fn(_, value) { Ok(graph.Finish(value, value)) }, [])
   let base = spec([node])
   let assert Ok(definition) =
@@ -313,9 +322,12 @@ pub fn typed_handler_failures_preserve_uncertainty_test() {
 }
 
 fn rejecting_decoder() -> codec.Codec(Int) {
-  codec.new(codec.encode_int_value, fn(_) {
-    Error(codec.CannotDecode(codec.CustomDecodeReason("receipt is invalid")))
-  })
+  codec.custom(
+    encode: codec.encode(codec.int(), _),
+    decode: fn(_) { Error(codec.decode_failure("receipt is invalid")) },
+    schema: None,
+    placeholder: 0,
+  )
 }
 
 pub fn receipt_decode_failures_are_distinct_test() {

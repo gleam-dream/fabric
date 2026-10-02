@@ -27,6 +27,22 @@ integration packages under `integrations/` keep their own changelogs.
   operation from `fabric/graph/llm` never prints the provider key held in
   their llm_wire settings.
 
+### Changed
+
+- Fabric builds on the wave 2 APIs of Sinal and json_blueprint. Events are
+  emitted with `sinal.emit`, which follows the application's forwarder
+  routes as `forwarder.emit_routed` did; the event names and metadata keys
+  are unchanged.
+- **Breaking:** `fabric/graph/fork.result_codec` returns the codec, not a
+  `Result`: json_blueprint's union builder has no construction error. The
+  JSON (`{"tag": "ok" | "error", "value": ...}`) is unchanged.
+- `fabric/graph/llm.receipt_codec` writes a receipt as the
+  `fabric.graph.llm.v2` object `{"format", "model", "outcome", "usage"}`. It
+  still reads the `fabric.graph.llm.v1` nested arrays stored before, with the
+  same checks.
+- Codec errors in tool admission and graph records are rendered by
+  json_blueprint's `describe_decode_error` and `describe_encode_error`.
+
 ### Fixed
 
 - The README no longer says the suite skips PostgreSQL:

@@ -1,8 +1,6 @@
 import fabric_typesafe/client
 import gleam/list
 import json/blueprint/codec
-import json/blueprint/parser
-import json/blueprint/parser_limits
 import json/blueprint/value
 
 pub type Server
@@ -38,8 +36,7 @@ pub fn field(object: value.Value, key: String) -> value.Value {
 }
 
 pub fn parse(raw: String) -> value.Value {
-  let assert Ok(value) =
-    parser.parse_value_from_string(parser_limits.default(), raw)
+  let assert Ok(value) = value.parse(raw, value.default_limits())
   value
 }
 

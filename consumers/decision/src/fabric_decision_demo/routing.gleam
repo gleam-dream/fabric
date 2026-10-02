@@ -14,15 +14,13 @@ pub type Decision {
 }
 
 pub fn decision_codec() -> codec.Codec(Decision) {
-  let assert Ok(choices) =
+  let choices =
     codec.string_enum([#("approve", Approve), #("revise", Revise)])
-  codec.field(
-    "decision",
-    choices
-      |> codec.describe(
-        "Approve only a correct arithmetic statement; otherwise revise.",
-      ),
-  )
+    |> codec.describe(
+      "Approve only a correct arithmetic statement; otherwise revise.",
+    )
+  use decision <- codec.field("decision", choices, fn(decision) { decision })
+  codec.success(decision)
 }
 
 pub fn runtime(

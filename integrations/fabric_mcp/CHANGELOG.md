@@ -20,6 +20,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Builds on json_blueprint wave 2: tool contracts are `contract.Contract`
+  values (was `runtime.RuntimeContract`), loaded with `contract.load`. The
+  saved descriptor and receipt formats (`fabric.mcp.tool.v1`,
+  `fabric.mcp.receipt.v1`) are unchanged.
 - `client.Options.environment` is now `fn() -> List(#(String, String))`,
   called once when `start` opens the server process. Server environment
   variables often carry credentials; `string.inspect` of an `Options` or a

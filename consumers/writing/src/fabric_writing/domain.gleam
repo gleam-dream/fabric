@@ -1,5 +1,6 @@
 //// Application values and codecs. No credential or live handle is retained.
 
+import gleam/option.{None}
 import json/blueprint/codec
 
 pub type Brief {
@@ -42,70 +43,62 @@ pub type Outcome {
 }
 
 pub fn brief_codec() -> codec.Codec(Brief) {
-  let assert Ok(c) =
-    codec.record2(
-      codec.required("source_path", codec.string()),
-      codec.required("instructions", codec.string()),
-      Brief,
-      fn(v) { v.source_path },
-      fn(v) { v.instructions },
-    )
-  c
+  use source_path <- codec.field("source_path", codec.string(), fn(v: Brief) {
+    v.source_path
+  })
+  use instructions <- codec.field("instructions", codec.string(), fn(v: Brief) {
+    v.instructions
+  })
+  codec.success(Brief(source_path:, instructions:))
 }
 
 pub fn text_codec() -> codec.Codec(Text) {
-  let assert Ok(c) =
-    codec.record3(
-      codec.required("source", codec.string()),
-      codec.required("brief", codec.string()),
-      codec.required("body", codec.string()),
-      Text,
-      fn(v) { v.source },
-      fn(v) { v.brief },
-      fn(v) { v.body },
-    )
-  c
+  use source <- codec.field("source", codec.string(), fn(v: Text) { v.source })
+  use brief <- codec.field("brief", codec.string(), fn(v: Text) { v.brief })
+  use body <- codec.field("body", codec.string(), fn(v: Text) { v.body })
+  codec.success(Text(source:, brief:, body:))
 }
 
 pub fn draft_codec() -> codec.Codec(Draft) {
   // Build the composed codec inside the callbacks so copying an operation into
   // its task does not repeatedly copy nested combinator environments.
-  codec.new(fn(v) { codec.encode(draft_fields(), v) }, fn(v) {
-    codec.decode(draft_fields(), v)
-  })
-}
-
-fn draft_fields() -> codec.Codec(Draft) {
-  let assert Ok(generation) = codec.integer_between(0, 3)
-  let assert Ok(c) =
-    codec.record2(
-      codec.required("text", text_codec()),
-      codec.required("generation", generation),
-      Draft,
-      fn(v) { v.text },
-      fn(v) { v.generation },
-    )
-  c
-}
-
-pub fn body_codec() -> codec.Codec(String) {
-  codec.field(
-    "body",
-    codec.string()
-      |> codec.describe(
-        "The complete draft, using only facts in the supplied source.",
-      ),
+  codec.custom(
+    encode: fn(v) { codec.encode(draft_fields(), v) },
+    decode: fn(v) { codec.decode(draft_fields(), v) },
+    schema: None,
+    placeholder: Draft(Text("", "", ""), 0),
   )
 }
 
+fn draft_fields() -> codec.Codec(Draft) {
+  use text <- codec.field("text", text_codec(), fn(v: Draft) { v.text })
+  use generation <- codec.field(
+    "generation",
+    codec.integer_between(0, 3),
+    fn(v: Draft) { v.generation },
+  )
+  codec.success(Draft(text:, generation:))
+}
+
+pub fn body_codec() -> codec.Codec(String) {
+  let body =
+    codec.string()
+    |> codec.describe(
+      "The complete draft, using only facts in the supplied source.",
+    )
+  use body <- codec.field("body", body, fn(body) { body })
+  codec.success(body)
+}
+
 pub fn decision_codec() -> codec.Codec(Decision) {
-  let assert Ok(c) =
+  let decision =
     codec.string_enum([
       #("approve", Approve),
       #("revise", Revise),
       #("reject", Reject),
     ])
-  codec.field("decision", c)
+  use decision <- codec.field("decision", decision, fn(decision) { decision })
+  codec.success(decision)
 }
 
 pub fn decision_text(decision: Decision) -> String {
@@ -117,77 +110,61 @@ pub fn decision_text(decision: Decision) -> String {
 }
 
 pub fn artifact_codec() -> codec.Codec(Artifact) {
-  let assert Ok(c) =
-    codec.record2(
-      codec.required("path", codec.string()),
-      codec.required("sha256", codec.string()),
-      Artifact,
-      fn(v) { v.path },
-      fn(v) { v.sha256 },
-    )
-  c
+  use path <- codec.field("path", codec.string(), fn(v: Artifact) { v.path })
+  use sha256 <- codec.field("sha256", codec.string(), fn(v: Artifact) {
+    v.sha256
+  })
+  codec.success(Artifact(path:, sha256:))
 }
 
 pub fn state_codec() -> codec.Codec(State) {
-  codec.new(fn(v) { codec.encode(state_fields(), v) }, fn(v) {
-    codec.decode(state_fields(), v)
-  })
+  codec.custom(
+    encode: fn(v) { codec.encode(state_fields(), v) },
+    decode: fn(v) { codec.decode(state_fields(), v) },
+    schema: None,
+    placeholder: Loading(Brief("", "")),
+  )
 }
 
 fn state_fields() -> codec.Codec(State) {
-  let assert Ok(stages) =
+  let stages =
     codec.string_enum([
       #("generate", Generating),
       #("review", Reviewing),
       #("publish", Publishing),
     ])
-  let assert Ok(c) =
-    codec.tagged(
-      "loading",
-      brief_codec(),
+  codec.union({
+    use loading <- codec.variant("loading", brief_codec(), Loading)
+    use working <- codec.variant(
       "working",
       codec.pair(stages, draft_codec()),
+      fn(pair) { Working(pair.0, pair.1) },
     )
-  codec.imap(
-    c,
-    fn(v) {
-      case v {
-        codec.Left(b) -> Loading(b)
-        codec.Right(#(s, d)) -> Working(s, d)
+    codec.match(fn(state) {
+      case state {
+        Loading(brief) -> loading(brief)
+        Working(stage, draft) -> working(#(stage, draft))
       }
-    },
-    fn(v) {
-      case v {
-        Loading(b) -> codec.Left(b)
-        Working(s, d) -> codec.Right(#(s, d))
-      }
-    },
-  )
+    })
+  })
 }
 
 pub fn outcome_codec() -> codec.Codec(Outcome) {
-  let assert Ok(stopped) =
+  let stopped =
     codec.string_enum([
       #("rejected", Rejected),
       #("revision_limit", RevisionLimit),
     ])
-  let assert Ok(c) =
-    codec.tagged("published", artifact_codec(), "stopped", stopped)
-  codec.try_imap(
-    c,
-    fn(v) {
-      Ok(case v {
-        codec.Left(a) -> Published(a)
-        codec.Right(outcome) -> outcome
-      })
-    },
-    fn(v) {
-      case v {
-        Published(a) -> Ok(codec.Left(a))
-        Rejected | RevisionLimit -> Ok(codec.Right(v))
+  codec.union({
+    use published <- codec.variant("published", artifact_codec(), Published)
+    use stopped <- codec.variant("stopped", stopped, fn(outcome) { outcome })
+    codec.match(fn(outcome) {
+      case outcome {
+        Published(artifact) -> published(artifact)
+        Rejected | RevisionLimit -> stopped(outcome)
       }
-    },
-  )
+    })
+  })
 }
 
 pub fn prompt(draft: Draft) -> String {

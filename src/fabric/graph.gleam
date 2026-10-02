@@ -364,10 +364,7 @@ pub fn both(
   let input = codec.pair(left_input, right_input)
   let left_output = definition.answer_codec(left.definition)
   let right_output = definition.answer_codec(right.definition)
-  use output <- result.try(
-    fork.result_codec(codec.pair(left_output, right_output))
-    |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
-  )
+  let output = fork.result_codec(codec.pair(left_output, right_output))
   use left_driver <- result.try(
     operation.child_driver(as_subgraph(left))
     |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
@@ -469,10 +466,7 @@ pub fn map(
   let child_input = definition.state_codec(child.definition)
   let child_output = definition.answer_codec(child.definition)
   let input = codec.list(child_input)
-  use output <- result.try(
-    fork.result_codec(codec.list(child_output))
-    |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
-  )
+  let output = fork.result_codec(codec.list(child_output))
   use binding <- result.try(
     operation.child_driver(as_subgraph(child))
     |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),

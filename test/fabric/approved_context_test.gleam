@@ -16,6 +16,7 @@ import fabric/policy
 import fabric/run.{Requirement}
 import fabric/support
 import fabric/support/apps
+import fabric/support/codecs
 import fabric/support/flaky
 import fabric/support/probe.{type Probe}
 import fabric/support/restart
@@ -48,7 +49,7 @@ fn note_tool(probe: Probe, label: String) -> tool.Tool(String) {
   tool.define(
     "note",
     "Write a note.",
-    codec.field("x", codec.string()),
+    codecs.one_field("x", codec.string()),
     codec.string(),
   )
   |> tool.bind(
@@ -248,10 +249,20 @@ fn research() -> tool.Definition(Topic, Summary) {
   tool.define(
     "research",
     "Delegate research on a topic to a researcher.",
-    codec.field("topic", codec.string())
-      |> codec.imap(Topic, fn(topic) { topic.topic }),
-    codec.field("summary", codec.string())
-      |> codec.imap(Summary, fn(summary) { summary.summary }),
+    {
+      use topic <- codec.field("topic", codec.string(), fn(topic: Topic) {
+        topic.topic
+      })
+      codec.success(Topic(topic))
+    },
+    {
+      use summary <- codec.field(
+        "summary",
+        codec.string(),
+        fn(summary: Summary) { summary.summary },
+      )
+      codec.success(Summary(summary))
+    },
   )
 }
 
