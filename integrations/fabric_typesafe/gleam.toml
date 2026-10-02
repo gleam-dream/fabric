@@ -7,7 +7,7 @@ description = "Typed TypeSafe classifier decisions for Fabric graphs."
 internal_modules = ["fabric_typesafe/internal", "fabric_typesafe/internal/*"]
 
 [dependencies]
-gleam_stdlib = ">= 0.70.0 and < 1.0.0"
+gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 fabric = { path = "../.." }
 json_blueprint = { path = "../../../json_blueprint" }
