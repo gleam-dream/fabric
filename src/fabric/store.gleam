@@ -739,15 +739,20 @@ fn sentinel(
         process.new_selector()
         |> process.select_trapped_exits(fn(exit) { exit })
         |> process.selector_receive_forever
-      // The store's process may be gone already (it failed to start).
+      // The store's process may be gone already (it failed to start), or be
+      // exiting with its starter: its exit ends the wait, so a restart does
+      // not find the factory's name held for the whole bound.
       case process.named(factory), process.named(name) {
-        Ok(pid), Ok(_) -> {
+        Ok(pid), Ok(store_process) -> {
+          let down = process.monitor(store_process)
+          let reply = process.new_subject()
+          process.send(process.named_subject(name), BeginDrain(pid, reply))
           let _ =
-            bounded.call(1000, fn() {
-              let reply = process.new_subject()
-              process.send(process.named_subject(name), BeginDrain(pid, reply))
-              process.receive_forever(reply)
-            })
+            process.new_selector()
+            |> process.select(reply)
+            |> process.select_specific_monitor(down, fn(_) { Nil })
+            |> process.selector_receive(1000)
+          process.demonitor_process(down)
           Nil
         }
         _, _ -> Nil
