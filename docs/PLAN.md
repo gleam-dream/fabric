@@ -979,7 +979,8 @@ pub fn with_drain(store: Store, milliseconds: Int) -> Result(Store, DrainError) 
 pub type UnwritableVersion { UnwritableVersion(requested: Int, oldest: Int, newest: Int) }   // S6
 pub fn with_record_version(store: Store, version: Int) -> Result(Store, UnwritableVersion)  // S6
 
-// fabric/observation — as in slice 2b, with model_turn() -> Event(model.Usage, ModelTurn);
+// fabric/observation — as in slice 2b, with model_turn() -> Event(Option(model.Usage), ModelTurn)
+//   (None: no reply or no reported usage) and RunTotals.unreported_replies;
 //   S2 adds run_handed_off() -> Event(Nil, RunHandedOff) and RunHandedOff(run: String, incarnation: Int)
 // fabric/model — updated by the library adoption
 pub type ProviderData { ProviderData(format: String, value: String) }
