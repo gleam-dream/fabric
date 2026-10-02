@@ -17,6 +17,7 @@ import fabric/support/restart
 import fabric/support/scripted
 import fabric/testing
 import fabric/tool
+import gleam/dynamic
 import gleam/erlang/atom
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
@@ -61,7 +62,7 @@ fn capture(subject: Subject(String)) -> List(sinal.Attachment) {
     attach_line(
       attach("model"),
       o.model_turn(),
-      fn(t: model.Usage, m: o.ModelTurn) {
+      fn(t: option.Option(model.Usage), m: o.ModelTurn) {
         "model_turn "
         <> m.run
         <> " "
@@ -69,7 +70,10 @@ fn capture(subject: Subject(String)) -> List(sinal.Attachment) {
         <> " "
         <> string.inspect(m.result)
         <> " tokens="
-        <> int.to_string(t.input_tokens + t.output_tokens)
+        <> case t {
+          Some(t) -> int.to_string(t.input_tokens + t.output_tokens)
+          None -> "unreported"
+        }
       },
     ),
     attach_line(
@@ -139,6 +143,10 @@ fn capture(subject: Subject(String)) -> List(sinal.Attachment) {
         <> string.inspect(m.outcome)
         <> " turns="
         <> int.to_string(t.turns)
+        <> " tokens="
+        <> int.to_string(t.input_tokens + t.output_tokens)
+        <> " unreported="
+        <> int.to_string(t.unreported_replies)
       },
     ),
   ]
@@ -255,8 +263,61 @@ pub fn a_run_is_observed_after_each_commit_test() {
     "tool_dispatched R 1/t transfer_funds",
     "tool_settled R 1/t transfer_funds ModelVisible",
     "model_turn R 2 FinalAnswer tokens=25",
-    "run_finished R Completed turns=2",
+    "run_finished R Completed turns=2 tokens=40 unreported=0",
   ])
+}
+
+/// A model attempt whose provider reported no usage is observed as
+/// unreported, never as zero tokens: a retried attempt got no reply, and a
+/// reply without usage counts in the run's `unreported_replies` instead of
+/// its token totals.
+pub fn unreported_usage_is_observed_as_unknown_not_zero_test() {
+  let events = process.new_subject()
+  let attachments = capture(events)
+  let calls = probe.new()
+  let weather = scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}")
+  let unreporting =
+    model.new(fn(request: model.Request) {
+      probe.record(calls, "call")
+      case probe.count(calls, "call"), scripted.results(request.messages) {
+        1, _ -> Error(model.ModelError("overloaded", retryable: True))
+        _, [] ->
+          Ok(model.ToolRequest(model.AssistantTurn("", [weather], None), None))
+        _, _ -> Ok(model.FinalAnswer("done", Some(model.Usage(20, 5))))
+      }
+    })
+  let agent =
+    agent.new(
+      "agent",
+      unreporting,
+      [apps.weather_tool()],
+      policy.always_allow(),
+    )
+    |> agent.with_limits(
+      agent.Limits(..agent.default_limits(), model_retry_delay: 0),
+    )
+    |> support.agent
+  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
+  fabric.await(run, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed("done"))))
+  let lines =
+    until(events, "run_finished") |> about(support.text(fabric.id(run)))
+  release(attachments)
+  lines
+  |> should.equal([
+    "run_started R agent parent=none",
+    "model_turn R 1 Retry tokens=unreported",
+    "model_turn R 2 ToolRequest tokens=unreported",
+    "tool_dispatched R 2/w lookup_weather",
+    "tool_settled R 2/w lookup_weather ModelVisible",
+    "model_turn R 3 FinalAnswer tokens=25",
+    "run_finished R Completed turns=3 tokens=25 unreported=1",
+  ])
+  // An unreported attempt carries no token keys at all, so a plain
+  // `:telemetry` handler cannot mistake it for a reported zero.
+  let assert Ok(#(_, raw, _)) =
+    sinal.encode_event(o.model_turn(), None, o.ModelTurn("r", 1, o.Retry))
+  raw |> should.equal(dynamic.properties([]))
 }
 
 /// A handler that returns an error and one that crashes are detached by
@@ -303,7 +364,7 @@ pub fn a_failing_handler_does_not_affect_the_run_test() {
     "tool_dispatched R 1/w lookup_weather",
     "tool_settled R 1/w lookup_weather ModelVisible",
     "model_turn R 2 FinalAnswer tokens=25",
-    "run_finished R Completed turns=2",
+    "run_finished R Completed turns=2 tokens=40 unreported=0",
   ])
 }
 
@@ -375,7 +436,7 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
     "child_started R 1/r research R-1",
     "run_cancelled R",
     "child_settled R 1/r research R-1 EffectUncertain",
-    "run_finished R Cancelled turns=1",
+    "run_finished R Cancelled turns=1 tokens=15 unreported=0",
   ])
   of_run(lines, id <> "-1", id)
   |> should.equal([
@@ -385,7 +446,7 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
     "run_recovered R-1 2",
     "tool_settled R-1 1/s slow EffectUncertain",
     "run_cancelled R-1",
-    "run_finished R-1 Cancelled turns=1",
+    "run_finished R-1 Cancelled turns=1 tokens=15 unreported=0",
   ])
 }
 

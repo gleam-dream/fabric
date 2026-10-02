@@ -92,10 +92,7 @@ fn model_turn(before: Option(State), after: State) -> Nil {
             Some(result) ->
               emit(
                 o.model_turn(),
-                model.Usage(
-                  after.usage.input_tokens - before.usage.input_tokens,
-                  after.usage.output_tokens - before.usage.output_tokens,
-                ),
+                turn_usage(before, after, result),
                 o.ModelTurn(after.run, turn, result),
               )
             None -> Nil
@@ -103,6 +100,37 @@ fn model_turn(before: Option(State), after: State) -> Nil {
         _ -> Nil
       }
     _ -> Nil
+  }
+}
+
+/// The tokens the reply to this attempt reported; `None` when no reply
+/// arrived or it did not report usage, never a zero that was not reported.
+fn turn_usage(
+  before: State,
+  after: State,
+  result: o.TurnResult,
+) -> Option(model.Usage) {
+  let replied = case result {
+    o.Retry | o.ModelFailure -> False
+    // A budget stop ends the run either after a reply (whose assistant turn
+    // the transcript then holds) or after a failed or aborted attempt.
+    o.BudgetStop ->
+      list.length(after.transcript) > list.length(before.transcript)
+    o.ToolRequest
+    | o.FinalAnswer
+    | o.Refusal
+    | o.Truncated
+    | o.ProtocolViolation -> True
+  }
+  let reported =
+    after.usage.unreported_replies == before.usage.unreported_replies
+  case replied && reported {
+    True ->
+      Some(model.Usage(
+        after.usage.input_tokens - before.usage.input_tokens,
+        after.usage.output_tokens - before.usage.output_tokens,
+      ))
+    False -> None
   }
 }
 
@@ -290,6 +318,7 @@ fn finished(before: Option(State), after: State) -> Nil {
           after.turns_used,
           after.usage.input_tokens,
           after.usage.output_tokens,
+          after.usage.unreported_replies,
         ),
         o.RunFinished(after.run, outcome_kind(outcome)),
       )

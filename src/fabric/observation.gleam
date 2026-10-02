@@ -118,7 +118,7 @@ import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/erlang/atom
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import sinal.{type Event}
 import sinal/fields.{type Fields}
 
@@ -281,9 +281,16 @@ pub type RunFinished {
   RunFinished(run: String, outcome: OutcomeKind)
 }
 
-/// Totals over the whole run.
+/// Totals over the whole run. The token counts sum the replies that
+/// reported usage; `unreported_replies` counts the replies that arrived
+/// without it, which are not counted as zero (see `run.TokenUsage`).
 pub type RunTotals {
-  RunTotals(turns: Int, input_tokens: Int, output_tokens: Int)
+  RunTotals(
+    turns: Int,
+    input_tokens: Int,
+    output_tokens: Int,
+    unreported_replies: Int,
+  )
 }
 
 // --- descriptors
@@ -386,9 +393,12 @@ pub fn renewal_failed() -> Event(Nil, RenewalFailed) {
   )
 }
 
-/// Its measurements are the tokens the provider reported for this attempt
-/// (zero when it reported none).
-pub fn model_turn() -> Event(Usage, ModelTurn) {
+/// Its measurements are the tokens the provider reported for this attempt:
+/// `None` when the attempt got no reply (`Retry`, `ModelFailure`, a budget
+/// stop before a reply) or the reply did not report usage. A missing report
+/// is never zero; the measurement map then omits `input_tokens` and
+/// `output_tokens`.
+pub fn model_turn() -> Event(Option(Usage), ModelTurn) {
   event(
     ["model", "stop"],
     tokens(),
@@ -549,18 +559,24 @@ pub fn run_cancelled() -> Event(Nil, RunCancelled) {
 }
 
 pub fn run_finished() -> Event(RunTotals, RunFinished) {
-  let assert Ok(totals) =
-    fields.pair(int("turns"), both(int("input_tokens"), int("output_tokens")))
+  let totals =
+    both(
+      both(int("turns"), int("unreported_replies")),
+      both(int("input_tokens"), int("output_tokens")),
+    )
   event(
     ["run", "stop"],
     totals
       |> fields.imap(
         fn(values) {
-          let #(turns, #(input, output)) = values
-          RunTotals(turns, input, output)
+          let #(#(turns, unreported), #(input, output)) = values
+          RunTotals(turns, input, output, unreported)
         },
         fn(totals) {
-          #(totals.turns, #(totals.input_tokens, totals.output_tokens))
+          #(
+            #(totals.turns, totals.unreported_replies),
+            #(totals.input_tokens, totals.output_tokens),
+          )
         },
       ),
     both(
@@ -625,11 +641,26 @@ fn action_fields() -> Fields(ActionRef) {
   )
 }
 
-fn tokens() -> Fields(Usage) {
-  both(int("input_tokens"), int("output_tokens"))
-  |> fields.imap(fn(values) { Usage(values.0, values.1) }, fn(tokens) {
-    #(tokens.input_tokens, tokens.output_tokens)
-  })
+/// Both keys present, or both absent for an unreported attempt. A map with
+/// only one of them is a partial report and decodes as `None` too.
+fn tokens() -> Fields(Option(Usage)) {
+  let assert Ok(input) = fields.optional(int("input_tokens"))
+  let assert Ok(output) = fields.optional(int("output_tokens"))
+  both(input, output)
+  |> fields.imap(
+    fn(values) {
+      case values {
+        #(Some(input), Some(output)) -> Some(Usage(input, output))
+        _ -> None
+      }
+    },
+    fn(tokens) {
+      case tokens {
+        Some(Usage(input, output)) -> #(Some(input), Some(output))
+        None -> #(None, None)
+      }
+    },
+  )
 }
 
 fn disposition() -> Fields(Disposition) {
