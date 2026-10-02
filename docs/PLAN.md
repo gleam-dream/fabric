@@ -986,7 +986,7 @@ pub type ProviderData { ProviderData(format: String, value: String) }
 pub type AssistantTurn { AssistantTurn(text: String, calls: List(ToolCall), data: Option(ProviderData)) }
 // Message: AssistantMessage(turn: AssistantTurn)
 // Reply: ToolRequest(turn: AssistantTurn, usage: Option(Usage))
-// fabric/llm.model(settings, model_id) — signature unchanged
+// fabric/llm.model(client, settings, model_id) — the caller-owned http_gun.Client since llm_wire 1c0ad61
 ```
 
 Errors by operation: `agent.build` returns every `ConfigError` at once;
@@ -1220,8 +1220,8 @@ pub type ModelError { ModelError(reason: String, retryable: Bool) }
 pub opaque type Model
 pub fn new(call: fn(Request) -> Result(Reply, ModelError)) -> Model
 
-// fabric/llm — llm_wire adapter
-pub fn model(settings: llm_wire/config.Config, model_id: llm_wire/types.ModelId) -> Model
+// fabric/llm — llm_wire adapter; Fabric neither starts nor stops the client
+pub fn model(client: http_gun.Client, settings: llm_wire/config.Config, model_id: llm_wire/types.ModelId) -> Model
 
 // fabric/agent — pure configuration
 pub opaque type Agent(context)
@@ -1704,23 +1704,25 @@ adopted here:
 
 ## Tested sibling revisions
 
-Fabric resolves its siblings as `../` path dependencies. The library
-adoption gates on 2026-09-29 passed against this snapshot:
+Fabric resolves its siblings as `../` path dependencies, each checked out on
+its default branch. The HTTP Gun client migration gates on 2026-10-01 passed
+against these revisions, each with a clean working tree level with its
+remote:
 
-| Package        | Revision  | Working tree                                                  |
-| -------------- | --------- | ------------------------------------------------------------- |
-| llm_wire       | `cc79a69` | Pending caller-owned conversation, retry and cassette changes |
-| json_blueprint | `129c963` | Clean                                                         |
-| sinal          | `858dfa3` | Clean                                                         |
-| saga           | `4a93b04` | Clean                                                         |
+| Package        | Revision  | Relationship                                                                     |
+| -------------- | --------- | -------------------------------------------------------------------------------- |
+| llm_wire       | `220b134` | Direct dependency (`fabric/llm`, `fabric/graph/llm`); first client API `1c0ad61` |
+| http_gun       | `369da4f` | Direct dependency: the caller-owned client the LLM adapters run on               |
+| json_blueprint | `129c963` | Direct dependency (tool and output codecs)                                       |
+| sinal          | `8acec45` | Direct dependency (`fabric/observation`)                                         |
+| saga           | `2c9992e` | Dependency of `integrations/fabric_saga` and the consumer only; not of Fabric    |
 
-The llm_wire commit alone does not contain the adopted API. Its tested
-working-tree SHA-256 was
-`250c885b15ba7d61371105e76cde10b5d8b8dec54ce609e144df70d92ff3f84d`:
-sorted tracked and non-ignored untracked files, each relative path followed
-by a NUL byte and its file contents. Those pending changes need their own
-commit and release before Fabric can replace its path dependency. Fabric
-did not modify any sibling source.
+The 2026-09-29 library adoption gates passed against llm_wire `cc79a69`
+plus then-pending working-tree changes (SHA-256
+`250c885b15ba7d61371105e76cde10b5d8b8dec54ce609e144df70d92ff3f84d`), with
+json_blueprint `129c963`, sinal `858dfa3` and saga `4a93b04`. llm_wire later
+committed its caller-owned conversation API as `bbde1d9`. Fabric did not
+modify any sibling source.
 
 Historically, the completion
 gates through production S6 passed against these revisions, each
