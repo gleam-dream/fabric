@@ -480,8 +480,10 @@ its own temporary cluster; it never uses an existing database:
 integrations/fabric_postgres/scripts/test-postgres.sh
 ```
 
-The root suite and CI do not run PostgreSQL tests. `nix flake check` checks
-formatting across the repository and starts no database. The packages use
+`scripts/check.py full`, and its prepared `ci` profile, run this PostgreSQL
+gate with the other packages. The root `gleam test` runs no PostgreSQL
+tests, and `nix flake check` checks formatting across the repository and
+starts no database. The packages use
 sibling path dependencies; see the tested revisions in [PLAN](docs/PLAN.md#tested-sibling-revisions).
 
 Production slices S1–S6 are complete. [Remaining work](docs/REMAINING.md)

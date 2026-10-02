@@ -286,3 +286,21 @@ fn field(object: value.Value, key: String) -> value.Value {
   let assert Ok(found) = list.key_find(fields, key)
   found
 }
+
+pub fn inspecting_options_or_a_client_never_prints_the_environment_test() {
+  let secret = "mcp-inspect-secret-token-91c2"
+  let dir = temp_dir()
+  let opened = process.new_subject()
+  let options =
+    client.Options(..settings(dir), environment: fn() {
+      process.send(opened, Nil)
+      [#("COUNTER_TOKEN", secret)]
+    })
+  string.contains(string.inspect(options), secret) |> should.be_false
+  let assert Ok(connection) = client.start("local-counter", options)
+  process.receive(opened, 0) |> should.equal(Ok(Nil))
+  string.contains(string.inspect(connection), secret) |> should.be_false
+  read(connection, "inspect") |> should.equal(0)
+  client.stop(connection)
+  remove_dir(dir)
+}

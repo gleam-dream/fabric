@@ -14,11 +14,17 @@ import json/blueprint/value.{type Value}
 pub const protocol_version = "2026-07-28"
 
 /// Process configuration is live context, not persisted workflow data.
+///
+/// `environment` is a closure returning the extra variables for the server
+/// process, because they often carry credentials: `string.inspect` of an
+/// `Options` or a `Client`, and crash reports that contain one, print a
+/// function reference instead of the values. It runs once, when `start`
+/// opens the process.
 pub type Options {
   Options(
     command: String,
     arguments: List(String),
-    environment: List(#(String, String)),
+    environment: fn() -> List(#(String, String)),
     timeout: Int,
     max_bytes: Int,
     max_notifications: Int,
@@ -26,7 +32,7 @@ pub type Options {
 }
 
 pub fn options(command: String, arguments: List(String)) -> Options {
-  Options(command, arguments, [], 10_000, 1_048_576, 64)
+  Options(command, arguments, fn() { [] }, 10_000, 1_048_576, 64)
 }
 
 type Connection
@@ -73,7 +79,7 @@ pub fn start(server: String, options: Options) -> Result(Client, String) {
   use connection <- result.map(open(
     options.command,
     options.arguments,
-    options.environment,
+    options.environment(),
     options.max_bytes,
     options.max_notifications,
   ))
