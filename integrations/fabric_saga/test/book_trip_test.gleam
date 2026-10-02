@@ -142,19 +142,13 @@ fn book_trip(
 
 fn trip_definition() -> tool.Definition(Trip, Itinerary) {
   let itinerary = {
-    use flight <- codec.field("flight", codec.string(), fn(i: Itinerary) {
-      i.flight
-    })
-    use hotel <- codec.field("hotel", codec.string(), fn(i: Itinerary) {
-      i.hotel
-    })
-    use charge <- codec.field("charge", codec.string(), fn(i: Itinerary) {
-      i.charge
-    })
+    use flight <- codec.field("flight", codec.string(), get: fn(i) { i.flight })
+    use hotel <- codec.field("hotel", codec.string(), get: fn(i) { i.hotel })
+    use charge <- codec.field("charge", codec.string(), get: fn(i) { i.charge })
     codec.success(Itinerary(flight:, hotel:, charge:))
   }
   let trip = {
-    use city <- codec.field("city", codec.string(), fn(t: Trip) { t.city })
+    use city <- codec.field("city", codec.string(), get: fn(t) { t.city })
     codec.success(Trip(city:))
   }
   tool.define(

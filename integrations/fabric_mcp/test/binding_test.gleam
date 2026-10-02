@@ -18,14 +18,14 @@ type Increment {
 }
 
 fn increment_codec() -> codec.Codec(Increment) {
-  use name <- codec.field("name", codec.string(), fn(v: Increment) { v.name })
-  use amount <- codec.field("amount", codec.int(), fn(v: Increment) { v.amount })
+  use name <- codec.field("name", codec.string(), get: fn(v) { v.name })
+  use amount <- codec.field("amount", codec.int(), get: fn(v) { v.amount })
   codec.success(Increment(name:, amount:))
 }
 
 /// The object `{"value": n}`, read as `n`.
 fn counter_codec() -> codec.Codec(Int) {
-  use value <- codec.field("value", codec.int(), fn(value) { value })
+  use value <- codec.field("value", codec.int(), get: fn(value) { value })
   codec.success(value)
 }
 

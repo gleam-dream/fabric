@@ -113,7 +113,7 @@ pub fn member_with_scan_gate(
 
 /// An object with the one string property `name`, read as its text.
 fn text_field(name: String) -> Codec(String) {
-  use text <- codec.field(name, codec.string(), fn(text) { text })
+  use text <- codec.field(name, codec.string(), get: fn(text) { text })
   codec.success(text)
 }
 
@@ -122,26 +122,22 @@ fn title_codec() -> Codec(String) {
 }
 
 pub fn book_codec() -> Codec(Book) {
-  use isbn <- codec.field("isbn", codec.string(), fn(book: Book) { book.isbn })
-  use title <- codec.field("title", codec.string(), fn(book: Book) {
-    book.title
-  })
+  use isbn <- codec.field("isbn", codec.string(), get: fn(book) { book.isbn })
+  use title <- codec.field("title", codec.string(), get: fn(book) { book.title })
   codec.success(Book(isbn:, title:))
 }
 
 fn reservation_codec() -> Codec(Reservation) {
-  use isbn <- codec.field("isbn", codec.string(), fn(reservation: Reservation) {
+  use isbn <- codec.field("isbn", codec.string(), get: fn(reservation) {
     reservation.isbn
   })
   codec.success(Reservation(isbn))
 }
 
 fn confirmation_codec() -> Codec(Confirmation) {
-  use code <- codec.field(
-    "confirmation",
-    codec.string(),
-    fn(confirmation: Confirmation) { confirmation.code },
-  )
+  use code <- codec.field("confirmation", codec.string(), get: fn(confirmation) {
+    confirmation.code
+  })
   codec.success(Confirmation(code))
 }
 
@@ -339,14 +335,14 @@ pub type Order {
 }
 
 fn purchase_codec() -> Codec(Purchase) {
-  use title <- codec.field("title", codec.string(), fn(purchase: Purchase) {
+  use title <- codec.field("title", codec.string(), get: fn(purchase) {
     purchase.title
   })
   codec.success(Purchase(title))
 }
 
 fn order_codec() -> Codec(Order) {
-  use summary <- codec.field("order", codec.string(), fn(order: Order) {
+  use summary <- codec.field("order", codec.string(), get: fn(order) {
     order.summary
   })
   codec.success(Order(summary))
@@ -469,7 +465,7 @@ pub fn loan_tool() -> tool.Tool(Member) {
         "interlibrary_loan",
         "Borrow a book from a partner library.",
         {
-          use title <- codec.field("title", codec.string(), fn(loan: Loan) {
+          use title <- codec.field("title", codec.string(), get: fn(loan) {
             loan.title
           })
           codec.success(Loan(title))

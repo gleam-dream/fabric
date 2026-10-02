@@ -147,21 +147,15 @@ fn receipt_fields(output: codec.Codec(output)) -> codec.Codec(Receipt(output)) {
     use Nil <- codec.field(
       "format",
       codec.string_enum([#("fabric.graph.llm.v2", Nil)]),
-      fn(_: Receipt(output)) { Nil },
+      get: fn(_) { Nil },
     )
-    use model <- codec.field("model", codec.string(), fn(r: Receipt(output)) {
-      r.model
+    use model <- codec.field("model", codec.string(), get: fn(r) { r.model })
+    use outcome <- codec.field("outcome", outcome_codec(output), get: fn(r) {
+      r.outcome
     })
-    use outcome <- codec.field(
-      "outcome",
-      outcome_codec(output),
-      fn(r: Receipt(output)) { r.outcome },
-    )
-    use usage <- codec.field(
-      "usage",
-      codec.nullable(usage_codec()),
-      fn(r: Receipt(output)) { r.usage },
-    )
+    use usage <- codec.field("usage", codec.nullable(usage_codec()), get: fn(r) {
+      r.usage
+    })
     codec.success(Receipt(model:, outcome:, usage:))
   }
   |> codec.try_map(
@@ -247,21 +241,15 @@ fn encode_answer(
 }
 
 fn usage_codec() -> codec.Codec(types.Usage) {
-  use input_tokens <- codec.field(
-    "input_tokens",
-    codec.int(),
-    fn(usage: types.Usage) { usage.input_tokens },
-  )
-  use output_tokens <- codec.field(
-    "output_tokens",
-    codec.int(),
-    fn(usage: types.Usage) { usage.output_tokens },
-  )
-  use total_tokens <- codec.field(
-    "total_tokens",
-    codec.int(),
-    fn(usage: types.Usage) { usage.total_tokens },
-  )
+  use input_tokens <- codec.field("input_tokens", codec.int(), get: fn(usage) {
+    usage.input_tokens
+  })
+  use output_tokens <- codec.field("output_tokens", codec.int(), get: fn(usage) {
+    usage.output_tokens
+  })
+  use total_tokens <- codec.field("total_tokens", codec.int(), get: fn(usage) {
+    usage.total_tokens
+  })
   codec.success(types.Usage(input_tokens, output_tokens, total_tokens))
 }
 

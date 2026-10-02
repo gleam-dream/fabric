@@ -43,17 +43,15 @@ fn research() -> tool.Definition(Topic, Summary) {
     "research",
     "Delegate research on a topic to a researcher.",
     {
-      use topic <- codec.field("topic", codec.string(), fn(topic: Topic) {
+      use topic <- codec.field("topic", codec.string(), get: fn(topic) {
         topic.topic
       })
       codec.success(Topic(topic))
     },
     {
-      use summary <- codec.field(
-        "summary",
-        codec.string(),
-        fn(summary: Summary) { summary.summary },
-      )
+      use summary <- codec.field("summary", codec.string(), get: fn(summary) {
+        summary.summary
+      })
       codec.success(Summary(summary))
     },
   )

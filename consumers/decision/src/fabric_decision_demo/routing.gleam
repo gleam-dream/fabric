@@ -19,7 +19,9 @@ pub fn decision_codec() -> codec.Codec(Decision) {
     |> codec.describe(
       "Approve only a correct arithmetic statement; otherwise revise.",
     )
-  use decision <- codec.field("decision", choices, fn(decision) { decision })
+  use decision <- codec.field("decision", choices, get: fn(decision) {
+    decision
+  })
   codec.success(decision)
 }
 

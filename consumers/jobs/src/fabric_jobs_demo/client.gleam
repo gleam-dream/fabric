@@ -71,10 +71,10 @@ pub type Error {
 }
 
 pub fn request_codec() -> codec.Codec(Request) {
-  use text <- codec.field("text", codec.string(), fn(request: Request) {
+  use text <- codec.field("text", codec.string(), get: fn(request) {
     request.text
   })
-  use delay_ms <- codec.field("delay_ms", codec.int(), fn(request: Request) {
+  use delay_ms <- codec.field("delay_ms", codec.int(), get: fn(request) {
     request.delay_ms
   })
   codec.success(Request(text:, delay_ms:))
@@ -93,7 +93,7 @@ pub fn receipt_codec() -> codec.Codec(Receipt) {
       encode: Ok,
       placeholder: "",
     )
-  use id <- codec.field("id", id, fn(receipt: Receipt) { receipt.id })
+  use id <- codec.field("id", id, get: fn(receipt) { receipt.id })
   codec.success(Receipt(id))
 }
 

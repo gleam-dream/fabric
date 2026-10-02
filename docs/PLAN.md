@@ -1707,18 +1707,22 @@ adopted here:
 ## Tested sibling revisions
 
 Fabric resolves its siblings as `../` path dependencies, each checked out on
-its default branch. The Sinal and Blueprint wave 2 migration gate on
-2026-10-02 passed against these local revisions, each with a clean working
-tree; the wave is pushed only after every package passes:
+its default branch. The follow-up builder migration gate on 2026-10-02
+(the Sinal record builder and the json_blueprint `get:` getters) passed
+against these local revisions, each with a clean working tree; the wave is
+pushed only after every package passes:
 
 | Package        | Revision  | Relationship                                                                     |
 | -------------- | --------- | -------------------------------------------------------------------------------- |
-| llm_wire       | `bc5d626` | Direct dependency (`fabric/llm`, `fabric/graph/llm`); first client API `1c0ad61` |
-| http_gun       | `1dc20a1` | Direct dependency: the caller-owned client the LLM adapters run on               |
-| json_blueprint | `f55ec09` | Direct dependency (tool and output codecs); wave 2 API                           |
-| sinal          | `5aef827` | Direct dependency (`fabric/observation`); wave 2 API                             |
-| saga           | `43ae141` | Dependency of `integrations/fabric_saga` and the consumer only; not of Fabric    |
+| llm_wire       | `ea7c90b` | Direct dependency (`fabric/llm`, `fabric/graph/llm`); first client API `1c0ad61` |
+| http_gun       | `056536b` | Direct dependency: the caller-owned client the LLM adapters run on               |
+| json_blueprint | `bb4da39` | Direct dependency (tool and output codecs); `get:` getters                       |
+| sinal          | `6de2b69` | Direct dependency (`fabric/observation`); `use`/`include` record builder         |
+| saga           | `d4eef94` | Dependency of `integrations/fabric_saga` and the consumer only; not of Fabric    |
 
+The Sinal and Blueprint wave 2 migration gate on 2026-10-02 passed against
+llm_wire `bc5d626`, http_gun `1dc20a1`, json_blueprint `f55ec09`, sinal
+`5aef827` and saga `43ae141`.
 The HTTP Gun client migration gates on 2026-10-01 passed against llm_wire
 `220b134`, http_gun `369da4f`, json_blueprint `129c963`, sinal `8acec45` and
 saga `2c9992e`.

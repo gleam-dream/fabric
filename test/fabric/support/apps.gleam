@@ -33,13 +33,13 @@ pub fn city_codec() -> Codec(City) {
   use name <- codec.field(
     "city",
     codec.describe(codec.string(), "City to look up"),
-    fn(city: City) { city.name },
+    get: fn(city) { city.name },
   )
   codec.success(City(name))
 }
 
 pub fn forecast_codec() -> Codec(Forecast) {
-  use summary <- codec.field("summary", codec.string(), fn(forecast: Forecast) {
+  use summary <- codec.field("summary", codec.string(), get: fn(forecast) {
     forecast.summary
   })
   codec.success(Forecast(summary))
@@ -49,18 +49,18 @@ pub fn transfer_codec() -> Codec(Transfer) {
   use to <- codec.field(
     "to",
     codec.describe(codec.string(), "Recipient account"),
-    fn(t: Transfer) { t.to },
+    get: fn(t) { t.to },
   )
   use amount <- codec.field(
     "amount",
     codec.describe(codec.int(), "Amount in cents"),
-    fn(t: Transfer) { t.amount },
+    get: fn(t) { t.amount },
   )
   codec.success(Transfer(to:, amount:))
 }
 
 pub fn receipt_codec() -> Codec(Receipt) {
-  use id <- codec.field("receipt", codec.string(), fn(receipt: Receipt) {
+  use id <- codec.field("receipt", codec.string(), get: fn(receipt) {
     receipt.id
   })
   codec.success(Receipt(id))
