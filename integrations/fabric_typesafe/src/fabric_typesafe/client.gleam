@@ -24,8 +24,11 @@ type Endpoint {
   Endpoint(host: String, port: Int, path: String, tls: Bool)
 }
 
+/// The API key is kept as a closure, so `string.inspect` of a `Config`, and
+/// crash reports or logs that contain one, print a function reference
+/// instead of the key.
 pub opaque type Config {
-  Config(key: String, endpoint: Endpoint, bounds: Bounds)
+  Config(key: fn() -> String, endpoint: Endpoint, bounds: Bounds)
 }
 
 pub type Error {
@@ -50,7 +53,11 @@ pub fn new(key: String) -> Result(Config, String) {
       False -> Error("classifier API key is empty or invalid")
     },
   )
-  Config(key, Endpoint("api.typesafe.ai", 443, "/v1/systemone", True), bounds())
+  Config(
+    fn() { key },
+    Endpoint("api.typesafe.ai", 443, "/v1/systemone", True),
+    bounds(),
+  )
 }
 
 pub fn with_bounds(config: Config, bounds: Bounds) -> Result(Config, String) {
@@ -140,7 +147,7 @@ pub fn post(config: Config, body: String) -> Result(Response, Error) {
     config.endpoint.port,
     config.endpoint.path,
     config.endpoint.tls,
-    config.key,
+    config.key(),
     body,
     config.bounds,
   )

@@ -105,3 +105,14 @@ fn await_stat(url: String, key: String, expected: Int, left: Int) -> Nil {
     }
   }
 }
+
+pub fn inspecting_a_config_never_prints_the_api_key_test() {
+  let secret = "typesafe-inspect-secret-7f3a"
+  let assert Ok(config) = client.new(secret)
+  let assert Ok(local) =
+    client.with_endpoint(config, "http://127.0.0.1:8080/v1/systemone")
+  let assert Ok(bounded) = client.with_bounds(local, client.bounds())
+  list.each([config, local, bounded], fn(config) {
+    string.contains(string.inspect(config), secret) |> should.be_false
+  })
+}

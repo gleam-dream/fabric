@@ -52,6 +52,6 @@ nix develop -c sh -c 'cd integrations/fabric_mcp && gleam build --warnings-as-er
 
 See the [adapter contract](../../docs/implementation/graph-flow/mcp-adapter.md)
 for selection evidence, boundaries and acceptance. The package gate includes
-11 client scenarios, 11 graph/descriptor scenarios and four independent service
+12 client scenarios, 11 graph/descriptor scenarios and four independent service
 tests. [The graph consumer tests](test/binding_test.gleam) show native counter
 operations, policy approval, cancellation and recovery with the server closed.
