@@ -5,7 +5,7 @@ gleam = ">= 1.18.0"
 
 [dependencies]
 fabric_graph_authoring = { path = ".." }
-gleam_stdlib = ">= 0.70.0 and < 1.0.0"
+gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 json_blueprint = { path = "../../../../json_blueprint" }
 
 [dev-dependencies]
