@@ -8,6 +8,7 @@ gleam_stdlib = ">= 0.70.0 and < 1.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 fabric = { path = "../.." }
 fabric_typesafe = { path = "../../integrations/fabric_typesafe" }
+http_gun = { path = "../../../http_gun" }
 json_blueprint = { path = "../../../json_blueprint" }
 llm_wire = { path = "../../../llm_wire" }
 

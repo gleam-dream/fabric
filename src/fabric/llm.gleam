@@ -27,22 +27,30 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import http_gun
 import json/blueprint/runtime
 import llm_wire/config
 import llm_wire/retry
 import llm_wire/session
 import llm_wire/types
 
-/// A model backed by llm_wire. `settings` owns the provider, endpoint,
-/// credentials, limits, and deadlines; nothing is allocated until a turn
-/// runs. Killing the task that runs a turn closes its HTTP stream.
-pub fn model(settings: config.Config, model_id: types.ModelId) -> Model {
+/// A model backed by llm_wire. `client` is the caller's started HTTP Gun
+/// client: its destination, trust and connection policy apply to every turn,
+/// and Fabric neither starts nor stops it. `settings` owns the provider,
+/// endpoint, credentials, limits, and deadlines. Nothing is allocated until a
+/// turn runs. Killing the task that runs a turn closes its HTTP stream.
+pub fn model(
+  client: http_gun.Client,
+  settings: config.Config,
+  model_id: types.ModelId,
+) -> Model {
   let settings =
     config.with_tool_call_checks(settings, types.ReportInvalidToolCalls)
-  model.new(fn(request) { call(settings, model_id, request) })
+  model.new(fn(request) { call(client, settings, model_id, request) })
 }
 
 fn call(
+  client: http_gun.Client,
   settings: config.Config,
   model_id: types.ModelId,
   request: Request,
@@ -55,7 +63,7 @@ fn call(
     session.prepare(settings, wire_request)
     |> result.map_error(fn(error) { local_failure(error) }),
   )
-  case session.run(prepared) {
+  case session.run(client, prepared) {
     Ok(session.RunText(text, usage)) ->
       Ok(model.FinalAnswer(text, usage_of(usage)))
     Ok(session.RunToolCalls(turn, usage)) ->

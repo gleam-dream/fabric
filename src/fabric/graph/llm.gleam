@@ -8,6 +8,7 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import http_gun
 import json/blueprint/codec
 import llm_wire/config
 import llm_wire/session
@@ -27,8 +28,10 @@ pub type Receipt(output) {
 }
 
 /// Version `identity` when the provider, prompt or output meaning changes.
-/// The pure request builder runs only after policy admission; credentials
-/// belong in fresh context, never in the persisted input or receipt.
+/// The pure request builder runs only after policy admission. It returns the
+/// caller's started HTTP Gun client, the llm_wire settings and the request.
+/// Credentials and the client belong in fresh context, never in the persisted
+/// input or receipt; Fabric neither starts nor stops the client.
 ///
 /// Requests must have no tools. Preparation and proven unsent failures are
 /// definite; potentially sent failures require reconciliation. No implicit
@@ -38,21 +41,23 @@ pub fn new(
   input: codec.Codec(input),
   output: codec.Codec(output),
   output_name: String,
-  request: fn(context, input) -> #(config.Config, types.Request),
+  request: fn(context, input) ->
+    #(http_gun.Client, config.Config, types.Request),
 ) -> operation.Operation(context, input, Receipt(output)) {
   operation.new(
     identity,
     input,
     receipt_codec(output),
     fn(context, _, input) {
-      let #(settings, request) = request(context, input)
-      perform(settings, request, output_name, output)
+      let #(client, settings, request) = request(context, input)
+      perform(client, settings, request, output_name, output)
     },
     fn(failure) { failure },
   )
 }
 
 fn perform(
+  client: http_gun.Client,
   settings: config.Config,
   request: types.Request,
   output_name: String,
@@ -70,7 +75,7 @@ fn perform(
     |> result.map_error(fn(error) { operation.DefiniteFailure(describe(error)) }),
   )
   use response <- result.try(
-    session.run_structured(prepared) |> result.map_error(failure),
+    session.run_structured(client, prepared) |> result.map_error(failure),
   )
   let model = types.model_id_to_string(request.model)
   case response {

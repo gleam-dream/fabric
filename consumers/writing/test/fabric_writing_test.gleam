@@ -6,6 +6,7 @@ import fabric_writing
 import fabric_writing/domain
 import fabric_writing/file
 import fabric_writing/provider
+import fabric_writing_fake_provider as fake_provider
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -24,16 +25,16 @@ pub fn approval_survives_restart_without_repeating_generation_or_review_test() {
   let source = directory <> "/source.txt"
   let assert Ok(Nil) =
     write_file(source, "The library opens on 12 May. Admission is free.")
-  let script =
-    testing.start([
+  let fake =
+    fake_provider.start([
       testing.text(
         "{\"body\":\"The library opens on 12 May, with free admission.\"}",
       ),
       testing.text("{\"decision\":\"approve\"}"),
     ])
   let assert Ok(model) = types.model_id("scripted-writer")
-  let generator = provider.generator(testing.config(script), model)
-  let reviewer = provider.llm_reviewer(testing.config(script), model)
+  let generator = provider.generator(fake.client, fake.settings, model)
+  let reviewer = provider.llm_reviewer(fake.client, fake.settings, model)
   let publisher = file.publisher(directory <> "/published")
   let runs = store.directory(process.new_name("writing"), directory <> "/runs")
   let owner = start_store(runs)
@@ -64,9 +65,10 @@ pub fn approval_survives_restart_without_repeating_generation_or_review_test() {
   let assert graph.Completed(domain.Published(artifact)) = done.status
   file.read(artifact.path)
   |> should.equal(Ok("The library opens on 12 May, with free admission.\n"))
-  testing.requests(script) |> list.length |> should.equal(2)
+  fake_provider.request_count(fake) |> should.equal(2)
   graph.approve(handle, first) |> should.be_error
   stop_store(owner, runs)
+  fake_provider.stop(fake)
   remove_dir(directory)
 }
 
@@ -106,7 +108,7 @@ type Fixture {
     owner: process.Pid,
     runs: store.Store,
     handle: graph.Handle(Nil, domain.State, domain.Outcome),
-    script: testing.Script,
+    fake: fake_provider.Fake,
   )
 }
 
@@ -128,7 +130,7 @@ fn fixture(
   let source = directory <> "/source.txt"
   let assert Ok(Nil) =
     write_file(source, "The library opens on 12 May. Admission is free.")
-  let script = testing.start(replies)
+  let fake = fake_provider.start(replies)
   let assert Ok(model) = types.model_id("scripted-writer")
   let runs =
     store.directory(process.new_name("writing-case"), directory <> "/runs")
@@ -136,8 +138,8 @@ fn fixture(
   let runtime =
     fabric_writing.runtime(
       runs,
-      provider.generator(testing.config(script), model),
-      provider.llm_reviewer(testing.config(script), model),
+      provider.generator(fake.client, fake.settings, model),
+      provider.llm_reviewer(fake.client, fake.settings, model),
       publish(directory <> "/published"),
     )
   let assert Ok(handle) =
@@ -147,11 +149,12 @@ fn fixture(
       source,
       "Mention the date and price.",
     )
-  Fixture(directory, owner, runs, handle, script)
+  Fixture(directory, owner, runs, handle, fake)
 }
 
 fn close(fixture: Fixture) -> Nil {
   stop_store(fixture.owner, fixture.runs)
+  fake_provider.stop(fixture.fake)
   remove_dir(fixture.directory)
 }
 
@@ -173,7 +176,7 @@ pub fn revision_has_a_saved_counter_and_stops_after_three_drafts_test() {
   let assert domain.Working(domain.Reviewing, saved) = done.value
   saved.generation |> should.equal(3)
   saved.text.body |> should.equal("three")
-  testing.requests(f.script) |> list.length |> should.equal(6)
+  fake_provider.request_count(f.fake) |> should.equal(6)
   // No publish activation is admitted on the exhausted review route.
   done.receipts
   |> list.map(fn(receipt) { receipt.node })
@@ -215,7 +218,7 @@ pub fn invalid_refused_and_incomplete_review_responses_cannot_publish_test() {
     let assert Ok(done) = graph.await(f.handle, 5000)
     let assert graph.Blocked(_, _) = done.status
     file.read(f.directory <> "/published/article-4.md") |> should.be_error
-    testing.requests(f.script) |> list.length |> should.equal(2)
+    fake_provider.request_count(f.fake) |> should.equal(2)
     close(f)
   })
 }
@@ -237,7 +240,7 @@ pub fn a_corrected_draft_is_reviewed_before_approval_test() {
   let assert Ok(done) = graph.await(f.handle, 5000)
   let assert graph.Completed(domain.Published(artifact)) = done.status
   file.read(artifact.path) |> should.equal(Ok("12 May; free admission\n"))
-  testing.requests(f.script) |> list.length |> should.equal(4)
+  fake_provider.request_count(f.fake) |> should.equal(4)
   close(f)
 }
 
@@ -245,20 +248,21 @@ pub fn absent_source_stops_before_a_provider_call_test() {
   let directory = temp_dir()
   let runs = store.in_memory(process.new_name("absent-source"))
   let owner = start_store(runs)
-  let script = testing.start([])
+  let fake = fake_provider.start([])
   let assert Ok(model) = types.model_id("unused")
   let runtime =
     fabric_writing.runtime(
       runs,
-      provider.generator(testing.config(script), model),
-      provider.llm_reviewer(testing.config(script), model),
+      provider.generator(fake.client, fake.settings, model),
+      provider.llm_reviewer(fake.client, fake.settings, model),
       file.publisher(directory),
     )
   let assert Ok(handle) =
     fabric_writing.start(runtime, "absent", directory <> "/missing", "write")
   let assert Ok(done) = graph.await(handle, 5000)
   let assert graph.Failed(_) = done.status
-  testing.requests(script) |> should.equal([])
+  fake_provider.request_count(fake) |> should.equal(0)
+  fake_provider.stop(fake)
   stop_store(owner, runs)
   remove_dir(directory)
 }
@@ -320,6 +324,6 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
   let assert graph.Completed(domain.Published(after)) = done.status
   after |> should.equal(receipt)
   file.read(after.path) |> should.equal(Ok("approved draft\n"))
-  testing.requests(f.script) |> list.length |> should.equal(2)
+  fake_provider.request_count(f.fake) |> should.equal(2)
   close(Fixture(..f, owner:))
 }

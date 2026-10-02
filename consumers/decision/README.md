@@ -18,8 +18,9 @@ Run the offline gate from the repository root:
 nix develop -c sh -c 'cd consumers/decision && gleam build --warnings-as-errors && gleam test'
 ```
 
-Tests exercise both routes with llm_wire's scripted transport and an explicit
-loopback TypeSafe protocol fixture. The fixture is not Jev inference. Tests do
+Tests exercise both routes with an offline HTTP Gun script that answers the
+exact expected LLM request, and an explicit loopback TypeSafe protocol fixture.
+The application starts the HTTP Gun client and passes it to `runtime`. The fixture is not Jev inference. Tests do
 not read credentials or contact a provider.
 
 ## Live LLM

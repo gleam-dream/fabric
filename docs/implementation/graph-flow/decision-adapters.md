@@ -15,8 +15,9 @@ type from a saved receipt. The binding's identity/version owns the provider,
 prompt, output meaning and request options. Changing those semantics requires
 a new identity/version under the existing graph compatibility contract.
 
-The application supplies configuration and a request from fresh context plus
-the retained input. Credentials and live transports stay in context. The
+The application supplies its started HTTP Gun client, configuration and a
+request from fresh context plus the retained input. Credentials and live
+transports stay in context; Fabric neither starts nor stops the client. The
 callback must describe the request without additional effects. Policy admits
 the graph operation before the request is built or sent. llm_wire owns HTTP,
 SSE, provider schema projection, cancellation and transport bounds; Fabric

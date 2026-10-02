@@ -22,6 +22,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import http_gun
+import http_gun/config as http_config
 import json/blueprint/codec
 import llm_wire/config
 import llm_wire/provider/openai
@@ -56,31 +58,43 @@ fn model() -> types.ModelId {
 
 pub fn main() -> Nil {
   let mode = required("FABRIC_WRITING_MODE")
+  // One HTTP client for every LLM request this process makes. Its default
+  // 30-second ceiling covers the 20-second LLM deadline.
+  let assert Ok(http) = http_gun.start(http_config.default())
   case required("FABRIC_WRITING_REVIEWER") {
     "llm" ->
       dispatch(
         mode,
-        provider.llm_reviewer(llm_settings(), model()),
+        http,
+        provider.llm_reviewer(http, llm_settings(), model()),
         llm_metadata,
       )
     "typesafe" -> {
       let assert Ok(settings) = client.new(required("TYPESAFE_API_KEY"))
       let model =
         environment("FABRIC_CLASSIFIER_MODEL") |> result.unwrap("jev-latest")
-      dispatch(mode, provider.classifier(settings, model), classifier_metadata)
+      dispatch(
+        mode,
+        http,
+        provider.classifier(settings, model),
+        classifier_metadata,
+      )
     }
     _ -> panic as "reviewer must be llm or typesafe"
   }
+  let _ = http_gun.stop(http)
+  Nil
 }
 
 fn dispatch(
   mode: String,
+  http: http_gun.Client,
   reviewer: provider.Reviewer(receipt),
   metadata: fn(receipt) -> List(#(String, json.Json)),
 ) -> Nil {
   case mode {
     "review" -> measure(reviewer, metadata)
-    "start" | "inspect" | "approve" | "reject" -> workflow(mode, reviewer)
+    "start" | "inspect" | "approve" | "reject" -> workflow(mode, http, reviewer)
     _ -> panic as "mode must be review, start, inspect, approve or reject"
   }
 }
@@ -159,7 +173,11 @@ fn classifier_metadata(
   ]
 }
 
-fn workflow(mode: String, reviewer: provider.Reviewer(receipt)) -> Nil {
+fn workflow(
+  mode: String,
+  http: http_gun.Client,
+  reviewer: provider.Reviewer(receipt),
+) -> Nil {
   let directory = required("FABRIC_WRITING_DIRECTORY")
   let runs =
     store.directory(process.new_name("writing-example"), directory <> "/runs")
@@ -167,7 +185,7 @@ fn workflow(mode: String, reviewer: provider.Reviewer(receipt)) -> Nil {
   let runtime =
     fabric_writing.runtime(
       runs,
-      provider.generator(llm_settings(), model()),
+      provider.generator(http, llm_settings(), model()),
       reviewer,
       file.publisher(directory <> "/published"),
     )
