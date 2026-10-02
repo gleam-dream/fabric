@@ -26,12 +26,10 @@ pub type Context {
 }
 
 pub fn draft_codec() -> Codec(Draft) {
-  use revision <- codec.field("revision", codec.int(), fn(draft: Draft) {
+  use revision <- codec.field("revision", codec.int(), get: fn(draft) {
     draft.revision
   })
-  use text <- codec.field("text", codec.string(), fn(draft: Draft) {
-    draft.text
-  })
+  use text <- codec.field("text", codec.string(), get: fn(draft) { draft.text })
   codec.success(Draft(revision:, text:))
 }
 

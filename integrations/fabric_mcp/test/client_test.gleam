@@ -32,7 +32,7 @@ fn read(connection: client.Client, name: String) -> Int {
   let assert Ok(answer) =
     codec.decode(
       {
-        use value <- codec.field("value", codec.int(), fn(value) { value })
+        use value <- codec.field("value", codec.int(), get: fn(value) { value })
         codec.success(value)
       },
       field(response.result, "structuredContent"),

@@ -55,7 +55,7 @@ fn definition() -> tool.Definition(Int, Int) {
 }
 
 fn one_field(name: String) -> codec.Codec(Int) {
-  use value <- codec.field(name, codec.int(), fn(value) { value })
+  use value <- codec.field(name, codec.int(), get: fn(value) { value })
   codec.success(value)
 }
 

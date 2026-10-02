@@ -560,13 +560,11 @@ fn delegation_agent(probe: Probe) -> agent.Agent(Nil) {
     use subagent_type <- codec.field(
       "subagent_type",
       codec.string(),
-      fn(task: Task) { task.subagent_type },
+      get: fn(task) { task.subagent_type },
     )
-    use description <- codec.field(
-      "description",
-      codec.string(),
-      fn(task: Task) { task.description },
-    )
+    use description <- codec.field("description", codec.string(), get: fn(task) {
+      task.description
+    })
     codec.success(Task(subagent_type:, description:))
   }
   let researcher =

@@ -43,19 +43,19 @@ pub type Outcome {
 }
 
 pub fn brief_codec() -> codec.Codec(Brief) {
-  use source_path <- codec.field("source_path", codec.string(), fn(v: Brief) {
+  use source_path <- codec.field("source_path", codec.string(), get: fn(v) {
     v.source_path
   })
-  use instructions <- codec.field("instructions", codec.string(), fn(v: Brief) {
+  use instructions <- codec.field("instructions", codec.string(), get: fn(v) {
     v.instructions
   })
   codec.success(Brief(source_path:, instructions:))
 }
 
 pub fn text_codec() -> codec.Codec(Text) {
-  use source <- codec.field("source", codec.string(), fn(v: Text) { v.source })
-  use brief <- codec.field("brief", codec.string(), fn(v: Text) { v.brief })
-  use body <- codec.field("body", codec.string(), fn(v: Text) { v.body })
+  use source <- codec.field("source", codec.string(), get: fn(v) { v.source })
+  use brief <- codec.field("brief", codec.string(), get: fn(v) { v.brief })
+  use body <- codec.field("body", codec.string(), get: fn(v) { v.body })
   codec.success(Text(source:, brief:, body:))
 }
 
@@ -71,11 +71,11 @@ pub fn draft_codec() -> codec.Codec(Draft) {
 }
 
 fn draft_fields() -> codec.Codec(Draft) {
-  use text <- codec.field("text", text_codec(), fn(v: Draft) { v.text })
+  use text <- codec.field("text", text_codec(), get: fn(v) { v.text })
   use generation <- codec.field(
     "generation",
     codec.integer_between(0, 3),
-    fn(v: Draft) { v.generation },
+    get: fn(v) { v.generation },
   )
   codec.success(Draft(text:, generation:))
 }
@@ -86,7 +86,7 @@ pub fn body_codec() -> codec.Codec(String) {
     |> codec.describe(
       "The complete draft, using only facts in the supplied source.",
     )
-  use body <- codec.field("body", body, fn(body) { body })
+  use body <- codec.field("body", body, get: fn(body) { body })
   codec.success(body)
 }
 
@@ -97,7 +97,9 @@ pub fn decision_codec() -> codec.Codec(Decision) {
       #("revise", Revise),
       #("reject", Reject),
     ])
-  use decision <- codec.field("decision", decision, fn(decision) { decision })
+  use decision <- codec.field("decision", decision, get: fn(decision) {
+    decision
+  })
   codec.success(decision)
 }
 
@@ -110,10 +112,8 @@ pub fn decision_text(decision: Decision) -> String {
 }
 
 pub fn artifact_codec() -> codec.Codec(Artifact) {
-  use path <- codec.field("path", codec.string(), fn(v: Artifact) { v.path })
-  use sha256 <- codec.field("sha256", codec.string(), fn(v: Artifact) {
-    v.sha256
-  })
+  use path <- codec.field("path", codec.string(), get: fn(v) { v.path })
+  use sha256 <- codec.field("sha256", codec.string(), get: fn(v) { v.sha256 })
   codec.success(Artifact(path:, sha256:))
 }
 

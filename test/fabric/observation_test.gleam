@@ -375,9 +375,7 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
       "research",
       "Research a topic.",
       {
-        use topic <- codec.field("topic", codec.string(), fn(t: Topic) {
-          t.topic
-        })
+        use topic <- codec.field("topic", codec.string(), get: fn(t) { t.topic })
         codec.success(Topic(topic))
       },
       codec.string(),

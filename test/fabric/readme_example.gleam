@@ -34,14 +34,12 @@ pub type TransferError {
 /// declaration the model sees and the decoder of its arguments.
 pub fn transfer_definition() -> tool.Definition(Transfer, Receipt) {
   let input = {
-    use to <- codec.field("to", codec.string(), fn(t: Transfer) { t.to })
-    use amount <- codec.field("amount", codec.int(), fn(t: Transfer) {
-      t.amount
-    })
+    use to <- codec.field("to", codec.string(), get: fn(t) { t.to })
+    use amount <- codec.field("amount", codec.int(), get: fn(t) { t.amount })
     codec.success(Transfer(to:, amount:))
   }
   let output = {
-    use id <- codec.field("receipt", codec.string(), fn(r: Receipt) { r.id })
+    use id <- codec.field("receipt", codec.string(), get: fn(r) { r.id })
     codec.success(Receipt(id:))
   }
   tool.define("transfer_funds", "Transfer an amount.", input, output)
@@ -214,13 +212,11 @@ pub fn front_desk(
       "research",
       "Research a topic.",
       {
-        use name <- codec.field("topic", codec.string(), fn(t: Topic) { t.name })
+        use name <- codec.field("topic", codec.string(), get: fn(t) { t.name })
         codec.success(Topic(name:))
       },
       {
-        use text <- codec.field("summary", codec.string(), fn(s: Summary) {
-          s.text
-        })
+        use text <- codec.field("summary", codec.string(), get: fn(s) { s.text })
         codec.success(Summary(text:))
       },
     )
