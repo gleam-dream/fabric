@@ -31,8 +31,10 @@ nix develop -c sh -c 'cd consumers/writing && gleam test'
 nix develop -c python3 -B -m unittest discover -s consumers/writing -p test_live.py
 ```
 
-The eight Gleam scenarios use scripted provider responses with actual files
-and store restarts. They cover successful recovery, two revisions, rejection,
+The eight Gleam scenarios use an offline HTTP Gun script that answers each
+exact expected generation and review request in order, with actual files and
+store restarts. Any other or repeated provider request fails without network
+access. They cover successful recovery, two revisions, rejection,
 invalid/refused/incomplete results, missing source, conflicting saves and a
 save whose result was lost. Python scenarios validate the corpus, credential
 loading, measured values and failure accounting. The full repository gate

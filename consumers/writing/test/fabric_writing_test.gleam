@@ -6,13 +6,17 @@ import fabric_writing
 import fabric_writing/domain
 import fabric_writing/file
 import fabric_writing/provider
-import fabric_writing_fake_provider as fake_provider
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleeunit
 import gleeunit/should
+import http_gun
+import http_gun/config as http_config
+import http_gun/fixture
+import http_gun/testing as http_testing
 import json/blueprint/codec
+import llm_wire/session
 import llm_wire/testing
 import llm_wire/types
 
@@ -25,16 +29,15 @@ pub fn approval_survives_restart_without_repeating_generation_or_review_test() {
   let source = directory <> "/source.txt"
   let assert Ok(Nil) =
     write_file(source, "The library opens on 12 May. Admission is free.")
-  let fake =
-    fake_provider.start([
-      testing.text(
-        "{\"body\":\"The library opens on 12 May, with free admission.\"}",
-      ),
-      testing.text("{\"decision\":\"approve\"}"),
+  // Exactly one generation and one review: a repeated call after the
+  // restart would find no matching exchange.
+  let client =
+    script("Mention the opening date and price.", [
+      draft("The library opens on 12 May, with free admission."),
+      review(domain.Approve),
     ])
-  let assert Ok(model) = types.model_id("scripted-writer")
-  let generator = provider.generator(fake.client, fake.settings, model)
-  let reviewer = provider.llm_reviewer(fake.client, fake.settings, model)
+  let generator = provider.generator(client, testing.config(), model())
+  let reviewer = provider.llm_reviewer(client, testing.config(), model())
   let publisher = file.publisher(directory <> "/published")
   let runs = store.directory(process.new_name("writing"), directory <> "/runs")
   let owner = start_store(runs)
@@ -65,10 +68,9 @@ pub fn approval_survives_restart_without_repeating_generation_or_review_test() {
   let assert graph.Completed(domain.Published(artifact)) = done.status
   file.read(artifact.path)
   |> should.equal(Ok("The library opens on 12 May, with free admission.\n"))
-  fake_provider.request_count(fake) |> should.equal(2)
   graph.approve(handle, first) |> should.be_error
   stop_store(owner, runs)
-  fake_provider.stop(fake)
+  let assert Ok(Nil) = http_gun.stop(client)
   remove_dir(directory)
 }
 
@@ -108,38 +110,99 @@ type Fixture {
     owner: process.Pid,
     runs: store.Store,
     handle: graph.Handle(Nil, domain.State, domain.Outcome),
-    fake: fake_provider.Fake,
+    client: http_gun.Client,
   )
 }
 
-fn draft(body: String) -> testing.Reply {
-  let assert Ok(raw) = codec.encode_json(domain.body_codec(), body)
-  testing.text(raw)
+const source_text = "The library opens on 12 May. Admission is free."
+
+fn model() -> types.ModelId {
+  let assert Ok(model) = types.model_id("scripted-writer")
+  model
 }
 
-fn review(decision: domain.Decision) -> testing.Reply {
+/// One provider request the graph is expected to make, with its reply.
+type Turn {
+  Generate(body: String)
+  Review(reply: testing.Reply)
+}
+
+fn draft(body: String) -> Turn {
+  Generate(body)
+}
+
+fn review(decision: domain.Decision) -> Turn {
   let assert Ok(raw) = codec.encode_json(domain.decision_codec(), decision)
-  testing.text(raw)
+  Review(testing.text(raw))
+}
+
+/// An offline HTTP Gun client that answers exactly these requests, in this
+/// order, for `brief` over the source text. Any other or further request
+/// fails without network access.
+fn script(brief: String, turns: List(Turn)) -> http_gun.Client {
+  let start = domain.Draft(domain.Text(source_text, brief, ""), 0)
+  let assert Ok(client) =
+    http_testing.start(http_config.default(), exchanges(start, turns, []))
+  client
+}
+
+/// Follows the graph's drafts: a generation sets the body and advances the
+/// generation; a review, including a revision, keeps the reviewed draft.
+fn exchanges(
+  current: domain.Draft,
+  turns: List(Turn),
+  done: List(fixture.Exchange),
+) -> List(fixture.Exchange) {
+  case turns {
+    [] -> list.reverse(done)
+    [Generate(body), ..rest] -> {
+      let assert Ok(call) =
+        session.prepare_structured(
+          testing.config(),
+          provider.generation_request(model(), current),
+          "draft",
+          domain.body_codec(),
+        )
+      let assert Ok(raw) = codec.encode_json(domain.body_codec(), body)
+      let next =
+        domain.Draft(domain.Text(..current.text, body:), current.generation + 1)
+      exchanges(next, rest, [
+        testing.structured_exchange(call, testing.text(raw)),
+        ..done
+      ])
+    }
+    [Review(reply), ..rest] -> {
+      let assert Ok(call) =
+        session.prepare_structured(
+          testing.config(),
+          provider.review_request(model(), current),
+          "review",
+          domain.decision_codec(),
+        )
+      exchanges(current, rest, [
+        testing.structured_exchange(call, reply),
+        ..done
+      ])
+    }
+  }
 }
 
 fn fixture(
-  replies: List(testing.Reply),
+  turns: List(Turn),
   publish: fn(String) -> operation.Operation(Nil, domain.Draft, domain.Artifact),
 ) -> Fixture {
   let directory = temp_dir()
   let source = directory <> "/source.txt"
-  let assert Ok(Nil) =
-    write_file(source, "The library opens on 12 May. Admission is free.")
-  let fake = fake_provider.start(replies)
-  let assert Ok(model) = types.model_id("scripted-writer")
+  let assert Ok(Nil) = write_file(source, source_text)
+  let client = script("Mention the date and price.", turns)
   let runs =
     store.directory(process.new_name("writing-case"), directory <> "/runs")
   let owner = start_store(runs)
   let runtime =
     fabric_writing.runtime(
       runs,
-      provider.generator(fake.client, fake.settings, model),
-      provider.llm_reviewer(fake.client, fake.settings, model),
+      provider.generator(client, testing.config(), model()),
+      provider.llm_reviewer(client, testing.config(), model()),
       publish(directory <> "/published"),
     )
   let assert Ok(handle) =
@@ -149,12 +212,12 @@ fn fixture(
       source,
       "Mention the date and price.",
     )
-  Fixture(directory, owner, runs, handle, fake)
+  Fixture(directory, owner, runs, handle, client)
 }
 
 fn close(fixture: Fixture) -> Nil {
   stop_store(fixture.owner, fixture.runs)
-  fake_provider.stop(fixture.fake)
+  let assert Ok(Nil) = http_gun.stop(fixture.client)
   remove_dir(fixture.directory)
 }
 
@@ -176,7 +239,6 @@ pub fn revision_has_a_saved_counter_and_stops_after_three_drafts_test() {
   let assert domain.Working(domain.Reviewing, saved) = done.value
   saved.generation |> should.equal(3)
   saved.text.body |> should.equal("three")
-  fake_provider.request_count(f.fake) |> should.equal(6)
   // No publish activation is admitted on the exhausted review route.
   done.receipts
   |> list.map(fn(receipt) { receipt.node })
@@ -214,11 +276,13 @@ pub fn invalid_refused_and_incomplete_review_responses_cannot_publish_test() {
     testing.output_limited("{\"decision\":"),
   ]
   |> list.each(fn(response) {
-    let f = fixture([draft("draft"), response], file.publisher)
+    let f = fixture([draft("draft"), Review(response)], file.publisher)
     let assert Ok(done) = graph.await(f.handle, 5000)
     let assert graph.Blocked(_, _) = done.status
     file.read(f.directory <> "/published/article-4.md") |> should.be_error
-    fake_provider.request_count(f.fake) |> should.equal(2)
+    done.receipts
+    |> list.map(fn(receipt) { receipt.node })
+    |> should.equal(["source", "generate"])
     close(f)
   })
 }
@@ -240,7 +304,6 @@ pub fn a_corrected_draft_is_reviewed_before_approval_test() {
   let assert Ok(done) = graph.await(f.handle, 5000)
   let assert graph.Completed(domain.Published(artifact)) = done.status
   file.read(artifact.path) |> should.equal(Ok("12 May; free admission\n"))
-  fake_provider.request_count(f.fake) |> should.equal(4)
   close(f)
 }
 
@@ -248,21 +311,21 @@ pub fn absent_source_stops_before_a_provider_call_test() {
   let directory = temp_dir()
   let runs = store.in_memory(process.new_name("absent-source"))
   let owner = start_store(runs)
-  let fake = fake_provider.start([])
-  let assert Ok(model) = types.model_id("unused")
+  let client = script("write", [])
   let runtime =
     fabric_writing.runtime(
       runs,
-      provider.generator(fake.client, fake.settings, model),
-      provider.llm_reviewer(fake.client, fake.settings, model),
+      provider.generator(client, testing.config(), model()),
+      provider.llm_reviewer(client, testing.config(), model()),
       file.publisher(directory),
     )
   let assert Ok(handle) =
     fabric_writing.start(runtime, "absent", directory <> "/missing", "write")
   let assert Ok(done) = graph.await(handle, 5000)
   let assert graph.Failed(_) = done.status
-  fake_provider.request_count(fake) |> should.equal(0)
-  fake_provider.stop(fake)
+  // The source activation failed, so no generation was ever started.
+  done.receipts |> should.equal([])
+  let assert Ok(Nil) = http_gun.stop(client)
   stop_store(owner, runs)
   remove_dir(directory)
 }
@@ -324,6 +387,5 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
   let assert graph.Completed(domain.Published(after)) = done.status
   after |> should.equal(receipt)
   file.read(after.path) |> should.equal(Ok("approved draft\n"))
-  fake_provider.request_count(f.fake) |> should.equal(2)
   close(Fixture(..f, owner:))
 }
