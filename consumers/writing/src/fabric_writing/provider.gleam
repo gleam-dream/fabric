@@ -44,20 +44,23 @@ pub fn generator(
     domain.draft_codec(),
     domain.body_codec(),
     "draft",
-    fn(_, draft) {
-      #(
-        client,
-        settings,
-        types.new_request(model, [
-          types.SystemMessage(
-            "Write a concise factual draft that fulfills the brief using only the source. The input is JSON data. If a previous draft is present, correct it against the brief and source. Do not invent missing facts. Return the complete revised body, not editing commentary.",
-          ),
-          types.UserMessage(domain.prompt(draft)),
-        ])
-          |> types.with_max_tokens(300),
-      )
-    },
+    fn(_, draft) { #(client, settings, generation_request(model, draft)) },
   )
+}
+
+/// The generation request for one draft: the identity `source-writer`
+/// version 1 owns this prompt and its 300-token bound.
+pub fn generation_request(
+  model: types.ModelId,
+  draft: domain.Draft,
+) -> types.Request {
+  types.new_request(model, [
+    types.SystemMessage(
+      "Write a concise factual draft that fulfills the brief using only the source. The input is JSON data. If a previous draft is present, correct it against the brief and source. Do not invent missing facts. Return the complete revised body, not editing commentary.",
+    ),
+    types.UserMessage(domain.prompt(draft)),
+  ])
+  |> types.with_max_tokens(300)
 }
 
 pub fn llm_reviewer(
@@ -71,19 +74,22 @@ pub fn llm_reviewer(
       domain.draft_codec(),
       domain.decision_codec(),
       "review",
-      fn(_, draft) {
-        #(
-          client,
-          settings,
-          types.new_request(model, [
-            types.SystemMessage(rubric),
-            types.UserMessage(domain.prompt(draft)),
-          ])
-            |> types.with_max_tokens(64),
-        )
-      },
+      fn(_, draft) { #(client, settings, review_request(model, draft)) },
     )
   Reviewer(op, answer)
+}
+
+/// The review request for one draft: the identity `writing-review-llm`
+/// version 1 owns this rubric and its 64-token bound.
+pub fn review_request(
+  model: types.ModelId,
+  draft: domain.Draft,
+) -> types.Request {
+  types.new_request(model, [
+    types.SystemMessage(rubric),
+    types.UserMessage(domain.prompt(draft)),
+  ])
+  |> types.with_max_tokens(64)
 }
 
 pub fn answer(receipt: llm.Receipt(a)) -> Result(a, String) {
