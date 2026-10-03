@@ -17,7 +17,7 @@
 //// | `Completed(output)` | the output |
 //// | `Failed` by a typed error (`StepFailed`, or a retry limit whose last attempt returned one), past the deadline, or by an output crash; no unknown effect (so no error its step marks with `unknown_when`); nothing left in place (no undo or cleanup that returned an error, no step without an undo, none held) | a definite failure the model sees: `explain(error)` (or the missed deadline, or the output that could not be computed) |
 //// | `Cancelled`, with the same conditions | a definite failure the model sees: the workflow was cancelled and every completed step undone |
-//// | anything else: `CompletedWithUnknownEffects`, an unknown effect of any action, an effect left in place, a crash or timeout cause, `Unresolved`, a lost run | an uncertain effect whose evidence summarizes Saga's report (outcome kinds, actions and step addresses, never application data) |
+//// | anything else: `CompletedWithUnknownEffects`, an unknown effect of any action, an effect left in place, a crash or timeout cause, `Unresolved` (the default end of a step whose `unknown_when` error has no decision to settle it; `saga.on_unknown(step, saga.RollBack)` ends it `Failed` instead), a lost run | an uncertain effect whose evidence summarizes Saga's report (outcome kinds, actions and step addresses, never application data) |
 ////
 //// Cancelling the Fabric run (or any stop of the tool's task) cancels the
 //// Saga run: the workflow is started by the tool's task, which owns it, and

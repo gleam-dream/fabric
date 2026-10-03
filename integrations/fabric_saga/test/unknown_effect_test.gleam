@@ -103,7 +103,7 @@ pub fn a_crash_its_decider_aborted_is_uncertain_test() {
       panic as "crashed after paying"
     })
     |> saga.compensate(max_attempts: 1, with: fn(_) { saga.Abort(Declined) })
-  let assert Ok(workflow) = saga.define("pay_once", saga.perform(_, pay))
+  let workflow = saga.define("pay_once", saga.perform(_, pay))
 
   let run = start(workflow)
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
@@ -142,7 +142,7 @@ pub fn a_sibling_that_crashed_while_settling_is_uncertain_test() {
     saga.step("join", fn(pair: #(String, String)) -> Result(String, Failure) {
       Ok(pair.0 <> pair.1)
     })
-  let assert Ok(workflow) =
+  let workflow =
     saga.define("sibling_crash", fn(x) {
       saga.perform(saga.both(saga.perform(x, a), saga.perform(x, b)), join)
     })
@@ -193,7 +193,7 @@ pub fn a_crash_retried_to_success_is_uncertain_test() {
       }
     })
     |> saga.compensate(max_attempts: 2, with: fn(_) { saga.Retry })
-  let assert Ok(workflow) = saga.define("pay_retried", saga.perform(_, pay))
+  let workflow = saga.define("pay_retried", saga.perform(_, pay))
 
   let run = start(workflow)
   let assert Ok(first) = process.receive(attempts, 5000)
@@ -219,7 +219,7 @@ pub fn a_crashed_recovery_decision_is_uncertain_test() {
     |> saga.compensate(max_attempts: 1, with: fn(_) {
       panic as "crashed while cleaning up"
     })
-  let assert Ok(workflow) = saga.define("decision_crash", saga.perform(_, pay))
+  let workflow = saga.define("decision_crash", saga.perform(_, pay))
 
   let run = start(workflow)
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
@@ -245,7 +245,7 @@ pub fn a_crashed_undo_is_uncertain_test() {
     saga.step("pay", fn(_: String) -> Result(String, Failure) {
       Error(Declined)
     })
-  let assert Ok(workflow) =
+  let workflow =
     saga.define("undo_crash", fn(x) { saga.perform(saga.perform(x, hold), pay) })
 
   let run = start(workflow)
@@ -258,10 +258,10 @@ pub fn a_crashed_undo_is_uncertain_test() {
 
 /// The refund reaches the provider, which takes it but does not answer: the
 /// step returns `PaymentOutcomeUnknown`, which it marks with
-/// `saga.unknown_when`. Saga ends the run with that typed error, and names
-/// the attempt among its unknown effects, so the call is an uncertain effect
-/// a person reconciles, never a definite failure the model could retry
-/// into a second refund (SD-1).
+/// `saga.unknown_when`. With no decision to settle it, Saga ends the run
+/// `Unresolved` and undoes nothing, and names the attempt among its unknown
+/// effects, so the call is an uncertain effect a person reconciles, never a
+/// definite failure the model could retry into a second refund (SD-1).
 pub fn a_refund_the_provider_may_have_taken_is_uncertain_test() {
   let reports = process.new_subject()
   let refund =
@@ -270,7 +270,7 @@ pub fn a_refund_the_provider_may_have_taken_is_uncertain_test() {
       Error(PaymentOutcomeUnknown)
     })
     |> saga.unknown_when(fn(failure) { failure == PaymentOutcomeUnknown })
-  let assert Ok(workflow) = saga.define("refund", saga.perform(_, refund))
+  let workflow = saga.define("refund", saga.perform(_, refund))
 
   let run = start(workflow)
   let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
@@ -280,10 +280,43 @@ pub fn a_refund_the_provider_may_have_taken_is_uncertain_test() {
     "attempt 1 of step refund returned an error after which its effect is unknown",
   )
   |> should.be_true
+  string.contains(
+    uncertain.evidence,
+    "the workflow held the effects of step refund unresolved",
+  )
+  |> should.be_true
+  string.contains(uncertain.evidence, "Saga reported unresolved at refund")
+  |> should.be_true
   string.contains(uncertain.evidence, "typed error:") |> should.be_false
   string.contains(uncertain.evidence, "PaymentOutcomeUnknown")
   |> should.be_false
   next(reports) |> should.equal("refund sent")
+}
+
+/// A step that opts into rolling back on an unknown effect ends the run
+/// `Failed` with the same error, and the call is still uncertain: Saga
+/// names the attempt among its unknown effects.
+pub fn a_rolled_back_unknown_effect_is_uncertain_test() {
+  let refund =
+    saga.step("refund", fn(_: String) -> Result(String, Failure) {
+      Error(PaymentOutcomeUnknown)
+    })
+    |> saga.unknown_when(fn(failure) { failure == PaymentOutcomeUnknown })
+    |> saga.on_unknown(saga.RollBack)
+  let workflow = saga.define("refund", saga.perform(_, refund))
+
+  let run = start(workflow)
+  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  uncertain.tool |> should.equal("workflow")
+  string.contains(
+    uncertain.evidence,
+    "attempt 1 of step refund returned an error after which its effect is unknown",
+  )
+  |> should.be_true
+  string.contains(uncertain.evidence, "Saga reported failed:")
+  |> should.be_true
+  string.contains(uncertain.evidence, "PaymentOutcomeUnknown")
+  |> should.be_false
 }
 
 /// The same error without `unknown_when` is a typed failure the model sees:
@@ -293,7 +326,7 @@ pub fn an_unmarked_typed_error_is_definite_test() {
     saga.step("refund", fn(_: String) -> Result(String, Failure) {
       Error(PaymentOutcomeUnknown)
     })
-  let assert Ok(workflow) = saga.define("refund", saga.perform(_, refund))
+  let workflow = saga.define("refund", saga.perform(_, refund))
 
   let run = start(workflow)
   fabric.await(run, 5000)

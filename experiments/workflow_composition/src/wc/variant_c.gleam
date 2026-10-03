@@ -44,10 +44,7 @@ pub fn define(
   policy: agent.Policy,
   mode: ApprovalMode,
   max_turns: Int,
-) -> Result(
-  saga.Workflow(Conversation, Conversation, LoopError, Nil),
-  List(saga.DefinitionError),
-) {
+) -> saga.Workflow(Conversation, Conversation, LoopError, Nil) {
   saga.define("agent", fn(start) {
     int.range(from: 1, to: max_turns + 1, with: start, run: fn(port, turn) {
       port

@@ -144,7 +144,7 @@ pub fn book_trip(probe: Probe) -> Tool {
       probe.record(probe, "charge")
       Ok(Itinerary(pair.0, pair.1, "CH-1"))
     })
-  let assert Ok(workflow) =
+  let workflow =
     saga.define("book_trip", fn(city) {
       let flight = saga.perform(city, reserve_flight)
       let hotel = saga.perform(saga.both(city, flight), reserve_hotel)
