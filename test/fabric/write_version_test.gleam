@@ -4,6 +4,7 @@
 import fabric
 import fabric/agent
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric/store/backend
@@ -85,7 +86,12 @@ pub fn configured_writes_remain_readable_by_the_version_2_decoder_test() {
     fabric.await(started, within: duration.milliseconds(5000))
   writes(memory.backend, fabric.id(started), 2)
   let assert Ok(_) =
-    fabric.approve(started, pending.reference, reviewer: None, context: Nil)
+    fabric.approve(
+      started,
+      pending.reference,
+      reviewer: reviewer.new("reviewer"),
+      context: Nil,
+    )
   let running = probe.arrival(body)
   writes(memory.backend, fabric.id(started), 2)
   probe.release(running)
@@ -118,7 +124,12 @@ pub fn the_write_target_does_not_restrict_what_can_be_read_test() {
       let assert Ok(opened) =
         fabric.open(second, agent, Nil, fabric.id(started))
       let assert Ok(_) =
-        fabric.approve(opened, pending.reference, reviewer: None, context: Nil)
+        fabric.approve(
+          opened,
+          pending.reference,
+          reviewer: reviewer.new("reviewer"),
+          context: Nil,
+        )
       let running = probe.arrival(body)
       probe.release(running)
       fabric.await(opened, within: duration.milliseconds(5000))

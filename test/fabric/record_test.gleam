@@ -4,7 +4,8 @@ import fabric/internal/controller.{type State}
 import fabric/internal/graph/attachment
 import fabric/internal/record
 import fabric/internal/registry
-import fabric/model.{ToolCall}
+import fabric/model
+import fabric/reviewer
 import fabric/run.{ActionId, Requirement}
 import fabric/support
 import fabric/support/apps
@@ -14,17 +15,22 @@ import gleam/string
 import gleeunit/should
 
 fn call(id: String, name: String) -> model.ToolCall {
-  ToolCall(
-    id,
-    name,
-    "{\"city\":\"Paris\"}",
-    provider_id: Some("fc_" <> id),
-    provider_state: Some("signature-" <> id),
+  model.tool_call(id: id, name: name, arguments_json: "{\"city\":\"Paris\"}")
+  |> model.with_provider_replay(
+    id: Some("fc_" <> id),
+    state: Some("signature-" <> id),
   )
 }
 
 fn action(id: String, state: run.ActionState) -> run.ActionRecord {
-  run.ActionRecord(ActionId(1, id), call(id, "lookup_weather"), state, [], None)
+  run.ActionRecord(
+    ActionId(1, id),
+    call(id, "lookup_weather"),
+    state,
+    [],
+    None,
+    0,
+  )
 }
 
 /// Every action state, both answers, with and without a reviewer.
@@ -33,7 +39,7 @@ fn every_action() -> List(run.ActionRecord) {
   [
     action("a", run.Queued),
     action("b", run.Running),
-    action("c", run.AwaitingApproval(requirement, 3)),
+    action("c", run.AwaitingApproval(requirement, 3, None)),
     action("d", run.Succeeded("{\"summary\":\"sunny\"}")),
     action("e", run.ToolFailed("{\"error\":\"nope\"}")),
     action("f", run.Denied("blocked")),
@@ -59,7 +65,7 @@ fn every_action() -> List(run.ActionRecord) {
       call("a", "transfer_funds"),
       run.Queued,
       [
-        run.Approval(requirement, 1, run.Approve, Some("alice")),
+        run.Approval(requirement, 1, run.Approve, Some(reviewer.new("alice"))),
         run.Approval(
           requirement,
           2,
@@ -68,6 +74,7 @@ fn every_action() -> List(run.ActionRecord) {
         ),
       ],
       None,
+      0,
     ),
   ]
 }
@@ -115,7 +122,7 @@ fn phases() -> List(controller.Phase) {
     run.PolicyFailed(ActionId(1, "a"), "down"),
     run.OutputEncodingFailed(ActionId(1, "b"), "bad"),
     run.ToolChanged(ActionId(1, "c"), "tool is not registered"),
-    run.ModelFailed(model.ModelError("reset", retryable: True)),
+    run.ModelFailed(model.error(model.Overloaded, "reset")),
     run.ModelProtocolViolation("empty batch"),
   ]
   let outcomes = [
@@ -256,7 +263,8 @@ pub fn a_version_1_record_is_read_as_a_root_run_without_sub_agents_test() {
     <> "\"provider_state\":null},\"state\":{\"tag\":\"awaiting_approval\","
     <> "\"requirement\":{\"name\":\"transfer\",\"version\":1},\"revision\":1},"
     <> "\"approvals\":[]}]}}"
-  let transfer = ToolCall("t", "transfer_funds", "{}", None, None)
+  let transfer =
+    model.tool_call(id: "t", name: "transfer_funds", arguments_json: "{}")
   let expected =
     controller.State(
       run: "run-old",
@@ -279,9 +287,10 @@ pub fn a_version_1_record_is_read_as_a_root_run_without_sub_agents_test() {
         run.ActionRecord(
           ActionId(1, "t"),
           transfer,
-          run.AwaitingApproval(Requirement("transfer", 1), 1),
+          run.AwaitingApproval(Requirement("transfer", 1), 1, None),
           [],
           None,
+          0,
         ),
       ]),
       family_budget: None,
@@ -341,13 +350,15 @@ pub fn a_record_continues_only_under_its_agent_and_tools_test() {
         action("w", run.Queued),
         run.ActionRecord(
           ActionId(2, "t"),
-          ToolCall(
-            ..call("t", "transfer_funds"),
+          model.tool_call(
+            id: "t",
+            name: "transfer_funds",
             arguments_json: "{\"to\":\"bob\",\"amount\":10}",
           ),
-          run.AwaitingApproval(Requirement("transfer", 1), 1),
+          run.AwaitingApproval(Requirement("transfer", 1), 1, None),
           [],
           None,
+          0,
         ),
         run.ActionRecord(
           ActionId(2, "old"),
@@ -355,6 +366,7 @@ pub fn a_record_continues_only_under_its_agent_and_tools_test() {
           run.Succeeded("{}"),
           [],
           None,
+          0,
         ),
       ]),
     )

@@ -5,7 +5,9 @@ import fabric
 import fabric/agent
 import fabric/internal/store as store_core
 import fabric/llm
+import fabric/model
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric/support
@@ -227,7 +229,12 @@ pub fn google_signed_parts_survive_approval_and_directory_restart_test() -> Nil 
   |> should.equal(Ok(run.Suspended([approval], [])))
   list.length(fake_provider.bodies(fake)) |> should.equal(1)
   let assert Ok(_) =
-    fabric.approve(resumed, approval.reference, reviewer: None, context: Nil)
+    fabric.approve(
+      resumed,
+      approval.reference,
+      reviewer: reviewer.new("reviewer"),
+      context: Nil,
+    )
   fabric.await(resumed, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("finished"))))
   probe.entries(ledger) |> should.equal(["calc:7"])
@@ -322,13 +329,8 @@ fn text_agent(
     [],
     policy.always_allow(),
   )
-  |> agent.with_limits(
-    agent.Limits(
-      ..agent.default_limits(),
-      max_turns:,
-      model_retry_delay: duration.milliseconds(0),
-    ),
-  )
+  |> agent.with_max_turns(max_turns)
+  |> agent.with_model_retry_delay(duration.milliseconds(0))
   |> support.agent
 }
 
@@ -349,7 +351,7 @@ pub fn http_501_stops_without_retrying_the_unchanged_request_test() -> Nil {
     )
   let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =
     fabric.await(started, within: duration.milliseconds(5000))
-  error.retryable |> should.be_false
+  model.is_retryable(error) |> should.be_false
   let assert Ok(snapshot) = fabric.snapshot(started)
   snapshot.turns_used |> should.equal(1)
   list.length(fake_provider.bodies(fake)) |> should.equal(1)

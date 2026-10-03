@@ -82,7 +82,7 @@ pub fn runtime(
             |> result.map_error(fn(error) {
               operation.UncertainEffect(
                 "recipe probe does not implement model retry/backoff: "
-                <> error.reason,
+                <> model.describe_error(error),
               )
             }),
           )
@@ -198,7 +198,14 @@ fn env(
   config: checked_agent.Admitted(context),
   context: context,
 ) -> controller.Env(context) {
-  controller.Env(config.registry, config.policy, context, config.system_prompt)
+  controller.Env(
+    config.registry,
+    config.policy,
+    context,
+    config.system_prompt,
+    approval_expiry: None,
+    clock: fn() { 0 },
+  )
 }
 
 fn load(

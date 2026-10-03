@@ -12,6 +12,7 @@ import fabric/internal/record
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
+import fabric/reviewer
 import fabric/run.{type RunId, ActionId}
 import fabric/store
 import fabric/store/backend
@@ -194,12 +195,7 @@ pub fn a_held_child_is_cancelled_through_its_record_test() {
   let #(holds, attached) = hold_runner(string.ends_with(_, "-1"))
   let child =
     two_payments_spec(probe, policy.always_allow())
-    |> agent.with_limits(
-      agent.Limits(
-        ..agent.default_limits(),
-        command_timeout: duration.milliseconds(20),
-      ),
-    )
+    |> agent.with_command_timeout(duration.milliseconds(20))
     |> support.agent
   let assert Ok(run) =
     fabric.start(
@@ -235,20 +231,14 @@ pub fn a_held_child_is_cancelled_through_its_record_test() {
 /// released runner commits nothing more.
 pub fn a_held_run_is_cancelled_through_its_record_test() {
   let cancel_with = fn(
-    cancel: fn(fabric.Run(Nil), store.Store) ->
-      Result(run.Status, fabric.CommandError),
+    cancel: fn(fabric.Run(Nil), store.Store) -> Result(run.Status, fabric.Error),
   ) {
     let probe = probe.new()
     let store = support.store()
     let #(holds, attached) = hold_runner(fn(_) { True })
     let agent =
       two_payments_spec(probe, policy.always_allow())
-      |> agent.with_limits(
-        agent.Limits(
-          ..agent.default_limits(),
-          command_timeout: duration.milliseconds(20),
-        ),
-      )
+      |> agent.with_command_timeout(duration.milliseconds(20))
       |> support.agent
     let assert Ok(run) =
       fabric.start(
@@ -310,12 +300,7 @@ fn counted_payer(probe: Probe, slow: Bool) -> Agent(Nil) {
     [paying_tool(probe), scripted.gated_tool(probe)],
     policy.always_allow(),
   )
-  |> agent.with_limits(
-    agent.Limits(
-      ..agent.default_limits(),
-      command_timeout: duration.milliseconds(20),
-    ),
-  )
+  |> agent.with_command_timeout(duration.milliseconds(20))
   |> support.agent
 }
 
@@ -452,6 +437,7 @@ fn store_stopping_root(store: store.Store, id: String) -> Nil {
             run.Delegated,
             [],
             Some(support.id(id <> "-1")),
+            0,
           ),
         ],
         controller.CancelRequested,
@@ -517,7 +503,7 @@ pub fn a_tool_under_a_stopping_ancestor_never_starts_test() {
         model.AssistantMessage(model.AssistantTurn("", [t1], None)),
       ],
       controller.Acting(1, [
-        run.ActionRecord(ActionId(1, "t1"), t1, run.Queued, [], None),
+        run.ActionRecord(ActionId(1, "t1"), t1, run.Queued, [], None, 0),
       ]),
     )
 
@@ -597,7 +583,7 @@ pub fn an_answer_racing_the_parent_cancellation_starts_nothing_test() {
         fabric.approve(
           run,
           pending.reference,
-          reviewer: None,
+          reviewer: reviewer.new("reviewer"),
           context: "recheck",
         ),
       )
@@ -689,6 +675,7 @@ pub fn a_reattached_sub_agent_under_a_stopping_ancestor_never_starts_test() {
           run.Delegated,
           [],
           Some(support.id("run-elders-1-1")),
+          0,
         ),
       ]),
     )

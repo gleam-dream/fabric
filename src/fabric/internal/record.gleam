@@ -61,17 +61,31 @@
 //// which no run did, and a sub-agent limit now only refuses a delegation
 //// (`limit_reached`).
 ////
+//// An approval request with a deadline (`agent.with_approval_expiry`)
+//// stores it as `"expires_at"`, in Unix milliseconds, in any version; one
+//// without the key never expires. An answer stores its reviewer's subject
+//// as `"reviewer"` (a string, as before) and its issuer, when there is one,
+//// as `"reviewer_issuer"`. An expired request is stored as a rejection
+//// with `"expired": true`, which a reader that ignores the key reads as a
+//// rejection. A replayed action (`tool.with_replay`) stores `"replays"`;
+//// one without the key was never replayed. A model failure stores its
+//// `"kind"` beside the `reason` and `retryable` it always had, and its
+//// provider delay as `"retry_after_ms"`; one stored without a kind reads
+//// as `other` (`overloaded` when it was retryable).
+////
 //// The `stopping` phase records `tools_stopped`, whether the executor
 //// confirmed that no tool task runs. A record without it reads as not yet
 //// confirmed, which refuses late settlements until recovery completes the
 //// stop.
 
 import fabric/internal/budget/config as budget_config
+import fabric/internal/clock
 import fabric/internal/controller.{type Phase, type State, State}
 import fabric/internal/graph/attachment
 import fabric/internal/registry.{type Registry}
 import fabric/internal/run_id
 import fabric/model.{type Message, type ToolCall}
+import fabric/reviewer
 import fabric/run.{
   type ActionId, type ActionRecord, type ActionState, type Approval,
   type DefinitionId, type HostFailure, type Incompatibility, type Outcome,
@@ -83,6 +97,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/duration
 import sinal/correlation.{type Correlation}
 
 pub const format = "fabric.run"
@@ -400,36 +415,78 @@ fn requirement(requirement: Requirement) -> Json {
 }
 
 fn action(action: ActionRecord) -> Json {
-  json.object([
-    #("id", action_id(action.id)),
-    #("call", tool_call(action.call)),
-    #("state", action_state(action.state)),
-    #("approvals", json.array(action.approvals, approval)),
-    #("child", json.nullable(action.child, run_id)),
-  ])
+  json.object(
+    list.append(
+      [
+        #("id", action_id(action.id)),
+        #("call", tool_call(action.call)),
+        #("state", action_state(action.state)),
+        #("approvals", json.array(action.approvals, approval)),
+        #("child", json.nullable(action.child, run_id)),
+      ],
+      case action.replays {
+        0 -> []
+        replays -> [#("replays", json.int(replays))]
+      },
+    ),
+  )
 }
 
+/// The reason an expired request is stored with, as the rejection a reader
+/// that does not know expiry reads.
+const expired_reason = "the approval request expired"
+
 fn approval(approval: Approval) -> Json {
-  json.object([
-    #("requirement", requirement(approval.requirement)),
-    #("revision", json.int(approval.revision)),
-    #("answer", case approval.answer {
-      run.Approve -> tag("approve", [])
-      run.Reject(reason) -> tag("reject", [#("reason", json.string(reason))])
-    }),
-    #("reviewer", json.nullable(approval.reviewer, json.string)),
-  ])
+  json.object(
+    list.flatten([
+      [
+        #("requirement", requirement(approval.requirement)),
+        #("revision", json.int(approval.revision)),
+        #("answer", case approval.answer {
+          run.Approve -> tag("approve", [])
+          run.Reject(reason) ->
+            tag("reject", [#("reason", json.string(reason))])
+          run.Expired ->
+            tag("reject", [#("reason", json.string(expired_reason))])
+        }),
+        #(
+          "reviewer",
+          json.nullable(
+            option.map(approval.reviewer, reviewer.subject),
+            json.string,
+          ),
+        ),
+      ],
+      case option.then(approval.reviewer, reviewer.issuer) {
+        Some(issuer) -> [#("reviewer_issuer", json.string(issuer))]
+        None -> []
+      },
+      case approval.answer {
+        run.Expired -> [#("expired", json.bool(True))]
+        run.Approve | run.Reject(_) -> []
+      },
+    ]),
+  )
 }
 
 fn action_state(state: ActionState) -> Json {
   case state {
     run.Queued -> tag("queued", [])
     run.Running -> tag("running", [])
-    run.AwaitingApproval(required, revision) ->
-      tag("awaiting_approval", [
-        #("requirement", requirement(required)),
-        #("revision", json.int(revision)),
-      ])
+    run.AwaitingApproval(required, revision, expires) ->
+      tag(
+        "awaiting_approval",
+        list.append(
+          [
+            #("requirement", requirement(required)),
+            #("revision", json.int(revision)),
+          ],
+          case expires {
+            Some(at) -> [#("expires_at", json.int(clock.to_milliseconds(at)))]
+            None -> []
+          },
+        ),
+      )
     run.Succeeded(content) ->
       tag("succeeded", [#("content", json.string(content))])
     run.ToolFailed(content) ->
@@ -529,13 +586,55 @@ fn host_failure(failure: HostFailure) -> Json {
         #("id", action_id(id)),
         #("detail", json.string(detail)),
       ])
-    run.ModelFailed(model.ModelError(reason, retryable)) ->
-      tag("model_failed", [
-        #("reason", json.string(reason)),
-        #("retryable", json.bool(retryable)),
-      ])
+    run.ModelFailed(error) ->
+      tag(
+        "model_failed",
+        list.append(
+          [
+            #("reason", json.string(model.error_detail(error))),
+            #("retryable", json.bool(model.is_retryable(error))),
+            #("kind", json.string(model_kind_name(model.error_kind(error)))),
+          ],
+          case model.retry_after(error) {
+            Some(delay) -> [
+              #("retry_after_ms", json.int(duration.to_milliseconds(delay))),
+            ]
+            None -> []
+          },
+        ),
+      )
     run.ModelProtocolViolation(reason) ->
       tag("model_protocol_violation", [#("reason", json.string(reason))])
+  }
+}
+
+fn model_kind_name(kind: model.ErrorKind) -> String {
+  case kind {
+    model.Unreachable -> "unreachable"
+    model.TimedOut -> "timed_out"
+    model.RateLimited -> "rate_limited"
+    model.Overloaded -> "overloaded"
+    model.Rejected -> "rejected"
+    model.InvalidRequest -> "invalid_request"
+    model.InvalidReply -> "invalid_reply"
+    model.Crashed -> "crashed"
+    model.Other -> "other"
+  }
+}
+
+/// A kind this version does not know (a later one wrote it) reads as
+/// `Other`.
+fn model_kind(name: String) -> model.ErrorKind {
+  case name {
+    "unreachable" -> model.Unreachable
+    "timed_out" -> model.TimedOut
+    "rate_limited" -> model.RateLimited
+    "overloaded" -> model.Overloaded
+    "rejected" -> model.Rejected
+    "invalid_request" -> model.InvalidRequest
+    "invalid_reply" -> model.InvalidReply
+    "crashed" -> model.Crashed
+    _ -> model.Other
   }
 }
 
@@ -904,13 +1003,10 @@ fn tool_call_decoder() -> Decoder(ToolCall) {
     "provider_state",
     decode.optional(decode.string),
   )
-  decode.success(model.ToolCall(
-    id:,
-    name:,
-    arguments_json: arguments,
-    provider_id:,
-    provider_state:,
-  ))
+  decode.success(
+    model.tool_call(id:, name:, arguments_json: arguments)
+    |> model.with_provider_replay(id: provider_id, state: provider_state),
+  )
 }
 
 fn run_id_decoder() -> Decoder(run.RunId) {
@@ -935,7 +1031,8 @@ fn action_decoder(found: Int) -> Decoder(ActionRecord) {
   use state <- decode.field("state", action_state_decoder(found))
   use approvals <- decode.field("approvals", decode.list(approval_decoder()))
   use child <- since_2(found, "child", None, decode.optional(run_id_decoder()))
-  decode.success(ActionRecord(id, call, state, approvals, child))
+  use replays <- decode.optional_field("replays", 0, decode.int)
+  decode.success(ActionRecord(id, call, state, approvals, child, replays))
 }
 
 fn approval_decoder() -> Decoder(Approval) {
@@ -949,7 +1046,24 @@ fn approval_decoder() -> Decoder(Approval) {
       _ -> Error(Nil)
     }
   })
-  use reviewer <- decode.field("reviewer", decode.optional(decode.string))
+  use subject <- decode.field("reviewer", decode.optional(decode.string))
+  use issuer <- decode.optional_field(
+    "reviewer_issuer",
+    None,
+    decode.optional(decode.string),
+  )
+  use expired <- decode.optional_field("expired", False, decode.bool)
+  let reviewer =
+    option.map(subject, fn(subject) {
+      case issuer {
+        Some(issuer) -> reviewer.new(subject) |> reviewer.with_issuer(issuer)
+        None -> reviewer.new(subject)
+      }
+    })
+  let answer = case expired {
+    True -> run.Expired
+    False -> answer
+  }
   decode.success(run.Approval(required, revision, answer, reviewer))
 }
 
@@ -962,7 +1076,12 @@ fn action_state_decoder(version: Int) -> Decoder(ActionState) {
       Ok({
         use required <- decode.field("requirement", requirement_decoder())
         use revision <- decode.field("revision", decode.int)
-        decode.success(run.AwaitingApproval(required, revision))
+        use expires <- decode.optional_field(
+          "expires_at",
+          None,
+          decode.optional(decode.map(decode.int, clock.to_timestamp)),
+        )
+        decode.success(run.AwaitingApproval(required, revision, expires))
       })
     "succeeded" -> Ok(string_field("content", run.Succeeded))
     "tool_failed" -> Ok(string_field("content", run.ToolFailed))
@@ -1165,7 +1284,28 @@ fn host_failure_decoder() -> Decoder(HostFailure) {
       Ok({
         use reason <- decode.field("reason", decode.string)
         use retryable <- decode.field("retryable", decode.bool)
-        decode.success(run.ModelFailed(model.ModelError(reason, retryable)))
+        use kind <- decode.optional_field(
+          "kind",
+          None,
+          decode.optional(decode.string),
+        )
+        use delay <- decode.optional_field(
+          "retry_after_ms",
+          None,
+          decode.optional(decode.int),
+        )
+        let kind = case kind, retryable {
+          Some(name), _ -> model_kind(name)
+          None, True -> model.Overloaded
+          None, False -> model.Other
+        }
+        let error = model.error(kind, reason)
+        decode.success(
+          run.ModelFailed(case delay {
+            Some(ms) -> model.with_retry_after(error, duration.milliseconds(ms))
+            None -> error
+          }),
+        )
       })
     "model_protocol_violation" ->
       Ok(string_field("reason", run.ModelProtocolViolation))

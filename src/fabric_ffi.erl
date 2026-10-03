@@ -3,7 +3,8 @@
          directory_insert/3, directory_compare_and_set/4, claim_new/0,
          claim_take/2, exit_shutdown/0, factory_name/1,
          await_or_shutdown/3, requeue_shutdown/1, take_shutdown/1, graph_child_id/2,
-         family_budget_id/1, system_time_ms/0, graph_branch_id/3]).
+         family_budget_id/1, system_time_ms/0, graph_branch_id/3,
+         sha256_hex/1]).
 
 family_budget_id(Root) ->
     Hash = crypto:hash(sha256, [<<"fabric.family.budget:">>, Root]),
@@ -250,3 +251,7 @@ unavailable(Reason) ->
 
 describe(Reason) ->
     unicode:characters_to_binary(io_lib:format("~p", [Reason])).
+
+%% The SHA-256 of Text, in lowercase hexadecimal.
+sha256_hex(Text) ->
+    string:lowercase(binary:encode_hex(crypto:hash(sha256, Text))).

@@ -301,7 +301,7 @@ pub fn owned_expiration_keeps_its_cause_and_cleanup_across_restart_test() {
       build(runs, fn(_) { Ok(job.Pending) }),
       support.id("owned-deadline"),
       "receipt",
-      budget.Limits(1, 1, 1),
+      budget.limits(work: 1) |> budget.with_children(1) |> budget.with_depth(1),
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))

@@ -4,10 +4,12 @@
 import fabric/budget
 import fabric/internal/run_id
 import fabric/model.{type Message, type ModelError, type ToolCall}
+import fabric/reviewer.{type Reviewer}
 import gleam/list
 import gleam/option.{type Option}
 import gleam/string
 import gleam/time/duration.{type Duration}
+import gleam/time/timestamp.{type Timestamp}
 
 /// The id of a run. The caller chooses it when it starts a run
 /// (`fabric.start`, `graph.start`): `new_id()` for a fresh one, or
@@ -49,6 +51,50 @@ pub fn parse_id(text: String) -> Result(RunId, Nil) {
     False -> Error(Nil)
   }
 }
+
+/// A run id derived from an application key, for a start that must be
+/// idempotent: the same parts always give the same id, so a start retried
+/// with them finds its run (`AlreadyStarted`). Unlike `parse_id` it is total.
+///
+/// `prefix` names the kind of work, is written in source code, and must be 1
+/// to 32 ASCII letters and digits; any other prefix is a bug and panics.
+/// The parts are joined to it with `-`: `id_from_parts("job", ["42", "1"])`
+/// is `job-42-1`. When that text is not a valid id (a part has other
+/// characters, or it is longer than 128 characters), the id is the prefix,
+/// `_` and the SHA-256 of the parts in hexadecimal instead, which stays
+/// unique and stable. Give each part a fixed shape (digits, a uuid), since
+/// `["4-2"]` and `["4", "2"]` join to the same text.
+///
+/// When a retry must start a fresh run rather than find the old one,
+/// include the attempt among the parts.
+pub fn id_from_parts(prefix: String, parts: List(String)) -> RunId {
+  let letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+  let length = string.length(prefix)
+  case
+    length >= 1
+    && length <= 32
+    && list.all(string.to_graphemes(prefix), string.contains(letters, _))
+  {
+    False ->
+      panic as {
+        "run.id_from_parts: the prefix must be 1 to 32 ASCII letters and digits: "
+        <> string.inspect(prefix)
+      }
+    True -> {
+      let text = string.join([prefix, ..parts], "-")
+      case parse_id(text) {
+        Ok(id) -> id
+        Error(Nil) ->
+          run_id.from_string(
+            prefix <> "_" <> sha256_hex(string.join(parts, "\u{0}")),
+          )
+      }
+    }
+  }
+}
+
+@external(erlang, "fabric_ffi", "sha256_hex")
+fn sha256_hex(text: String) -> String
 
 pub fn id_to_string(id: RunId) -> String {
   run_id.to_string(id)
@@ -105,26 +151,39 @@ pub type ApprovalRef {
   ApprovalRef(run: RunId, id: ActionId, requirement: Requirement, revision: Int)
 }
 
+/// An approval request waiting for an answer. Read it by label: Fabric may
+/// add fields. `expires` is when it expires unanswered (`None`: never); an
+/// expired request rejects its action (see `agent.with_approval_expiry`).
 pub type PendingApproval {
-  PendingApproval(reference: ApprovalRef, tool: String, arguments_json: String)
+  PendingApproval(
+    reference: ApprovalRef,
+    tool: String,
+    arguments_json: String,
+    expires: Option(Timestamp),
+  )
 }
 
-/// A reviewer's answer to an approval request.
+/// The answer to an approval request.
 pub type Answer {
   Approve
   /// The action does not run; the model sees `reason`.
   Reject(reason: String)
+  /// No one answered before the request's deadline: the action does not
+  /// run, and the model sees that its approval expired.
+  Expired
 }
 
-/// An answered approval request, kept on its action. `reviewer` is the identity
-/// the application passed to `fabric.approve` or `fabric.reject`, as given:
-/// Fabric records it and does not authenticate it.
+/// An answered approval request, kept on its action. Read it by label.
+/// `reviewer` is the identity the application passed to `fabric.approve` or
+/// `fabric.reject`: Fabric records it and does not authenticate it. It is
+/// `None` for an `Expired` answer, and for an answer stored before reviewers
+/// were required.
 pub type Approval {
   Approval(
     requirement: Requirement,
     revision: Int,
     answer: Answer,
-    reviewer: Option(String),
+    reviewer: Option(Reviewer),
   )
 }
 
@@ -198,7 +257,14 @@ pub type ActionState {
   Queued
   /// The start was committed before the tool body ran.
   Running
-  AwaitingApproval(requirement: Requirement, revision: Int)
+  /// Waiting for an answer to its approval request. `expires` is the
+  /// request's deadline (`agent.with_approval_expiry`): after it the
+  /// request expires, and the action is rejected. `None` never expires.
+  AwaitingApproval(
+    requirement: Requirement,
+    revision: Int,
+    expires: Option(Timestamp),
+  )
   Succeeded(content: String)
   /// A typed failure; `content` is what the model sees.
   ToolFailed(content: String)
@@ -227,9 +293,12 @@ pub type ActionState {
   Faulted(detail: String)
 }
 
+/// One action of a run. Read it by label: Fabric may add fields.
 /// `approvals` lists the answered approval requests of the action, oldest
 /// first. `child` names the sub-agent run a delegation started, from the
-/// moment it is started, and stays after the action settles.
+/// moment it is started, and stays after the action settles. `replays`
+/// counts how often a replayable tool's body was started again after a
+/// crash, a timeout or a lost runner (`tool.with_replay`).
 pub type ActionRecord {
   ActionRecord(
     id: ActionId,
@@ -237,6 +306,7 @@ pub type ActionRecord {
     state: ActionState,
     approvals: List(Approval),
     child: Option(RunId),
+    replays: Int,
   )
 }
 

@@ -11,7 +11,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/time/duration.{type Duration}
+import gleam/time/duration
 import llm_wire/tool as wire_tool
 
 pub opaque type Registry(context) {
@@ -24,17 +24,31 @@ pub type RegistryError {
   InvalidName(String)
   /// The input codec has no JSON Schema to declare.
   SchemaUnavailable(String)
-  /// A tool bound with `tool.bind_settling` waits less than 1 ms.
-  SettlementBoundNotPositive(name: String, within: Duration)
-  /// A tool bound with `tool.bind_settling` waits longer than a timer can.
-  SettlementBoundTooLarge(name: String, within: Duration)
-  /// A tool's own timeout (`tool.with_timeout`) is under 1 ms or longer
-  /// than a timer can wait.
-  InvalidTimeout(name: String, timeout: Duration)
+  /// A tool's own bound is outside `minimum..maximum`.
+  InvalidToolLimit(
+    name: String,
+    limit: ToolLimit,
+    value: Int,
+    minimum: Int,
+    maximum: Int,
+  )
+}
+
+/// A bound one tool sets for itself.
+pub type ToolLimit {
+  /// `tool.bind_settling`'s `settle_within`, in milliseconds.
+  SettleWithin
+  /// `tool.with_timeout`, in milliseconds.
+  Timeout
+  /// `tool.with_replay`'s attempts.
+  ReplayAttempts
 }
 
 /// The longest timer the runtime sets, in milliseconds (2^32 - 1).
 pub const max_settlement_bound = 4_294_967_295
+
+/// The most attempts `tool.with_replay` allows.
+pub const max_replay_attempts = 100
 
 pub type AdmissionError {
   NotRegistered
@@ -60,32 +74,43 @@ pub fn new(
             Ok(_) -> errors
             Error(_) -> [SchemaUnavailable(name), ..errors]
           }
-          let errors = case
-            option.map(tool.settles_within(tool), fn(within) {
-              #(within, duration.to_milliseconds(within))
-            })
-          {
-            Some(#(within, ms)) if ms <= 0 -> [
-              SettlementBoundNotPositive(name, within),
-              ..errors
-            ]
-            Some(#(within, ms)) if ms > max_settlement_bound -> [
-              SettlementBoundTooLarge(name, within),
-              ..errors
-            ]
-            _ -> errors
+          let bounded = fn(errors, value, limit, minimum, maximum) {
+            case value {
+              Some(value) if value < minimum || value > maximum -> [
+                InvalidToolLimit(name, limit, value, minimum, maximum),
+                ..errors
+              ]
+              _ -> errors
+            }
           }
-          let errors = case tool.timeout(tool) {
-            Some(run.After(within)) ->
-              case duration.to_milliseconds(within) {
-                ms if ms < 1 || ms > max_settlement_bound -> [
-                  InvalidTimeout(name, within),
-                  ..errors
-                ]
-                _ -> errors
-              }
-            _ -> errors
-          }
+          let errors =
+            bounded(
+              errors,
+              option.map(tool.settles_within(tool), duration.to_milliseconds),
+              SettleWithin,
+              1,
+              max_settlement_bound,
+            )
+          let errors =
+            bounded(
+              errors,
+              case tool.timeout(tool) {
+                Some(run.After(within)) ->
+                  Some(duration.to_milliseconds(within))
+                _ -> None
+              },
+              Timeout,
+              1,
+              max_settlement_bound,
+            )
+          let errors =
+            bounded(
+              errors,
+              tool.replay(tool),
+              ReplayAttempts,
+              1,
+              max_replay_attempts,
+            )
           #(Registry([name, ..order], dict.insert(by_name, name, tool)), errors)
         }
       }
@@ -165,6 +190,18 @@ pub fn timeout(
     Ok(Some(run.After(within))) -> Some(duration.to_milliseconds(within))
     Ok(Some(run.Infinity)) -> None
     _ -> default
+  }
+}
+
+/// How many times in all the body of `name` may start, for a replayable
+/// tool (`tool.with_replay`).
+pub fn replay_attempts(
+  registry: Registry(context),
+  name: String,
+) -> Option(Int) {
+  case dict.get(registry.tools, name) {
+    Ok(tool) -> tool.replay(tool)
+    Error(Nil) -> None
   }
 }
 

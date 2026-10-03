@@ -1,6 +1,8 @@
 //// Automatic recovery for a leased store: a sweeper that scans for runs
-//// whose lease expired (their node died) and for idle graph waits that are
-//// due, and recovers each through its registered root.
+//// whose lease expired (their node died), for idle graph waits that are
+//// due, and for agent approval requests whose deadline passed
+//// (`agent.with_approval_expiry`), and recovers each through its registered
+//// root; recovery rejects an expired request, so the model sees it.
 ////
 //// Register every root agent and root graph whose runs the sweeper may
 //// meet, then put `supervised` under the application's supervisor in place

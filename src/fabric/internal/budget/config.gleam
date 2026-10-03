@@ -3,6 +3,7 @@
 
 import fabric/budget as quota
 
+import fabric/internal/budget/limits as budget_limits
 import fabric/internal/budget/model as budget
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json
@@ -37,7 +38,7 @@ pub fn limits_decoder() -> Decoder(quota.Limits) {
   use work <- decode.field("work", decode.int)
   use children <- decode.field("children", decode.int)
   use depth <- decode.field("depth", decode.int)
-  let limits = quota.Limits(work, children, depth)
+  let limits = budget_limits.Limits(work, children, depth)
   case budget.new(limits) {
     Ok(_) -> decode.success(limits)
     Error(_) -> decode.failure(limits, "valid family budget limits")

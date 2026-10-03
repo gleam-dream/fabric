@@ -50,12 +50,14 @@ fn fixtures() -> List(Fixture) {
       provider: message.Google,
       text: "thinking",
       calls: [
-        model.ToolCall(
-          "same-id",
-          "calc",
-          "{\"x\":7}",
-          Some("same-id"),
-          Some("call-signature"),
+        model.tool_call(
+          id: "same-id",
+          name: "calc",
+          arguments_json: "{\"x\":7}",
+        )
+        |> model.with_provider_replay(
+          id: Some("same-id"),
+          state: Some("call-signature"),
         ),
       ],
       data: google_data,
@@ -65,20 +67,18 @@ fn fixtures() -> List(Fixture) {
       provider: message.OpenAI,
       text: "",
       calls: [
-        model.ToolCall(
-          "call_a",
-          "lookup_weather",
-          "{\"city\":\"Paris\"}",
-          Some("call_a"),
-          None,
-        ),
-        model.ToolCall(
-          "call_b",
-          "transfer_funds",
-          "{\"to\":\"bob\",\"amount\":10}",
-          Some("call_b"),
-          None,
-        ),
+        model.tool_call(
+          id: "call_a",
+          name: "lookup_weather",
+          arguments_json: "{\"city\":\"Paris\"}",
+        )
+          |> model.with_provider_replay(id: Some("call_a"), state: None),
+        model.tool_call(
+          id: "call_b",
+          name: "transfer_funds",
+          arguments_json: "{\"to\":\"bob\",\"amount\":10}",
+        )
+          |> model.with_provider_replay(id: Some("call_b"), state: None),
       ],
       data: "{\"provider\":{\"kind\":\"openai\",\"name\":null},\"response_id\":\"resp_1\",\"provider_data\":null,\"issues\":[]}",
       replayed: "[{\"type\":\"function_call\",\"call_id\":\"call_a\",\"name\":\"lookup_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"},{\"type\":\"function_call\",\"call_id\":\"call_b\",\"name\":\"transfer_funds\",\"arguments\":\"{\\\"to\\\":\\\"bob\\\",\\\"amount\\\":10}\"}]",
@@ -87,13 +87,12 @@ fn fixtures() -> List(Fixture) {
       provider: message.Anthropic,
       text: "",
       calls: [
-        model.ToolCall(
-          "toolu_1",
-          "lookup_weather",
-          "{\"city\": ",
-          Some("toolu_1"),
-          None,
-        ),
+        model.tool_call(
+          id: "toolu_1",
+          name: "lookup_weather",
+          arguments_json: "{\"city\": ",
+        )
+        |> model.with_provider_replay(id: Some("toolu_1"), state: None),
       ],
       data: "{\"provider\":{\"kind\":\"anthropic\",\"name\":null},\"response_id\":\"msg_1\",\"provider_data\":null,\"issues\":[{\"call_id\":\"toolu_1\",\"reason\":\"Invalid JSON in tool call arguments\"}]}",
       replayed: "{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"lookup_weather\",\"input\":{\"unparsed_arguments\":\"{\\\"city\\\": \"}}]}",
@@ -102,14 +101,12 @@ fn fixtures() -> List(Fixture) {
       provider: message.Custom("scripted"),
       text: "",
       calls: [
-        model.ToolCall(
-          "call_a",
-          "lookup_weather",
-          "{\"town\":\"Paris\"}",
-          None,
-          None,
+        model.tool_call(
+          id: "call_a",
+          name: "lookup_weather",
+          arguments_json: "{\"town\":\"Paris\"}",
         ),
-        model.ToolCall("call_b", "ghost", "{}", None, None),
+        model.tool_call(id: "call_b", name: "ghost", arguments_json: "{}"),
       ],
       data: "{\"provider\":{\"kind\":\"custom\",\"name\":\"scripted\"},\"response_id\":null,\"provider_data\":null,\"issues\":[{\"call_id\":\"call_a\",\"reason\":\"Tool call arguments failed schema validation: $: unknown field\"},{\"call_id\":\"call_b\",\"reason\":null}]}",
       replayed: "{\"role\":\"assistant\",\"content\":\"\",\"calls\":[{\"id\":\"call_a\",\"name\":\"lookup_weather\",\"arguments\":\"{\\\"town\\\":\\\"Paris\\\"}\"},{\"id\":\"call_b\",\"name\":\"ghost\",\"arguments\":\"{}\"}]}",

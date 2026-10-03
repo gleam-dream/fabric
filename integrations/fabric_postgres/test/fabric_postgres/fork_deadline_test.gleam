@@ -163,7 +163,9 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
           parent(runs, arrivals),
           id,
           [[1], [2], [3]],
-          budget.Limits(work: 5, children: 4, depth: 2),
+          budget.limits(work: 5)
+            |> budget.with_children(4)
+            |> budget.with_depth(2),
         )
       #(runs, root)
     })

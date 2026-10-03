@@ -3,6 +3,7 @@
 //// reading it back.
 
 import fabric
+import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric/store/backend
@@ -12,7 +13,7 @@ import fabric_postgres/support
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
-import gleam/option.{None, Some}
+import gleam/option.{None}
 import gleam/time/duration
 import gleeunit/should
 
@@ -54,7 +55,7 @@ pub fn a_suspended_run_is_approved_after_a_store_restart_and_finishes_test() {
     fabric.approve(
       opened,
       pending.reference,
-      reviewer: Some("reviewer"),
+      reviewer: reviewer.new("reviewer"),
       context: Nil,
     )
   let arrival = agents.arrival(gate)
@@ -166,7 +167,7 @@ pub fn the_postgres_adapter_supports_the_write_version_window_test() {
     fabric.approve(
       opened,
       pending.reference,
-      reviewer: Some("reviewer"),
+      reviewer: reviewer.new("reviewer"),
       context: Nil,
     )
   agents.release(agents.arrival(gate))

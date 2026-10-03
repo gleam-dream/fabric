@@ -7,7 +7,7 @@ import fabric/internal/invocation
 import fabric/internal/record
 import fabric/internal/registry
 import fabric/model.{
-  AssistantMessage, FinalAnswer, ToolCall, ToolRequest, ToolResultMessage, Usage,
+  AssistantMessage, FinalAnswer, ToolRequest, ToolResultMessage, Usage,
   UserMessage,
 }
 import fabric/policy.{type Action}
@@ -47,7 +47,14 @@ fn bank_policy(
 fn env_with(policy: policy.Policy(Nil)) -> controller.Env(Nil) {
   let assert Ok(tools) =
     registry.new([apps.weather_tool(), apps.transfer_tool()])
-  controller.Env(registry: tools, policy:, context: Nil, system: None)
+  controller.Env(
+    registry: tools,
+    policy:,
+    context: Nil,
+    system: None,
+    approval_expiry: None,
+    clock: fn() { 0 },
+  )
 }
 
 fn env() -> controller.Env(Nil) {
@@ -79,7 +86,7 @@ fn begin(env: controller.Env(Nil), limits: controller.Limits) -> State {
 }
 
 fn call(id: String, name: String, args: String) -> model.ToolCall {
-  ToolCall(id, name, args, None, None)
+  model.tool_call(id: id, name: name, arguments_json: args)
 }
 
 fn weather(id: String, city: String) -> model.ToolCall {
@@ -238,6 +245,7 @@ pub fn policy_denies_and_requires_approval_test() {
           run.ApprovalRef(support.id("run-1"), ActionId(1, "a"), requirement, 1),
           "transfer_funds",
           "{\"to\":\"bob\",\"amount\":500}",
+          None,
         ),
       ],
       [],
@@ -245,7 +253,7 @@ pub fn policy_denies_and_requires_approval_test() {
   )
   let assert [
     run.Denied("recipient is blocked"),
-    run.AwaitingApproval(_, 1),
+    run.AwaitingApproval(_, 1, _),
     run.Succeeded(_),
   ] = states(state)
 }
@@ -372,7 +380,7 @@ pub fn every_model_attempt_counts_against_the_turn_limit_test() {
         max_depth: 0,
       ),
     )
-  let flaky = model.ModelError("connection reset", retryable: True)
+  let flaky = model.error(model.Overloaded, "connection reset")
   let #(state, effects) = step(env, state, controller.ModelFailed(1, flaky))
   let assert [CallModel(2, _)] = effects
   let #(state, effects) = step(env, state, controller.ModelFailed(2, flaky))
@@ -385,7 +393,7 @@ pub fn every_model_attempt_counts_against_the_turn_limit_test() {
 pub fn non_retryable_model_failure_ends_the_run_test() {
   let env = env()
   let state = begin(env, limits())
-  let fatal = model.ModelError("401 unauthorized", retryable: False)
+  let fatal = model.error(model.Other, "401 unauthorized")
   let assert #(state, []) = step(env, state, controller.ModelFailed(1, fatal))
   controller.status(state)
   |> should.equal(run.Finished(run.Failed(run.ModelFailed(fatal))))
@@ -593,7 +601,7 @@ pub fn a_handoff_before_the_model_call_gives_the_turn_back_test() {
   let assert controller.AwaitingModel(2) = state.phase
   state.turns_used |> should.equal(2)
 
-  let handed = controller.hand_off(state)
+  let handed = controller.hand_off(env, state)
   handed.turns_used |> should.equal(1)
   let assert Ok(read) = record.decode(record.encode(handed))
   read |> should.equal(handed)

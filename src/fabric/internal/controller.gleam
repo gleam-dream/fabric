@@ -43,6 +43,7 @@
 
 import fabric/budget as quota
 import fabric/internal/budget/model as budget
+import fabric/internal/clock
 import fabric/internal/invocation
 import fabric/internal/registry.{type Registry}
 import fabric/internal/run_id
@@ -50,6 +51,7 @@ import fabric/model.{
   type Message, type ModelError, type Reply, type Request, type ToolCall,
 }
 import fabric/policy.{type Policy}
+import fabric/reviewer.{type Reviewer}
 import fabric/run.{
   type ActionId, type ActionRecord, type ActionState, type Answer,
   type ApprovalRef, type DefinitionId, type HostFailure, type Outcome,
@@ -60,16 +62,22 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
+import gleam/time/timestamp.{type Timestamp}
 import sinal/correlation.{type Correlation}
 
 // --- vocabulary ----------------------------------------------------------------
 
+/// `approval_expiry` (milliseconds; `None`: never) sets the deadline of
+/// each approval request the run issues, and `clock` reads the UTC time in
+/// Unix milliseconds that deadlines are judged by.
 pub type Env(context) {
   Env(
     registry: Registry(context),
     policy: Policy(context),
     context: context,
     system: Option(String),
+    approval_expiry: Option(Int),
+    clock: fn() -> Int,
   )
 }
 
@@ -151,12 +159,19 @@ pub type Event {
   ToolReported(ActionId, invocation.Outcome)
   /// A task died without reporting.
   ToolLost(ActionId, reason: String)
+  /// A task crashed or ran past its timeout: a replayable tool is started
+  /// again (`tool.with_replay`), any other becomes uncertain with
+  /// `evidence`.
+  ToolInterrupted(ActionId, evidence: String)
   /// The executor confirms nothing of this batch runs any more.
   ToolsStopped
   Reconcile(ActionId, content: String)
   /// A reviewer's answer; the policy is checked again with the context of
   /// the environment the event is applied with.
-  Answer(reference: ApprovalRef, answer: Answer, reviewer: Option(String))
+  Answer(reference: ApprovalRef, answer: Answer, reviewer: Option(Reviewer))
+  /// Rejects every approval request of the current batch whose deadline
+  /// has passed (`env.clock`); refused as stale when none has.
+  ExpireApprovals
   Cancel
   FamilyBudgetReached(quota.Denial)
   /// The child run of a delegation is stored and runs.
@@ -210,6 +225,8 @@ pub type Rejection {
   StaleReference
   /// This approval request was already answered.
   AlreadyAnswered
+  /// This approval request expired unanswered; its action was rejected.
+  ApprovalExpired
   /// The action does not await a late settlement.
   SettlementNotAwaited(ActionId)
   /// The action's task may still run: a settlement is awaited only once
@@ -220,8 +237,8 @@ pub type Rejection {
   SettlementRecorded(ActionId)
 }
 
-type Transition =
-  Result(#(State, List(Effect)), Rejection)
+type Transition(rejection) =
+  Result(#(State, List(Effect)), rejection)
 
 // --- transitions ---------------------------------------------------------------
 
@@ -280,10 +297,19 @@ pub fn start_correlated(
   call_model(env, state)
 }
 
-pub fn step(env: Env(context), state: State, event: Event) -> Transition {
+pub fn step(
+  env: Env(context),
+  state: State,
+  event: Event,
+) -> Transition(Rejection) {
   case event {
     Answer(reference, answer, reviewer) ->
       answer_approval(env, state, reference, answer, reviewer)
+    ExpireApprovals ->
+      case expire(env, state) {
+        Ok(next) -> Ok(next)
+        Error(Nil) -> Error(StaleEvent)
+      }
     Settled(id, _) ->
       step_phase(env, state, event)
       |> result.map_error(settlement_refused(state, id, _))
@@ -309,7 +335,11 @@ fn settlement_refused(
   }
 }
 
-fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
+fn step_phase(
+  env: Env(context),
+  state: State,
+  event: Event,
+) -> Transition(Rejection) {
   case state.phase, event {
     Ended(_), _ | NeverStarted, _ -> Error(RunEnded)
 
@@ -350,10 +380,10 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
         None -> Ok(settle(env, state))
       }
     }
-    Acting(turn, actions), ToolLost(id, reason) -> {
-      use actions <- result.try(update(actions, id, lose(id, reason)))
-      Ok(settle(env, State(..state, phase: Acting(turn, actions))))
-    }
+    Acting(turn, actions), ToolLost(id, reason) ->
+      interrupted(env, state, turn, actions, id, lost_report <> reason)
+    Acting(turn, actions), ToolInterrupted(id, evidence) ->
+      interrupted(env, state, turn, actions, id, evidence)
     Acting(turn, actions), Reconcile(id, content) -> {
       use actions <- result.try(
         update(actions, id, fn(action_state) {
@@ -385,7 +415,7 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
       Ok(#(State(..state, phase: Acting(turn, actions)), []))
     }
     Acting(turn, actions), ChildEnded(id, ChildMissing) ->
-      child_missing(state, turn, actions, id)
+      child_missing(env, state, turn, actions, id)
     Acting(turn, actions), ChildEnded(id, result) -> {
       use #(actions, fault) <- result.try(child_ended(
         actions,
@@ -406,7 +436,15 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
       Ok(#(State(..state, phase: Stopping(turn, actions, reason, halted)), []))
     }
     Stopping(turn, actions, reason, halted), ToolLost(id, why) -> {
-      use actions <- result.try(update(actions, id, lose(id, why)))
+      use actions <- result.try(update(
+        actions,
+        id,
+        lose(id, lost_report <> why),
+      ))
+      Ok(#(State(..state, phase: Stopping(turn, actions, reason, halted)), []))
+    }
+    Stopping(turn, actions, reason, halted), ToolInterrupted(id, evidence) -> {
+      use actions <- result.try(update(actions, id, lose(id, evidence)))
       Ok(#(State(..state, phase: Stopping(turn, actions, reason, halted)), []))
     }
     Stopping(turn, actions, reason, _), ToolsStopped -> {
@@ -488,7 +526,7 @@ fn step_phase(env: Env(context), state: State, event: Event) -> Transition {
 /// Cancels the run. It needs no environment: cancelling starts nothing.
 /// A run that is already stopping asks again to cancel the child runs it
 /// still waits on, in case an earlier request did not reach them.
-pub fn cancel(state: State) -> Transition {
+pub fn cancel(state: State) -> Transition(Rejection) {
   case state.phase {
     Ended(_) | NeverStarted -> Error(RunEnded)
     AwaitingModel(_) ->
@@ -502,7 +540,7 @@ pub fn cancel(state: State) -> Transition {
 /// stop the lost runner had begun is completed by abandoning it, and that
 /// ending is the cancellation; one still waiting for child runs is asked
 /// to cancel them again.
-pub fn cancel_abandoned(state: State) -> Transition {
+pub fn cancel_abandoned(state: State) -> Transition(Rejection) {
   case state.phase, abandon(state) {
     Stopping(..), State(phase: Ended(_), ..) as ended -> Ok(#(ended, []))
     Stopping(..), State(phase: Stopping(actions:, ..), ..) as stopping ->
@@ -519,7 +557,7 @@ pub fn cancel_abandoned(state: State) -> Transition {
 pub fn cancel_unattended(
   state: State,
   ended: List(#(ActionId, ChildResult)),
-) -> Transition {
+) -> Transition(Rejection) {
   let stopping = case state.phase {
     Stopping(..) -> True
     _ -> False
@@ -650,11 +688,12 @@ fn cancel_children(actions: List(ActionRecord)) -> List(Effect) {
 /// recheck is gone. An allowed one is started again by recovery, and in a
 /// live batch the report is out of date.
 fn child_missing(
+  env: Env(context),
   state: State,
   turn: Int,
   actions: List(ActionRecord),
   id: ActionId,
-) -> Transition {
+) -> Transition(Rejection) {
   let issued = state.approvals_issued + 1
   use actions <- result.map(
     update_record(actions, id, fn(action) {
@@ -663,7 +702,11 @@ fn child_missing(
           Ok(
             ActionRecord(
               ..action,
-              state: run.AwaitingApproval(approval.requirement, issued),
+              state: run.AwaitingApproval(
+                approval.requirement,
+                issued,
+                deadline(env),
+              ),
               child: None,
             ),
           )
@@ -816,8 +859,8 @@ fn answer_approval(
   state: State,
   reference: ApprovalRef,
   answer: Answer,
-  reviewer: Option(String),
-) -> Transition {
+  reviewer: Option(Reviewer),
+) -> Transition(Rejection) {
   let find = fn(actions: List(ActionRecord)) {
     list.find(actions, fn(action) { action.id == reference.id })
   }
@@ -830,19 +873,28 @@ fn answer_approval(
     True, Acting(turn, actions) ->
       case find(actions) {
         Ok(
-          ActionRecord(state: run.AwaitingApproval(requirement, revision), ..) as action,
+          ActionRecord(
+            state: run.AwaitingApproval(requirement, revision, expires),
+            ..,
+          ) as action,
         )
           if requirement == reference.requirement
           && revision == reference.revision
         ->
-          Ok(decide(
-            env,
-            state,
-            turn,
-            actions,
-            action,
-            run.Approval(requirement, revision, answer, reviewer),
-          ))
+          case passed(env, expires) {
+            // The answer came too late: the request expires instead, and
+            // with it every other request of the batch that is due.
+            True -> expire(env, state) |> result.replace_error(ApprovalExpired)
+            False ->
+              Ok(decide(
+                env,
+                state,
+                turn,
+                actions,
+                action,
+                run.Approval(requirement, revision, answer, reviewer),
+              ))
+          }
         Ok(action) -> Error(unanswerable(action, reference))
         Error(Nil) -> Error(in_history(state, reference))
       }
@@ -856,15 +908,23 @@ fn after_end(actions: List(ActionRecord), reference: ApprovalRef) -> Rejection {
   case list.find(actions, fn(action) { action.id == reference.id }) {
     Error(Nil) -> WrongReference
     Ok(action) ->
-      case
-        list.any(action.approvals, fn(approval) {
-          approval.revision == reference.revision
-        })
-      {
-        True -> AlreadyAnswered
-        False -> RunEnded
+      case answer_to(action, reference) {
+        Ok(run.Expired) -> ApprovalExpired
+        Ok(_) -> AlreadyAnswered
+        Error(Nil) -> RunEnded
       }
   }
+}
+
+/// The answer `action` recorded for the request `reference` names.
+fn answer_to(
+  action: ActionRecord,
+  reference: ApprovalRef,
+) -> Result(Answer, Nil) {
+  list.find(action.approvals, fn(approval) {
+    approval.revision == reference.revision
+  })
+  |> result.map(fn(approval) { approval.answer })
 }
 
 fn in_history(state: State, reference: ApprovalRef) -> Rejection {
@@ -876,17 +936,120 @@ fn in_history(state: State, reference: ApprovalRef) -> Rejection {
 
 /// Why `reference` cannot be answered on `action`.
 fn unanswerable(action: ActionRecord, reference: ApprovalRef) -> Rejection {
-  let answered =
-    list.any(action.approvals, fn(approval) {
-      approval.revision == reference.revision
-    })
-  case answered, action.approvals, action.state {
+  case answer_to(action, reference), action.approvals, action.state {
     // A request superseded by a new one is stale even though it was
     // answered.
     _, _, run.AwaitingApproval(..) -> StaleReference
-    True, _, _ -> AlreadyAnswered
-    False, [], _ -> WrongReference
-    False, _, _ -> StaleReference
+    Ok(run.Expired), _, _ -> ApprovalExpired
+    Ok(_), _, _ -> AlreadyAnswered
+    Error(Nil), [], _ -> WrongReference
+    Error(Nil), _, _ -> StaleReference
+  }
+}
+
+/// What the model sees for an action whose approval request expired.
+const expired_reason = "the approval request expired before anyone answered it"
+
+/// The deadline of an approval request issued now.
+fn deadline(env: Env(context)) -> Option(Timestamp) {
+  option.map(env.approval_expiry, fn(expiry) {
+    clock.to_timestamp(env.clock() + expiry)
+  })
+}
+
+/// Whether a request with the deadline `expires` has expired.
+fn passed(env: Env(context), expires: Option(Timestamp)) -> Bool {
+  case expires {
+    Some(at) -> clock.to_milliseconds(at) <= env.clock()
+    None -> False
+  }
+}
+
+/// Rejects every approval request of the current batch whose deadline has
+/// passed, as `run.Expired` answers with no reviewer. `Error(Nil)` when
+/// none has.
+fn expire(env: Env(context), state: State) -> Transition(Nil) {
+  let due =
+    list.filter_map(current(state), fn(action) {
+      case action.state {
+        run.AwaitingApproval(expires:, ..) ->
+          case passed(env, expires) {
+            True -> Ok(action.id)
+            False -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+    })
+  case due, state.phase {
+    [_, ..], Acting(..) ->
+      Ok(
+        list.fold(due, #(state, []), fn(acc, id) {
+          let #(state, effects) = acc
+          case state.phase {
+            Acting(turn, actions) ->
+              case list.find(actions, fn(action) { action.id == id }) {
+                Ok(
+                  ActionRecord(
+                    state: run.AwaitingApproval(requirement, revision, _),
+                    ..,
+                  ) as action,
+                ) -> {
+                  let #(state, more) =
+                    decide(
+                      env,
+                      state,
+                      turn,
+                      actions,
+                      action,
+                      run.Approval(requirement, revision, run.Expired, None),
+                    )
+                  #(state, list.append(effects, more))
+                }
+                _ -> acc
+              }
+            _ -> acc
+          }
+        }),
+      )
+    _, _ -> Error(Nil)
+  }
+}
+
+/// Whether the current batch has an approval request whose deadline has
+/// passed.
+pub fn has_expired_approvals(env: Env(context), state: State) -> Bool {
+  list.any(current(state), fn(action) {
+    case action.state {
+      run.AwaitingApproval(expires:, ..) -> passed(env, expires)
+      _ -> False
+    }
+  })
+}
+
+/// Queues again, for recovery, the running tool actions whose replayable
+/// tools have attempts left (`tool.with_replay`), instead of letting
+/// `abandon` make them uncertain.
+fn replay_running(env: Env(context), state: State) -> State {
+  case state.phase {
+    Acting(turn, actions) ->
+      State(
+        ..state,
+        phase: Acting(
+          turn,
+          list.map(actions, fn(action) {
+            case action.state, replayable(env, action) {
+              run.Running, True ->
+                ActionRecord(
+                  ..action,
+                  state: run.Queued,
+                  replays: action.replays + 1,
+                )
+              _, _ -> action
+            }
+          }),
+        ),
+      )
+    _ -> state
   }
 }
 
@@ -921,6 +1084,10 @@ fn decide(
       let actions = replace(answered(run.Rejected(reason)))
       settle(env, State(..state, phase: Acting(turn, actions)))
     }
+    run.Expired -> {
+      let actions = replace(answered(run.Rejected(expired_reason)))
+      settle(env, State(..state, phase: Acting(turn, actions)))
+    }
     run.Approve -> {
       let others =
         list.append(
@@ -937,7 +1104,9 @@ fn decide(
           // The superseded answer stays on the action for the audit
           // trail; it authorizes nothing.
           let actions =
-            replace(answered(run.AwaitingApproval(required, issued)))
+            replace(
+              answered(run.AwaitingApproval(required, issued, deadline(env))),
+            )
           #(
             State(
               ..state,
@@ -1030,7 +1199,14 @@ fn tools_requested(
         )
       let withdrawn =
         list.map(calls, fn(call) {
-          ActionRecord(ActionId(turn, call.id), call, run.NotStarted, [], None)
+          ActionRecord(
+            ActionId(turn, call.id),
+            call,
+            run.NotStarted,
+            [],
+            None,
+            0,
+          )
         })
       case continuation_blocked(state, usage) {
         Some(outcome) -> #(end(state, withdrawn, outcome), [])
@@ -1184,13 +1360,13 @@ fn admitted(
   others: List(ActionRecord),
 ) -> ActionRecord {
   let record = fn(action_state) {
-    ActionRecord(id, call, action_state, [], None)
+    ActionRecord(id, call, action_state, [], None, 0)
   }
   case gated {
     Refused(action_state) -> record(action_state)
     Decided(policy.Deny(reason)) -> record(run.Denied(reason))
     Decided(policy.RequireApproval(requirement)) ->
-      record(run.AwaitingApproval(requirement, issued + 1))
+      record(run.AwaitingApproval(requirement, issued + 1, deadline(env)))
     Decided(policy.Allow) ->
       case registry.is_delegation(env.registry, call.name) {
         False -> record(run.Queued)
@@ -1224,16 +1400,63 @@ fn accept_report(
 
 /// A task that died without reporting may have started its body even when
 /// its fence was not yet committed, so both cases are uncertain.
+const lost_report = "tool task exited without a report: "
+
 fn lose(
   id: ActionId,
-  reason: String,
+  evidence: String,
 ) -> fn(ActionState) -> Result(ActionState, Rejection) {
   fn(action_state) {
     case action_state {
-      run.Running | run.Queued ->
-        Ok(run.Uncertain("tool task exited without a report: " <> reason))
+      run.Running | run.Queued -> Ok(run.Uncertain(evidence))
       _ -> Error(ReportNotExpected(id))
     }
+  }
+}
+
+/// A tool body that stopped without a result of its own: it crashed, ran
+/// past its timeout, or its task exited. A replayable tool with attempts
+/// left is queued and started again; any other action becomes uncertain.
+fn interrupted(
+  env: Env(context),
+  state: State,
+  turn: Int,
+  actions: List(ActionRecord),
+  id: ActionId,
+  evidence: String,
+) -> Transition(Rejection) {
+  use actions <- result.try(
+    update_record(actions, id, fn(action) {
+      case action.state, replayable(env, action) {
+        run.Running, True ->
+          Ok(
+            ActionRecord(
+              ..action,
+              state: run.Queued,
+              replays: action.replays + 1,
+            ),
+          )
+        _, _ ->
+          lose(id, evidence)(action.state)
+          |> result.map(fn(next) { ActionRecord(..action, state: next) })
+      }
+    }),
+  )
+  let state = State(..state, phase: Acting(turn, actions))
+  let #(state, effects) = settle(env, state)
+  let replayed =
+    list.filter(actions, fn(action) {
+      action.id == id && action.state == run.Queued
+    })
+  Ok(#(state, list.append(dispatch(replayed), effects)))
+}
+
+/// Whether a tool action's body may be started again: its tool is
+/// replayable (`tool.with_replay`) and has attempts left.
+fn replayable(env: Env(context), action: ActionRecord) -> Bool {
+  case action.child, registry.replay_attempts(env.registry, action.call.name) {
+    None, Some(attempts) -> action.replays + 1 < attempts
+    _, _ -> False
   }
 }
 
@@ -1313,7 +1536,7 @@ fn model_failed(
   state: State,
   error: ModelError,
 ) -> #(State, List(Effect)) {
-  case error.retryable {
+  case model.is_retryable(error) {
     // A retry the turn budget refuses ends the run on the budget.
     True -> call_model(env, state)
     False -> #(
@@ -1506,11 +1729,11 @@ pub fn abandon(state: State) -> State {
 /// Delegated actions are left to the runtime, which reattaches their child
 /// runs; a stop still waiting for child runs asks to cancel them again.
 pub fn recover(env: Env(context), state: State) -> #(State, List(Effect)) {
-  let state = abandon(state)
+  let state = abandon(replay_running(env, state))
   case state.phase {
     AwaitingModel(_) -> call_model(env, state)
     Acting(turn, actions) -> {
-      let state = ask_again(state, turn, actions)
+      let state = ask_again(env, state, turn, actions)
       #(state, dispatch(current(state)))
     }
     Stopping(actions:, ..) -> #(state, cancel_children(actions))
@@ -1525,10 +1748,10 @@ pub fn recover(env: Env(context), state: State) -> #(State, List(Effect)) {
 /// approved asks for its approval again, as at recovery (`ask_again`);
 /// other queued actions stay queued. A stop keeps waiting for its child
 /// runs.
-pub fn hand_off(state: State) -> State {
+pub fn hand_off(env: Env(context), state: State) -> State {
   case state.phase {
     AwaitingModel(turn) -> State(..state, turns_used: turn - 1)
-    Acting(turn, actions) -> ask_again(state, turn, actions)
+    Acting(turn, actions) -> ask_again(env, state, turn, actions)
     Stopping(..) | Ended(_) | NeverStarted -> state
   }
 }
@@ -1544,7 +1767,12 @@ pub fn tools_running(state: State) -> Bool {
 /// under the requirement last answered, as new requests: the approval was
 /// checked with the answer's context, which a later incarnation does not
 /// have. The earlier answers stay in the approvals; they authorize nothing.
-fn ask_again(state: State, turn: Int, actions: List(ActionRecord)) -> State {
+fn ask_again(
+  env: Env(context),
+  state: State,
+  turn: Int,
+  actions: List(ActionRecord),
+) -> State {
   let #(issued, actions) =
     list.map_fold(actions, state.approvals_issued, fn(issued, action) {
       case action.state, list.last(action.approvals) {
@@ -1552,7 +1780,11 @@ fn ask_again(state: State, turn: Int, actions: List(ActionRecord)) -> State {
           issued + 1,
           ActionRecord(
             ..action,
-            state: run.AwaitingApproval(approval.requirement, issued + 1),
+            state: run.AwaitingApproval(
+              approval.requirement,
+              issued + 1,
+              deadline(env),
+            ),
           ),
         )
         _, _ -> #(issued, action)
@@ -1648,7 +1880,7 @@ pub fn status(state: State) -> Status {
           run.Suspended(
             list.filter_map(actions, fn(action) {
               case action.state {
-                run.AwaitingApproval(requirement, revision) ->
+                run.AwaitingApproval(requirement, revision, expires) ->
                   Ok(run.PendingApproval(
                     run.ApprovalRef(
                       run_id.from_string(state.run),
@@ -1658,6 +1890,7 @@ pub fn status(state: State) -> Status {
                     ),
                     action.call.name,
                     action.call.arguments_json,
+                    expires,
                   ))
                 _ -> Error(Nil)
               }

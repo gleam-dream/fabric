@@ -8,6 +8,7 @@ import fabric/agent
 import fabric/llm
 import fabric/model
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/support
 import fabric/support/apps
@@ -99,9 +100,7 @@ pub fn two_tool_calls_round_trip_through_llm_wire_test() {
       policy.always_allow(),
     )
     |> agent.with_system_prompt("You are a careful assistant.")
-    |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), token_budget: Some(1000)),
-    )
+    |> agent.with_token_budget(1000)
     |> support.agent
   let assert Ok(run) =
     fabric.start(
@@ -195,10 +194,15 @@ pub fn unsupported_or_corrupt_stored_adapter_data_stops_before_provider_io_test(
       let assert Ok(opened) =
         fabric.open(runs, resumed_agent, Nil, fabric.id(started))
       let assert Ok(_) =
-        fabric.approve(opened, pending.reference, reviewer: None, context: Nil)
+        fabric.approve(
+          opened,
+          pending.reference,
+          reviewer: reviewer.new("reviewer"),
+          context: Nil,
+        )
       let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =
         fabric.await(opened, within: duration.milliseconds(5000))
-      error.retryable |> should.be_false
+      model.is_retryable(error) |> should.be_false
       fake_provider.bodies(fake) |> should.equal([])
       fake_provider.remaining(fake) |> should.equal(1)
       fake_provider.stop(fake)
@@ -321,12 +325,7 @@ pub fn http_statuses_through_llm_wire_are_classified_for_retry_test() {
     fake_provider.start([testing.Status(503, "busy"), testing.text("recovered")])
   let agent =
     agent.new("agent", scripted_model(fake), [], policy.always_allow())
-    |> agent.with_limits(
-      agent.Limits(
-        ..agent.default_limits(),
-        model_retry_delay: duration.milliseconds(0),
-      ),
-    )
+    |> agent.with_model_retry_delay(duration.milliseconds(0))
     |> support.agent
   let assert Ok(run) =
     fabric.start(
@@ -356,7 +355,7 @@ pub fn http_statuses_through_llm_wire_are_classified_for_retry_test() {
     )
   let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =
     fabric.await(run, within: duration.milliseconds(10_000))
-  error.retryable |> should.be_false
+  model.is_retryable(error) |> should.be_false
   fake_provider.remaining(fake) |> should.equal(0)
   fake_provider.stop(fake)
 }

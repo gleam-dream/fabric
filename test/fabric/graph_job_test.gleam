@@ -188,7 +188,12 @@ pub fn an_observer_timeout_preserves_the_wait_and_reuses_its_work_grant_test() {
       commands: duration.milliseconds(1000),
     )
   let assert Ok(handle) =
-    graph.start_with_budget(slow, id, "receipt", budget.Limits(1, 1, 1))
+    graph.start_with_budget(
+      slow,
+      id,
+      "receipt",
+      budget.limits(work: 1) |> budget.with_children(1) |> budget.with_depth(1),
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status

@@ -5,6 +5,7 @@
 import fabric
 import fabric/agent
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/support
 import fabric/support/apps
@@ -67,7 +68,12 @@ pub fn a_runner_started_by_a_command_works_while_its_handlers_run_test() {
       }
     })
   let answered =
-    fabric.approve(run, pending.reference, reviewer: None, context: Nil)
+    fabric.approve(
+      run,
+      pending.reference,
+      reviewer: reviewer.new("reviewer"),
+      context: Nil,
+    )
   let _ = sinal.detach(attached)
   let assert Ok(_) = answered
   process.receive(seen, 0) |> should.equal(Ok(Ok(Nil)))
@@ -139,12 +145,7 @@ pub fn a_handler_in_a_commands_caller_can_command_the_run_test() {
       ],
       fn(_, _) { Ok(policy.RequireApproval(run.Requirement("t", 1))) },
     )
-    |> agent.with_limits(
-      agent.Limits(
-        ..agent.default_limits(),
-        command_timeout: duration.milliseconds(300),
-      ),
-    )
+    |> agent.with_command_timeout(duration.milliseconds(300))
     |> support.agent
   let assert Ok(run) =
     fabric.start(
@@ -167,7 +168,12 @@ pub fn a_handler_in_a_commands_caller_can_command_the_run_test() {
       }
     })
   let assert Ok(_) =
-    fabric.approve(run, pending.reference, reviewer: None, context: Nil)
+    fabric.approve(
+      run,
+      pending.reference,
+      reviewer: reviewer.new("reviewer"),
+      context: Nil,
+    )
   let _ = sinal.detach(attached)
   let assert Ok(Ok(_)) = process.receive(outcome, 0)
   fabric.await(run, within: duration.milliseconds(5000))

@@ -18,7 +18,7 @@ pub fn model(reply: fn(List(Message)) -> Reply) -> Model {
 }
 
 pub fn call(id: String, name: String, arguments: String) -> ToolCall {
-  model.ToolCall(id, name, arguments, None, None)
+  model.tool_call(id: id, name: name, arguments_json: arguments)
 }
 
 /// The contents of every tool result the model has seen, in order.

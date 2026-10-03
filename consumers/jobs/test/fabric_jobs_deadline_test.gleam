@@ -76,7 +76,7 @@ pub fn a_restarted_sweeper_expires_and_stops_a_real_owned_job_test() {
       demo.deadline_runtime(runs, submit, stop, support.url(), 60_000),
       id("deadline-real-job"),
       demo.Submitting(client.Request("never published after expiry", 5000)),
-      budget.Limits(2, 1, 1),
+      budget.limits(work: 2) |> budget.with_children(1) |> budget.with_depth(1),
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))

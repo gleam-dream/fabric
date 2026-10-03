@@ -36,6 +36,7 @@ import fabric/internal/budget/bootstrap
 import fabric/internal/budget/model as reservations
 import fabric/internal/checked_agent
 import fabric/internal/claim
+import fabric/internal/clock
 import fabric/internal/controller.{type Effect, type Event, type State}
 import fabric/internal/executor.{type Executor}
 import fabric/internal/invocation
@@ -59,6 +60,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/duration
 import sinal/correlation.{type Correlation}
 
 pub type Setup(context) {
@@ -108,6 +110,8 @@ pub fn setup(
       policy: contain_policy(admitted.policy, admitted.policy_timeout),
       context:,
       system: admitted.system_prompt,
+      approval_expiry: admitted.approval_expiry,
+      clock: clock.now,
     ),
     model: admitted.model,
     max_concurrency: admitted.max_concurrency,
@@ -242,7 +246,7 @@ fn bounded_outcome(
             <> int.to_string(size)
             <> " bytes, more than the run keeps ("
             <> int.to_string(setup.max_result_bytes)
-            <> " bytes, agent.Limits.max_result_bytes)",
+            <> " bytes, agent.with_max_result_bytes)",
           )
         _ -> outcome
       }
@@ -410,6 +414,9 @@ type Runner(context) {
     model_task: Option(#(Pid, Int, claim.Claim)),
     /// Consecutive retryable model failures; the next call waits longer.
     model_failures: Int,
+    /// The delay the last retryable model failure asked for
+    /// (`model.retry_after`), in milliseconds; 0 when it named none.
+    provider_delay: Int,
     /// One linked reader of durable child outcomes; it never holds up
     /// the runner's receive loop or drain.
     child_reader: Option(Pid),
@@ -704,6 +711,7 @@ fn begin(
         executor: None,
         model_task: None,
         model_failures: 0,
+        provider_delay: 0,
         child_reader: None,
         factory:,
         draining:,
@@ -764,7 +772,7 @@ fn withhold_model_call(runner: Runner(context)) -> Runner(context) {
 /// the run uses one turn more than without the stop. The store retains
 /// confirmation or failure for its shutdown summary.
 fn hand_off(runner: Runner(context)) -> Nil {
-  let state = controller.hand_off(runner.state)
+  let state = controller.hand_off(runner.setup.env, runner.state)
   let written = {
     use encoded <- result.try(store.encode(runner.setup.store, state))
     persist(
@@ -850,12 +858,21 @@ fn receive_next(runner: Runner(context)) -> Nil {
       }
     live.CapacityUnavailable(_) -> Error(Superseded)
     live.ModelDone(turn, result) -> {
-      let model_failures = case result {
-        Error(model.ModelError(retryable: True, ..)) ->
-          runner.model_failures + 1
-        _ -> 0
+      let #(model_failures, provider_delay) = case result {
+        Error(error) ->
+          case model.is_retryable(error) {
+            True -> #(
+              runner.model_failures + 1,
+              model.retry_after(error)
+                |> option.map(duration.to_milliseconds)
+                |> option.unwrap(0),
+            )
+            False -> #(0, 0)
+          }
+        Ok(_) -> #(0, 0)
       }
-      let runner = Runner(..runner, model_task: None, model_failures:)
+      let runner =
+        Runner(..runner, model_task: None, model_failures:, provider_delay:)
       apply(runner, case result {
         Ok(reply) -> controller.ModelReplied(turn, reply)
         Error(error) -> controller.ModelFailed(turn, error)
@@ -878,23 +895,15 @@ fn receive_next(runner: Runner(context)) -> Nil {
     live.Executed(executor.Reported(id, outcome)) ->
       apply(runner, controller.ToolReported(id, outcome))
     live.Executed(executor.Crashed(id, reason)) ->
-      apply(
-        runner,
-        controller.ToolReported(
-          id,
-          invocation.EffectUncertain("tool crashed: " <> reason),
-        ),
-      )
+      apply(runner, controller.ToolInterrupted(id, "tool crashed: " <> reason))
     live.Executed(executor.TimedOut(id, after)) ->
       apply(
         runner,
-        controller.ToolReported(
+        controller.ToolInterrupted(
           id,
-          invocation.EffectUncertain(
-            "the tool body was stopped after its "
+          "the tool body was stopped after its "
             <> int.to_string(after)
-            <> " ms timeout (agent.Limits.tool_timeout or tool.with_timeout)",
-          ),
+            <> " ms timeout (agent.with_tool_timeout or tool.with_timeout)",
         ),
       )
     live.Executed(executor.Lost(id, reason)) ->
@@ -990,9 +999,9 @@ fn exited(
         Runner(..runner, model_task: None),
         controller.ModelFailed(
           turn,
-          model.ModelError(
+          model.error(
+            model.Crashed,
             "the model task exited: " <> string.inspect(reason),
-            retryable: False,
           ),
         ),
       )
@@ -1215,7 +1224,10 @@ fn perform(
         )
       let declaration = runner.state.family_budget
       let delay =
-        retry_delay(runner.setup.model_retry_delay, runner.model_failures)
+        int.max(
+          retry_delay(runner.setup.model_retry_delay, runner.model_failures),
+          int.clamp(runner.provider_delay, 0, max_provider_delay),
+        )
       let model_timeout = runner.setup.model_timeout
       let issue = claim.new()
       // Linked: the task dies with the runner, and the runner (trapping
@@ -2098,7 +2110,7 @@ fn call_model(
   timeout: Option(Int),
 ) -> Result(model.Reply, model.ModelError) {
   let crashed = fn(crash) {
-    Error(model.ModelError("model crashed: " <> crash, retryable: False))
+    Error(model.error(model.Crashed, "model crashed: " <> crash))
   }
   case timeout {
     None ->
@@ -2111,11 +2123,11 @@ fn call_model(
         Ok(result) -> result
         Error(bounded.Crashed(crash)) -> crashed(crash)
         Error(bounded.TimedOut) ->
-          Error(model.ModelError(
+          Error(model.error(
+            model.TimedOut,
             "the model call did not finish within "
               <> int.to_string(ms)
-              <> " ms (agent.Limits.model_timeout)",
-            retryable: True,
+              <> " ms (agent.with_model_timeout)",
           ))
       }
   }
@@ -2123,6 +2135,10 @@ fn call_model(
 
 /// Exponential backoff: `initial` doubled per consecutive failure after the
 /// first, at most six times.
+/// The longest provider delay (`model.retry_after`) a retry waits: 10
+/// minutes.
+const max_provider_delay = 600_000
+
 fn retry_delay(initial: Int, failures: Int) -> Int {
   case failures {
     0 -> 0

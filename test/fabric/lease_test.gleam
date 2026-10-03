@@ -9,6 +9,7 @@ import fabric/agent.{type Agent}
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
+import fabric/reviewer
 import fabric/run.{Requirement}
 import fabric/store
 import fabric/store/backend
@@ -208,7 +209,12 @@ pub fn an_approval_of_an_idle_run_on_another_node_claims_the_lease_test() {
   nodes.holding(memory.backend, fabric.id(run)) |> should.equal(Error(Nil))
   let assert Ok(there) = fabric.open(b, agent, Nil, fabric.id(run))
   let assert Ok(run.Working) =
-    fabric.approve(there, pending.reference, reviewer: None, context: Nil)
+    fabric.approve(
+      there,
+      pending.reference,
+      reviewer: reviewer.new("reviewer"),
+      context: Nil,
+    )
   let running = probe.arrival(probe)
   nodes.holding(memory.backend, fabric.id(run))
   |> should.equal(Ok(#("b", True)))
@@ -247,11 +253,21 @@ pub fn an_approval_needing_another_nodes_runner_is_unattended_test() {
   let assert Ok([pending]) = fabric.pending(run)
   let assert Ok(before) = fabric.snapshot(run)
   let assert Ok(there) = fabric.open(b, agent, Nil, fabric.id(run))
-  fabric.approve(there, pending.reference, reviewer: None, context: Nil)
+  fabric.approve(
+    there,
+    pending.reference,
+    reviewer: reviewer.new("reviewer"),
+    context: Nil,
+  )
   |> should.equal(Error(fabric.RunUnattended))
   fabric.snapshot(run) |> should.equal(Ok(before))
   let assert Ok(run.Working) =
-    fabric.approve(run, pending.reference, reviewer: None, context: Nil)
+    fabric.approve(
+      run,
+      pending.reference,
+      reviewer: reviewer.new("reviewer"),
+      context: Nil,
+    )
   let second = probe.arrival(probe)
   probe.release(running)
   probe.release(second)

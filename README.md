@@ -70,6 +70,7 @@ import fabric
 import fabric/agent.{type Agent}
 import fabric/model.{type Model}
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric/tool
@@ -119,7 +120,7 @@ pub fn transfer_definition() -> tool.Definition(Transfer, Receipt) {
 /// never retried and waits for a person to reconcile it. The handler also
 /// gets the `tool.Call` it answers: its run, its action and the run's
 /// correlation, for the requests it makes. A body runs for at most the
-/// agent's `tool_timeout` (60 s by default).
+/// agent's tool timeout (`agent.with_tool_timeout`, 60 s by default).
 pub fn transfer_tool(
   pay: fn(Transfer) -> Result(Receipt, TransferError),
 ) -> tool.Tool(Context) {
@@ -158,13 +159,8 @@ pub fn desk(
   pay: fn(Transfer) -> Result(Receipt, TransferError),
 ) -> Result(Agent(Context), List(agent.ConfigError)) {
   agent.new("desk", model, [transfer_tool(pay)], desk_policy)
-  |> agent.with_limits(
-    agent.Limits(
-      ..agent.default_limits(),
-      max_turns: 6,
-      token_budget: Some(20_000),
-    ),
-  )
+  |> agent.with_max_turns(6)
+  |> agent.with_token_budget(20_000)
   |> agent.build
 }
 
@@ -189,16 +185,16 @@ pub fn supervise(path: String) -> Result(store.Store, actor.StartError) {
 }
 
 /// A request starts a run under an id it chooses and keeps (in a link, a
-/// job, a table). A job derives the id from its own (`run.parse_id`), so a
-/// retried start finds the run (`fabric.AlreadyStarted`) instead of paying
-/// twice. The run's correlation is in every event, model request and tool
+/// job, a table). A job derives the id from its own
+/// (`run.id_from_parts("job", [job_id])`), so a retried start finds the run
+/// (`fabric.AlreadyStarted`) instead of paying twice. The run's correlation is in every event, model request and tool
 /// call of the run; `None` derives it from the id.
 pub fn start_payment(
   runs: store.Store,
   desk: Agent(Context),
   context: Context,
   prompt: String,
-) -> Result(String, fabric.StartError) {
+) -> Result(String, fabric.Error) {
   let id = run.new_id()
   use _handle <- result.map(fabric.start(
     runs,
@@ -221,27 +217,24 @@ pub type Verdict {
 
 /// A later request opens the run by the id it kept and acts on its status.
 /// Opening takes nothing over, and every command is checked against the
-/// stored record. The application authenticates the reviewer; an approval
-/// checks the policy again with the context passed here.
+/// stored record. The application authenticates the reviewer and names it
+/// with `reviewer.new`; an approval checks the policy again with the context
+/// passed here, and one that comes after the request expired (7 days by
+/// default, `agent.with_approval_expiry`) is `fabric.ApprovalExpired`.
 pub fn review(
   runs: store.Store,
   desk: Agent(Context),
   context: Context,
   stored_id: String,
   verdict: Verdict,
-) -> Result(run.Status, fabric.CommandError) {
+) -> Result(run.Status, fabric.Error) {
   use id <- result.try(
     run.parse_id(stored_id)
-    |> result.replace_error(fabric.Unreadable(fabric.RunNotFound)),
+    |> result.replace_error(fabric.RunNotFound),
   )
-  use handle <- result.try(
-    fabric.open(runs, desk, context, id) |> result.map_error(fabric.Unreadable),
-  )
-  use status <- result.try(
-    fabric.await(handle, within: duration.seconds(5))
-    |> result.map_error(fabric.Unreadable),
-  )
-  let reviewer = Some(context.user)
+  use handle <- result.try(fabric.open(runs, desk, context, id))
+  use status <- result.try(fabric.await(handle, within: duration.seconds(5)))
+  let reviewer = reviewer.new(context.user)
   case status, verdict {
     run.Suspended([pending, ..], _), Approve ->
       fabric.approve(handle, pending.reference, reviewer:, context:)
@@ -258,7 +251,8 @@ pub fn review(
 /// At boot, when the previous owner is known to be gone, `recover` takes
 /// over work whose runner was lost. A run handed off by a drained shutdown
 /// goes on with nothing uncertain; after a crash, running tools become
-/// uncertain effects, never retried. On an unleased store, never recover
+/// uncertain effects, never retried, unless a tool is replayable
+/// (`tool.with_replay`). On an unleased store, never recover
 /// a run another process may drive; a leased store's `recover` leaves a run
 /// alone while another node holds its lease.
 pub fn resume(
@@ -266,10 +260,10 @@ pub fn resume(
   desk: Agent(Context),
   context: Context,
   stored_id: String,
-) -> Result(fabric.Run(Context), fabric.CommandError) {
+) -> Result(fabric.Run(Context), fabric.Error) {
   use id <- result.try(
     run.parse_id(stored_id)
-    |> result.replace_error(fabric.Unreadable(fabric.RunNotFound)),
+    |> result.replace_error(fabric.RunNotFound),
   )
   fabric.recover(runs, desk, context, id)
 }
@@ -338,25 +332,43 @@ Every step and every wait is bounded unless the caller asks for
 `run.Infinity`. A run's own length is then bounded by its turns, its model
 and tool timeouts, and the answers it waits for.
 
-| Bound                                       | Default                         | Change it with                                            | When it is reached                                          |
-| ------------------------------------------- | ------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------- |
-| Model attempts per run                      | 8                               | `agent.Limits.max_turns`                                  | the run ends `BudgetExhausted(TurnLimit(8))`                |
-| One model call                              | 600 s                           | `agent.Limits.model_timeout`                              | the call stops; a retryable `ModelError` that spends a turn |
-| One tool body                               | 60 s                            | `agent.Limits.tool_timeout`, `tool.with_timeout`          | the body stops; the action is an uncertain effect           |
-| Tool result size                            | 1 MiB                           | `agent.Limits.max_result_bytes`                           | the run fails with `OutputEncodingFailed`, naming the limit |
-| Concurrent tool bodies                      | 4                               | `agent.Limits.max_concurrency`                            | later tools queue                                           |
-| One policy decision                         | 5 s                             | `agent.Limits.policy_timeout`                             | the run stops closed (`PolicyFailed`)                       |
-| A command waiting for a busy runner         | 5 s                             | `agent.Limits.command_timeout`                            | `RunnerBusy`                                                |
-| First model retry delay                     | 200 ms, doubling up to 64 times | `agent.Limits.model_retry_delay`                          |                                                             |
-| Sub-agents per run, depth                   | 4, 1                            | `agent.Limits.max_children`, `max_depth`                  | the delegation is refused and the model sees why            |
-| Token budget                                | none (opt in)                   | `agent.Limits.token_budget`                               | `BudgetExhausted(TokenLimit(..))`                           |
-| Drain window on shutdown                    | 25 s                            | `store.with_drain`                                        | the runner is killed; running tools become uncertain        |
-| Graph callbacks, operation bodies, commands | 1 s, 60 s, 1 s                  | `graph.with_timeouts(callbacks:, operations:, commands:)` | `CallbackFailed`, an uncertain operation, `Busy`            |
+| Bound                                       | Default                         | Change it with                                            | When it is reached                                                        |
+| ------------------------------------------- | ------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Model attempts per run                      | 8                               | `agent.with_max_turns`                                    | the run ends `BudgetExhausted(TurnLimit(8))`                              |
+| One model call                              | 600 s                           | `agent.with_model_timeout`                                | the call stops; a retryable `model.TimedOut` that spends a turn           |
+| One tool body                               | 60 s                            | `agent.with_tool_timeout`, `tool.with_timeout`            | the body stops; uncertain, or started again (`tool.with_replay`)          |
+| Tool result size                            | 1 MiB                           | `agent.with_max_result_bytes`                             | the run fails with `OutputEncodingFailed`, naming the limit               |
+| Concurrent tool bodies                      | 4                               | `agent.with_max_concurrency`                              | later tools queue                                                         |
+| One policy decision                         | 5 s                             | `agent.with_policy_timeout`                               | the run stops closed (`PolicyFailed`)                                     |
+| A command waiting for a busy runner         | 5 s                             | `agent.with_command_timeout`                              | `RunnerBusy`                                                              |
+| First model retry delay                     | 200 ms, doubling up to 64 times | `agent.with_model_retry_delay`                            | a provider's `Retry-After` is waited instead when longer (10 min at most) |
+| Sub-agents per run, depth                   | 4, 1                            | `agent.with_max_children`, `agent.with_max_depth`         | the delegation is refused and the model sees why                          |
+| An approval request                         | 7 days                          | `agent.with_approval_expiry`                              | the request expires: the action is rejected, the model sees it            |
+| Token budget                                | none (opt in)                   | `agent.with_token_budget`                                 | `BudgetExhausted(TokenLimit(..))`                                         |
+| Family budget                               | none (opt in)                   | `agent.with_family_budget`                                | `BudgetExhausted(FamilyLimit(..))`                                        |
+| Replays of a crashed tool body              | none (opt in)                   | `tool.with_replay`                                        | the action is an uncertain effect                                         |
+| Drain window on shutdown                    | 25 s                            | `store.with_drain`                                        | the runner is killed; running tools become uncertain                      |
+| Graph callbacks, operation bodies, commands | 1 s, 60 s, 1 s                  | `graph.with_timeouts(callbacks:, operations:, commands:)` | `CallbackFailed`, an uncertain operation, `Busy`                          |
 
-Every timeout is a `gleam/time/duration.Duration`. Two waits stay
-unbounded by default, deferred with the durability decisions: an agent
-approval waits for its answer, and a graph signal, job, child or fork waits
-until `operation.with_deadline` bounds it.
+Every timeout is a `gleam/time/duration.Duration`. An approval request
+stores its deadline (`run.PendingApproval.expires`); one stored before
+deadlines existed never expires. A graph signal, job, child or fork wait
+stays unbounded until `operation.with_deadline` bounds it (the graph's
+defaults follow with its vocabulary).
+
+### Failures
+
+Every function of `fabric` returns one `fabric.Error`. Branch on
+`fabric.error_kind(error)`: `NotFound`, `Refused` (the run's state refuses
+the request, such as `ApprovalExpired` or `AlreadyStarted`), `Retry` (a
+transient conflict), `Unavailable` (the store or the runner, with a write
+whose outcome may be unknown) or `Incompatible`; log with
+`fabric.describe_error`. A model fails with an opaque `model.ModelError`:
+`model.error_kind`, `model.is_retryable` and the provider's
+`model.retry_after`. The unions that may grow (`fabric.Error`,
+`agent.ConfigError`, `model.ErrorKind`, `run.Outcome`, `run.HostFailure`,
+`run.ActionState`, `graph.Status`) each have such a classification or a
+`describe_*` function.
 
 ### Correlation
 
@@ -445,15 +457,16 @@ Existing values and runners keep their setting; this does not migrate rows.
 See the [rollout procedure](integrations/fabric_postgres/README.md#record-versions)
 for compatibility and rollback limits.
 
-Use `fabric.start_with_budget(store, agent, id:, context:, prompt:, correlation:, limits:)` or
+Use `agent.with_family_budget(spec, limits)` (checked by `agent.build`) or
 `graph.start_with_budget(runtime, id, initial, limits)` to bound the whole family.
-For example, `budget.Limits(work: 40, children: 6, depth: 3)` allows up to 40
-work admissions and six children, at most three levels below the root.
+For example, `budget.limits(work: 40) |> budget.with_children(6) |> budget.with_depth(3)`
+allows up to 40 work admissions and six children, at most three levels below
+the root.
 Graph attempts, model attempts and agent tool actions each spend one work unit;
 managed children inherit the same ledger across graph/agent boundaries and
 restarts. Rechecking an approval reuses its saved claim. Failed or uncertain
 attempts retain their charge; these limits do not predict provider token costs.
-Existing `start` calls keep their per-run limits without a shared family budget.
+An agent without a family budget keeps its per-run limits only.
 Quota exhaustion is a typed `FamilyLimit` agent outcome or `FamilyBudget` graph
 failure, with started effects preserved for reconciliation. See the
 [reservation contract](docs/implementation/graph-flow/managed-composition.md#shared-family-reservations).

@@ -87,12 +87,10 @@ pub fn agent(gate: Gate, amount: Int) -> Agent(Nil) {
             model.AssistantTurn(
               "",
               [
-                model.ToolCall(
-                  "c1",
-                  "work",
-                  "{\"amount\":" <> int.to_string(amount) <> "}",
-                  None,
-                  None,
+                model.tool_call(
+                  id: "c1",
+                  name: "work",
+                  arguments_json: "{\"amount\":" <> int.to_string(amount) <> "}",
                 ),
               ],
               None,

@@ -1,6 +1,7 @@
 //// The checked agent behind `fabric/agent.Agent`: every bound in
 //// milliseconds, the tool registry and the checked sub-agents.
 
+import fabric/budget
 import fabric/internal/registry.{type Registry}
 import fabric/model.{type Model}
 import fabric/policy.{type Policy}
@@ -40,6 +41,11 @@ pub type Admitted(context) {
     model_timeout: Option(Int),
     tool_timeout: Option(Int),
     max_result_bytes: Int,
+    /// The deadline of an approval request after it is issued; `None`:
+    /// never.
+    approval_expiry: Option(Int),
+    /// The family budget a root run of this agent declares.
+    family_budget: Option(budget.Limits),
     /// The admitted sub-agent of each delegation, by delegation name.
     children: Dict(String, Admitted(context)),
     max_children: Int,

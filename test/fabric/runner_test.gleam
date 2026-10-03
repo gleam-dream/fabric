@@ -16,7 +16,7 @@ import fabric/support/scripted
 import fabric/tool
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{None}
 import gleam/result
 import gleam/string
 import gleam/time/duration
@@ -119,9 +119,7 @@ pub fn tool_concurrency_is_bounded_per_run_test() {
       [scripted.gated_tool(probe)],
       policy.always_allow(),
     )
-    |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), max_concurrency: 2),
-    )
+    |> agent.with_max_concurrency(2)
     |> support.agent
   let assert Ok(run) =
     fabric.start(
@@ -173,7 +171,7 @@ pub fn approval_suspends_the_run_as_data_test() {
   |> should.equal(run.Requirement("transfer", 1))
   // No process holds the suspended run.
   restart.runner(held, fabric.id(run)) |> should.equal(Error(Nil))
-  let assert [run.Succeeded(_), run.AwaitingApproval(_, 1)] = states(run)
+  let assert [run.Succeeded(_), run.AwaitingApproval(_, 1, _)] = states(run)
   // Cancelling it is a transition on the stored record.
   fabric.cancel(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert [run.Succeeded(_), run.NotStarted] = states(run)
@@ -189,9 +187,7 @@ pub fn cancel_kills_running_tools_and_records_them_uncertain_test() {
       [scripted.gated_tool(probe)],
       policy.always_allow(),
     )
-    |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), max_concurrency: 1),
-    )
+    |> agent.with_max_concurrency(1)
     |> support.agent
   let held = support.store()
   let assert Ok(run) =
@@ -373,19 +369,14 @@ pub fn invalid_configuration_is_rejected_before_starting_test() {
       [apps.weather_tool(), apps.weather_tool()],
       policy.always_allow(),
     )
-    |> agent.with_limits(
-      agent.Limits(
-        ..agent.default_limits(),
-        max_turns: 0,
-        max_concurrency: -1,
-        token_budget: Some(0),
-      ),
-    )
+    |> agent.with_max_turns(0)
+    |> agent.with_max_concurrency(-1)
+    |> agent.with_token_budget(0)
   let expected = [
     agent.DuplicateToolName("lookup_weather"),
-    agent.MaxTurnsNotPositive(0),
-    agent.MaxConcurrencyNotPositive(-1),
-    agent.TokenBudgetNotPositive(0),
+    agent.InvalidLimit(agent.MaxTurns, 0, 1, 9_007_199_254_740_991),
+    agent.InvalidLimit(agent.MaxConcurrency, -1, 1, 9_007_199_254_740_991),
+    agent.InvalidLimit(agent.TokenBudget, 0, 1, 9_007_199_254_740_991),
   ]
   agent.build(spec) |> should.equal(Error(expected))
 }
@@ -482,12 +473,7 @@ pub fn a_policy_that_never_answers_fails_closed_at_its_deadline_test() {
       [apps.weather_tool()],
       stuck,
     )
-    |> agent.with_limits(
-      agent.Limits(
-        ..agent.default_limits(),
-        policy_timeout: duration.milliseconds(50),
-      ),
-    )
+    |> agent.with_policy_timeout(duration.milliseconds(50))
     |> support.agent
   let assert Ok(run) =
     fabric.start(
@@ -513,15 +499,10 @@ pub fn a_policy_that_never_answers_fails_closed_at_its_deadline_test() {
 
 pub fn the_policy_timeout_must_be_positive_test() {
   agent.new("agent", scripted.plan([]), [], policy.always_allow())
-  |> agent.with_limits(
-    agent.Limits(
-      ..agent.default_limits(),
-      policy_timeout: duration.milliseconds(0),
-    ),
-  )
+  |> agent.with_policy_timeout(duration.milliseconds(0))
   |> agent.build
   |> should.equal(
-    Error([agent.PolicyTimeoutNotPositive(duration.milliseconds(0))]),
+    Error([agent.InvalidLimit(agent.PolicyTimeout, 0, 1, 4_294_967_295)]),
   )
 }
 
@@ -531,40 +512,26 @@ pub fn the_policy_timeout_must_be_positive_test() {
 pub fn timer_fed_limits_must_fit_a_timer_test() {
   let longest = 4_294_967_295
   agent.new("agent", scripted.plan([]), [], policy.always_allow())
-  |> agent.with_limits(
-    agent.Limits(
-      ..agent.default_limits(),
-      policy_timeout: duration.milliseconds(longest + 1),
-      command_timeout: duration.milliseconds(longest + 1),
-      model_retry_delay: duration.milliseconds(longest / 64 + 1),
-    ),
-  )
+  |> agent.with_policy_timeout(duration.milliseconds(longest + 1))
+  |> agent.with_command_timeout(duration.milliseconds(longest + 1))
+  |> agent.with_model_retry_delay(duration.milliseconds(longest / 64 + 1))
   |> agent.build
   |> should.equal(
     Error([
-      agent.PolicyTimeoutTooLarge(
-        value: duration.milliseconds(longest + 1),
-        limit: duration.milliseconds(longest),
+      agent.InvalidLimit(agent.PolicyTimeout, longest + 1, 1, 4_294_967_295),
+      agent.InvalidLimit(
+        agent.ModelRetryDelay,
+        longest / 64 + 1,
+        0,
+        4_294_967_295 / 64,
       ),
-      agent.CommandTimeoutTooLarge(
-        value: duration.milliseconds(longest + 1),
-        limit: duration.milliseconds(longest),
-      ),
-      agent.ModelRetryDelayTooLarge(
-        value: duration.milliseconds(longest / 64 + 1),
-        limit: duration.milliseconds(longest / 64),
-      ),
+      agent.InvalidLimit(agent.CommandTimeout, longest + 1, 1, 4_294_967_295),
     ]),
   )
   agent.new("agent", scripted.plan([]), [], policy.always_allow())
-  |> agent.with_limits(
-    agent.Limits(
-      ..agent.default_limits(),
-      policy_timeout: duration.milliseconds(longest),
-      command_timeout: duration.milliseconds(longest),
-      model_retry_delay: duration.milliseconds(longest / 64),
-    ),
-  )
+  |> agent.with_policy_timeout(duration.milliseconds(longest))
+  |> agent.with_command_timeout(duration.milliseconds(longest))
+  |> agent.with_model_retry_delay(duration.milliseconds(longest / 64))
   |> agent.build
   |> result.is_ok
   |> should.be_true
@@ -580,18 +547,13 @@ pub fn model_retries_back_off_test() {
     model.new(fn(_request) {
       probe.record(probe, "call")
       case probe.count(probe, "call") {
-        n if n <= 2 -> Error(model.ModelError("reset", retryable: True))
+        n if n <= 2 -> Error(model.error(model.Overloaded, "reset"))
         _ -> Ok(model.FinalAnswer("ok", option.None))
       }
     })
   let agent =
     agent.new("agent", flaky, [], policy.always_allow())
-    |> agent.with_limits(
-      agent.Limits(
-        ..agent.default_limits(),
-        model_retry_delay: duration.milliseconds(40),
-      ),
-    )
+    |> agent.with_model_retry_delay(duration.milliseconds(40))
     |> support.agent
   let started = now()
   let assert Ok(run) =
@@ -612,15 +574,10 @@ pub fn model_retries_back_off_test() {
 
 pub fn the_model_retry_delay_must_not_be_negative_test() {
   agent.new("agent", scripted.plan([]), [], policy.always_allow())
-  |> agent.with_limits(
-    agent.Limits(
-      ..agent.default_limits(),
-      model_retry_delay: duration.milliseconds(-1),
-    ),
-  )
+  |> agent.with_model_retry_delay(duration.milliseconds(-1))
   |> agent.build
   |> should.equal(
-    Error([agent.ModelRetryDelayNegative(duration.milliseconds(-1))]),
+    Error([agent.InvalidLimit(agent.ModelRetryDelay, -1, 0, 4_294_967_295 / 64)]),
   )
 }
 

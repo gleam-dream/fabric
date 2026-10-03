@@ -11,6 +11,7 @@ import fabric/internal/record
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
+import fabric/reviewer
 import fabric/run.{type RunId, ActionId}
 import fabric/store.{type Store}
 import fabric/store/backend
@@ -97,9 +98,7 @@ fn three_slow(probe: Probe) -> Agent(Nil) {
     [scripted.gated_tool(probe)],
     policy.always_allow(),
   )
-  |> agent.with_limits(
-    agent.Limits(..agent.default_limits(), max_concurrency: 1),
-  )
+  |> agent.with_max_concurrency(1)
   |> support.agent
 }
 
@@ -236,7 +235,7 @@ pub fn a_lost_model_call_is_not_issued_again_beyond_the_turn_budget_test() {
     })
   let limited = fn(model) {
     agent.new("agent", model, [], policy.always_allow())
-    |> agent.with_limits(agent.Limits(..agent.default_limits(), max_turns: 1))
+    |> agent.with_max_turns(1)
     |> support.agent
   }
   let #(owner, old, run) = start_owned(dir, limited(blocking), Nil, "hi")
@@ -263,9 +262,7 @@ pub fn concurrent_recoveries_take_the_run_over_once_test() {
       [scripted.gated_tool(probe)],
       policy.always_allow(),
     )
-    |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), max_concurrency: 1),
-    )
+    |> agent.with_max_concurrency(1)
     |> support.agent
   let #(owner, old, run) = start_owned(dir, agent, Nil, "go")
   let _ = probe.arrival(probe)
@@ -423,9 +420,7 @@ pub fn recovery_refuses_another_agent_definition_test() {
   fabric.recover(reopen(dir), renamed, Nil, id)
   |> should.equal(
     Error(
-      fabric.Unreadable(
-        fabric.IncompatibleAgent([run.OtherAgent(run.DefinitionId("agent", 1))]),
-      ),
+      fabric.IncompatibleAgent([run.OtherAgent(run.DefinitionId("agent", 1))]),
     ),
   )
   restart.remove_dir(dir)
@@ -437,11 +432,9 @@ pub fn recovery_refuses_an_agent_without_a_pending_tool_test() {
   fabric.recover(reopen(dir), paying_agent([apps.weather_tool()]), Nil, id)
   |> should.equal(
     Error(
-      fabric.Unreadable(
-        fabric.IncompatibleAgent([
-          run.ToolNotRegistered(ActionId(1, "t"), "transfer_funds"),
-        ]),
-      ),
+      fabric.IncompatibleAgent([
+        run.ToolNotRegistered(ActionId(1, "t"), "transfer_funds"),
+      ]),
     ),
   )
   restart.remove_dir(dir)
@@ -462,9 +455,9 @@ pub fn recovery_refuses_a_tool_that_no_longer_accepts_pending_arguments_test() {
     |> tool.bind(fn(_, _call, memo) { Ok(memo) }, fn(_: Nil) {
       tool.Explain("no")
     })
-  let assert Error(fabric.Unreadable(fabric.IncompatibleAgent([
+  let assert Error(fabric.IncompatibleAgent([
     run.ArgumentsNotAccepted(id: ActionId(1, "t"), tool: "transfer_funds", ..),
-  ]))) = fabric.recover(reopen(dir), paying_agent([stricter]), Nil, id)
+  ])) = fabric.recover(reopen(dir), paying_agent([stricter]), Nil, id)
   restart.remove_dir(dir)
 }
 
@@ -477,7 +470,7 @@ pub fn recovery_reports_an_unsupported_record_version_test() {
       "{\"format\":\"fabric.run\",\"version\":99}",
     )
   fabric.recover(reopen(dir), paying_agent([apps.transfer_tool()]), Nil, id)
-  |> should.equal(Error(fabric.Unreadable(fabric.UnsupportedVersion(99))))
+  |> should.equal(Error(fabric.UnsupportedVersion(99)))
   restart.remove_dir(dir)
 }
 
@@ -489,7 +482,7 @@ pub fn recovery_reports_a_corrupt_record_test() {
       dir <> "/" <> support.text(id) <> "/99999999999999999999.json",
       "{\"format\":\"fabric.run\",\"version\":1,\"run\":",
     )
-  let assert Error(fabric.Unreadable(fabric.CorruptRecord(_))) =
+  let assert Error(fabric.CorruptRecord(_)) =
     fabric.recover(reopen(dir), paying_agent([apps.transfer_tool()]), Nil, id)
   restart.remove_dir(dir)
 }
@@ -502,7 +495,7 @@ pub fn recovery_reports_a_run_that_does_not_exist_test() {
     Nil,
     support.id("run-nope"),
   )
-  |> should.equal(Error(fabric.Unreadable(fabric.RunNotFound)))
+  |> should.equal(Error(fabric.RunNotFound))
   restart.remove_dir(dir)
 }
 
@@ -685,20 +678,40 @@ pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
   let assert Ok(run_b) =
     fabric.open(b, two_reviewed(probe), Nil, fabric.id(run_a))
   let assert Ok(run.Working) =
-    fabric.approve(run_a, p.reference, reviewer: None, context: Nil)
+    fabric.approve(
+      run_a,
+      p.reference,
+      reviewer: reviewer.new("reviewer"),
+      context: Nil,
+    )
   let started = probe.arrival(probe)
   started.name |> should.equal("p")
 
-  fabric.approve(run_b, p.reference, reviewer: None, context: Nil)
+  fabric.approve(
+    run_b,
+    p.reference,
+    reviewer: reviewer.new("reviewer"),
+    context: Nil,
+  )
   |> should.equal(Error(fabric.AlreadyAnswered))
-  fabric.approve(run_b, q.reference, reviewer: None, context: Nil)
+  fabric.approve(
+    run_b,
+    q.reference,
+    reviewer: reviewer.new("reviewer"),
+    context: Nil,
+  )
   |> should.equal(Error(fabric.RunUnattended))
 
   probe.release(started)
   let assert Ok(run.Suspended([_], [])) =
     fabric.await(run_a, within: duration.milliseconds(5000))
   let assert Ok(run.Working) =
-    fabric.approve(run_b, q.reference, reviewer: None, context: Nil)
+    fabric.approve(
+      run_b,
+      q.reference,
+      reviewer: reviewer.new("reviewer"),
+      context: Nil,
+    )
   probe.release(probe.arrival(probe))
   fabric.await(run_b, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"p\" | \"q\""))))
@@ -818,12 +831,22 @@ pub fn an_approval_through_an_opened_handle_runs_the_action_test() {
   let assert Ok(opened) =
     fabric.open(store, two_reviewed(probe), Nil, fabric.id(started))
   let assert Ok(run.Working) =
-    fabric.approve(opened, p.reference, reviewer: None, context: Nil)
+    fabric.approve(
+      opened,
+      p.reference,
+      reviewer: reviewer.new("reviewer"),
+      context: Nil,
+    )
   probe.release(probe.arrival(probe))
   let assert Ok(run.Suspended([_], [])) =
     fabric.await(opened, within: duration.milliseconds(5000))
   let assert Ok(_) =
-    fabric.reject(opened, q.reference, reason: "no", reviewer: None)
+    fabric.reject(
+      opened,
+      q.reference,
+      reason: "no",
+      reviewer: reviewer.new("reviewer"),
+    )
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(opened, within: duration.milliseconds(5000))
   probe.count(probe, "start:p") |> should.equal(1)
@@ -837,14 +860,14 @@ pub fn a_stranded_run_is_cancelled_without_an_agent_test() {
   let dir = restart.temp_dir()
   let id = suspended_on_disk(dir)
   let store = reopen(dir)
-  let assert Error(fabric.Unreadable(fabric.IncompatibleAgent(_))) =
+  let assert Error(fabric.IncompatibleAgent(_)) =
     fabric.recover(store, paying_agent([apps.weather_tool()]), Nil, id)
 
   fabric.cancel_stored(store, id)
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.cancel_stored(store, id) |> should.equal(Error(fabric.RunEnded))
   fabric.cancel_stored(store, support.id("run-nope"))
-  |> should.equal(Error(fabric.Unreadable(fabric.RunNotFound)))
+  |> should.equal(Error(fabric.RunNotFound))
 
   let assert Ok(run) =
     fabric.recover(store, paying_agent([apps.transfer_tool()]), Nil, id)
@@ -901,7 +924,7 @@ pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
       approvals_issued: 0,
       phase: controller.Stopping(
         1,
-        [run.ActionRecord(ActionId(1, "a"), call, run.Running, [], None)],
+        [run.ActionRecord(ActionId(1, "a"), call, run.Running, [], None, 0)],
         controller.CancelRequested,
         False,
       ),
@@ -993,7 +1016,7 @@ pub fn a_start_whose_id_holds_another_record_is_already_started_test() {
     correlation: None,
   )
   |> result.map(fabric.id)
-  |> should.equal(Error(fabric.AlreadyStarted(id)))
+  |> should.equal(Error(fabric.AlreadyStarted(id, same_input: False)))
 }
 
 /// A start whose first write the store does not confirm names the run it
@@ -1014,7 +1037,7 @@ pub fn an_unconfirmed_start_names_its_run_test() {
     )
   reason |> should.equal("the backend blinked")
   fabric.cancel_stored(runs, id)
-  |> should.equal(Error(fabric.Unreadable(fabric.RunNotFound)))
+  |> should.equal(Error(fabric.RunNotFound))
 
   // The write lands late, before the next write of the run.
   let assert Error(backend.AlreadyExists) =

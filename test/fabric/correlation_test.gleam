@@ -122,11 +122,15 @@ pub fn starting_again_with_the_same_id_is_already_started_test() {
 }
 
 fn should_be_already_started(
-  started: Result(fabric.Run(Nil), fabric.StartError),
+  started: Result(fabric.Run(Nil), fabric.Error),
   id: run.RunId,
 ) -> Nil {
   case started {
-    Error(fabric.AlreadyStarted(found)) -> found |> should.equal(id)
+    Error(fabric.AlreadyStarted(found, same_input:)) -> {
+      found |> should.equal(id)
+      // The second start's prompt differs from the stored run's.
+      same_input |> should.be_false
+    }
     _ -> panic as "expected AlreadyStarted"
   }
 }
@@ -324,7 +328,7 @@ pub fn a_families_events_carry_its_root_test() {
       [],
       policy.always_allow(),
     )
-    |> agent.with_limits(agent.Limits(..agent.default_limits(), max_depth: 2))
+    |> agent.with_max_depth(2)
     |> agent.with_sub_agent(
       research,
       to: child,
@@ -410,6 +414,8 @@ pub fn a_sub_agents_record_keeps_its_root_test() {
       policy: policy.always_allow(),
       context: Nil,
       system: None,
+      approval_expiry: None,
+      clock: fn() { 0 },
     )
   let #(root, _) =
     controller.start(
@@ -453,6 +459,8 @@ pub fn the_record_keeps_only_a_chosen_correlation_test() {
         policy: policy.always_allow(),
         context: Nil,
         system: None,
+        approval_expiry: None,
+        clock: fn() { 0 },
       ),
       "plain-run",
       run.DefinitionId("desk", 1),

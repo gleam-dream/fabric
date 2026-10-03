@@ -89,7 +89,11 @@ pub type Tool(context) =
 /// settle its result after its task was stopped. Whoever holds it may
 /// settle; the first settlement the run accepts is the only one.
 pub opaque type Settlement(output) {
-  Settlement(output: Codec(output), deliver: core.Late(SettleError))
+  Settlement(
+    output: Codec(output),
+    deliver: core.Late(SettleError),
+    action: run.ActionRef,
+  )
 }
 
 /// Why a settlement was not recorded. Nothing changed in either case.
@@ -119,6 +123,28 @@ pub fn define(
   core.define(name, description, input, output)
 }
 
+/// The name the model calls the tool by.
+pub fn name(definition: Definition(input, output)) -> String {
+  core.definition_name(definition)
+}
+
+/// The description the model reads.
+pub fn description(definition: Definition(input, output)) -> String {
+  core.definition_description(definition)
+}
+
+/// The codec of the tool's arguments: its JSON Schema is what the model is
+/// told, and it decodes what the model sends. Another runtime that serves
+/// the same tool (an MCP server, say) can declare and decode with it.
+pub fn input_codec(definition: Definition(input, output)) -> Codec(input) {
+  core.definition_input(definition)
+}
+
+/// The codec of the tool's result, as the model reads it.
+pub fn output_codec(definition: Definition(input, output)) -> Codec(output) {
+  core.definition_output(definition)
+}
+
 /// Binds a typed handler. `classify` decides, for every typed error, what
 /// it means: a definite failure the model sees (`Explain`), or an effect that
 /// may have happened (`Uncertain`), which blocks the run until it is
@@ -127,7 +153,7 @@ pub fn define(
 ///
 /// The handler runs in its own task with the run's context, the `Call` it
 /// answers and the decoded input. Its body is bounded by the agent's
-/// `tool_timeout` (60 s by default) or `with_timeout`.
+/// timeout (`agent.with_tool_timeout`, 60 s by default) or `with_timeout`.
 pub fn bind(
   definition: Definition(input, output),
   handler: fn(context, Call, input) -> Result(output, error),
@@ -173,11 +199,15 @@ pub fn bind_settling(
       case codec.decode_json(input, arguments) {
         Error(error) ->
           invocation.ArgumentsRejected(codec.describe_decode_error(error))
-        Ok(value) ->
-          case handler(context, call, value, Settlement(output, late)) {
+        Ok(value) -> {
+          let call: Call = call
+          let settlement =
+            Settlement(output, late, run.ActionRef(call.run, call.action))
+          case handler(context, call, value, settlement) {
             Ok(value) -> core.encode(output, value)
             Error(error) -> failure(classify(error))
           }
+        }
       }
     },
     Some(within),
@@ -202,6 +232,53 @@ pub fn settle(
     },
     summary,
   )
+}
+
+/// The action this settlement settles: its run and its action id, the
+/// reference `fabric.reconcile` takes when the settlement is refused and a
+/// person reconciles instead.
+pub fn action(settlement: Settlement(output)) -> run.ActionRef {
+  settlement.action
+}
+
+/// The content `fabric.reconcile` and `fabric.reconcile_stored` take for an
+/// action of `definition`: the output encoded with the tool's output codec,
+/// as the handler's result would have been, or for `Error(message)` the
+/// definite failure the model sees (`{"error": message}`, as for
+/// `Explain`). Use it instead of writing the JSON by hand.
+///
+/// ```gleam
+/// let assert Ok(content) =
+///   tool.reconciliation(refund_definition, Ok(Refund(id: "r-1")))
+/// fabric.reconcile(handle, uncertain.reference, content)
+/// ```
+pub fn reconciliation(
+  definition: Definition(input, output),
+  result: Result(output, String),
+) -> Result(String, codec.EncodeError) {
+  case result {
+    Ok(value) -> codec.encode_json(core.definition_output(definition), value)
+    Error(message) -> Ok(invocation.error_content(message))
+  }
+}
+
+/// Lets the runtime start this tool's body again, up to `max_attempts`
+/// starts in all, when an attempt ends without a result of its own: its
+/// body crashed, ran past its timeout, or its runner was lost (a restart,
+/// a lost node). Without it, such an action becomes an uncertain effect
+/// that a person reconciles.
+///
+/// Use it only for a tool whose effect is safe to repeat: a read, or a
+/// write the handler makes idempotent (keyed by `call.run` and
+/// `call.action`, which stay the same across attempts). A typed failure the
+/// handler returns (`Explain`, `Uncertain`) is never replayed, nor is a
+/// tool stopped by a cancellation. An approved action that is replayed
+/// after a lost runner asks for its approval again, as any approved action
+/// does at recovery. `agent.build` refuses fewer than 1 or more than 100
+/// attempts (`InvalidToolLimit`); `run.ActionRecord.replays` counts the
+/// replays.
+pub fn with_replay(tool: Tool(context), max_attempts: Int) -> Tool(context) {
+  core.with_replay(tool, max_attempts)
 }
 
 fn failure(failure: Failure) -> Outcome {
@@ -256,11 +333,12 @@ pub fn input(
 }
 
 /// Bounds this tool's body by `timeout` instead of the agent's
-/// `tool_timeout`: `run.After(duration)`, or `run.Infinity` for a body
-/// that may run as long as it needs. A body still running at its timeout is
-/// stopped and its action becomes an uncertain effect (it may have acted).
+/// (`agent.with_tool_timeout`): `run.After(duration)`, or `run.Infinity` for
+/// a body that may run as long as it needs. A body still running at its
+/// timeout is stopped and its action becomes an uncertain effect (it may
+/// have acted), unless the tool is replayable (`with_replay`).
 /// `agent.build` refuses a timeout under 1 ms or over 2^32 - 1 ms
-/// (`InvalidToolTimeout`). A sub-agent delegation has no body: its child
+/// (`InvalidToolLimit`). A sub-agent delegation has no body: its child
 /// run's own limits bound it.
 pub fn with_timeout(tool: Tool(context), timeout: Timeout) -> Tool(context) {
   core.with_timeout(tool, timeout)

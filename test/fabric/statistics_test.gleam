@@ -77,16 +77,20 @@ pub fn unknown_records_have_no_invented_execution_status_test() {
 fn action(id: String, status: run.ActionState) -> run.ActionRecord {
   run.ActionRecord(
     run.ActionId(1, id),
-    model.ToolCall(id, "tool", "{}", None, None),
+    model.tool_call(id: id, name: "tool", arguments_json: "{}"),
     status,
     [],
     None,
+    0,
   )
 }
 
 pub fn approval_and_reconciliation_overlap_without_hiding_active_work_test() {
   let requests = [
-    action("approval", run.AwaitingApproval(run.Requirement("review", 1), 1)),
+    action(
+      "approval",
+      run.AwaitingApproval(run.Requirement("review", 1), 1, None),
+    ),
     action("uncertain", run.Uncertain("lost reply")),
   ]
   let waiting =
@@ -281,7 +285,10 @@ pub fn idle_signals_children_and_job_observation_are_waiting_test() {
 }
 
 pub fn budget_records_are_not_runs_and_projection_does_not_contain_payloads_test() {
-  let assert Ok(limits) = budget.new(quota.Limits(3, 2, 1))
+  let assert Ok(limits) =
+    budget.new(
+      quota.limits(work: 3) |> quota.with_children(2) |> quota.with_depth(1),
+    )
   let encoded = budget_record.encode(budget_record.Record("stats-root", limits))
   statistics.inspect(encoded)
   |> should.equal(

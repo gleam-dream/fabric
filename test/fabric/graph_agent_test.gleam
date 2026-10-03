@@ -9,6 +9,7 @@ import fabric/internal/graph/attachment
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/store/backend
 import fabric/support
@@ -89,7 +90,7 @@ pub fn graph_and_managed_agent_share_one_work_and_child_budget_test() {
       parent(runs, runtime),
       support.id("shared-budget"),
       41,
-      budget.Limits(2, 1, 1),
+      budget.limits(work: 2) |> budget.with_children(1) |> budget.with_depth(1),
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(42))
@@ -99,7 +100,7 @@ pub fn graph_and_managed_agent_share_one_work_and_child_budget_test() {
       parent(runs, runtime),
       support.id("shared-exhausted"),
       41,
-      budget.Limits(1, 1, 1),
+      budget.limits(work: 1) |> budget.with_children(1) |> budget.with_depth(1),
     )
   let assert Ok(_) = graph.await(blocked, within: duration.milliseconds(5000))
   let assert Ok(agent) = node.child(blocked, 1, runtime)
@@ -120,7 +121,7 @@ pub fn a_zero_child_budget_refuses_a_managed_agent_before_creating_it_test() {
       parent(runs, runtime),
       support.id("no-children"),
       41,
-      budget.Limits(10, 0, 3),
+      budget.limits(work: 10) |> budget.with_children(0) |> budget.with_depth(3),
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status
@@ -140,7 +141,7 @@ pub fn a_graph_owned_agents_delegation_cannot_reset_family_depth_test() {
       parent(runs, runtime),
       support.id("shared-depth"),
       41,
-      budget.Limits(10, 3, 1),
+      budget.limits(work: 10) |> budget.with_children(3) |> budget.with_depth(1),
     )
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
   let assert Ok(agent) = node.child(handle, 1, runtime)
@@ -229,7 +230,8 @@ pub fn every_agent_approval_is_visible_and_wakes_an_idle_graph_test() {
   let assert Ok(agent) = node.child(handle, reference.activation, runtime)
   fabric.id(agent) |> should.equal(reference.child)
   list.each(approvals, fn(approval) {
-    let assert Ok(_) = fabric.approve(agent, approval.reference, None, Nil)
+    let assert Ok(_) =
+      fabric.approve(agent, approval.reference, reviewer.new("reviewer"), Nil)
   })
   probe.release(probe.arrival(body))
   probe.release(probe.arrival(body))
@@ -262,7 +264,8 @@ pub fn agent_approval_and_attachment_survive_store_restart_test() {
   let assert Ok(agent) = node.child(handle, reference.activation, runtime)
   fabric.id(agent) |> should.equal(reference.child)
   list.each(approvals, fn(approval) {
-    let assert Ok(_) = fabric.approve(agent, approval.reference, None, Nil)
+    let assert Ok(_) =
+      fabric.approve(agent, approval.reference, reviewer.new("reviewer"), Nil)
   })
   probe.release(probe.arrival(body))
   probe.release(probe.arrival(body))
@@ -290,7 +293,8 @@ pub fn canceling_an_agent_approval_starts_no_tool_and_settles_the_graph_test() {
   fabric.await(agent, within: duration.milliseconds(1000))
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   list.each(approvals, fn(approval) {
-    fabric.approve(agent, approval.reference, None, Nil) |> should.be_error
+    fabric.approve(agent, approval.reference, reviewer.new("reviewer"), Nil)
+    |> should.be_error
   })
   probe.entries(body) |> should.equal([])
   done.receipts |> should.equal([])
@@ -443,13 +447,8 @@ fn delegating(child, children, depth) {
     fn(n) { int.to_string(n) },
     fn(text) { int.parse(text) |> result.replace_error("integer expected") },
   )
-  |> agent.with_limits(
-    agent.Limits(
-      ..agent.default_limits(),
-      max_children: children,
-      max_depth: depth,
-    ),
-  )
+  |> agent.with_max_children(children)
+  |> agent.with_max_depth(depth)
   |> support.agent
 }
 
@@ -554,7 +553,8 @@ pub fn nested_graphs_observe_an_agents_own_delegated_family_test() {
   let assert Ok(agent) = node.child(inner_handle, 1, runtime)
   list.each(approvals, fn(approval) {
     { approval.reference.run != fabric.id(agent) } |> should.be_true
-    let assert Ok(_) = fabric.approve(agent, approval.reference, None, Nil)
+    let assert Ok(_) =
+      fabric.approve(agent, approval.reference, reviewer.new("reviewer"), Nil)
   })
   probe.release(probe.arrival(body))
   probe.release(probe.arrival(body))

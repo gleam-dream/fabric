@@ -135,7 +135,9 @@ pub fn repeated_forks_keep_prior_results_separate_and_reuse_budget_after_restart
           repeated(runs),
           id,
           #(0, [7, 7]),
-          budget.Limits(work: 6, children: 4, depth: 1),
+          budget.limits(work: 6)
+            |> budget.with_children(4)
+            |> budget.with_depth(1),
         )
       #(runs, root)
     })
@@ -192,7 +194,7 @@ pub fn sibling_maps_keep_private_joins_with_one_shared_family_budget_test() {
       outer(runs),
       support.id("sibling-maps"),
       [[7, 7], [7, 7]],
-      budget.Limits(work: 7, children: 6, depth: 2),
+      budget.limits(work: 7) |> budget.with_children(6) |> budget.with_depth(2),
     )
   let assert Ok(_) = graph.await(root, within: duration.milliseconds(5000))
   let assert Ok(left) = graph.branch(root, 1, 1, inner(runs))
@@ -232,7 +234,7 @@ pub fn child_budget_closes_admission_and_keeps_refused_members_distinct_test() {
       inner(runs),
       support.id("fork-child-limit"),
       [1, 2, 3, 4],
-      budget.Limits(work: 10, children: 2, depth: 1),
+      budget.limits(work: 10) |> budget.with_children(2) |> budget.with_depth(1),
     )
   let assert Ok(done) = graph.await(root, within: duration.milliseconds(5000))
   let assert graph.Completed(Error(failure)) = done.status
@@ -260,7 +262,7 @@ pub fn nested_forks_cannot_reset_the_family_depth_limit_test() {
       outer(runs),
       support.id("fork-depth-limit"),
       [[7, 7], [7, 7]],
-      budget.Limits(work: 10, children: 6, depth: 1),
+      budget.limits(work: 10) |> budget.with_children(6) |> budget.with_depth(1),
     )
   let assert Ok(done) = graph.await(root, within: duration.milliseconds(5000))
   let assert graph.Completed(Ok([Error(left), Error(right)])) = done.status
@@ -286,7 +288,7 @@ pub fn fork_members_share_the_parents_work_limit_test() {
       inner(runs),
       support.id("fork-work-limit"),
       [1, 2, 3],
-      budget.Limits(work: 1, children: 3, depth: 1),
+      budget.limits(work: 1) |> budget.with_children(3) |> budget.with_depth(1),
     )
   let assert Ok(done) = graph.await(root, within: duration.milliseconds(5000))
   let assert graph.Completed(Error(failure)) = done.status

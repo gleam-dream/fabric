@@ -117,7 +117,14 @@ pub fn unchanged_children_expire_after_restart_and_remain_retained_until_reconci
     agents.owned(fn() {
       let runs = start_store(settings)
       let assert Ok(handle) =
-        graph.start_with_budget(parent(runs), id, 41, budget.Limits(2, 1, 1))
+        graph.start_with_budget(
+          parent(runs),
+          id,
+          41,
+          budget.limits(work: 2)
+            |> budget.with_children(1)
+            |> budget.with_depth(1),
+        )
       let assert Ok(waiting) =
         graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.Child(child_ref, child.Uncertain(_)) = waiting.status

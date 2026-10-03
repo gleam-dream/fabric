@@ -14,6 +14,7 @@ import fabric/internal/controller
 import fabric/internal/record
 import fabric/model.{type Reply}
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/support
 import fabric/support/agent_recipe as recipe
@@ -265,9 +266,7 @@ fn run_scenario(
 ) -> #(fabric.Run(Nil), run.Status) {
   let agent =
     agent.new("agent", oracle_model(probe, rules), tools, policy.always_allow())
-    |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), max_turns: max_turns),
-    )
+    |> agent.with_max_turns(max_turns)
     |> support.agent
   let assert Ok(run) =
     fabric.start(
@@ -454,7 +453,8 @@ pub fn an_approved_call_matches_beamweaver_test() {
     )
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("hitl_approve"))
-  let assert Ok(_) = fabric.approve(run, pending.reference, None, Nil)
+  let assert Ok(_) =
+    fabric.approve(run, pending.reference, reviewer.new("reviewer"), Nil)
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))
   observe(run, probe) |> should.equal(fixture("hitl_approve"))
@@ -483,7 +483,7 @@ pub fn a_rejected_call_matches_beamweaver_test() {
       run,
       pending.reference,
       reason: "payment declined by reviewer",
-      reviewer: None,
+      reviewer: reviewer.new("reviewer"),
     )
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))
@@ -531,7 +531,8 @@ pub fn an_approval_after_a_restart_matches_beamweaver_test() {
   let assert Ok(run) =
     fabric.recover(store, hitl_agent(probe), Nil, fabric.id(run))
   let assert Ok([pending]) = fabric.pending(run)
-  let assert Ok(_) = fabric.approve(run, pending.reference, None, Nil)
+  let assert Ok(_) =
+    fabric.approve(run, pending.reference, reviewer.new("reviewer"), Nil)
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))
   observe(run, probe) |> should.equal(fixture("hitl_cold_restart"))
@@ -642,7 +643,8 @@ pub fn an_approved_sub_agent_start_matches_beamweaver_test() {
     )
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("subagent_gate_approve"))
-  let assert Ok(_) = fabric.approve(run, pending.reference, None, Nil)
+  let assert Ok(_) =
+    fabric.approve(run, pending.reference, reviewer.new("reviewer"), Nil)
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))
   observe(run, probe) |> should.equal(fixture("subagent_gate_approve"))
@@ -669,7 +671,7 @@ pub fn a_rejected_sub_agent_start_matches_beamweaver_test() {
       run,
       pending.reference,
       reason: "no sub-agent today",
-      reviewer: None,
+      reviewer: reviewer.new("reviewer"),
     )
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))
@@ -696,9 +698,7 @@ pub fn a_rejected_sub_agent_start_matches_beamweaver_test() {
 fn recipe_scenario(probe, rules, tools, max_turns) {
   let worker =
     agent.new("agent", oracle_model(probe, rules), tools, policy.always_allow())
-    |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), max_turns: max_turns),
-    )
+    |> agent.with_max_turns(max_turns)
     |> support.agent
   let assert Ok(handle) =
     graph.start(
