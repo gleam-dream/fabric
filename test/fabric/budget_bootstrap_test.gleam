@@ -28,6 +28,7 @@ import fabric/support/flaky
 import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
+import fabric/tool
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -129,7 +130,7 @@ fn fixture(runs, kind, initialized, calls) {
       )
     }
     Graph -> {
-      let assert Ok(node) = definition.node_id("work")
+      let node = definition.node_id("work")
       let op =
         operation.new(
           run.DefinitionId("work", 1),
@@ -139,7 +140,7 @@ fn fixture(runs, kind, initialized, calls) {
             check_before_effect(runs, Graph, calls)
             Ok(value + 1)
           },
-          fn(_: Nil) { operation.DefiniteFailure("failed") },
+          fn(_: Nil) { tool.Explain("failed") },
         )
       let step =
         definition.node(
@@ -150,14 +151,16 @@ fn fixture(runs, kind, initialized, calls) {
           [],
         )
       let assert Ok(spec) =
-        definition.build(definition.Spec(
-          run.DefinitionId("graph", 1),
-          node,
-          [step],
-          codec.int(),
-          codec.int(),
-          2,
-        ))
+        definition.build(
+          definition.new(
+            run.DefinitionId("graph", 1),
+            entry: node,
+            nodes: [step],
+            state: codec.int(),
+            answer: codec.int(),
+          )
+          |> definition.with_max_activations(2),
+        )
       let assert Ok(#(value, entry)) = compiled.prepare(spec, 0)
       let assert Ok(#(state, _)) =
         graph_control.start("root", compiled.identity(spec), value, entry)
@@ -171,8 +174,8 @@ fn fixture(runs, kind, initialized, calls) {
           store_core.Detached(True, False),
         )
       let runtime =
-        graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
-      let handle = graph.attach(runtime, support.id("root"))
+        graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+      let handle = support.open_graph(runtime, support.id("root"))
       Fixture(
         fn() {
           graph.recover(handle)

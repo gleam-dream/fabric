@@ -14,6 +14,7 @@ import fabric/support
 import fabric/support/flaky
 import fabric/support/probe
 import fabric/support/restart
+import fabric/tool
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None}
@@ -23,7 +24,7 @@ import json/blueprint/codec
 
 fn runtime(runs, read, request) {
   runtime_with(runs, read, request, fn(_, action) {
-    action.kind |> should.equal(operation.OwnedJob(job.Manual))
+    support.kind(action) |> should.equal(policy.OwnedJob)
     Ok(policy.Allow)
   })
 }
@@ -46,7 +47,7 @@ fn runtime_version(runs, read, request, policy, version) {
       fn(_, invocation, receipt) { request(invocation, receipt) },
       fn(error) { error },
     )
-  let assert Ok(id) = definition.node_id("job")
+  let id = definition.node_id("job")
   let node =
     definition.node(
       id,
@@ -56,25 +57,24 @@ fn runtime_version(runs, read, request, policy, version) {
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("owned-flow", version),
-      id,
-      [node],
-      codec.string(),
-      codec.int(),
-      1,
-    ))
-  graph.new(spec, runs, fn() { Nil }, policy)
+    definition.build(
+      definition.new(
+        run.DefinitionId("owned-flow", version),
+        entry: id,
+        nodes: [node],
+        state: codec.string(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, policy)
 }
 
 pub fn refusals_uncertainty_and_read_failures_remain_pending_until_terminal_evidence_test() {
   list.each(
     [
-      #(
-        operation.DefiniteFailure("stop refused"),
-        job.RequestRefused("stop refused"),
-      ),
-      #(operation.UncertainEffect("ack lost"), job.RequestUncertain("ack lost")),
+      #(tool.Explain("stop refused"), job.RequestRefused("stop refused")),
+      #(tool.Uncertain("ack lost"), job.RequestUncertain("ack lost")),
     ],
     fn(pair) {
       let runs = support.store()
@@ -88,11 +88,12 @@ pub fn refusals_uncertainty_and_read_failures_remain_pending_until_terminal_evid
           runtime(runs, fn(_) { Error("offline") }, request),
           support.id("refused-stop"),
           "receipt",
+          correlation: None,
         )
       let assert Ok(waiting) =
         graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.AwaitingJob(reference) = waiting.status
-      graph.cancel(handle) |> should.equal(Ok(Nil))
+      let assert Ok(_) = graph.cancel(handle)
       let assert Ok(pending) =
         graph.await(handle, within: duration.milliseconds(5000))
       pending.status
@@ -102,12 +103,12 @@ pub fn refusals_uncertainty_and_read_failures_remain_pending_until_terminal_evid
         operation.CancellationRequested,
       ))
       graph.poll_job(handle, reference) |> should.be_error
-      graph.read(handle) |> should.equal(Ok(pending))
-      graph.cancel(handle) |> should.equal(Ok(Nil))
+      graph.snapshot(handle) |> should.equal(Ok(pending))
+      let assert Ok(_) = graph.cancel(handle)
       let assert Ok(_) = graph.recover(handle)
       probe.entries(calls) |> should.equal(["request"])
       let handle =
-        graph.attach(
+        support.open_graph(
           runtime(runs, fn(_) { Ok(job.Failed("remote failed")) }, fn(_, _) {
             panic
           }),
@@ -131,14 +132,20 @@ pub fn cancellation_before_owned_admission_never_requests_a_remote_stop_test() {
       Ok(policy.RequireApproval(run.Requirement("own-job", 1)))
     })
   let assert Ok(handle) =
-    graph.start(rt, support.id("unadmitted-stop"), "receipt")
+    graph.start(rt, support.id("unadmitted-stop"), "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
-  graph.cancel(handle) |> should.equal(Ok(Nil))
-  let assert Ok(done) = graph.read(handle)
+  let assert Ok(_) = graph.cancel(handle)
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Cancelled(graph.BeforeStart))
-  graph.approve(handle, approval) |> should.be_error
+  graph.approve(
+    handle,
+    approval,
+    reviewer: support.reviewer("reviewer"),
+    context: Nil,
+  )
+  |> should.be_error
 }
 
 pub fn a_failed_start_fence_releases_no_stop_and_queued_recovery_can_request_test() {
@@ -149,12 +156,13 @@ pub fn a_failed_start_fence_releases_no_stop_and_queued_recovery_can_request_tes
       probe.record(calls, "request")
       Ok(Nil)
     })
-  let assert Ok(handle) = graph.start(rt, support.id("fenced-stop"), "receipt")
+  let assert Ok(handle) =
+    graph.start(rt, support.id("fenced-stop"), "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   flaky.arm(backend, [flaky.Pass, flaky.FailBefore])
-  graph.cancel(handle) |> should.equal(Ok(Nil))
+  let assert Ok(_) = graph.cancel(handle)
   let assert Ok(unattended) =
     graph.await(handle, within: duration.milliseconds(5000))
   unattended.status |> should.equal(graph.Unattended)
@@ -176,7 +184,7 @@ pub fn a_failed_start_fence_releases_no_stop_and_queued_recovery_can_request_tes
 pub fn owned_cleanup_continues_under_a_cancelled_parent_with_no_unused_work_budget_test() {
   let runs = support.store()
   let rt = runtime(runs, fn(_) { Ok(job.Cancelled) }, fn(_, _) { Ok(Nil) })
-  let assert Ok(id) = definition.node_id("child")
+  let id = definition.node_id("child")
   let node =
     definition.node(
       id,
@@ -186,34 +194,41 @@ pub fn owned_cleanup_continues_under_a_cancelled_parent_with_no_unused_work_budg
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("owned-parent", 1),
-      id,
-      [node],
-      codec.string(),
-      codec.int(),
-      1,
-    ))
+    definition.build(
+      definition.new(
+        run.DefinitionId("owned-parent", 1),
+        entry: id,
+        nodes: [node],
+        state: codec.string(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
   let parent =
-    graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
   let assert Ok(handle) =
-    graph.start_with_budget(
-      parent,
+    graph.start(
+      graph.with_family_budget(
+        parent,
+        budget.limits(work: 2)
+          |> budget.with_children(1)
+          |> budget.with_depth(1),
+      ),
       support.id("owned-parent"),
       "receipt",
-      budget.limits(work: 2) |> budget.with_children(1) |> budget.with_depth(1),
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(child_ref, child.Job(_)) = waiting.status
   let assert Ok(child_handle) = graph.child(handle, child_ref.activation, rt)
-  let assert Ok(child_waiting) = graph.read(child_handle)
+  let assert Ok(child_waiting) = graph.snapshot(child_handle)
   let assert graph.AwaitingJob(reference) = child_waiting.status
-  graph.cancel(handle) |> should.equal(Ok(Nil))
+  let assert Ok(_) = graph.cancel(handle)
   let assert Ok(pending) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Cancelled(graph.ChildUnresolved(_, _)) = pending.status
-  let assert Ok(child_pending) = graph.read(child_handle)
+  let assert Ok(child_pending) = graph.snapshot(child_handle)
   child_pending.status
   |> should.equal(graph.CancellingJob(
     reference,
@@ -235,7 +250,12 @@ pub fn incompatible_code_can_record_intent_but_cannot_dispatch_owned_cleanup_tes
       Ok(Nil)
     })
   let assert Ok(handle) =
-    graph.start(correct, support.id("changed-owned"), "receipt")
+    graph.start(
+      correct,
+      support.id("changed-owned"),
+      "receipt",
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
@@ -247,7 +267,9 @@ pub fn incompatible_code_can_record_intent_but_cannot_dispatch_owned_cleanup_tes
       fn(_, _) { Ok(policy.Allow) },
       2,
     )
-  graph.cancel(graph.attach(changed, support.id("changed-owned")))
+  let assert Error(graph.IncompatibleDefinition(_)) =
+    graph.open(changed, support.id("changed-owned"))
+  graph.cancel_stored(runs, support.id("changed-owned"))
   |> should.equal(Ok(Nil))
   let assert Ok(unattended) =
     graph.await(handle, within: duration.milliseconds(5000))
@@ -280,13 +302,14 @@ pub fn accepted_cancellation_survives_restart_until_confirmed_test() {
           }),
           support.id("owned-stop"),
           "receipt",
+          correlation: None,
         )
       #(runs, handle)
     })
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
-  graph.cancel(handle) |> should.equal(Ok(Nil))
+  let assert Ok(_) = graph.cancel(handle)
   let assert Ok(pending) =
     graph.await(handle, within: duration.milliseconds(5000))
   pending.status
@@ -299,11 +322,11 @@ pub fn accepted_cancellation_survives_restart_until_confirmed_test() {
   entry.live |> should.equal(None)
   let assert Ok(metadata) = retention.inspect(entry.record)
   metadata.settled |> should.equal(False)
-  graph.cancel(handle) |> should.equal(Ok(Nil))
+  let assert Ok(_) = graph.cancel(handle)
   restart.crash(owner, runs)
   let runs = support.directory(directory)
   let handle =
-    graph.attach(
+    support.open_graph(
       runtime(runs, fn(_) { Ok(job.Cancelled) }, fn(_, _) {
         panic as "saved request cannot repeat"
       }),
@@ -335,17 +358,18 @@ pub fn an_interrupted_stop_is_not_replayed_and_completion_settles_without_routin
           }),
           support.id("lost-stop"),
           "receipt",
+          correlation: None,
         )
       #(runs, handle)
     })
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
-  graph.cancel(handle) |> should.equal(Ok(Nil))
+  let assert Ok(_) = graph.cancel(handle)
   process.receive(called, 5000) |> should.equal(Ok(Nil))
   restart.crash(owner, runs)
   let handle =
-    graph.attach(
+    support.open_graph(
       runtime(
         support.directory(directory),
         fn(_) { Ok(job.Completed(42)) },

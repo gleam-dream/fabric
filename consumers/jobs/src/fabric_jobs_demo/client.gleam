@@ -2,6 +2,7 @@
 
 import fabric/graph/operation
 import fabric/run
+import fabric/tool
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -145,10 +146,10 @@ pub fn submit(
   }
 }
 
-pub fn classify(error: Error) -> operation.Failure {
+pub fn classify(error: Error) -> tool.Failure {
   case error {
-    Rejected(_, detail) -> operation.DefiniteFailure(detail)
-    Uncertain(detail) -> operation.UncertainEffect(detail)
+    Rejected(_, detail) -> tool.Explain(detail)
+    Uncertain(detail) -> tool.Uncertain(detail)
   }
 }
 

@@ -228,6 +228,7 @@ fn graph_metadata(state: graph.State) -> Metadata {
     | graph.Ended(graph.Failed(_, graph.PolicyFailed(_)))
     | graph.Ended(graph.Failed(_, graph.FamilyBudget(_)))
     | graph.Ended(graph.Failed(_, graph.DeadlineExpired(_)))
+    | graph.Ended(graph.Failed(_, graph.ApprovalExpired(_)))
     | graph.Ended(graph.Cancelled(_, graph.BeforeStart))
     | graph.Ended(graph.Cancelled(_, graph.JobDetached))
     | graph.Ended(graph.Cancelled(_, graph.JobStopped))

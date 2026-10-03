@@ -1,6 +1,7 @@
 import fabric/graph
 import fabric/graph/definition
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric_typesafe
@@ -49,7 +50,7 @@ fn questions() -> question.Batch(Answers) {
 fn runtime(
   runs: store.Store,
   config: client.Config,
-  policy: graph.Policy(client.Config),
+  policy: policy.Policy(client.Config),
 ) -> graph.Runtime(client.Config, String, fabric_typesafe.Receipt(Answers)) {
   let op =
     fabric_typesafe.new(
@@ -60,7 +61,7 @@ fn runtime(
         #(settings, fabric_typesafe.Request("jev-latest", value.String(input)))
       },
     )
-  let assert Ok(node_id) = definition.node_id("classify")
+  let node_id = definition.node_id("classify")
   let node =
     definition.node(
       node_id,
@@ -70,15 +71,17 @@ fn runtime(
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("classifier-graph", 1),
-      node_id,
-      [node],
-      codec.string(),
-      fabric_typesafe.receipt_codec(questions()),
-      1,
-    ))
-  graph.new(spec, runs, fn() { config }, policy)
+    definition.build(
+      definition.new(
+        run.DefinitionId("classifier-graph", 1),
+        entry: node_id,
+        nodes: [node],
+        state: codec.string(),
+        answer: fabric_typesafe.receipt_codec(questions()),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { config }, policy)
 }
 
 pub fn an_http_classifier_batch_retains_native_answers_models_usage_and_rubric_test() {
@@ -88,6 +91,7 @@ pub fn an_http_classifier_batch_retains_native_answers_models_usage_and_rubric_t
       runtime(memory(), support.config(url, "/v1/systemone"), allow),
       id("batch"),
       "2 + 2 = 4",
+      correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
@@ -117,12 +121,19 @@ pub fn approval_precedes_request_construction_and_the_http_call_test() {
       }),
       id("approval"),
       "sample",
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
   support.stats(url, "calls") |> should.equal(0)
-  graph.approve(handle, approval) |> should.be_ok
+  graph.approve(
+    handle,
+    approval,
+    reviewer: as_reviewer("reviewer"),
+    context: support.config(url, "/v1/systemone"),
+  )
+  |> should.be_ok
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(_) = done.status
   support.stats(url, "calls") |> should.equal(1)
@@ -137,6 +148,7 @@ pub fn malformed_results_rate_limits_and_lost_replies_never_route_or_retry_test(
         runtime(memory(), support.config(url, path), allow),
         id("uncertain"),
         "sample",
+        correlation: None,
       )
     let assert Ok(blocked) =
       graph.await(handle, within: duration.milliseconds(5000))
@@ -158,7 +170,12 @@ pub fn an_unsent_request_is_a_definite_failure_test() {
       client.Bounds(..client.bounds(), request_bytes: 16),
     )
   let assert Ok(handle) =
-    graph.start(runtime(memory(), config, allow), id("too-large"), "sample")
+    graph.start(
+      runtime(memory(), config, allow),
+      id("too-large"),
+      "sample",
+      correlation: None,
+    )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Failed(graph.OperationFailed(_)) = done.status
   support.stats(url, "calls") |> should.equal(0)
@@ -172,6 +189,7 @@ pub fn cancellation_closes_local_work_and_preserves_remote_uncertainty_test() {
       runtime(memory(), support.config(url, "/hold"), allow),
       id("cancel"),
       "sample",
+      correlation: None,
     )
   await_stat(url, "calls", 1, 100)
   graph.cancel(handle) |> should.be_ok
@@ -190,7 +208,12 @@ pub fn recovery_after_store_loss_reuses_the_receipt_with_the_server_stopped_test
     process.spawn_unlinked(fn() {
       let runs = directory(path)
       let assert Ok(handle) =
-        graph.start(runtime(runs, config, allow), id("saved"), "sample")
+        graph.start(
+          runtime(runs, config, allow),
+          id("saved"),
+          "sample",
+          correlation: None,
+        )
       process.send(ready, #(runs, handle))
       process.receive_forever(process.new_subject())
     })
@@ -202,8 +225,7 @@ pub fn recovery_after_store_loss_reuses_the_receipt_with_the_server_stopped_test
   process.kill(owner)
   let assert Ok(Nil) = store.stop(runs)
   support.stop(server)
-  let handle =
-    graph.attach(runtime(directory(path), config, allow), id("saved"))
+  let handle = open_graph(runtime(directory(path), config, allow), id("saved"))
   let assert Ok(after) = graph.recover(handle)
   after.status |> should.equal(before.status)
   after.receipts |> should.equal(before.receipts)
@@ -217,6 +239,7 @@ pub fn corrupt_receipts_and_changed_question_meaning_cannot_restore_test() {
       runtime(memory(), support.config(url, "/v1/systemone"), allow),
       id("codec"),
       "sample",
+      correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
@@ -300,6 +323,22 @@ fn id(text: String) -> run.RunId {
   id
 }
 
-fn allow(_: client.Config, _: graph.Action) -> Result(policy.Decision, String) {
+fn allow(
+  _: client.Config,
+  _: policy.Action,
+) -> Result(policy.Decision, String) {
   Ok(policy.Allow)
+}
+
+fn open_graph(
+  runtime: graph.Runtime(context, state, answer),
+  id: run.RunId,
+) -> graph.Handle(context, state, answer) {
+  let assert Ok(handle) = graph.open(runtime, id)
+  handle
+}
+
+fn as_reviewer(subject: String) -> reviewer.Reviewer {
+  let assert Ok(reviewer) = reviewer.new(subject)
+  reviewer
 }

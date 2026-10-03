@@ -1,6 +1,7 @@
 import fabric/graph
 import fabric/graph/definition
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric_mcp
@@ -8,7 +9,7 @@ import fabric_mcp/client
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
@@ -53,7 +54,7 @@ fn runtime(
   connection: client.Client,
   tool: fabric_mcp.Tool,
   runs: store.Store,
-  admission: graph.Policy(client.Client),
+  admission: policy.Policy(client.Client),
 ) -> graph.Runtime(client.Client, Increment, fabric_mcp.Receipt(Int)) {
   runtime_converting(connection, tool, runs, admission, value)
 }
@@ -62,7 +63,7 @@ fn runtime_converting(
   connection: client.Client,
   tool: fabric_mcp.Tool,
   runs: store.Store,
-  admission: graph.Policy(client.Client),
+  admission: policy.Policy(client.Client),
   convert: fn(fabric_mcp.ToolResult) -> Result(Int, String),
 ) -> graph.Runtime(client.Client, Increment, fabric_mcp.Receipt(Int)) {
   let assert Ok(op) =
@@ -74,7 +75,7 @@ fn runtime_converting(
       fn(context) { context },
       convert,
     )
-  let assert Ok(id) = definition.node_id("increment")
+  let id = definition.node_id("increment")
   let node =
     definition.node(
       id,
@@ -84,15 +85,17 @@ fn runtime_converting(
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("counter-graph", 1),
-      id,
-      [node],
-      increment_codec(),
-      fabric_mcp.receipt_codec(tool, codec.int(), convert),
-      1,
-    ))
-  graph.new(spec, runs, fn() { connection }, admission)
+    definition.build(
+      definition.new(
+        run.DefinitionId("counter-graph", 1),
+        entry: id,
+        nodes: [node],
+        state: increment_codec(),
+        answer: fabric_mcp.receipt_codec(tool, codec.int(), convert),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { connection }, admission)
 }
 
 pub fn a_real_mcp_operation_returns_a_native_result_and_retained_receipt_test() {
@@ -107,6 +110,7 @@ pub fn a_real_mcp_operation_returns_a_native_result_and_retained_receipt_test() 
       runtime(connection, tool, runs, fn(_, _) { Ok(policy.Allow) }),
       id,
       Increment("apple", 3),
+      correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
@@ -127,16 +131,28 @@ pub fn policy_holds_the_real_effect_until_approval_test() {
   use connection, tool, _ <- fixture
   let definition =
     runtime(connection, tool, memory(), fn(_, action) {
-      action.operation |> should.equal(run.DefinitionId("increment-counter", 1))
+      let assert policy.RunOperation(operation:, ..) = action.target
+      operation |> should.equal(run.DefinitionId("increment-counter", 1))
       Ok(policy.RequireApproval(run.Requirement("counter-owner", 1)))
     })
   let assert Ok(handle) =
-    graph.start(definition, id("approval"), Increment("approved", 5))
+    graph.start(
+      definition,
+      id("approval"),
+      Increment("approved", 5),
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
   read(connection, "approved") |> should.equal(0)
-  graph.approve(handle, approval) |> should.be_ok
+  graph.approve(
+    handle,
+    approval,
+    reviewer: as_reviewer("reviewer"),
+    context: connection,
+  )
+  |> should.be_ok
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
   receipt.value |> should.equal(5)
@@ -163,6 +179,7 @@ pub fn changed_contracts_and_server_identity_refuse_before_the_tool_effect_test(
           runtime(connection, tool, memory(), allow),
           id("drift"),
           Increment("refused", 3),
+          correlation: None,
         )
       let assert Ok(done) =
         graph.await(handle, within: duration.milliseconds(5000))
@@ -180,6 +197,7 @@ pub fn changed_contracts_and_server_identity_refuse_before_the_tool_effect_test(
       runtime(other, tool, memory(), allow),
       id("wrong-server"),
       Increment("refused", 3),
+      correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Failed(graph.OperationFailed(_)) = done.status
@@ -203,6 +221,7 @@ pub fn optional_output_schema_description_updates_and_paged_catalogs_work_test()
           runtime(connection, tool, memory(), allow),
           id("compatible"),
           Increment("count", 2),
+          correlation: None,
         )
       let assert Ok(done) =
         graph.await(handle, within: duration.milliseconds(5000))
@@ -233,6 +252,7 @@ pub fn optional_output_schema_description_updates_and_paged_catalogs_work_test()
       runtime_converting(connection, tool, memory(), allow, convert),
       id("text"),
       Increment("text", 6),
+      correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
@@ -258,6 +278,7 @@ pub fn post_call_errors_remain_uncertain_without_routes_or_retries_test() {
           runtime(connection, tool, memory(), allow),
           id("uncertain"),
           Increment("committed", 1),
+          correlation: None,
         )
       let assert Ok(blocked) =
         graph.await(handle, within: duration.milliseconds(5000))
@@ -284,6 +305,7 @@ pub fn a_saved_receipt_recovers_without_a_live_connection_after_store_loss_test(
           runtime(connection, tool, runs, allow),
           id("saved"),
           Increment("once", 8),
+          correlation: None,
         )
       process.send(ready, #(runs, handle))
       process.receive_forever(process.new_subject())
@@ -298,7 +320,7 @@ pub fn a_saved_receipt_recovers_without_a_live_connection_after_store_loss_test(
   let assert Ok(tool) =
     codec.decode_json(fabric_mcp.tool_codec(), pinned_descriptor)
   let restored =
-    graph.attach(
+    open_graph(
       runtime(connection, tool, directory(dir <> "/records"), allow),
       id("saved"),
     )
@@ -319,6 +341,7 @@ pub fn graph_cancellation_stops_waiting_but_retains_the_unresolved_effect_test()
       runtime(connection, tool, memory(), allow),
       id("cancel"),
       Increment("cancelled", 1),
+      correlation: None,
     )
   await_count(observer, "cancelled", 1, 100)
   graph.cancel(handle) |> should.be_ok
@@ -341,6 +364,7 @@ pub fn output_conversion_failure_preserves_the_actual_effect_test() {
       }),
       id("conversion"),
       Increment("once", 1),
+      correlation: None,
     )
   let assert Ok(blocked) =
     graph.await(handle, within: duration.milliseconds(5000))
@@ -378,6 +402,7 @@ pub fn protocol_content_is_preserved_for_the_application_converter_test() {
       runtime_converting(connection, tool, memory(), allow, convert),
       id("content"),
       Increment("content", 1),
+      correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
@@ -429,6 +454,7 @@ pub fn incompatible_native_input_and_corrupt_receipts_are_rejected_test() {
       runtime(connection, tool, memory(), allow),
       id("receipt"),
       Increment("counter", 2),
+      correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
@@ -500,7 +526,10 @@ fn id(text: String) -> run.RunId {
   id
 }
 
-fn allow(_: client.Client, _: graph.Action) -> Result(policy.Decision, String) {
+fn allow(
+  _: client.Client,
+  _: policy.Action,
+) -> Result(policy.Decision, String) {
   Ok(policy.Allow)
 }
 
@@ -509,3 +538,16 @@ fn temp_dir() -> String
 
 @external(erlang, "fabric_mcp_test_ffi", "remove_dir")
 fn remove_dir(path: String) -> Nil
+
+fn open_graph(
+  runtime: graph.Runtime(context, state, answer),
+  id: run.RunId,
+) -> graph.Handle(context, state, answer) {
+  let assert Ok(handle) = graph.open(runtime, id)
+  handle
+}
+
+fn as_reviewer(subject: String) -> reviewer.Reviewer {
+  let assert Ok(reviewer) = reviewer.new(subject)
+  reviewer
+}

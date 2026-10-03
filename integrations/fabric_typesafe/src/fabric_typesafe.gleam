@@ -2,6 +2,7 @@
 
 import fabric/graph/operation
 import fabric/run
+import fabric/tool
 import fabric_typesafe/client
 import fabric_typesafe/internal/batch
 import fabric_typesafe/internal/wire
@@ -49,14 +50,14 @@ pub fn new(
       let #(config, request) = request(context, input)
       use raw <- result.try(
         prepare(questions, request)
-        |> result.map_error(operation.DefiniteFailure),
+        |> result.map_error(tool.Explain),
       )
       use response <- result.try(
         client.post(config, raw)
         |> result.map_error(fn(error) {
           case error {
-            client.BeforeSend(reason) -> operation.DefiniteFailure(reason)
-            client.AfterSend(reason) -> operation.UncertainEffect(reason)
+            client.BeforeSend(reason) -> tool.Explain(reason)
+            client.AfterSend(reason) -> tool.Uncertain(reason)
           }
         }),
       )
@@ -66,7 +67,7 @@ pub fn new(
           let retry =
             list.key_find(response.headers, "retry-after")
             |> result.unwrap("not reported")
-          Error(operation.UncertainEffect(
+          Error(tool.Uncertain(
             "classifier HTTP status "
             <> int.to_string(status)
             <> "; retry-after: "
@@ -75,7 +76,7 @@ pub fn new(
         }
       })
       restore(questions, raw, response.body)
-      |> result.map_error(operation.UncertainEffect)
+      |> result.map_error(tool.Uncertain)
     },
     fn(error) { error },
   )

@@ -403,7 +403,7 @@ fn pay_needs_review(
   _context: Nil,
   action: policy.Action,
 ) -> Result(policy.Decision, String) {
-  case action.tool {
+  case action.name {
     "pay" -> Ok(policy.RequireApproval(run.Requirement("review", 1)))
     _ -> Ok(policy.Allow)
   }
@@ -614,7 +614,7 @@ fn delegation_agent(probe: Probe) -> agent.Agent(Nil) {
     case action.target {
       policy.StartAgent(..) ->
         Ok(policy.RequireApproval(run.Requirement("review", 1)))
-      policy.InvokeTool -> Ok(policy.Allow)
+      _ -> Ok(policy.Allow)
     }
   })
   |> agent.with_sub_agent(
@@ -701,9 +701,10 @@ fn recipe_scenario(probe, rules, tools, max_turns) {
     |> support.agent
   let assert Ok(handle) =
     graph.start(
-      recipe.runtime(support.store(), worker, fn() { Nil }),
+      recipe.runtime(support.store(), worker, fn(_) { Nil }),
       support.id("oracle-recipe"),
       recipe.initial(worker, Nil, "go"),
+      correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(raw) = done.status

@@ -21,6 +21,7 @@ import fabric/internal/graph/controller as g
 import fabric/internal/graph/fork as scope
 import fabric/internal/graph/fork_driver
 import fabric/internal/graph/live
+import fabric/internal/graph/observe
 import fabric/internal/graph/record
 import fabric/internal/run_id
 import fabric/internal/runner_host as host
@@ -28,16 +29,26 @@ import fabric/internal/store
 import fabric/policy
 import fabric/run
 import fabric/store/backend
+import fabric/tool
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import sinal/correlation
+import sinal/correlation.{type Correlation}
 
+/// A runtime's bounds, in milliseconds: one call of a definition's pure
+/// callbacks, one operation body (`None`: unbounded), how long a command
+/// waits for the live runner, and how long an approval request waits
+/// (`None`: never expires).
 pub type Options {
-  Options(callback_timeout: Int, operation_timeout: Int, command_timeout: Int)
+  Options(
+    callback_timeout: Int,
+    operation_timeout: Option(Int),
+    command_timeout: Int,
+    approval_expiry: Option(Int),
+  )
 }
 
 pub type Error {
@@ -46,9 +57,72 @@ pub type Error {
   Incompatible(definition.Error)
   CallbackFailed(String)
   Refused(g.Rejection)
+  /// An ancestor of the run is stopping or has ended: it accepts no child
+  /// work.
+  AncestorClosed
   Busy
   Contended
   OwnerUnknown
+}
+
+/// The deadline of an approval request issued now, by the store's clock.
+pub fn approval_deadline(
+  runs: store.Store,
+  options: Options,
+) -> Result(Option(Int), Error) {
+  case options.approval_expiry {
+    None -> Ok(None)
+    Some(expiry) ->
+      store.now(runs)
+      |> result.map(fn(now) { Some(now + expiry) })
+      |> result.map_error(StoreFailed)
+  }
+}
+
+/// The deadline an event issuing `decision` gives a new approval request.
+pub fn deadline_for(
+  runs: store.Store,
+  options: Options,
+  decision: Result(policy.Decision, String),
+) -> Result(Option(Int), Error) {
+  case decision {
+    Ok(policy.RequireApproval(_)) -> approval_deadline(runs, options)
+    _ -> Ok(None)
+  }
+}
+
+/// The correlation and root a child of the run `parent` inherits: the
+/// parent's, read from its record (derived from the parent's id when it
+/// cannot be read).
+pub fn lineage(runs: store.Store, parent: String) -> #(Correlation, String) {
+  case load_raw(runs, parent) {
+    Ok(#(_, state)) -> #(state.correlation, state.root)
+    Error(_) -> #(correlation.from_key(parent), parent)
+  }
+}
+
+/// The approval request of a run that waits on one whose deadline passed
+/// by the store's clock, with that time.
+pub fn approval_due(
+  runs: store.Store,
+  state: g.State,
+) -> Result(Option(#(g.Approval, Int)), Error) {
+  case state.phase {
+    g.AwaitingApproval(_, approval) ->
+      case approval.expires {
+        None -> Ok(None)
+        Some(due) -> {
+          use now <- result.map(
+            store.now(runs) |> result.map_error(StoreFailed),
+          )
+          case now >= due {
+            True -> Some(#(approval, now))
+            False -> None
+          }
+        }
+      }
+    _ -> Ok(None)
+  }
 }
 
 pub fn load(
@@ -125,7 +199,7 @@ pub fn admit(
         | operation.Job(_)
         | operation.OwnedJob(_) -> Ok(Nil)
       })
-      work.admit(state.run, activation)
+      work.admit(state, activation)
     })
     |> result.map_error(string.inspect)
     |> result.flatten
@@ -155,7 +229,7 @@ pub fn admit(
 pub fn check_ancestry(runs: store.Store, state: g.State) -> Result(Nil, Error) {
   case ancestry.read(runs, state.run, state.parent, 64) {
     Ok(True) -> Ok(Nil)
-    Ok(False) -> Error(CallbackFailed("parent no longer accepts child work"))
+    Ok(False) -> Error(AncestorClosed)
     Error(error) -> Error(CallbackFailed(string.inspect(error)))
   }
 }
@@ -203,16 +277,21 @@ type Runner {
   )
 }
 
+/// Commits `state` (over `before`, at revision `expected`; a new record
+/// when `None`), emits the commit's events, and starts a runner for its
+/// `effects` when it needs one.
 pub fn launch(
   runs: store.Store,
   work: live.Work,
   options: Options,
-  expected: Option(Int),
+  expected: Option(#(Int, g.State)),
   state: g.State,
   effects: List(g.Effect),
   body: Option(live.Body),
   seize: Bool,
 ) -> Result(Int, Error) {
+  let before = option.map(expected, fn(pair) { pair.1 })
+  let expected = option.map(expected, fn(pair) { pair.0 })
   use encoded <- result.try(
     record.encode(state)
     |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
@@ -225,7 +304,10 @@ pub fn launch(
         _ -> store.Detached(False, seize)
       }
       write_initialized(runs, state, expected, encoded, ownership)
-      |> result.map(fn(entry) { entry.0 })
+      |> result.map(fn(entry) {
+        observe.committed(before, entry.1)
+        entry.0
+      })
     }
     True -> {
       let prepared =
@@ -245,23 +327,25 @@ pub fn launch(
             encoded,
             store.Detached(True, seize),
           )
-          |> result.map(fn(entry) { entry.0 })
+          |> result.map(fn(entry) {
+            observe.committed(before, entry.1)
+            entry.0
+          })
         Ok(#(pid, mailbox, go)) -> {
           let ownership =
             store.Launch(
               pid,
-              // Graph runs carry no correlation yet: their events derive
-              // one from the run id, and a graph is its own root.
               store.GraphLive(
                 state.incarnation,
                 mailbox,
-                state.run,
-                correlation.from_key(state.run),
+                state.root,
+                state.correlation,
               ),
               seize,
             )
           case write_initialized(runs, state, expected, encoded, ownership) {
             Ok(#(revision, state)) -> {
+              observe.committed(before, state)
               process.send(go, Go(revision, state))
               Ok(revision)
             }
@@ -418,6 +502,7 @@ fn persist(
     store.commit(runner.runs, state.run, runner.revision, encoded, ownership)
     |> result.map_error(StoreFailed),
   )
+  observe.committed(Some(runner.state), state)
   Ok(Runner(..runner, state:, revision:))
 }
 
@@ -491,16 +576,27 @@ fn perform(runner: Runner, effects: List(g.Effect)) -> Result(Runner, Error) {
               activation,
             )
           {
-            Ok(live.Admission(decision, body)) ->
-              Ok(#(
-                g.Inspected(g.reference(runner.state, activation), Ok(decision)),
-                Some(body),
+            Ok(live.Admission(decision, body)) -> {
+              use expires <- result.map(deadline_for(
+                runner.runs,
+                runner.options,
+                Ok(decision),
               ))
+              #(
+                g.Inspected(
+                  g.reference(runner.state, activation),
+                  Ok(decision),
+                  expires,
+                ),
+                Some(body),
+              )
+            }
             Error(PolicyRejected(reason)) ->
               Ok(#(
                 g.Inspected(
                   g.reference(runner.state, activation),
                   Error(reason),
+                  None,
                 ),
                 None,
               ))
@@ -525,16 +621,12 @@ fn perform(runner: Runner, effects: List(g.Effect)) -> Result(Runner, Error) {
           None -> start_executor(runner)
         }
         executor.submit(executor, [
-          // `bounded.call` applies the operation timeout itself.
+          // The executor kills a body still running at the operation
+          // timeout and reports it `TimedOut`: an uncertain effect.
           executor.Job(
             g.reference(runner.state, activation),
-            fn() {
-              case bounded.call(runner.options.operation_timeout, body) {
-                Ok(result) -> live.Returned(result)
-                Error(error) -> live.Interrupted(string.inspect(error))
-              }
-            },
-            None,
+            fn() { live.Returned(body()) },
+            runner.options.operation_timeout,
           ),
         ])
         Ok(Runner(..runner, executor: Some(executor), body: None))
@@ -543,7 +635,7 @@ fn perform(runner: Runner, effects: List(g.Effect)) -> Result(Runner, Error) {
         use body <- result.try(
           bounded.call(runner.options.callback_timeout, fn() {
             use _ <- result.try(runner.work.validate(runner.state))
-            Ok(runner.work.cancel_job(runner.state.run, activation))
+            Ok(runner.work.cancel_job(runner.state, activation))
           })
           |> result.map_error(fn(error) {
             CallbackFailed(string.inspect(error))
@@ -1164,13 +1256,13 @@ fn result_event(
   case state.phase, execution {
     g.StoppingJob(_, _, _), live.Returned(Ok(_)) -> g.JobStopRequested(ref)
     g.StoppingJob(_, _, _),
-      live.Returned(Error(definition.OperationRejected(operation.BodyFailed(operation.DefiniteFailure(
+      live.Returned(Error(definition.OperationRejected(operation.BodyFailed(tool.Explain(
         reason,
       )))))
     -> g.JobStopRefused(ref, reason)
     g.StoppingJob(_, _, _), live.Interrupted(reason)
     | g.StoppingJob(_, _, _),
-      live.Returned(Error(definition.OperationRejected(operation.BodyFailed(operation.UncertainEffect(
+      live.Returned(Error(definition.OperationRejected(operation.BodyFailed(tool.Uncertain(
         reason,
       )))))
     -> g.Unresolved(ref, g.Uncertain(reason))
@@ -1191,10 +1283,10 @@ fn ordinary_result_event(
 ) -> g.Event {
   case execution {
     live.Interrupted(reason) -> g.Unresolved(ref, g.Uncertain(reason))
-    live.Returned(Error(definition.OperationRejected(operation.BodyFailed(operation.DefiniteFailure(
+    live.Returned(Error(definition.OperationRejected(operation.BodyFailed(tool.Explain(
       reason,
     ))))) -> g.FailedBody(ref, g.OperationFailed(reason))
-    live.Returned(Error(definition.OperationRejected(operation.BodyFailed(operation.UncertainEffect(
+    live.Returned(Error(definition.OperationRejected(operation.BodyFailed(tool.Uncertain(
       reason,
     ))))) -> g.Unresolved(ref, g.Uncertain(reason))
     live.Returned(Error(definition.OperationRejected(operation.OutputEncodingFailed(
@@ -1274,9 +1366,11 @@ pub fn discover(
     True -> Ok(None)
     False -> managed_due(runs, state)
   })
-  let outcome = case due {
-    Some(_) -> recover_abandoned(runs, work, options, entry, state, 1)
-    None ->
+  use expiring <- result.try(approval_due(runs, state))
+  let outcome = case due, expiring {
+    Some(_), _ | _, Some(_) ->
+      recover_abandoned(runs, work, options, entry, state, 1)
+    None, None ->
       case state.phase {
         g.WaitingFork(a, _) ->
           discover_fork(runs, work, options, entry, state, a)
@@ -1338,6 +1432,7 @@ pub fn discover(
                     work,
                     options,
                     entry,
+                    state,
                     g.State(
                       ..state,
                       phase: phase,
@@ -1433,6 +1528,7 @@ fn discover_fork(
         work,
         options,
         entry,
+        state,
         g.State(..state, incarnation: state.incarnation + 1),
         [],
         1,
@@ -1480,6 +1576,7 @@ fn discover_job(
             work,
             options,
             entry,
+            state,
             g.State(..state, incarnation: state.incarnation + 1),
             [],
             1,
@@ -1521,6 +1618,7 @@ fn observe_claimed_job(
         work,
         options,
         entry,
+        state,
         g.State(..observed, incarnation: observed.incarnation + 1),
         [],
         1,
@@ -1671,7 +1769,7 @@ fn read_job(
   stopping: Bool,
 ) -> Result(g.State, Error) {
   let observed =
-    bounded.call(options.callback_timeout, fn() { work.observe_job(a) })
+    bounded.call(options.callback_timeout, fn() { work.observe_job(state, a) })
     |> result.map_error(string.inspect)
     |> result.try(fn(reply) { reply |> result.map_error(string.inspect) })
     |> result.map_error(CallbackFailed)
@@ -1792,7 +1890,7 @@ fn commit_job(
       runs,
       work,
       options,
-      Some(entry.revision),
+      Some(#(entry.revision, state)),
       next,
       effects,
       None,
@@ -1883,16 +1981,26 @@ fn recover_abandoned(
   state: g.State,
   tries: Int,
 ) -> Result(g.State, Error) {
+  use expiring <- result.try(approval_due(runs, state))
   use due <- result.try(managed_due(runs, state))
-  case due {
-    Some(#(a, now)) -> {
+  case expiring, due {
+    // An approval request whose deadline passed expires: the run fails
+    // with `graph.ExpiredApproval`.
+    Some(#(approval, now)), _ -> {
+      use #(next, effects) <- result.try(
+        g.step(state, g.ExpireApproval(approval, now))
+        |> result.map_error(Refused),
+      )
+      commit_recovery(runs, work, options, entry, state, next, effects, tries)
+    }
+    None, Some(#(a, now)) -> {
       use #(next, effects) <- result.try(
         g.step(state, g.ExpireWait(g.reference(state, a), now))
         |> result.map_error(Refused),
       )
-      commit_recovery(runs, work, options, entry, next, effects, tries)
+      commit_recovery(runs, work, options, entry, state, next, effects, tries)
     }
-    None ->
+    None, None ->
       case state.phase {
         g.WaitingSignal(a) | g.WaitingJob(a) -> {
           use due <- result.try(wait_due(runs, a))
@@ -1906,6 +2014,7 @@ fn recover_abandoned(
                 work,
                 options,
                 entry,
+                state,
                 g.State(..state, incarnation: state.incarnation + 1),
                 [],
                 tries,
@@ -1916,7 +2025,16 @@ fn recover_abandoned(
                 g.step(state, g.ExpireWait(g.reference(state, a), now))
                 |> result.map_error(Refused),
               )
-              commit_recovery(runs, work, options, entry, next, effects, tries)
+              commit_recovery(
+                runs,
+                work,
+                options,
+                entry,
+                state,
+                next,
+                effects,
+                tries,
+              )
             }
           }
         }
@@ -1945,6 +2063,7 @@ fn recover_abandoned(
             work,
             options,
             entry,
+            state,
             g.State(..state, incarnation: state.incarnation + 1),
             [],
             tries,
@@ -2149,7 +2268,7 @@ fn settle_child(
         )
         |> result.map_error(Refused),
       )
-      commit_recovery(runs, work, options, entry, next, effects, tries)
+      commit_recovery(runs, work, options, entry, state, next, effects, tries)
     }
     child.Working
     | child.Approval(_)
@@ -2185,7 +2304,7 @@ fn recover_work(
         True -> g.recover(state) |> result.map_error(Refused)
         False -> Ok(#(state, []))
       })
-      commit_recovery(runs, work, options, entry, next, effects, tries)
+      commit_recovery(runs, work, options, entry, state, next, effects, tries)
     }
   }
 }
@@ -2195,6 +2314,7 @@ fn commit_recovery(
   work: live.Work,
   options: Options,
   entry: store.Entry,
+  before: g.State,
   next: g.State,
   effects: List(g.Effect),
   tries: Int,
@@ -2204,7 +2324,7 @@ fn commit_recovery(
       runs,
       work,
       options,
-      Some(entry.revision),
+      Some(#(entry.revision, before)),
       next,
       effects,
       None,
@@ -2238,7 +2358,7 @@ pub fn cancel(
         runs,
         work,
         options,
-        Some(entry.revision),
+        Some(#(entry.revision, state)),
         next,
         effects,
         None,

@@ -10,11 +10,13 @@ import fabric/run
 import fabric/store
 import fabric/store/backend
 import fabric/store/conformance
+import fabric/support
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
 import fabric/sweeper
 import fabric/telemetry
+import fabric/tool
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/time/duration
@@ -41,48 +43,57 @@ fn runtime(runs, inspect) {
 }
 
 fn runtime_with(runs, inspect, within, accept) {
-  let assert Ok(node) = definition.node_id("wait")
-  let assert Ok(wait) =
+  let node = definition.node_id("wait")
+  let wait =
     operation.await_signal(codec.int(), answer())
-    |> operation.with_deadline(duration.milliseconds(within))
+    |> operation.with_deadline(run.After(duration.milliseconds(within)))
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("deadline-loop", 1),
-      node,
-      [
-        definition.node(
-          node,
-          wait,
-          fn(n) { Ok(n) },
-          fn(n, done) { accept(n, done, node) },
-          [node],
-        ),
-      ],
-      codec.int(),
-      codec.int(),
-      3,
-    ))
-  graph.new(spec, runs, fn() { Nil }, inspect)
+    definition.build(
+      definition.new(
+        run.DefinitionId("deadline-loop", 1),
+        entry: node,
+        nodes: [
+          definition.node(
+            node,
+            wait,
+            fn(n) { Ok(n) },
+            fn(n, done) { accept(n, done, node) },
+            [node],
+          ),
+        ],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(3),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, inspect)
 }
 
 pub fn deadline_configuration_is_bounded_and_part_of_definition_compatibility_test() {
   let wait = operation.await_signal(codec.int(), answer())
-  operation.with_deadline(wait, duration.milliseconds(0)) |> should.be_error
-  operation.with_deadline(wait, duration.milliseconds(-1)) |> should.be_error
-  operation.with_deadline(wait, duration.milliseconds(4_294_967_296))
-  |> should.be_error
-  operation.with_deadline(wait, duration.milliseconds(4_294_967_295))
-  |> should.be_ok
+  operation.with_deadline(wait, run.After(duration.milliseconds(0)))
+  |> support.operation_problems
+  |> should.not_equal([])
+  operation.with_deadline(wait, run.After(duration.milliseconds(-1)))
+  |> support.operation_problems
+  |> should.not_equal([])
+  operation.with_deadline(wait, run.After(duration.milliseconds(4_294_967_296)))
+  |> support.operation_problems
+  |> should.not_equal([])
+  operation.with_deadline(wait, run.After(duration.milliseconds(4_294_967_295)))
+  |> support.operation_problems
+  |> should.equal([])
   let activity =
     operation.new(
       run.DefinitionId("body", 1),
       codec.int(),
       codec.int(),
       fn(_, _, n) { Ok(n) },
-      fn(_error: Nil) { operation.DefiniteFailure("none") },
+      fn(_error: Nil) { tool.Explain("none") },
     )
-  operation.with_deadline(activity, duration.milliseconds(1000))
-  |> should.equal(Error(operation.DeadlineRequiresWait))
+  operation.with_deadline(activity, run.After(duration.milliseconds(1000)))
+  |> support.operation_problems
+  |> should.equal([operation.DeadlineRequiresWait])
   let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "definition", nodes.long)
   let assert Ok(handle) =
@@ -90,19 +101,21 @@ pub fn deadline_configuration_is_bounded_and_part_of_definition_compatibility_te
       runtime(runs, fn(_, _) { Ok(policy.Allow) }),
       id("deadline-contract"),
       1,
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
+  // Another deadline is another stored contract: the run does not open
+  // under it, and the wait is unchanged.
   let changed =
-    graph.attach(
-      runtime_with(runs, fn(_, _) { Ok(policy.Allow) }, 120_000, fn(n, _, _) {
-        Ok(definition.Finish(n, n))
-      }),
-      id("deadline-contract"),
-    )
-  graph.recover(changed) |> should.be_error
-  graph.deliver(changed, reference, answer(), True) |> should.be_error
+    runtime_with(runs, fn(_, _) { Ok(policy.Allow) }, 120_000, fn(n, _, _) {
+      Ok(definition.Finish(n, n))
+    })
+  let assert Error(graph.IncompatibleDefinition(_)) =
+    graph.open(changed, id("deadline-contract"))
+  let assert Ok(unchanged) = graph.snapshot(handle)
+  unchanged.status |> should.equal(graph.AwaitingSignal(reference))
 }
 
 pub fn interrupted_arming_recovers_once_without_repeating_policy_test() {
@@ -125,6 +138,7 @@ pub fn interrupted_arming_recovers_once_without_repeating_policy_test() {
       }),
       id("deadline-arming"),
       1,
+      correlation: None,
     )
   let assert Ok(interrupted) =
     graph.await(handle, within: duration.milliseconds(5000))
@@ -157,19 +171,18 @@ pub fn a_clock_failure_refuses_delivery_but_allows_explicit_cancellation_test() 
       runtime(runs, fn(_, _) { Ok(policy.Allow) }),
       id("deadline-clock-failure"),
       1,
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
   probe.record(calls, "offline")
   graph.deliver(handle, reference, answer(), True)
-  |> should.equal(
-    Error(graph.StoreFailed(backend.Unavailable("clock offline"))),
-  )
-  let assert Ok(unchanged) = graph.read(handle)
+  |> should.equal(Error(graph.StoreUnavailable("clock offline")))
+  let assert Ok(unchanged) = graph.snapshot(handle)
   unchanged.revision |> should.equal(waiting.revision)
   let assert Ok(_) = graph.cancel(handle)
-  let assert Ok(cancelled) = graph.read(handle)
+  let assert Ok(cancelled) = graph.snapshot(handle)
   cancelled.status |> should.equal(graph.Cancelled(graph.BeforeStart))
 }
 
@@ -181,7 +194,8 @@ pub fn a_delivery_that_crosses_the_deadline_during_acceptance_cannot_route_test(
       memory.advance(60_001)
       Ok(definition.Finish(n, n))
     })
-  let assert Ok(handle) = graph.start(spec, id("deadline-slow-route"), 1)
+  let assert Ok(handle) =
+    graph.start(spec, id("deadline-slow-route"), 1, correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
@@ -225,6 +239,7 @@ pub fn due_discovery_expires_a_wait_after_store_loss_without_manual_delivery_tes
       runtime(runs, fn(_, _) { Ok(policy.Allow) }),
       id("deadline-scan"),
       1,
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
@@ -235,11 +250,11 @@ pub fn due_discovery_expires_a_wait_after_store_loss_without_manual_delivery_tes
   let restored = nodes.node(memory.backend, "new-deadline", nodes.long)
   scan(restored).claimed |> should.equal(1)
   let handle =
-    graph.attach(
+    support.open_graph(
       runtime(restored, fn(_, _) { Ok(policy.Allow) }),
       id("deadline-scan"),
     )
-  let assert Ok(expired) = graph.read(handle)
+  let assert Ok(expired) = graph.snapshot(handle)
   expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
   nodes.holder(memory.backend, id("deadline-scan"))
   |> should.equal(backend.Free)
@@ -254,6 +269,7 @@ pub fn a_clock_correction_releases_the_claim_without_resetting_the_due_time_test
       runtime(runs, fn(_, _) { Ok(policy.Allow) }),
       id("deadline-correction"),
       1,
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
@@ -282,7 +298,8 @@ pub fn an_expiration_commit_wins_against_an_in_progress_delivery_test() {
       probe.gate(route, "route")
       Ok(definition.Finish(n, n))
     })
-  let assert Ok(handle) = graph.start(spec, id("deadline-race"), 1)
+  let assert Ok(handle) =
+    graph.start(spec, id("deadline-race"), 1, correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
@@ -296,8 +313,8 @@ pub fn an_expiration_commit_wins_against_an_in_progress_delivery_test() {
   let assert Ok(expired) = graph.recover(handle)
   expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
   probe.release(held)
-  let assert Ok(Error(graph.CommandRefused(_))) = process.receive(reply, 5000)
-  let assert Ok(unchanged) = graph.read(handle)
+  let assert Ok(Error(graph.RunEnded)) = process.receive(reply, 5000)
+  let assert Ok(unchanged) = graph.snapshot(handle)
   unchanged.revision |> should.equal(expired.revision)
   unchanged.receipts |> should.equal([])
 }
@@ -307,7 +324,8 @@ pub fn overdue_waits_expire_after_restart_without_a_signal_or_runner_test() {
   let #(owner, runs) =
     restart.owned(fn() { nodes.node(memory.backend, "deadline", nodes.long) })
   let spec = runtime(runs, fn(_, _) { Ok(policy.Allow) })
-  let assert Ok(handle) = graph.start(spec, id("deadline-restart"), 7)
+  let assert Ok(handle) =
+    graph.start(spec, id("deadline-restart"), 7, correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
@@ -318,14 +336,14 @@ pub fn overdue_waits_expire_after_restart_without_a_signal_or_runner_test() {
   restart.crash(owner, runs)
   let restored = nodes.node(memory.backend, "deadline", nodes.long)
   let handle =
-    graph.attach(
+    support.open_graph(
       runtime(restored, fn(_, _) { Ok(policy.Allow) }),
       id("deadline-restart"),
     )
   let assert Ok(expired) = graph.recover(handle)
   expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
   expired.receipts |> should.equal([])
-  let assert Error(graph.CommandRefused(_)) =
+  let assert Error(graph.RunEnded) =
     graph.deliver(handle, reference, answer(), True)
 }
 
@@ -336,13 +354,24 @@ pub fn approval_does_not_start_the_clock_and_revisits_get_new_deadlines_test() {
     runtime(runs, fn(_, _) {
       Ok(policy.RequireApproval(run.Requirement("publish", 1)))
     })
-  let assert Ok(handle) = graph.start(spec, id("deadline-approval"), 0)
+  let assert Ok(handle) =
+    graph.start(spec, id("deadline-approval"), 0, correlation: None)
   let assert Ok(pending) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = pending.status
-  pending.deadline |> should.equal(None)
+  // The approval request's own deadline (7 days); the wait's clock has not
+  // started.
+  let assert Some(expires) = pending.deadline
+  let assert Ok(now) = store.now(runs)
+  { expires > now + 6 * 24 * 60 * 60 * 1000 } |> should.be_true
   memory.advance(120_000)
-  let assert Ok(approved) = graph.approve(handle, approval)
+  let assert Ok(approved) =
+    graph.approve(
+      handle,
+      approval,
+      reviewer: support.reviewer("reviewer"),
+      context: Nil,
+    )
   let assert Ok(first) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = first.status
@@ -355,7 +384,13 @@ pub fn approval_does_not_start_the_clock_and_revisits_get_new_deadlines_test() {
   let assert Ok(pending) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = pending.status
-  let assert Ok(_) = graph.approve(handle, approval)
+  let assert Ok(_) =
+    graph.approve(
+      handle,
+      approval,
+      reviewer: support.reviewer("reviewer"),
+      context: Nil,
+    )
   let assert Ok(second) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert Some(next_due) = second.deadline
@@ -373,6 +408,7 @@ pub fn late_delivery_commits_expiration_without_accepting_the_result_test() {
       runtime(runs, fn(_, _) { Ok(policy.Allow) }),
       id("deadline-delivery"),
       1,
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))

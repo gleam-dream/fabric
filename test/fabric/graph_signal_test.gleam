@@ -10,6 +10,7 @@ import fabric/support
 import fabric/support/flaky
 import fabric/support/probe
 import fabric/support/restart
+import fabric/tool
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
@@ -24,7 +25,7 @@ fn run_id(name: String) -> run.RunId {
 }
 
 fn node_id() -> definition.NodeId {
-  let assert Ok(id) = definition.node_id("review")
+  let id = definition.node_id("review")
   id
 }
 
@@ -44,14 +45,16 @@ fn spec(
       [node_id()],
     )
   let assert Ok(definition) =
-    definition.build(definition.Spec(
-      run.DefinitionId("human-loop", 1),
-      node_id(),
-      [node],
-      codec.int(),
-      codec.int(),
-      3,
-    ))
+    definition.build(
+      definition.new(
+        run.DefinitionId("human-loop", 1),
+        entry: node_id(),
+        nodes: [node],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(3),
+    )
   definition
 }
 
@@ -66,7 +69,7 @@ fn accept(
 }
 
 fn runtime(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
-  graph.new(spec(accept), runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+  graph.new(spec(accept), runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 pub fn a_typed_signal_survives_store_loss_without_holding_a_runner_test() {
@@ -75,20 +78,28 @@ pub fn a_typed_signal_survives_store_loss_without_holding_a_runner_test() {
     restart.owned(fn() {
       let runs = support.directory(dir)
       let assert Ok(handle) =
-        graph.start(runtime(runs), run_id("signal-restart"), 7)
+        graph.start(
+          runtime(runs),
+          run_id("signal-restart"),
+          7,
+          correlation: None,
+        )
       #(runs, handle)
     })
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Some(action) = waiting.current
-  action.kind |> should.equal(operation.Signal)
-  action.input_json |> should.equal("7")
+  support.kind(action) |> should.equal(policy.Signal)
+  action.arguments_json |> should.equal("7")
   let assert Ok(entry) = store_core.get(runs, "signal-restart")
   entry.live |> should.equal(None)
   restart.crash(owner, runs)
   let handle =
-    graph.attach(runtime(support.directory(dir)), run_id("signal-restart"))
+    support.open_graph(
+      runtime(support.directory(dir)),
+      run_id("signal-restart"),
+    )
   let assert Ok(restored) = graph.recover(handle)
   restored.status |> should.equal(waiting.status)
   let assert Ok(done) = graph.deliver(handle, reference, review(), True)
@@ -96,7 +107,7 @@ pub fn a_typed_signal_survives_store_loss_without_holding_a_runner_test() {
   list.length(done.receipts) |> should.equal(1)
   let assert Ok(again) = graph.deliver(handle, reference, review(), True)
   again.revision |> should.equal(done.revision)
-  let assert Error(graph.CommandRefused(_)) =
+  let assert Error(graph.SignalConflict) =
     graph.deliver(handle, reference, review(), False)
   restart.remove_dir(dir)
 }
@@ -110,10 +121,11 @@ pub fn duplicate_delivery_cannot_consume_a_later_visit_to_the_same_node_test() {
         accept(n, output)
       }),
       support.store(),
-      fn() { Nil },
+      fn(_) { Nil },
       fn(_, _) { Ok(policy.Allow) },
     )
-  let assert Ok(handle) = graph.start(runtime, run_id("signal-loop"), 0)
+  let assert Ok(handle) =
+    graph.start(runtime, run_id("signal-loop"), 0, correlation: None)
   let assert Ok(first) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(first_ref) = first.status
@@ -126,7 +138,7 @@ pub fn duplicate_delivery_cannot_consume_a_later_visit_to_the_same_node_test() {
   duplicate.status |> should.equal(second.status)
   duplicate.revision |> should.equal(second.revision)
   probe.entries(ledger) |> list.length |> should.equal(1)
-  let assert Error(graph.CommandRefused(_)) =
+  let assert Error(graph.SignalConflict) =
     graph.deliver(handle, first_ref, review(), True)
   let assert Ok(done) = graph.deliver(handle, second_ref, review(), True)
   done.status |> should.equal(graph.Completed(1))
@@ -135,20 +147,28 @@ pub fn duplicate_delivery_cannot_consume_a_later_visit_to_the_same_node_test() {
 
 pub fn a_signal_is_available_only_after_policy_admission_test() {
   let runtime =
-    graph.new(spec(accept), support.store(), fn() { Nil }, fn(_, action) {
-      action.kind |> should.equal(operation.Signal)
+    graph.new(spec(accept), support.store(), fn(_) { Nil }, fn(_, action) {
+      support.kind(action) |> should.equal(policy.Signal)
       Ok(policy.RequireApproval(run.Requirement("publish-review", 1)))
     })
   let id = run_id("signal-policy")
-  let assert Ok(handle) = graph.start(runtime, id, 1)
+  let assert Ok(handle) = graph.start(runtime, id, 1, correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
   let guessed =
     graph.SignalReference(id, 1, 1, run.DefinitionId("human-review", 1))
-  let assert Error(graph.CommandRefused(_)) =
+  let assert Error(graph.StaleReference) =
     graph.deliver(handle, guessed, review(), True)
-  let assert Ok(approved) = graph.approve(handle, approval)
+  let assert Ok(_) =
+    graph.approve(
+      handle,
+      approval,
+      reviewer: support.reviewer("reviewer"),
+      context: Nil,
+    )
+  let assert Ok(approved) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = approved.status
   let assert Ok(done) = graph.deliver(handle, reference, review(), True)
   done.status |> should.equal(graph.Completed(1))
@@ -156,22 +176,27 @@ pub fn a_signal_is_available_only_after_policy_admission_test() {
 
 pub fn malformed_or_wrongly_correlated_delivery_does_not_consume_the_wait_test() {
   let assert Ok(handle) =
-    graph.start(runtime(support.store()), run_id("signal-invalid"), 1)
+    graph.start(
+      runtime(support.store()),
+      run_id("signal-invalid"),
+      1,
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
-  let assert Error(graph.DefinitionRejected(_)) =
+  let assert Error(graph.ValueRefused(_)) =
     graph.deliver_json(handle, reference, "123")
   let wrong = signal.new(run.DefinitionId("human-review", 2), codec.bool())
-  let assert Error(graph.CommandRefused(_)) =
+  let assert Error(graph.WrongReference) =
     graph.deliver(handle, reference, wrong, True)
   let wrong_ref = graph.SignalReference(..reference, run: run_id("other"))
-  let assert Error(graph.CommandRefused(_)) =
+  let assert Error(graph.WrongReference) =
     graph.deliver(handle, wrong_ref, review(), True)
   let wrong_ref = graph.SignalReference(..reference, activation: 2)
-  let assert Error(graph.CommandRefused(_)) =
+  let assert Error(graph.WrongReference) =
     graph.deliver(handle, wrong_ref, review(), True)
-  let assert Ok(unchanged) = graph.read(handle)
+  let assert Ok(unchanged) = graph.snapshot(handle)
   unchanged.revision |> should.equal(waiting.revision)
   unchanged.status |> should.equal(waiting.status)
 }
@@ -186,16 +211,17 @@ pub fn rejected_transition_can_be_corrected_without_consuming_a_signal_test() {
         }
       }),
       support.store(),
-      fn() { Nil },
+      fn(_) { Nil },
       fn(_, _) { Ok(policy.Allow) },
     )
-  let assert Ok(handle) = graph.start(runtime, run_id("signal-transition"), 1)
+  let assert Ok(handle) =
+    graph.start(runtime, run_id("signal-transition"), 1, correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
-  let assert Error(graph.DefinitionRejected(definition.TransitionFailed(_))) =
+  let assert Error(graph.ValueRefused(definition.TransitionFailed(_))) =
     graph.deliver(handle, reference, review(), False)
-  let assert Ok(unchanged) = graph.read(handle)
+  let assert Ok(unchanged) = graph.snapshot(handle)
   unchanged.revision |> should.equal(waiting.revision)
   let assert Ok(done) = graph.deliver(handle, reference, review(), True)
   done.status |> should.equal(graph.Completed(1))
@@ -204,14 +230,19 @@ pub fn rejected_transition_can_be_corrected_without_consuming_a_signal_test() {
 pub fn failed_and_lost_delivery_commits_do_not_consume_twice_test() {
   let backend = flaky.new()
   let assert Ok(handle) =
-    graph.start(runtime(flaky.store(backend)), run_id("signal-commit"), 1)
+    graph.start(
+      runtime(flaky.store(backend)),
+      run_id("signal-commit"),
+      1,
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
   flaky.arm(backend, [flaky.FailBefore])
-  let assert Error(graph.StoreFailed(_)) =
+  let assert Error(graph.StoreUnavailable(_)) =
     graph.deliver(handle, reference, review(), True)
-  let assert Ok(unchanged) = graph.read(handle)
+  let assert Ok(unchanged) = graph.snapshot(handle)
   unchanged.status |> should.equal(waiting.status)
   flaky.arm(backend, [flaky.FailAfter])
   let assert Ok(done) = graph.deliver(handle, reference, review(), True)
@@ -223,21 +254,31 @@ pub fn failed_and_lost_delivery_commits_do_not_consume_twice_test() {
 
 pub fn canceled_waits_refuse_late_signals_test() {
   let assert Ok(handle) =
-    graph.start(runtime(support.store()), run_id("signal-cancel"), 1)
+    graph.start(
+      runtime(support.store()),
+      run_id("signal-cancel"),
+      1,
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
-  graph.cancel(handle) |> should.equal(Ok(Nil))
-  let assert Error(graph.CommandRefused(_)) =
+  let assert Ok(_) = graph.cancel(handle)
+  let assert Error(graph.RunEnded) =
     graph.deliver(handle, reference, review(), True)
-  let assert Ok(cancelled) = graph.read(handle)
+  let assert Ok(cancelled) = graph.snapshot(handle)
   cancelled.status |> should.equal(graph.Cancelled(graph.BeforeStart))
   cancelled.receipts |> should.equal([])
 }
 
 pub fn two_concurrent_deliveries_accept_only_one_output_test() {
   let assert Ok(handle) =
-    graph.start(runtime(support.store()), run_id("signal-concurrent"), 1)
+    graph.start(
+      runtime(support.store()),
+      run_id("signal-concurrent"),
+      1,
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
@@ -274,7 +315,7 @@ fn with_successor(
   runs: store.Store,
   effects: process.Subject(Nil),
 ) -> graph.Runtime(Nil, Int, Int) {
-  let assert Ok(last) = definition.node_id("effect")
+  let last = definition.node_id("effect")
   let waiting =
     definition.node(
       node_id(),
@@ -294,22 +335,24 @@ fn with_successor(
           process.send(effects, Nil)
           Ok(n + 1)
         },
-        fn(_error: Nil) { operation.DefiniteFailure("cannot fail") },
+        fn(_error: Nil) { tool.Explain("cannot fail") },
       ),
       fn(n) { Ok(n) },
       fn(_, n) { Ok(definition.Finish(n, n)) },
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("signal-effect", 1),
-      node_id(),
-      [waiting, successor],
-      codec.int(),
-      codec.int(),
-      2,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("signal-effect", 1),
+        entry: node_id(),
+        nodes: [waiting, successor],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(2),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 pub fn unconfirmed_signal_consumption_releases_no_successor_effect_test() {
@@ -320,12 +363,13 @@ pub fn unconfirmed_signal_consumption_releases_no_successor_effect_test() {
       with_successor(flaky.store(backend), effects),
       run_id("signal-fence"),
       1,
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
   flaky.arm(backend, [flaky.FailLate])
-  let assert Error(graph.StoreFailed(_)) =
+  let assert Error(graph.StoreUnavailable(_)) =
     graph.deliver(handle, reference, review(), True)
   process.receive(effects, 0) |> should.equal(Error(Nil))
   // The first delivery lands just before the second commit. The second
@@ -349,12 +393,13 @@ pub fn cancellation_wins_against_a_held_delivery_commit_test() {
       with_successor(flaky.store(backend), effects),
       run_id("signal-race"),
       1,
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
   let canceller =
-    graph.attach(
+    support.open_graph(
       with_successor(flaky.store(backend), effects),
       graph.id(handle),
     )
@@ -364,10 +409,10 @@ pub fn cancellation_wins_against_a_held_delivery_commit_test() {
     process.send(reply, graph.deliver(handle, reference, review(), True))
   })
   let assert Ok(_) = process.receive(held, 5000)
-  graph.cancel(canceller) |> should.equal(Ok(Nil))
+  let assert Ok(_) = graph.cancel(canceller)
   flaky.release_held(backend)
-  let assert Ok(Error(graph.CommandRefused(_))) = process.receive(reply, 5000)
-  let assert Ok(cancelled) = graph.read(handle)
+  let assert Ok(Error(graph.RunEnded)) = process.receive(reply, 5000)
+  let assert Ok(cancelled) = graph.snapshot(handle)
   cancelled.status |> should.equal(graph.Cancelled(graph.BeforeStart))
   cancelled.receipts |> should.equal([])
   process.receive(effects, 0) |> should.equal(Error(Nil))
@@ -376,7 +421,7 @@ pub fn cancellation_wins_against_a_held_delivery_commit_test() {
 pub fn recovery_refuses_a_signal_contract_replaced_by_an_activity_test() {
   let runs = support.store()
   let id = run_id("signal-definition")
-  let assert Ok(handle) = graph.start(runtime(runs), id, 1)
+  let assert Ok(handle) = graph.start(runtime(runs), id, 1, correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(_) = waiting.status
@@ -388,27 +433,26 @@ pub fn recovery_refuses_a_signal_contract_replaced_by_an_activity_test() {
         codec.int(),
         codec.bool(),
         fn(_, _, _) { panic as "never execute a changed contract" },
-        fn(_error: Nil) { operation.DefiniteFailure("cannot fail") },
+        fn(_error: Nil) { tool.Explain("cannot fail") },
       ),
       fn(n) { Ok(n) },
       accept,
       [node_id()],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("human-loop", 1),
-      node_id(),
-      [node],
-      codec.int(),
-      codec.int(),
-      3,
-    ))
-  let replacement =
-    graph.attach(
-      graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) }),
-      id,
+    definition.build(
+      definition.new(
+        run.DefinitionId("human-loop", 1),
+        entry: node_id(),
+        nodes: [node],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(3),
     )
-  graph.recover(replacement) |> result.is_error |> should.be_true
-  let assert Ok(unchanged) = graph.read(handle)
+  let replacement =
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  graph.open(replacement, id) |> result.is_error |> should.be_true
+  let assert Ok(unchanged) = graph.snapshot(handle)
   unchanged.revision |> should.equal(waiting.revision)
 }

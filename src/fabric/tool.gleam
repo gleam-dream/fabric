@@ -291,6 +291,8 @@ fn failure(failure: Failure) -> Outcome {
 
 /// The typed input of `action` when it calls `definition`: the policy's
 /// typed match on a tool. `Ok(None)` when the action calls another tool.
+/// A graph node whose operation has the tool's name (built from the same
+/// definition, say) matches too.
 ///
 /// `Error(detail)` when the action names this definition's tool but its
 /// arguments do not decode with this definition's input codec: the
@@ -315,7 +317,7 @@ pub fn input(
   action: policy.Action,
 ) -> Result(Option(input), String) {
   let name = core.definition_name(definition)
-  case action.tool == name {
+  case action.name == name {
     False -> Ok(None)
     True ->
       codec.decode_json(

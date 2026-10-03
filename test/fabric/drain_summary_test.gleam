@@ -15,6 +15,7 @@ import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
 import fabric/telemetry as o
+import fabric/tool
 import gleam/erlang/process
 import gleam/option.{None}
 import gleam/time/duration
@@ -341,7 +342,7 @@ pub fn graph_runners_are_included_in_the_same_summary_test() {
   let runs = store.in_memory(name)
   let #(events, attached) = capture(name)
   let ledger = probe.new()
-  let assert Ok(node) = definition.node_id("work")
+  let node = definition.node_id("work")
   let work =
     operation.new(
       run.DefinitionId("work", 1),
@@ -351,30 +352,32 @@ pub fn graph_runners_are_included_in_the_same_summary_test() {
         probe.gate(ledger, "work")
         Ok(n + 1)
       },
-      fn(_error: Nil) { operation.DefiniteFailure("cannot fail") },
+      fn(_error: Nil) { tool.Explain("cannot fail") },
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("graph-drain-summary", 1),
-      node,
-      [
-        definition.node(
-          node,
-          work,
-          fn(n) { Ok(n) },
-          fn(_, n) { Ok(definition.Continue(n, node)) },
-          [node],
-        ),
-      ],
-      codec.int(),
-      codec.int(),
-      3,
-    ))
+    definition.build(
+      definition.new(
+        run.DefinitionId("graph-drain-summary", 1),
+        entry: node,
+        nodes: [
+          definition.node(
+            node,
+            work,
+            fn(n) { Ok(n) },
+            fn(_, n) { Ok(definition.Continue(n, node)) },
+            [node],
+          ),
+        ],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(3),
+    )
   let application = restart.application(runs)
   let runtime =
-    graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
   let assert Ok(id) = run.parse_id("graph-drain-summary")
-  let assert Ok(_) = graph.start(runtime, id, 0)
+  let assert Ok(_) = graph.start(runtime, id, 0, correlation: None)
   let held = probe.arrival(ledger)
   restart.begin_stop(application)
   restart.draining(runs)

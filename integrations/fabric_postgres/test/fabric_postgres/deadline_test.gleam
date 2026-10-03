@@ -21,31 +21,33 @@ import json/blueprint/codec
 import pog
 
 fn runtime(runs) {
-  let assert Ok(node) = definition.node_id("answer")
-  let assert Ok(wait) =
+  let node = definition.node_id("answer")
+  let wait =
     operation.await_signal(
       codec.int(),
       signal.new(run.DefinitionId("answer", 1), codec.bool()),
     )
-    |> operation.with_deadline(duration.milliseconds(5000))
+    |> operation.with_deadline(run.After(duration.milliseconds(5000)))
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("pg-deadline", 1),
-      node,
-      [
-        definition.node(
-          node,
-          wait,
-          fn(n) { Ok(n) },
-          fn(n, _) { Ok(definition.Finish(n, n)) },
-          [],
-        ),
-      ],
-      codec.int(),
-      codec.int(),
-      1,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("pg-deadline", 1),
+        entry: node,
+        nodes: [
+          definition.node(
+            node,
+            wait,
+            fn(n) { Ok(n) },
+            fn(n, _) { Ok(definition.Finish(n, n)) },
+            [],
+          ),
+        ],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
@@ -58,7 +60,8 @@ pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
       let assert Ok(runs) =
         fabric_postgres.store(process.new_name("deadline-original"), settings)
       let assert Ok(Nil) = store.start(runs)
-      let assert Ok(handle) = graph.start(runtime(runs), id, 7)
+      let assert Ok(handle) =
+        graph.start(runtime(runs), id, 7, correlation: None)
       let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
       let assert graph.AwaitingSignal(_) = waiting.status
       let assert Ok(row) = store_core.get(runs, run.id_to_string(id))
@@ -88,7 +91,7 @@ pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
       [sweeper.graph(run.DefinitionId("pg-deadline", 1), runtime)],
       every: duration.milliseconds(60_000),
     )
-  let expired = await_expired(graph.attach(runtime(runs), id), 3000)
+  let expired = await_expired(open_graph(runtime(runs), id), 3000)
   process.unlink(started)
   agents.kill(started)
   expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
@@ -101,7 +104,7 @@ pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
 }
 
 fn await_expired(handle, remaining) {
-  let assert Ok(snapshot) = graph.read(handle)
+  let assert Ok(snapshot) = graph.snapshot(handle)
   case snapshot.status, remaining {
     graph.Failed(graph.DeadlineExpired(_)), _ -> snapshot
     _, n if n > 0 -> {
@@ -110,4 +113,12 @@ fn await_expired(handle, remaining) {
     }
     _, _ -> panic as "sweeper did not expire the signal"
   }
+}
+
+fn open_graph(
+  runtime: graph.Runtime(context, state, answer),
+  id: run.RunId,
+) -> graph.Handle(context, state, answer) {
+  let assert Ok(handle) = graph.open(runtime, id)
+  handle
 }

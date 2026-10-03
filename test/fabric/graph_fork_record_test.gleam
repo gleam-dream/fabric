@@ -39,7 +39,7 @@ pub fn version_thirteen_retains_fork_scopes_and_rejects_legacy_downgrades_test()
   let ready = initial()
   let assert graph.Ready(a) = ready.phase
   let ref = graph.reference(ready, a)
-  let preparing = next(ready, graph.Inspected(ref, Ok(policy.Allow)))
+  let preparing = next(ready, graph.Inspected(ref, Ok(policy.Allow), None))
   let fixed =
     next(
       preparing,
@@ -88,9 +88,9 @@ pub fn version_thirteen_retains_fork_scopes_and_rejects_legacy_downgrades_test()
     fn(state) {
       let assert Ok(bytes) = record.encode(state)
       record.decode(bytes) |> should.equal(Ok(state))
-      record.decode(string.replace(bytes, "\"version\":14", "\"version\":13"))
+      record.decode(string.replace(bytes, "\"version\":15", "\"version\":13"))
       |> should.equal(Ok(state))
-      record.decode(string.replace(bytes, "\"version\":14", "\"version\":12"))
+      record.decode(string.replace(bytes, "\"version\":15", "\"version\":12"))
       |> should.be_error
     },
   )
@@ -137,7 +137,7 @@ pub fn branch_records_require_matching_attachments_and_version_thirteen_test() {
     )
   let assert Ok(bytes) = record.encode(state)
   record.decode(bytes) |> should.equal(Ok(state))
-  record.decode(string.replace(bytes, "\"version\":14", "\"version\":12"))
+  record.decode(string.replace(bytes, "\"version\":15", "\"version\":12"))
   |> should.be_error
   record.encode(
     graph.State(..state, parent: Some(run.GraphBranch(parent, 1, 1))),
@@ -158,7 +158,7 @@ pub fn fork_deadlines_require_version_fourteen_and_retain_expiration_test() {
     )
   let ready = graph.State(..original, phase: graph.Ready(a))
   let ref = graph.reference(ready, a)
-  let arming = next(ready, graph.Inspected(ref, Ok(policy.Allow)))
+  let arming = next(ready, graph.Inspected(ref, Ok(policy.Allow), None))
   let assert graph.ArmingWait(_) = arming.phase
   let preparing = next(arming, graph.WaitArmed(ref, 100))
   let before_members = next(preparing, graph.ExpireWait(ref, 110))
@@ -233,7 +233,7 @@ pub fn fork_deadlines_require_version_fourteen_and_retain_expiration_test() {
     fn(state) {
       let assert Ok(bytes) = record.encode(state)
       record.decode(bytes) |> should.equal(Ok(state))
-      record.decode(string.replace(bytes, "\"version\":14", "\"version\":13"))
+      record.decode(string.replace(bytes, "\"version\":15", "\"version\":13"))
       |> should.be_error
     },
   )

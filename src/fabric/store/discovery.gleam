@@ -1,5 +1,6 @@
 //// Storage-owned discovery of idle dependencies, job reads and wait deadlines,
-//// and of agent approval requests that expire (`agent.with_approval_expiry`).
+//// and of approval requests that expire (`agent.with_approval_expiry`,
+//// `graph.with_approval_expiry`).
 //// This projection is a
 //// scheduling hint, never permission to execute. Recovery must revalidate the
 //// stored attachment and deployed definition through the registered root.
@@ -24,7 +25,7 @@ import gleam/result
 
 /// Bump when a record format or state changes discovery eligibility or keys.
 /// Backends must refresh older projections before using them for scheduling.
-pub const version = 11
+pub const version = 12
 
 pub type Trigger {
   Changed(dependencies: List(run.RunId), deadline: Option(Int))
@@ -90,6 +91,25 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
                     json.string("signal_deadline"),
                     json.int(activation.id),
                     json.int(activation.attempt),
+                    json.int(due),
+                  ],
+                  fn(value) { value },
+                )
+                  |> json.to_string,
+                At(due),
+              ))
+          }
+        graph.AwaitingApproval(activation, approval) ->
+          case approval.expires {
+            None -> None
+            Some(due) ->
+              Some(Wait(
+                run_id.from_string(state.run),
+                json.array(
+                  [
+                    json.string("approval_expiry"),
+                    json.int(activation.id),
+                    json.int(approval.revision),
                     json.int(due),
                   ],
                   fn(value) { value },

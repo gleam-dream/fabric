@@ -166,7 +166,7 @@ pub fn budget_refusal_stops_running_effects_without_claiming_they_did_not_happen
       scripted.plan([scripted.slow("one", "one"), scripted.slow("two", "two")]),
       [scripted.gated_tool(calls)],
       fn(_: Nil, action) {
-        case action.id.call_id {
+        case support.action_id(action).call_id {
           "one" -> Ok(policy.Allow)
           _ -> Ok(policy.RequireApproval(run.Requirement("review", 1)))
         }

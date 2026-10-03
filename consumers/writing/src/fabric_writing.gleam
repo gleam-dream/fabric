@@ -12,6 +12,7 @@ import fabric_writing/domain.{
 }
 import fabric_writing/file
 import fabric_writing/provider
+import gleam/option.{None}
 import gleam/result
 import gleam/time/duration
 
@@ -91,27 +92,27 @@ pub fn runtime(
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("source-writing", 1),
-      node("source"),
-      [source, generate, review, publish],
-      domain.state_codec(),
-      domain.outcome_codec(),
-      8,
-    ))
-  let assert Ok(runtime) =
-    graph.new(spec, runs, fn() { Nil }, fn(_, action) {
-      case action.node {
-        "publish" ->
+    definition.build(
+      definition.new(
+        run.DefinitionId("source-writing", 1),
+        entry: node("source"),
+        nodes: [source, generate, review, publish],
+        state: domain.state_codec(),
+        answer: domain.outcome_codec(),
+      )
+      |> definition.with_max_activations(8),
+    )
+  let runtime =
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, action) {
+      case action.target {
+        policy.RunOperation(node: "publish", ..) ->
           Ok(policy.RequireApproval(run.Requirement("publish-artifact", 1)))
         _ -> Ok(policy.Allow)
       }
     })
-    |> graph.with_timeouts(
-      callbacks: duration.milliseconds(5000),
-      operations: duration.milliseconds(30_000),
-      commands: duration.milliseconds(1000),
-    )
+    |> graph.with_callback_timeout(duration.milliseconds(5000))
+    |> graph.with_operation_timeout(run.After(duration.milliseconds(30_000)))
+    |> graph.with_command_timeout(duration.milliseconds(1000))
   runtime
 }
 
@@ -123,9 +124,14 @@ pub fn start(
 ) -> Result(graph.Handle(Nil, State, Outcome), graph.Error) {
   use id <- result.try(
     run.parse_id(id)
-    |> result.map_error(fn(_) { graph.CommandRefused("invalid run id") }),
+    |> result.replace_error(graph.WrongReference),
   )
-  graph.start(runtime, id, domain.Loading(domain.Brief(source, brief)))
+  graph.start(
+    runtime,
+    id,
+    domain.Loading(domain.Brief(source, brief)),
+    correlation: None,
+  )
 }
 
 fn select(stage: domain.Stage) -> fn(State) -> Result(Draft, String) {
@@ -138,6 +144,6 @@ fn select(stage: domain.Stage) -> fn(State) -> Result(Draft, String) {
 }
 
 fn node(name: String) -> definition.NodeId {
-  let assert Ok(id) = definition.node_id(name)
+  let id = definition.node_id(name)
   id
 }

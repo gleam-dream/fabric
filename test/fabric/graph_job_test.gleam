@@ -13,6 +13,7 @@ import fabric/support
 import fabric/support/flaky
 import fabric/support/probe
 import fabric/support/restart
+import fabric/tool
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None}
@@ -35,7 +36,7 @@ fn runtime_with(runs, read, gate, accept) {
       output,
       fn(_, receipt) { read(receipt) },
     )
-  let assert Ok(id) = definition.node_id("result")
+  let id = definition.node_id("result")
   let node =
     definition.node(
       id,
@@ -45,15 +46,17 @@ fn runtime_with(runs, read, gate, accept) {
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("job-observer", 1),
-      id,
-      [node],
-      codec.string(),
-      codec.int(),
-      1,
-    ))
-  graph.new(spec, runs, fn() { Nil }, gate)
+    definition.build(
+      definition.new(
+        run.DefinitionId("job-observer", 1),
+        entry: id,
+        nodes: [node],
+        state: codec.string(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, gate)
 }
 
 pub fn a_job_wait_survives_restart_and_commits_completion_once_test() {
@@ -66,6 +69,7 @@ pub fn a_job_wait_survives_restart_and_commits_completion_once_test() {
           runtime(runs, fn(_) { Ok(job.Pending) }),
           support.id("job-restart"),
           "receipt-17",
+          correlation: None,
         )
       #(runs, handle)
     })
@@ -83,7 +87,7 @@ pub fn a_job_wait_survives_restart_and_commits_completion_once_test() {
       probe.record(calls, "observe")
       Ok(job.Completed(42))
     })
-  let handle = graph.attach(restored, support.id("job-restart"))
+  let handle = support.open_graph(restored, support.id("job-restart"))
   let assert Ok(recovered) = graph.recover(handle)
   recovered.status |> should.equal(waiting.status)
   let assert Ok(done) = graph.poll_job(handle, reference)
@@ -104,20 +108,28 @@ pub fn job_observation_requires_admission_and_a_current_reference_test() {
       support.store(),
       read,
       fn(_, action) {
-        action.kind |> should.equal(operation.Job(job.Manual))
+        support.kind(action) |> should.equal(policy.Job)
         Ok(policy.RequireApproval(run.Requirement("observe", 1)))
       },
       fn(receipt, output) { Ok(definition.Finish(receipt, output)) },
     )
   let id = support.id("job-approval")
-  let assert Ok(handle) = graph.start(runtime, id, "receipt")
+  let assert Ok(handle) = graph.start(runtime, id, "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
   let guess = job.Reference(id, 1, 1, run.DefinitionId("external-job", 1))
   graph.poll_job(handle, guess) |> should.be_error
   probe.entries(calls) |> should.equal([])
-  let assert Ok(approved) = graph.approve(handle, approval)
+  let assert Ok(_) =
+    graph.approve(
+      handle,
+      approval,
+      reviewer: support.reviewer("reviewer"),
+      context: Nil,
+    )
+  let assert Ok(approved) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = approved.status
   graph.poll_job(handle, job.Reference(..reference, activation: 2))
   |> should.be_error
@@ -144,18 +156,19 @@ pub fn observation_errors_and_invalid_outputs_leave_the_wait_unconsumed_test() {
       runtime(runs, fn(_) { Error("transport unavailable") }),
       id,
       "receipt",
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   graph.poll_job(handle, reference) |> should.be_error
-  graph.read(handle) |> should.equal(Ok(waiting))
+  graph.snapshot(handle) |> should.equal(Ok(waiting))
   let invalid =
-    graph.attach(runtime(runs, fn(_) { Ok(job.Completed(101)) }), id)
+    support.open_graph(runtime(runs, fn(_) { Ok(job.Completed(101)) }), id)
   graph.poll_job(invalid, reference) |> should.be_error
-  graph.read(invalid) |> should.equal(Ok(waiting))
+  graph.snapshot(invalid) |> should.equal(Ok(waiting))
   let refused =
-    graph.attach(
+    support.open_graph(
       runtime_with(
         runs,
         fn(_) { Ok(job.Completed(42)) },
@@ -165,9 +178,9 @@ pub fn observation_errors_and_invalid_outputs_leave_the_wait_unconsumed_test() {
       id,
     )
   graph.poll_job(refused, reference) |> should.be_error
-  graph.read(refused) |> should.equal(Ok(waiting))
+  graph.snapshot(refused) |> should.equal(Ok(waiting))
   let corrected =
-    graph.attach(runtime(runs, fn(_) { Ok(job.Completed(42)) }), id)
+    support.open_graph(runtime(runs, fn(_) { Ok(job.Completed(42)) }), id)
   let assert Ok(done) = graph.poll_job(corrected, reference)
   done.status |> should.equal(graph.Completed(42))
 }
@@ -176,23 +189,26 @@ pub fn an_observer_timeout_preserves_the_wait_and_reuses_its_work_grant_test() {
   let runs = support.store()
   let id = support.id("job-timeout")
   let started = process.new_subject()
-  let assert Ok(slow) =
+  let slow =
     runtime(runs, fn(_) {
       process.send(started, process.self())
       process.sleep_forever()
       Ok(job.Pending)
     })
-    |> graph.with_timeouts(
-      callbacks: duration.milliseconds(50),
-      operations: duration.milliseconds(1000),
-      commands: duration.milliseconds(1000),
-    )
+    |> graph.with_callback_timeout(duration.milliseconds(50))
+    |> graph.with_operation_timeout(run.After(duration.milliseconds(1000)))
+    |> graph.with_command_timeout(duration.milliseconds(1000))
   let assert Ok(handle) =
-    graph.start_with_budget(
-      slow,
+    graph.start(
+      graph.with_family_budget(
+        slow,
+        budget.limits(work: 1)
+          |> budget.with_children(1)
+          |> budget.with_depth(1),
+      ),
       id,
       "receipt",
-      budget.limits(work: 1) |> budget.with_children(1) |> budget.with_depth(1),
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
@@ -200,12 +216,12 @@ pub fn an_observer_timeout_preserves_the_wait_and_reuses_its_work_grant_test() {
   graph.poll_job(handle, reference) |> should.be_error
   let assert Ok(observer) = process.receive(started, 1000)
   restart.gone(observer)
-  graph.read(handle) |> should.equal(Ok(waiting))
-  let pending = graph.attach(runtime(runs, fn(_) { Ok(job.Pending) }), id)
+  graph.snapshot(handle) |> should.equal(Ok(waiting))
+  let pending = support.open_graph(runtime(runs, fn(_) { Ok(job.Pending) }), id)
   graph.poll_job(pending, reference) |> should.equal(Ok(waiting))
   graph.poll_job(pending, reference) |> should.equal(Ok(waiting))
   let restored =
-    graph.attach(runtime(runs, fn(_) { Ok(job.Completed(42)) }), id)
+    support.open_graph(runtime(runs, fn(_) { Ok(job.Completed(42)) }), id)
   let assert Ok(done) = graph.poll_job(restored, reference)
   done.status |> should.equal(graph.Completed(42))
 }
@@ -219,7 +235,7 @@ pub fn definite_remote_failure_does_not_run_the_success_route_test() {
       fn(_, _) { panic as "a failed job has no success route" },
     )
   let assert Ok(handle) =
-    graph.start(runtime, support.id("failed-job"), "receipt")
+    graph.start(runtime, support.id("failed-job"), "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
@@ -242,17 +258,17 @@ pub fn cancellation_wins_over_an_inflight_observation_without_remote_cancellatio
       calls,
     )
   let assert Ok(handle) =
-    graph.start(runtime, support.id("cancel-job"), "receipt")
+    graph.start(runtime, support.id("cancel-job"), "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let reply = process.new_subject()
   process.spawn(fn() { process.send(reply, graph.poll_job(handle, reference)) })
   let held = probe.arrival(calls)
-  graph.cancel(handle) |> should.equal(Ok(Nil))
+  let assert Ok(_) = graph.cancel(handle)
   probe.release(held)
   let assert Ok(Error(_)) = process.receive(reply, 5000)
-  let assert Ok(cancelled) = graph.read(handle)
+  let assert Ok(cancelled) = graph.snapshot(handle)
   cancelled.status
   |> should.equal(graph.Cancelled(graph.JobDetached(reference)))
   cancelled.receipts |> should.equal([])
@@ -270,6 +286,7 @@ pub fn competing_observations_commit_only_one_result_test() {
       }),
       support.id("competing-job"),
       "receipt",
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
@@ -298,13 +315,14 @@ pub fn failed_and_lost_completion_commits_preserve_the_receipt_test() {
       runtime(flaky.store(backend), fn(_) { Ok(job.Completed(42)) }),
       support.id("job-commit"),
       "receipt",
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   flaky.arm(backend, [flaky.FailBefore])
   graph.poll_job(handle, reference) |> should.be_error
-  graph.read(handle) |> should.equal(Ok(waiting))
+  graph.snapshot(handle) |> should.equal(Ok(waiting))
   flaky.arm(backend, [flaky.FailAfter])
   let assert Ok(done) = graph.poll_job(handle, reference)
   done.status |> should.equal(graph.Completed(42))
@@ -314,7 +332,7 @@ pub fn failed_and_lost_completion_commits_preserve_the_receipt_test() {
 pub fn managed_parents_park_while_their_child_observes_a_job_test() {
   let runs = support.store()
   let child_runtime = runtime(runs, fn(_) { Ok(job.Completed(42)) })
-  let assert Ok(id) = definition.node_id("child")
+  let id = definition.node_id("child")
   let node =
     definition.node(
       id,
@@ -324,24 +342,26 @@ pub fn managed_parents_park_while_their_child_observes_a_job_test() {
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("job-parent", 1),
-      id,
-      [node],
-      codec.string(),
-      codec.int(),
-      1,
-    ))
+    definition.build(
+      definition.new(
+        run.DefinitionId("job-parent", 1),
+        entry: id,
+        nodes: [node],
+        state: codec.string(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
   let parent =
-    graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
   let assert Ok(handle) =
-    graph.start(parent, support.id("nested-job"), "receipt")
+    graph.start(parent, support.id("nested-job"), "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(child_ref, child.Job(_)) = waiting.status
   let assert Ok(child) =
     graph.child(handle, child_ref.activation, child_runtime)
-  let assert Ok(waiting_child) = graph.read(child)
+  let assert Ok(waiting_child) = graph.snapshot(child)
   let assert graph.AwaitingJob(reference) = waiting_child.status
   let assert Ok(_) = graph.poll_job(child, reference)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -349,8 +369,8 @@ pub fn managed_parents_park_while_their_child_observes_a_job_test() {
 }
 
 fn with_successor(runs, read, calls) {
-  let assert Ok(wait) = definition.node_id("wait")
-  let assert Ok(next) = definition.node_id("next")
+  let wait = definition.node_id("wait")
+  let next = definition.node_id("next")
   let observer =
     job.observe(
       run.DefinitionId("external-job", 1),
@@ -375,7 +395,7 @@ fn with_successor(runs, read, calls) {
         probe.record(calls, "successor")
         Ok(99)
       },
-      fn(_: Nil) { operation.DefiniteFailure("cannot fail") },
+      fn(_: Nil) { tool.Explain("cannot fail") },
     )
   let successor =
     definition.node(
@@ -386,13 +406,15 @@ fn with_successor(runs, read, calls) {
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("job-with-successor", 1),
-      wait,
-      [waiting, successor],
-      codec.string(),
-      codec.int(),
-      2,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("job-with-successor", 1),
+        entry: wait,
+        nodes: [waiting, successor],
+        state: codec.string(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(2),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }

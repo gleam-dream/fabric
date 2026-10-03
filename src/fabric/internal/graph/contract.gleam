@@ -10,8 +10,15 @@ import fabric/graph/job
 import fabric/internal/graph/child_driver
 import fabric/internal/graph/fork_driver
 import fabric/run
-import gleam/option.{type Option, None}
 import json/blueprint/codec.{type Codec}
+
+/// The deadline a wait asks for: the runtime's default (7 days), or a
+/// `run.Timeout` set with `operation.with_deadline`. `definition.build`
+/// checks it.
+pub type Deadline {
+  DefaultDeadline
+  SetDeadline(run.Timeout)
+}
 
 pub opaque type Operation(
   context,
@@ -28,7 +35,7 @@ pub opaque type Operation(
     output: Codec(output),
     kind: kind,
     recovery: recovery,
-    deadline: Option(Int),
+    deadline: Deadline,
     parts: Parts(context, invocation, error),
   )
 }
@@ -62,7 +69,7 @@ pub fn new(
     output:,
     kind:,
     recovery:,
-    deadline: None,
+    deadline: DefaultDeadline,
     parts:,
   )
 }
@@ -92,7 +99,7 @@ pub fn with_deadline(
     invocation,
     error,
   ),
-  deadline: Option(Int),
+  deadline: Deadline,
 ) -> Operation(context, input, output, kind, recovery, invocation, error) {
   Operation(..operation, deadline:)
 }
@@ -167,7 +174,7 @@ pub fn recovery(
   operation.recovery
 }
 
-/// The deadline of an admitted wait, in milliseconds after approval.
+/// The deadline an admitted wait asked for.
 pub fn deadline(
   operation: Operation(
     context,
@@ -178,7 +185,7 @@ pub fn deadline(
     invocation,
     error,
   ),
-) -> Option(Int) {
+) -> Deadline {
   operation.deadline
 }
 

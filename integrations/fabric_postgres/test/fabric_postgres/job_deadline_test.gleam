@@ -14,14 +14,14 @@ import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
 import gleam/erlang/process
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import pog
 
 fn runtime(runs, read, request) {
-  let assert Ok(observer) =
+  let observer =
     job.observe(
       run.DefinitionId("pg-expiring-job", 1),
       codec.string(),
@@ -29,28 +29,30 @@ fn runtime(runs, read, request) {
       fn(_, _) { read() },
     )
     |> job.with_poll_interval(duration.milliseconds(20_000))
-  let assert Ok(op) =
+  let op =
     operation.own_job(observer, fn(_, _, _) { request() }, fn(error) { error })
-    |> operation.with_deadline(duration.milliseconds(5000))
-  let assert Ok(node) = definition.node_id("job")
+    |> operation.with_deadline(run.After(duration.milliseconds(5000)))
+  let node = definition.node_id("job")
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("pg-job-deadline", 1),
-      node,
-      [
-        definition.node(
-          node,
-          op,
-          fn(receipt) { Ok(receipt) },
-          fn(_, _) { panic as "expired job cannot route" },
-          [],
-        ),
-      ],
-      codec.string(),
-      codec.int(),
-      1,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("pg-job-deadline", 1),
+        entry: node,
+        nodes: [
+          definition.node(
+            node,
+            op,
+            fn(receipt) { Ok(receipt) },
+            fn(_, _) { panic as "expired job cannot route" },
+            [],
+          ),
+        ],
+        state: codec.string(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 fn store(settings) {
@@ -83,7 +85,7 @@ fn released(backend: backend.LeasedBackend, left: Int) {
 }
 
 fn expired(handle, left) {
-  let assert Ok(snapshot) = graph.read(handle)
+  let assert Ok(snapshot) = graph.snapshot(handle)
   case snapshot.status, left {
     graph.Expired(..), _ -> snapshot
     _, n if n > 0 -> {
@@ -112,13 +114,16 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
         runtime(runs, pending, fn() { panic as "wait not due yet" })
       }
       let assert Ok(handle) =
-        graph.start_with_budget(
-          build(runs),
+        graph.start(
+          graph.with_family_budget(
+            build(runs),
+            budget.limits(work: 1)
+              |> budget.with_children(1)
+              |> budget.with_depth(1),
+          ),
           id,
           "receipt",
-          budget.limits(work: 1)
-            |> budget.with_children(1)
-            |> budget.with_depth(1),
+          correlation: None,
         )
       let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
       let _ = sweep(runs, build)
@@ -147,12 +152,12 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
         })
       }
       let _ = sweep(runs, build)
-      graph.attach(build(runs), id)
+      open_graph(build(runs), id)
     })
   process.receive(requested, 30_000) |> should.equal(Ok(Nil))
   process.receive(observed, 30_000) |> should.equal(Ok(Nil))
   released(backend, 3000)
-  let assert Ok(cleanup) = graph.read(handle)
+  let assert Ok(cleanup) = graph.snapshot(handle)
   cleanup.status
   |> should.equal(graph.CancellingJob(
     reference,
@@ -174,7 +179,7 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
     })
   }
   let started = sweep(runs, build)
-  let done = expired(graph.attach(build(runs), id), 3000)
+  let done = expired(open_graph(build(runs), id), 3000)
   done.status |> should.equal(graph.Expired(due, graph.JobStopped(reference)))
   process.receive(requested, 0) |> should.equal(Error(Nil))
   process.unlink(started)
@@ -186,4 +191,12 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
     limit: 10,
   )
   |> should.equal(Ok(2))
+}
+
+fn open_graph(
+  runtime: graph.Runtime(context, state, answer),
+  id: run.RunId,
+) -> graph.Handle(context, state, answer) {
+  let assert Ok(handle) = graph.open(runtime, id)
+  handle
 }

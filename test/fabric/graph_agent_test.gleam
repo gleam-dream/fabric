@@ -29,24 +29,21 @@ import json/blueprint/codec
 fn runtime(runs, worker) {
   let assert Ok(runtime) =
     node.new(
-      node.Definition(
-        run.DefinitionId("integer-agent", 1),
-        worker,
-        codec.int(),
-        codec.int(),
-        fn(n) { "number: " <> int.to_string(n) },
-        fn(text) {
-          int.parse(text) |> result.replace_error("expected an integer reply")
-        },
-      ),
-      runs,
-      fn() { Nil },
+      run.DefinitionId("integer-agent", 1),
+      worker,
+      input: codec.int(),
+      output: codec.int(),
+      prompt: fn(n) { "number: " <> int.to_string(n) },
+      answer: fn(text) {
+        int.parse(text) |> result.replace_error("expected an integer reply")
+      },
     )
+    |> node.runtime(runs, context: fn(_) { Nil })
   runtime
 }
 
 fn parent(runs, runtime) {
-  let assert Ok(id) = definition.node_id("agent")
+  let id = definition.node_id("agent")
   let node =
     definition.node(
       id,
@@ -56,15 +53,17 @@ fn parent(runs, runtime) {
       [],
     )
   let assert Ok(definition) =
-    definition.build(definition.Spec(
-      run.DefinitionId("parent", 1),
-      id,
-      [node],
-      codec.int(),
-      codec.int(),
-      1,
-    ))
-  graph.new(definition, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("parent", 1),
+        entry: id,
+        nodes: [node],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(definition, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 fn fixed(text, calls) {
@@ -85,21 +84,31 @@ pub fn graph_and_managed_agent_share_one_work_and_child_budget_test() {
   let calls = probe.new()
   let runtime = runtime(runs, fixed("42", calls))
   let assert Ok(handle) =
-    graph.start_with_budget(
-      parent(runs, runtime),
+    graph.start(
+      graph.with_family_budget(
+        parent(runs, runtime),
+        budget.limits(work: 2)
+          |> budget.with_children(1)
+          |> budget.with_depth(1),
+      ),
       support.id("shared-budget"),
       41,
-      budget.limits(work: 2) |> budget.with_children(1) |> budget.with_depth(1),
+      correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(42))
   probe.entries(calls) |> should.equal(["model"])
   let assert Ok(blocked) =
-    graph.start_with_budget(
-      parent(runs, runtime),
+    graph.start(
+      graph.with_family_budget(
+        parent(runs, runtime),
+        budget.limits(work: 1)
+          |> budget.with_children(1)
+          |> budget.with_depth(1),
+      ),
       support.id("shared-exhausted"),
       41,
-      budget.limits(work: 1) |> budget.with_children(1) |> budget.with_depth(1),
+      correlation: None,
     )
   let assert Ok(_) = graph.await(blocked, within: duration.milliseconds(5000))
   let assert Ok(agent) = node.child(blocked, 1, runtime)
@@ -116,11 +125,16 @@ pub fn a_zero_child_budget_refuses_a_managed_agent_before_creating_it_test() {
   let calls = probe.new()
   let runtime = runtime(runs, fixed("42", calls))
   let assert Ok(handle) =
-    graph.start_with_budget(
-      parent(runs, runtime),
+    graph.start(
+      graph.with_family_budget(
+        parent(runs, runtime),
+        budget.limits(work: 10)
+          |> budget.with_children(0)
+          |> budget.with_depth(3),
+      ),
       support.id("no-children"),
       41,
-      budget.limits(work: 10) |> budget.with_children(0) |> budget.with_depth(3),
+      correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status
@@ -136,11 +150,16 @@ pub fn a_graph_owned_agents_delegation_cannot_reset_family_depth_test() {
   let worker = delegating(fixed("42", calls), 3, 3)
   let runtime = runtime(runs, worker)
   let assert Ok(handle) =
-    graph.start_with_budget(
-      parent(runs, runtime),
+    graph.start(
+      graph.with_family_budget(
+        parent(runs, runtime),
+        budget.limits(work: 10)
+          |> budget.with_children(3)
+          |> budget.with_depth(1),
+      ),
       support.id("shared-depth"),
       41,
-      budget.limits(work: 10) |> budget.with_children(3) |> budget.with_depth(1),
+      correlation: None,
     )
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
   let assert Ok(agent) = node.child(handle, 1, runtime)
@@ -196,7 +215,12 @@ pub fn a_graph_owns_an_ordinary_agent_and_accepts_its_typed_reply_test() {
   let calls = probe.new()
   let runtime = runtime(runs, fixed("42", calls))
   let assert Ok(handle) =
-    graph.start(parent(runs, runtime), support.id("agent-parent"), 41)
+    graph.start(
+      parent(runs, runtime),
+      support.id("agent-parent"),
+      41,
+      correlation: None,
+    )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(42))
   let assert [receipt] = done.receipts
@@ -219,7 +243,12 @@ pub fn every_agent_approval_is_visible_and_wakes_an_idle_graph_test() {
   let body = probe.new()
   let runtime = runtime(runs, reviewed(body))
   let assert Ok(handle) =
-    graph.start(parent(runs, runtime), support.id("approvals"), 41)
+    graph.start(
+      parent(runs, runtime),
+      support.id("approvals"),
+      41,
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(reference, child.AgentInput(approvals, [])) =
@@ -252,7 +281,12 @@ pub fn agent_approval_and_attachment_survive_store_restart_test() {
       let runs = support.directory(dir)
       let runtime = runtime(runs, worker)
       let assert Ok(handle) =
-        graph.start(parent(runs, runtime), support.id("restart-agent"), 41)
+        graph.start(
+          parent(runs, runtime),
+          support.id("restart-agent"),
+          41,
+          correlation: None,
+        )
       #(runs, handle)
     })
   let assert Ok(waiting) =
@@ -263,7 +297,8 @@ pub fn agent_approval_and_attachment_survive_store_restart_test() {
   restart.crash(owner, runs)
   let runs = support.directory(dir)
   let runtime = runtime(runs, worker)
-  let handle = graph.attach(parent(runs, runtime), support.id("restart-agent"))
+  let handle =
+    support.open_graph(parent(runs, runtime), support.id("restart-agent"))
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(agent) = node.child(handle, reference.activation, runtime)
   fabric.id(agent) |> should.equal(reference.child)
@@ -290,7 +325,12 @@ pub fn canceling_an_agent_approval_starts_no_tool_and_settles_the_graph_test() {
   let body = probe.new()
   let runtime = runtime(runs, reviewed(body))
   let assert Ok(handle) =
-    graph.start(parent(runs, runtime), support.id("cancel-agent"), 41)
+    graph.start(
+      parent(runs, runtime),
+      support.id("cancel-agent"),
+      41,
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(reference, child.AgentInput(approvals, [])) =
@@ -314,7 +354,12 @@ pub fn an_invalid_agent_reply_is_retained_without_repeating_its_model_test() {
   let calls = probe.new()
   let runtime = runtime(runs, fixed("not an integer", calls))
   let assert Ok(handle) =
-    graph.start(parent(runs, runtime), support.id("invalid-agent"), 41)
+    graph.start(
+      parent(runs, runtime),
+      support.id("invalid-agent"),
+      41,
+      correlation: None,
+    )
   let assert Ok(blocked) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Blocked(_, graph.InvalidResult(output, _)) = blocked.status
@@ -334,7 +379,12 @@ pub fn agent_handles_and_dispatch_refuse_a_different_store_test() {
   let worker = fixed("42", calls)
   let runtime = runtime(other, worker)
   let assert Ok(handle) =
-    graph.start(parent(runs, runtime), support.id("other-store"), 41)
+    graph.start(
+      parent(runs, runtime),
+      support.id("other-store"),
+      41,
+      correlation: None,
+    )
   let assert Ok(stopped) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Failed(graph.PolicyFailed(_)) = stopped.status
@@ -355,7 +405,12 @@ pub fn canceling_a_running_agent_retains_uncertain_tool_effects_test() {
     |> support.agent
   let runtime = runtime(runs, worker)
   let assert Ok(handle) =
-    graph.start(parent(runs, runtime), support.id("cancel-running-agent"), 41)
+    graph.start(
+      parent(runs, runtime),
+      support.id("cancel-running-agent"),
+      41,
+      correlation: None,
+    )
   let _started = probe.arrival(body)
   let assert Ok(_) = graph.cancel(handle)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -417,7 +472,12 @@ pub fn agent_uncertainty_is_reconciled_in_the_child_before_graph_routing_test() 
     |> support.agent
   let runtime = runtime(runs, worker)
   let assert Ok(handle) =
-    graph.start(parent(runs, runtime), support.id("uncertain-agent"), 41)
+    graph.start(
+      parent(runs, runtime),
+      support.id("uncertain-agent"),
+      41,
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(reference, child.AgentInput([], [uncertain])) =
@@ -478,7 +538,12 @@ pub fn canceled_delegated_agent_evidence_survives_restart_and_settles_outward_te
       let runs = support.directory(dir)
       let runtime = runtime(runs, worker)
       let assert Ok(handle) =
-        graph.start(parent(runs, runtime), support.id("cancel-family"), 41)
+        graph.start(
+          parent(runs, runtime),
+          support.id("cancel-family"),
+          41,
+          correlation: None,
+        )
       #(runs, handle)
     })
   let _started = probe.arrival(body)
@@ -491,7 +556,8 @@ pub fn canceled_delegated_agent_evidence_survives_restart_and_settles_outward_te
   restart.crash(owner, runs)
   let runs = support.directory(dir)
   let runtime = runtime(runs, worker)
-  let handle = graph.attach(parent(runs, runtime), support.id("cancel-family"))
+  let handle =
+    support.open_graph(parent(runs, runtime), support.id("cancel-family"))
   let assert Ok(root) = node.child(handle, reference.activation, runtime)
   let assert Ok(leaf) = fabric.child(root, leaf_id)
   let assert Ok(leaf_before) = fabric.snapshot(leaf)
@@ -524,7 +590,7 @@ pub fn canceled_delegated_agent_evidence_survives_restart_and_settles_outward_te
 }
 
 fn wrap(runs, inner) {
-  let assert Ok(id) = definition.node_id("nested")
+  let id = definition.node_id("nested")
   let node =
     definition.node(
       id,
@@ -534,15 +600,17 @@ fn wrap(runs, inner) {
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("outer", 1),
-      id,
-      [node],
-      codec.int(),
-      codec.int(),
-      1,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("outer", 1),
+        entry: id,
+        nodes: [node],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 pub fn nested_graphs_observe_an_agents_own_delegated_family_test() {
@@ -551,7 +619,12 @@ pub fn nested_graphs_observe_an_agents_own_delegated_family_test() {
   let runtime = runtime(runs, delegating(reviewed(body), 1, 1))
   let inner = parent(runs, runtime)
   let assert Ok(handle) =
-    graph.start(wrap(runs, inner), support.id("nested-agent"), 41)
+    graph.start(
+      wrap(runs, inner),
+      support.id("nested-agent"),
+      41,
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(_, child.AgentInput(approvals, [])) = waiting.status
@@ -599,7 +672,8 @@ pub fn lost_start_and_completion_acknowledgements_reuse_the_agent_test() {
     support.id(attachment.reserved_id(run.id_to_string(id), 1)),
     [flaky.FailAfter],
   )
-  let assert Ok(handle) = graph.start(parent(runs, runtime), id, 41)
+  let assert Ok(handle) =
+    graph.start(parent(runs, runtime), id, 41, correlation: None)
   let reply = probe.arrival(calls)
   flaky.arm_run(backend, id, [flaky.FailAfter])
   probe.release(reply)
@@ -618,23 +692,23 @@ pub fn cancellation_buries_a_reserved_agent_without_calling_prompt_or_context_te
   let id = support.id("bury-agent")
   let child_id = attachment.reserved_id(run.id_to_string(id), 1)
   let held = flaky.hold(backend, fn(id) { id == child_id })
-  let assert Ok(handle) = graph.start(parent(runs, runtime), id, 41)
+  let assert Ok(handle) =
+    graph.start(parent(runs, runtime), id, 41, correlation: None)
   let assert Ok(_) = process.receive(held, 5000)
   let other = flaky.store(backend)
   let assert Ok(cancel_runtime) =
     node.new(
-      node.Definition(
-        run.DefinitionId("integer-agent", 1),
-        worker,
-        codec.int(),
-        codec.int(),
-        fn(_) { panic as "cancellation called prompt" },
-        fn(_) { panic as "cancellation called answer" },
-      ),
-      other,
-      fn() { panic as "cancellation called context" },
+      run.DefinitionId("integer-agent", 1),
+      worker,
+      input: codec.int(),
+      output: codec.int(),
+      prompt: fn(_) { panic as "cancellation called prompt" },
+      answer: fn(_) { panic as "cancellation called answer" },
     )
-  let canceller = graph.attach(parent(other, cancel_runtime), id)
+    |> node.runtime(other, context: fn(_) {
+      panic as "cancellation called context"
+    })
+  let canceller = support.open_graph(parent(other, cancel_runtime), id)
   let assert Ok(_) = graph.cancel(canceller)
   let assert Ok(done) =
     graph.await(canceller, within: duration.milliseconds(5000))
@@ -655,34 +729,32 @@ pub fn agent_descendants_must_fit_ids_below_a_graph_reservation_test() {
       delegating(child, 999, 16)
     })
   node.new(
-    node.Definition(
-      run.DefinitionId("deep", 1),
-      deep,
-      codec.int(),
-      codec.int(),
-      int.to_string,
-      fn(text) { int.parse(text) |> result.replace_error("integer expected") },
-    ),
-    runs,
-    fn() { Nil },
+    run.DefinitionId("deep", 1),
+    deep,
+    input: codec.int(),
+    output: codec.int(),
+    prompt: int.to_string,
+    answer: fn(text) {
+      int.parse(text) |> result.replace_error("integer expected")
+    },
   )
+  |> node.runtime(runs, context: fn(_) { Nil })
   |> should.equal(Error(node.ChildIdsTooLong(134, 128)))
   let narrow =
     list.fold(list.repeat(Nil, 16), leaf, fn(child, _) {
       delegating(child, 1, 16)
     })
   node.new(
-    node.Definition(
-      run.DefinitionId("narrow", 1),
-      narrow,
-      codec.int(),
-      codec.int(),
-      int.to_string,
-      fn(text) { int.parse(text) |> result.replace_error("integer expected") },
-    ),
-    runs,
-    fn() { Nil },
+    run.DefinitionId("narrow", 1),
+    narrow,
+    input: codec.int(),
+    output: codec.int(),
+    prompt: int.to_string,
+    answer: fn(text) {
+      int.parse(text) |> result.replace_error("integer expected")
+    },
   )
+  |> node.runtime(runs, context: fn(_) { Nil })
   |> should.be_ok
 }
 
@@ -692,24 +764,27 @@ pub fn canceled_agent_settlement_does_not_call_the_reply_adapter_test() {
   let worker = fixed("not an integer", calls)
   let runtime = runtime(runs, worker)
   let assert Ok(handle) =
-    graph.start(parent(runs, runtime), support.id("settle-invalid-agent"), 41)
+    graph.start(
+      parent(runs, runtime),
+      support.id("settle-invalid-agent"),
+      41,
+      correlation: None,
+    )
   let assert Ok(blocked) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Blocked(_, graph.InvalidResult(_, _)) = blocked.status
   let assert Ok(cancel_runtime) =
     node.new(
-      node.Definition(
-        run.DefinitionId("integer-agent", 1),
-        worker,
-        codec.int(),
-        codec.int(),
-        int.to_string,
-        fn(_) { panic as "settlement called answer" },
-      ),
-      runs,
-      fn() { panic as "settlement called context" },
+      run.DefinitionId("integer-agent", 1),
+      worker,
+      input: codec.int(),
+      output: codec.int(),
+      prompt: int.to_string,
+      answer: fn(_) { panic as "settlement called answer" },
     )
-  let canceller = graph.attach(parent(runs, cancel_runtime), graph.id(handle))
+    |> node.runtime(runs, context: fn(_) { panic as "settlement called context" })
+  let canceller =
+    support.open_graph(parent(runs, cancel_runtime), graph.id(handle))
   let assert Ok(_) = graph.cancel(canceller)
   let assert Ok(done) = graph.recover(canceller)
   let assert graph.Cancelled(graph.ChildSettled(_)) = done.status

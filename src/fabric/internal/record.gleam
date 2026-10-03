@@ -437,7 +437,8 @@ fn action(action: ActionRecord) -> Json {
 /// that does not know expiry reads.
 const expired_reason = "the approval request expired"
 
-fn approval(approval: Approval) -> Json {
+/// An answered approval request, as both agent and graph records store it.
+pub fn approval(approval: Approval) -> Json {
   json.object(
     list.flatten([
       [
@@ -889,7 +890,7 @@ fn state_decoder(found: Int) -> Decoder(State) {
   ))
 }
 
-fn correlation_decoder() -> Decoder(Correlation) {
+pub fn correlation_decoder() -> Decoder(Correlation) {
   use text <- decode.then(decode.string)
   case correlation.from_string(text) {
     Ok(value) -> decode.success(value)
@@ -1036,7 +1037,7 @@ fn action_decoder(found: Int) -> Decoder(ActionRecord) {
   decode.success(ActionRecord(id, call, state, approvals, child, replays))
 }
 
-fn approval_decoder() -> Decoder(Approval) {
+pub fn approval_decoder() -> Decoder(Approval) {
   use required <- decode.field("requirement", requirement_decoder())
   use revision <- decode.field("revision", decode.int)
   use answer <- decode.field("answer", {

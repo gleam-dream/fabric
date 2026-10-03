@@ -1,5 +1,22 @@
 //// An ordinary agent as a managed graph operation. The agent owns its
 //// transcript, tools and approvals. The graph owns its child attachment.
+////
+//// ```gleam
+//// let assert Ok(researcher) =
+////   graph_agent.new(
+////     run.DefinitionId("research", 1),
+////     agent,
+////     input: topic_codec,
+////     output: summary_codec,
+////     prompt: fn(topic) { "Research " <> topic.name },
+////     answer: parse_summary,
+////   )
+////   |> graph_agent.runtime(runs, context: fn(_run) { ctx })
+//// let node = definition.node(id, graph_agent.as_operation(researcher), ..)
+//// ```
+////
+//// The child agent run inherits its graph parent's correlation and family
+//// root, so its events join the graph's.
 
 import fabric
 import fabric/agent as worker
@@ -14,6 +31,7 @@ import fabric/internal/graph/attachment
 import fabric/internal/graph/child_driver
 import fabric/internal/graph/handle as graph_handle
 import fabric/internal/graph/managed
+import fabric/internal/graph/runner as graph_runner
 import fabric/internal/run_id
 import fabric/internal/runner
 import fabric/internal/store as store_core
@@ -28,13 +46,9 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import json/blueprint/codec.{type Codec}
-import sinal/correlation
 
-/// Version this binding when its prompt, reply meaning or deployed agent
-/// changes. Codecs describe native values, not provider output schemas.
-/// Prompt and answer callbacks must be pure: recovery and observation may
-/// call them again. Only the agent runner performs model and tool effects.
-pub type Definition(context, input, output) {
+/// An agent bound as a graph operation. Build one with `new`.
+pub opaque type Definition(context, input, output) {
   Definition(
     identity: run.DefinitionId,
     agent: worker.Agent(context),
@@ -45,11 +59,30 @@ pub type Definition(context, input, output) {
   )
 }
 
+/// `agent` as the operation `identity`: the child run's prompt is
+/// `prompt(input)`, and its completed answer becomes the operation's output
+/// through `answer` (an `Error(reason)` is an invalid result the parent must
+/// reconcile). Version `identity` when the prompt, the reply's meaning or
+/// the deployed agent changes. Codecs describe native values, not provider
+/// output schemas. Prompt and answer callbacks must be pure: recovery and
+/// observation may call them again. Only the agent runner performs model
+/// and tool effects.
+pub fn new(
+  identity: run.DefinitionId,
+  agent: worker.Agent(context),
+  input input: Codec(input),
+  output output: Codec(output),
+  prompt prompt: fn(input) -> String,
+  answer answer: fn(String) -> Result(output, String),
+) -> Definition(context, input, output) {
+  Definition(identity:, agent:, input:, output:, prompt:, answer:)
+}
+
 pub opaque type Runtime(context, input, output) {
   Runtime(
     definition: Definition(context, input, output),
     store: store.Store,
-    context: fn() -> context,
+    context: fn(run.RunId) -> context,
   )
 }
 
@@ -57,10 +90,15 @@ pub type ConfigurationError {
   ChildIdsTooLong(maximum: Int, limit: Int)
 }
 
-pub fn new(
+/// Binds `definition` to `runs`, the parent graph's store. `context` builds
+/// the live context of the child agent run it is given, when the child
+/// starts or recovers; it is never stored. `ChildIdsTooLong` when the
+/// agent's sub-agent limits would make child run ids longer than 128
+/// characters.
+pub fn runtime(
   definition: Definition(context, input, output),
   runs: store.Store,
-  context: fn() -> context,
+  context context: fn(run.RunId) -> context,
 ) -> Result(Runtime(context, input, output), ConfigurationError) {
   let admitted = checked_agent.admitted(definition.agent)
   let maximum =
@@ -156,7 +194,7 @@ pub fn child(
     fabric.open(
       runtime.store,
       runtime.definition.agent,
-      runtime.context(),
+      runtime.context(run_id.from_string(id)),
       run_id.from_string(id),
     )
     |> result.map_error(Unreadable),
@@ -214,6 +252,7 @@ fn cancel(
     }
     Error(runner.NotFound) -> {
       let agent = checked_agent.admitted(runtime.definition.agent)
+      let #(correlation, root) = graph_runner.lineage(runtime.store, parent.run)
       let tombstone =
         controller.State(
           run: id,
@@ -234,8 +273,8 @@ fn cancel(
           approvals_issued: 0,
           phase: controller.NeverStarted,
           family_budget: None,
-          correlation: correlation.from_key(id),
-          root: id,
+          correlation:,
+          root:,
         )
       use encoded <- result.try(
         store_core.encode(runtime.store, tombstone)
@@ -271,7 +310,7 @@ fn start(
     runner.setup(
       runtime.store,
       checked_agent.admitted(definition.agent),
-      runtime.context(),
+      runtime.context(run_id.from_string(id)),
       None,
     )
   use input <- result.try(
@@ -294,10 +333,15 @@ fn start(
       }
     }
     Error(runner.NotFound) -> {
+      let #(correlation, root) = graph_runner.lineage(runtime.store, parent.run)
       let #(initial, effects) =
-        runner.root_state(setup, id, prompt, correlation.from_key(id))
+        runner.root_state(setup, id, prompt, correlation)
       let initial =
-        controller.State(..initial, parent: Some(attachment.parent(parent)))
+        controller.State(
+          ..initial,
+          parent: Some(attachment.parent(parent)),
+          root:,
+        )
       use _ <- result.try(
         case runner.ancestors_open(runtime.store, id, initial.parent) {
           True -> Ok(Nil)

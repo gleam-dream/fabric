@@ -51,7 +51,7 @@ pub fn initial(
 pub fn runtime(
   runs: store.Store,
   worker: agent.Agent(context),
-  context: fn() -> context,
+  context: fn(run.RunId) -> context,
 ) -> graph.Runtime(context, String, String) {
   let config = checked_agent.admitted(worker)
   let model_node =
@@ -80,7 +80,7 @@ pub fn runtime(
           use reply <- result.try(
             model_port.call(config.model, request)
             |> result.map_error(fn(error) {
-              operation.UncertainEffect(
+              tool.Uncertain(
                 "recipe probe does not implement model retry/backoff: "
                 <> model.describe_error(error),
               )
@@ -89,8 +89,7 @@ pub fn runtime(
           transition(env, state, controller.ModelReplied(turn, reply))
           |> result.map(record.encode)
         }
-        _ ->
-          Error(operation.DefiniteFailure("model node received another phase"))
+        _ -> Error(tool.Explain("model node received another phase"))
       }
     })
   let batch_node =
@@ -135,7 +134,7 @@ pub fn runtime(
                     )
                   case outcome {
                     invocation.EffectUncertain(reason) ->
-                      Error(operation.UncertainEffect(reason))
+                      Error(tool.Uncertain(reason))
                     _ ->
                       transition(
                         env,
@@ -150,19 +149,20 @@ pub fn runtime(
           )
           record.encode(state)
         }
-        _ ->
-          Error(operation.DefiniteFailure("batch node received another phase"))
+        _ -> Error(tool.Explain("batch node received another phase"))
       }
     })
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("agent-recipe-evaluation", 1),
-      id("model"),
-      [model_node, batch_node],
-      codec.string(),
-      codec.string(),
-      config.max_turns * 2 + 1,
-    ))
+    definition.build(
+      definition.new(
+        run.DefinitionId("agent-recipe-evaluation", 1),
+        entry: id("model"),
+        nodes: [model_node, batch_node],
+        state: codec.string(),
+        answer: codec.string(),
+      )
+      |> definition.with_max_activations(config.max_turns * 2 + 1),
+    )
   graph.new(spec, runs, context, fn(_, _) { Ok(policy.Allow) })
 }
 
@@ -211,35 +211,29 @@ fn env(
 fn load(
   raw: String,
   config: checked_agent.Admitted(context),
-) -> Result(controller.State, operation.Failure) {
+) -> Result(controller.State, tool.Failure) {
   use state <- result.try(
     record.decode(raw)
-    |> result.map_error(fn(error) {
-      operation.DefiniteFailure(string.inspect(error))
-    }),
+    |> result.map_error(fn(error) { tool.Explain(string.inspect(error)) }),
   )
   record.check(state, config.identity, config.registry)
-  |> result.map_error(fn(error) {
-    operation.DefiniteFailure(string.inspect(error))
-  })
+  |> result.map_error(fn(error) { tool.Explain(string.inspect(error)) })
 }
 
 fn transition(env, state, event) {
   controller.step(env, state, event)
   |> result.map(fn(next) { next.0 })
-  |> result.map_error(fn(error) {
-    operation.UncertainEffect(string.inspect(error))
-  })
+  |> result.map_error(fn(error) { tool.Uncertain(string.inspect(error)) })
 }
 
-fn require(condition: Bool, message: String) -> Result(Nil, operation.Failure) {
+fn require(condition: Bool, message: String) -> Result(Nil, tool.Failure) {
   case condition {
     True -> Ok(Nil)
-    False -> Error(operation.DefiniteFailure(message))
+    False -> Error(tool.Explain(message))
   }
 }
 
 fn id(name: String) -> definition.NodeId {
-  let assert Ok(id) = definition.node_id(name)
+  let id = definition.node_id(name)
   id
 }

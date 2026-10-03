@@ -107,7 +107,7 @@ fn approval_desk(probe: probe.Probe) -> agent.Agent(Nil) {
     ]),
     [apps.transfer_tool()],
     fn(_, action: policy.Action) {
-      probe.record(probe, action.tool)
+      probe.record(probe, action.name)
       Ok(policy.RequireApproval(Requirement("transfer", 1)))
     },
   )

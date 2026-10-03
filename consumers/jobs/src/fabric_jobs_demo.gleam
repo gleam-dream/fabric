@@ -34,11 +34,11 @@ pub fn runtime(
   let submit = case recovery {
     operation.RequireReconciliation -> submit
     operation.ReplayInterrupted(attempts) -> {
-      let assert Ok(replay) = operation.with_replay(submit, attempts)
+      let replay = operation.with_replay(submit, attempts)
       replay
     }
   }
-  let assert Ok(node_id) = definition.node_id("submit")
+  let node_id = definition.node_id("submit")
   let node =
     definition.node(
       node_id,
@@ -48,15 +48,17 @@ pub fn runtime(
       [],
     )
   let assert Ok(definition) =
-    definition.build(definition.Spec(
-      run.DefinitionId("artifact-job", 1),
-      node_id,
-      [node],
-      client.request_codec(),
-      client.receipt_codec(),
-      1,
-    ))
-  graph.new(definition, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("artifact-job", 1),
+        entry: node_id,
+        nodes: [node],
+        state: client.request_codec(),
+        answer: client.receipt_codec(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(definition, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 pub type State {
@@ -136,8 +138,8 @@ fn wait_with(
   lifetime: Lifetime,
   deadline: Option(Int),
 ) -> graph.Runtime(Nil, State, String) {
-  let assert Ok(submit_id) = definition.node_id("submit")
-  let assert Ok(wait_id) = definition.node_id("wait")
+  let submit_id = definition.node_id("submit")
+  let wait_id = definition.node_id("wait")
   let submit =
     operation.new(
       run.DefinitionId("artifact-submission", 1),
@@ -146,7 +148,7 @@ fn wait_with(
       fn(_, invocation, request) { submit(invocation, request) },
       client.classify,
     )
-  let assert Ok(submit) = operation.with_replay(submit, 3)
+  let submit = operation.with_replay(submit, 3)
   let submission =
     definition.node(
       submit_id,
@@ -179,7 +181,7 @@ fn wait_with(
   let observer = case polling {
     job.Manual -> observer
     job.Every(ms) -> {
-      let assert Ok(scheduled) =
+      let scheduled =
         job.with_poll_interval(observer, duration.milliseconds(ms))
       scheduled
     }
@@ -196,7 +198,7 @@ fn wait_with(
   let op = case deadline {
     None -> op
     Some(ms) -> {
-      let assert Ok(op) = operation.with_deadline(op, duration.milliseconds(ms))
+      let op = operation.with_deadline(op, run.After(duration.milliseconds(ms)))
       op
     }
   }
@@ -214,15 +216,17 @@ fn wait_with(
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("artifact-submit-and-wait", 1),
-      submit_id,
-      [submission, waiting],
-      state_codec(),
-      codec.string(),
-      2,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("artifact-submit-and-wait", 1),
+        entry: submit_id,
+        nodes: [submission, waiting],
+        state: state_codec(),
+        answer: codec.string(),
+      )
+      |> definition.with_max_activations(2),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 /// An explicit cancellation workflow proving the remote request boundary.
@@ -233,10 +237,10 @@ pub fn cancellation_runtime(
     Result(client.CancelReply, client.Error),
   url: String,
   recovery: operation.Recovery,
-  gate: graph.Policy(Nil),
+  gate: policy.Policy(Nil),
 ) -> graph.Runtime(Nil, client.Receipt, client.CancellationOutcome) {
-  let assert Ok(stop_id) = definition.node_id("request-stop")
-  let assert Ok(wait_id) = definition.node_id("confirm-stop")
+  let stop_id = definition.node_id("request-stop")
+  let wait_id = definition.node_id("confirm-stop")
   let stop =
     operation.new(
       run.DefinitionId("artifact-stop-request", 1),
@@ -248,7 +252,7 @@ pub fn cancellation_runtime(
   let stop = case recovery {
     operation.RequireReconciliation -> stop
     operation.ReplayInterrupted(attempts) -> {
-      let assert Ok(replay) = operation.with_replay(stop, attempts)
+      let replay = operation.with_replay(stop, attempts)
       replay
     }
   }
@@ -291,13 +295,15 @@ pub fn cancellation_runtime(
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("artifact-cancellation", 1),
-      stop_id,
-      [request_node, wait_node],
-      client.receipt_codec(),
-      client.cancellation_outcome_codec(),
-      2,
-    ))
-  graph.new(spec, runs, fn() { Nil }, gate)
+    definition.build(
+      definition.new(
+        run.DefinitionId("artifact-cancellation", 1),
+        entry: stop_id,
+        nodes: [request_node, wait_node],
+        state: client.receipt_codec(),
+        answer: client.cancellation_outcome_codec(),
+      )
+      |> definition.with_max_activations(2),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, gate)
 }

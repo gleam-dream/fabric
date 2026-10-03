@@ -7,7 +7,7 @@ import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/time/duration
 import gleeunit
 import gleeunit/should
@@ -60,7 +60,8 @@ pub fn replacing_decision_production_preserves_typed_graph_routes_test() {
     let assert Ok(Nil) = store.start(runs)
     let runtime = demo.runtime(runs, client, testing.config(), model)
     let assert Ok(id) = run.parse_id("decision-consumer")
-    let assert Ok(handle) = graph.start(runtime, id, "2 + 2 = 4")
+    let assert Ok(handle) =
+      graph.start(runtime, id, "2 + 2 = 4", correlation: None)
     let assert Ok(done) =
       graph.await(handle, within: duration.milliseconds(5000))
     done.status |> should.equal(graph.Completed(example.1))

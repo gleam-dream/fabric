@@ -29,11 +29,6 @@ pub type Polling {
   Every(milliseconds: Int)
 }
 
-pub type ConfigurationError {
-  /// Under 1 ms or over 2^32 - 1 ms.
-  InvalidPollInterval(Duration)
-}
-
 pub type Reference {
   Reference(
     run: run.RunId,
@@ -64,23 +59,14 @@ pub fn observe(
 /// The first observation is immediately eligible; later ready claims wait at
 /// least this interval according to the backend's clock. Manual polling remains
 /// available. Changing this interval changes the persisted operation contract,
-/// which keeps it in whole milliseconds (`Every`).
+/// which keeps it in whole milliseconds (`Every`). `definition.build`
+/// refuses an interval under 1 ms or over 2^32 - 1 ms
+/// (`operation.InvalidPollInterval`).
 pub fn with_poll_interval(
   observer: Observer(context, receipt, output),
   every: Duration,
-) -> Result(Observer(context, receipt, output), ConfigurationError) {
-  let polling = Every(duration.to_milliseconds(every))
-  case valid_polling(polling) {
-    True -> Ok(observer.with_polling(observer, polling))
-    False -> Error(InvalidPollInterval(every))
-  }
-}
-
-fn valid_polling(polling: Polling) -> Bool {
-  case polling {
-    Manual -> True
-    Every(ms) -> ms > 0 && ms <= 4_294_967_295
-  }
+) -> Observer(context, receipt, output) {
+  observer.with_polling(observer, Every(duration.to_milliseconds(every)))
 }
 
 /// Reads the job of an encoded receipt, encoding a completed output.

@@ -49,7 +49,7 @@ fn graph_parent(runs: store.Store) -> #(graph.State, String) {
   let assert Ok(#(state, _)) =
     graph.step(
       state,
-      graph.Inspected(graph.reference(state, a), Ok(policy.Allow)),
+      graph.Inspected(graph.reference(state, a), Ok(policy.Allow), None),
     )
   let assert Ok(encoded) = graph_record.encode(state)
   let assert Ok(_) =

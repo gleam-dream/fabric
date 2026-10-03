@@ -88,6 +88,7 @@ pub fn idle_graph_and_agent_attachments_have_stable_discovery_keys_test() {
         graph.Inspected(
           graph.reference(next, next_activation),
           Ok(policy.Allow),
+          None,
         ),
       )
     let assert graph.Joining(next_activation, next_child) = joined.phase
@@ -151,13 +152,13 @@ pub fn unknown_corrupt_and_misfiled_records_have_no_usable_discovery_index_test(
   )
   |> should.equal(Ok([attachment.reserved_id("root", 1)]))
   list.each(
-    ["invalid", string.replace(encoded, "\"version\":14", "\"version\":1199")],
+    ["invalid", string.replace(encoded, "\"version\":15", "\"version\":1199")],
     fn(encoded) {
       discovery.inspect(encoded) |> should.be_error
-      discovery.encode("root", encoded) |> should.equal("{\"version\":11}")
+      discovery.encode("root", encoded) |> should.equal("{\"version\":12}")
     },
   )
-  discovery.encode("wrong", encoded) |> should.equal("{\"version\":11}")
+  discovery.encode("wrong", encoded) |> should.equal("{\"version\":12}")
 }
 
 pub fn completed_and_settled_child_attachments_stop_dependency_discovery_test() {

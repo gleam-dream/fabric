@@ -260,33 +260,40 @@ pub fn a_graph_wait_is_neither_unattended_work_nor_a_budget_run_test() {
   let settings = support.migrated(connection, "graph", support.schema())
   let runs = started(settings)
   let signal = signal.new(run.DefinitionId("answer", 1), codec.bool())
-  let assert Ok(node) = definition.node_id("wait")
+  let node = definition.node_id("wait")
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("stats-graph", 1),
-      node,
-      [
-        definition.node(
-          node,
-          operation.await_signal(codec.int(), signal),
-          fn(n) { Ok(n) },
-          fn(n, answer) { Ok(definition.Finish(n, answer)) },
-          [],
-        ),
-      ],
-      codec.int(),
-      codec.bool(),
-      1,
-    ))
+    definition.build(
+      definition.new(
+        run.DefinitionId("stats-graph", 1),
+        entry: node,
+        nodes: [
+          definition.node(
+            node,
+            operation.await_signal(codec.int(), signal),
+            fn(n) { Ok(n) },
+            fn(n, answer) { Ok(definition.Finish(n, answer)) },
+            [],
+          ),
+        ],
+        state: codec.int(),
+        answer: codec.bool(),
+      )
+      |> definition.with_max_activations(1),
+    )
   let runtime =
-    graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
   let assert Ok(id) = run.parse_id("graph-stats")
   let assert Ok(handle) =
-    graph.start_with_budget(
-      runtime,
+    graph.start(
+      graph.with_family_budget(
+        runtime,
+        budget.limits(work: 1)
+          |> budget.with_children(1)
+          |> budget.with_depth(1),
+      ),
       id,
       1,
-      budget.limits(work: 1) |> budget.with_children(1) |> budget.with_depth(1),
+      correlation: None,
     )
   let assert Ok(snapshot) = graph.await(handle, within: duration.seconds(30))
   let assert graph.AwaitingSignal(reference) = snapshot.status

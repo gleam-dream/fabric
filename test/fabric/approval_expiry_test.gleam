@@ -47,7 +47,7 @@ fn spec(probe: Probe) -> agent.Spec(Nil) {
     ]),
     [paying_tool(probe)],
     fn(_, action: policy.Action) {
-      case action.tool {
+      case action.name {
         "transfer_funds" ->
           Ok(policy.RequireApproval(Requirement("transfer", 1)))
         _ -> Ok(policy.Allow)

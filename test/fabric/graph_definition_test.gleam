@@ -5,19 +5,22 @@ import fabric/internal/graph/controller
 import fabric/internal/graph/record
 import fabric/policy
 import fabric/run
+import fabric/tool
 import gleam/list
 import gleam/option.{None}
 import gleam/result
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
+import sinal/correlation
 
 fn id(name: String) -> graph.NodeId {
-  let assert Ok(id) = graph.node_id(name)
+  let id = graph.node_id(name)
   id
 }
 
-fn no_error(_error: Nil) -> operation.Failure {
-  operation.DefiniteFailure("cannot fail")
+fn no_error(_error: Nil) -> tool.Failure {
+  tool.Explain("cannot fail")
 }
 
 fn increment() -> operation.Operation(Nil, Int, Int) {
@@ -44,14 +47,16 @@ fn counter(
 }
 
 fn spec(nodes: List(graph.Node(Nil, Int, Int))) -> graph.Spec(Nil, Int, Int) {
-  graph.Spec(
-    run.DefinitionId("counter-loop", 1),
-    id("counter"),
-    nodes,
-    codec.int(),
-    codec.int(),
-    3,
-  )
+  spec_of(run.DefinitionId("counter-loop", 1), id("counter"), nodes)
+}
+
+fn spec_of(
+  identity: run.DefinitionId,
+  entry: graph.NodeId,
+  nodes: List(graph.Node(Nil, Int, Int)),
+) -> graph.Spec(Nil, Int, Int) {
+  graph.new(identity, entry:, nodes:, state: codec.int(), answer: codec.int())
+  |> graph.with_max_activations(3)
 }
 
 fn loop() -> graph.Definition(Nil, Int, Int) {
@@ -85,7 +90,7 @@ fn completed_visit(
   let assert controller.Ready(a) = state.phase
   let ref = controller.reference(state, a)
   let assert Ok(#(state, _)) =
-    controller.step(state, controller.Inspected(ref, Ok(policy.Allow)))
+    controller.step(state, controller.Inspected(ref, Ok(policy.Allow), None))
   let assert Ok(#(state, _)) =
     controller.step(state, controller.BodyStarted(ref))
   let assert Ok(run) = run.parse_id(state.run)
@@ -93,7 +98,12 @@ fn completed_visit(
     compiled.invoke(
       definition,
       Nil,
-      operation.Invocation(run, a.id, a.attempt),
+      operation.Invocation(
+        run,
+        a.id,
+        a.attempt,
+        correlation.from_key(state.run),
+      ),
       a.prepared,
     )
   let assert Ok(decision) =
@@ -166,15 +176,15 @@ pub fn validation_never_repeats_selection_operations_or_routing_test() {
 
 pub fn construction_rejects_invalid_bounds_identity_and_destinations_test() {
   let node = counter(fn(state, value) { Ok(graph.Finish(state, value)) }, [])
-  let base = spec([node])
-  graph.build(graph.Spec(..base, nodes: [node, node]))
-  |> should.equal(Error(graph.DuplicateNode(id("counter"))))
-  graph.build(graph.Spec(..base, max_activations: 0))
-  |> should.equal(Error(graph.InvalidActivationLimit(0)))
-  graph.build(graph.Spec(..base, identity: run.DefinitionId("", 1)))
-  |> should.equal(Error(graph.InvalidIdentity(run.DefinitionId("", 1))))
-  graph.build(graph.Spec(..base, entry: id("missing")))
-  |> should.equal(Error(graph.MissingEntry(id("missing"))))
+  let identity = run.DefinitionId("counter-loop", 1)
+  graph.build(spec([node, node]))
+  |> should.equal(Error([graph.DuplicateNode(id("counter"))]))
+  graph.build(spec([node]) |> graph.with_max_activations(0))
+  |> should.equal(Error([graph.InvalidActivationLimit(0)]))
+  graph.build(spec_of(run.DefinitionId("", 1), id("counter"), [node]))
+  |> should.equal(Error([graph.InvalidIdentity(run.DefinitionId("", 1))]))
+  graph.build(spec_of(identity, id("missing"), [node]))
+  |> should.equal(Error([graph.MissingEntry(id("missing"))]))
   graph.build(
     spec([
       counter(fn(state, _) { Ok(graph.Continue(state, id("missing"))) }, [
@@ -182,7 +192,43 @@ pub fn construction_rejects_invalid_bounds_identity_and_destinations_test() {
       ]),
     ]),
   )
-  |> should.equal(Error(graph.UnknownDestination(id("counter"), id("missing"))))
+  |> should.equal(
+    Error([graph.UnknownDestination(id("counter"), id("missing"))]),
+  )
+  // Every problem at once, an operation's settings included.
+  let wait =
+    graph.node(
+      id(" "),
+      operation.new(
+        run.DefinitionId("increment", 1),
+        codec.int(),
+        codec.int(),
+        fn(_, _, input) { Ok(input + 1) },
+        no_error,
+      )
+        |> operation.with_replay(0)
+        |> operation.with_deadline(run.After(duration.seconds(1))),
+      fn(state) { Ok(state) },
+      fn(state, value) { Ok(graph.Finish(state, value)) },
+      [],
+    )
+  let assert Error(problems) =
+    graph.build(
+      spec_of(run.DefinitionId("", 0), id("counter"), [wait])
+      |> graph.with_max_activations(0),
+    )
+  problems
+  |> should.equal([
+    graph.InvalidIdentity(run.DefinitionId("", 0)),
+    graph.InvalidActivationLimit(0),
+    graph.MissingEntry(id("counter")),
+    graph.InvalidNodeId(" "),
+    graph.InvalidOperation(id(" "), operation.InvalidAttemptBound(0)),
+    graph.InvalidOperation(id(" "), operation.DeadlineRequiresWait),
+  ])
+  list.map(problems, graph.describe_build_error)
+  |> list.all(fn(line) { line != "" })
+  |> should.be_true
 }
 
 pub fn manifest_is_order_independent_and_detects_declared_contract_changes_test() {
@@ -202,7 +248,7 @@ pub fn manifest_is_order_independent_and_detects_declared_contract_changes_test(
   let assert Ok(first) = graph.build(spec([a, b]))
   let assert Ok(reordered) = graph.build(spec([b, a]))
   compiled.identity(first) |> should.equal(compiled.identity(reordered))
-  let assert Ok(replay) = operation.with_replay(increment(), 2)
+  let replay = operation.with_replay(increment(), 2)
   let changed =
     graph.node(
       id("counter"),
@@ -287,7 +333,13 @@ pub fn codecs_without_provider_schema_are_sufficient_for_durable_values_test() {
       [],
     )
   let assert Ok(definition) =
-    graph.build(graph.Spec(..spec([node]), state: native, answer: native))
+    graph.build(graph.new(
+      run.DefinitionId("counter-loop", 1),
+      entry: id("counter"),
+      nodes: [node],
+      state: native,
+      answer: native,
+    ))
   compiled.validate(
     definition,
     completed_visit(definition, started(definition)),

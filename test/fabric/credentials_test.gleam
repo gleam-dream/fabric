@@ -24,16 +24,16 @@ pub fn inspecting_an_llm_model_or_operation_never_prints_the_key_test() {
   let settings = fake_provider.google(fake, secret)
   hidden(llm.model(fake.client, settings, "inspect-model"))
   hidden(
-    graph_llm.new(
+    graph_llm.decision(
       run.DefinitionId("inspect-decision", 1),
-      codec.string(),
-      codecs.one_field("approve", codec.bool()),
-      "decision",
-      fn(_: Nil, text) {
-        #(
-          fake.client,
-          settings,
-          llm_wire.request("inspect-model", [llm_wire.user(text)]),
+      input: codec.string(),
+      output: codecs.one_field("approve", codec.bool()),
+      name: "decision",
+      call: fn(_: Nil, text) {
+        graph_llm.call(
+          client: fake.client,
+          config: settings,
+          request: llm_wire.request("inspect-model", [llm_wire.user(text)]),
         )
       },
     ),
