@@ -6,16 +6,17 @@ import fabric/graph
 import fabric/graph/definition
 import fabric/graph/job
 import fabric/graph/operation
-import fabric/observation
+import fabric/internal/store as store_core
 import fabric/policy
-import fabric/retention
 import fabric/run
-import fabric/store
+import fabric/store/backend
+import fabric/store/conformance
+import fabric/store/retention
 import fabric/support
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
-import fabric/testing
+import fabric/telemetry
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/time/duration
@@ -30,7 +31,7 @@ fn runtime(runs, owned, read, request, accept) {
 fn runtime_with(runs, owned, polling, read, request, accept) {
   let observer =
     job.observe(
-      run.Identity("deadline-job", 1),
+      run.DefinitionId("deadline-job", 1),
       codec.string(),
       codec.int(),
       fn(_, receipt) { read(receipt) },
@@ -56,7 +57,7 @@ fn runtime_with(runs, owned, polling, read, request, accept) {
   let assert Ok(node) = definition.node_id("job")
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("job-deadline", 1),
+      run.DefinitionId("job-deadline", 1),
       node,
       [definition.node(node, op, fn(receipt) { Ok(receipt) }, accept, [])],
       codec.string(),
@@ -67,10 +68,10 @@ fn runtime_with(runs, owned, polling, read, request, accept) {
 }
 
 pub fn ownership_can_be_cancelled_even_when_arming_cannot_read_the_clock_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let backend =
-    store.LeasedBackend(..memory.backend, now: fn() {
-      Error(store.Unavailable("clock offline"))
+    backend.LeasedBackend(..memory.backend, now: fn() {
+      Error(backend.Unavailable("clock offline"))
     })
   let runs = nodes.node(backend, "unarmed-owner", nodes.long)
   let calls = probe.new()
@@ -105,7 +106,7 @@ pub fn ownership_can_be_cancelled_even_when_arming_cannot_read_the_clock_test() 
 }
 
 pub fn a_terminal_result_observed_after_the_deadline_is_retained_without_routing_or_a_stop_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "late-result", nodes.long)
   let spec =
     runtime(
@@ -128,17 +129,17 @@ pub fn a_terminal_result_observed_after_the_deadline_is_retained_without_routing
   done.status |> should.equal(graph.Expired(due, graph.AfterResult))
   let assert [receipt] = done.receipts
   receipt.output_json |> should.equal("42")
-  receipt.route |> should.equal(graph.Canceled)
+  receipt.route |> should.equal(graph.Stopped)
 }
 
 pub fn a_failed_read_cannot_extend_a_deadline_and_cleanup_ignores_clock_failure_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let calls = probe.new()
   let backend =
-    store.LeasedBackend(..memory.backend, now: fn() {
+    backend.LeasedBackend(..memory.backend, now: fn() {
       case probe.count(calls, "stop") {
         0 -> memory.backend.now()
-        _ -> Error(store.Unavailable("clock offline"))
+        _ -> Error(backend.Unavailable("clock offline"))
       }
     })
   let runs = nodes.node(backend, "failed-read", nodes.long)
@@ -183,13 +184,13 @@ pub fn a_failed_read_cannot_extend_a_deadline_and_cleanup_ignores_clock_failure_
 fn scan(runs, build) {
   let events = process.new_subject()
   let attached =
-    sinal.observe(observation.sweep(), fn(summary, _) {
+    sinal.observe(telemetry.sweep(), fn(summary, _) {
       process.send(events, summary)
     })
   let assert Ok(spec) =
     fabric.sweeper(
       runs,
-      [graph.recovery(run.Identity("job-deadline", 1), build)],
+      [graph.recovery(run.DefinitionId("job-deadline", 1), build)],
       every: duration.milliseconds(60_000),
     )
   let assert Ok(started) = spec.start()
@@ -201,7 +202,7 @@ fn scan(runs, build) {
 }
 
 pub fn the_deadline_preempts_polling_but_does_not_spin_cleanup_observations_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "scheduled-deadline", nodes.long)
   let calls = probe.new()
   let build = fn(runs) {
@@ -255,7 +256,7 @@ pub fn the_deadline_preempts_polling_but_does_not_spin_cleanup_observations_test
 }
 
 pub fn read_only_expiration_detaches_without_observation_or_a_stop_request_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "readonly", nodes.long)
   let spec =
     runtime(
@@ -280,7 +281,7 @@ pub fn read_only_expiration_detaches_without_observation_or_a_stop_request_test(
 }
 
 pub fn owned_expiration_keeps_its_cause_and_cleanup_across_restart_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let calls = probe.new()
   let #(owner, runs) =
     restart.owned(fn() { nodes.node(memory.backend, "owned", nodes.long) })
@@ -318,7 +319,7 @@ pub fn owned_expiration_keeps_its_cause_and_cleanup_across_restart_test() {
     operation.DeadlineReached(due),
   ))
   graph.cancel(handle) |> should.equal(Ok(Nil))
-  let assert Ok(row) = store.get(runs, "owned-deadline")
+  let assert Ok(row) = store_core.get(runs, "owned-deadline")
   let assert Ok(metadata) = retention.inspect(row.record)
   metadata.settled |> should.equal(False)
   row.live |> should.equal(None)
@@ -333,6 +334,6 @@ pub fn owned_expiration_keeps_its_cause_and_cleanup_across_restart_test() {
   done.status |> should.equal(graph.Expired(due, graph.AfterResult))
   let assert [receipt] = done.receipts
   receipt.output_json |> should.equal("42")
-  receipt.route |> should.equal(graph.Canceled)
+  receipt.route |> should.equal(graph.Stopped)
   probe.entries(calls) |> should.equal(["stop"])
 }

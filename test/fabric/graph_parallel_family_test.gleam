@@ -22,7 +22,7 @@ fn node_id() -> definition.NodeId {
 }
 
 fn response() -> signal.Signal(Int) {
-  signal.new(run.Identity("branch-answer", 1), codec.int())
+  signal.new(run.DefinitionId("branch-answer", 1), codec.int())
 }
 
 fn leaf(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
@@ -36,7 +36,7 @@ fn leaf(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("branch", 1),
+      run.DefinitionId("branch", 1),
       node_id(),
       [node],
       codec.int(),
@@ -54,7 +54,7 @@ fn mapped(
   output: codec.Codec(output),
 ) -> graph.Runtime(Nil, List(input), Result(List(output), fork.Failure)) {
   let assert Ok(op) =
-    graph.map(run.Identity(name, 1), member, max_members: 4, concurrency: 3)
+    graph.map(run.DefinitionId(name, 1), member, max_members: 4, concurrency: 3)
   let node =
     definition.node(
       node_id(),
@@ -66,7 +66,7 @@ fn mapped(
   let output = fork.result_codec(codec.list(output))
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity(name, 1),
+      run.DefinitionId(name, 1),
       node_id(),
       [node],
       codec.list(input),
@@ -89,7 +89,7 @@ fn repeated(runs: store.Store) {
   let values = codec.list(codec.int())
   let answer = fork.result_codec(values)
   let assert Ok(op) =
-    graph.map(run.Identity("repeated-map", 1), leaf(runs), 2, 2)
+    graph.map(run.DefinitionId("repeated-map", 1), leaf(runs), 2, 2)
   let node =
     definition.node(
       node_id(),
@@ -105,7 +105,7 @@ fn repeated(runs: store.Store) {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("repeated", 1),
+      run.DefinitionId("repeated", 1),
       node_id(),
       [node],
       codec.pair(codec.int(), values),

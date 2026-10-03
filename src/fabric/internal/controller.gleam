@@ -45,14 +45,15 @@ import fabric/budget as quota
 import fabric/internal/budget/model as budget
 import fabric/internal/invocation
 import fabric/internal/registry.{type Registry}
+import fabric/internal/run_id
 import fabric/model.{
   type Message, type ModelError, type Reply, type Request, type ToolCall,
 }
 import fabric/policy.{type Policy}
 import fabric/run.{
   type ActionId, type ActionRecord, type ActionState, type Answer,
-  type ApprovalRef, type HostFailure, type Identity, type Outcome, type Status,
-  type TokenUsage, ActionId, ActionRecord,
+  type ApprovalRef, type DefinitionId, type HostFailure, type Outcome,
+  type Status, type TokenUsage, ActionId, ActionRecord,
 }
 import gleam/int
 import gleam/list
@@ -115,7 +116,7 @@ pub type Phase {
 pub type State {
   State(
     run: String,
-    agent: Identity,
+    agent: DefinitionId,
     /// Increases by one each time a lost runner's work is taken over.
     incarnation: Int,
     /// The action that started this run, for a sub-agent run.
@@ -224,7 +225,7 @@ type Transition =
 pub fn start(
   env: Env(context),
   run: String,
-  agent: Identity,
+  agent: DefinitionId,
   limits: Limits,
   prompt: String,
   parent: Option(run.Parent),
@@ -246,7 +247,7 @@ pub fn start(
 pub fn start_correlated(
   env: Env(context),
   run: String,
-  agent: Identity,
+  agent: DefinitionId,
   limits: Limits,
   prompt: String,
   parent: Option(run.Parent),
@@ -1153,7 +1154,7 @@ fn decide_policy(
   env.policy(
     env.context,
     policy.Action(
-      run.issued(run_id),
+      run_id.from_string(run_id),
       id,
       call.name,
       call.arguments_json,
@@ -1190,7 +1191,7 @@ fn admitted(
         True ->
           ActionRecord(
             ..record(run.Running),
-            child: Some(run.issued(next_child(state, others))),
+            child: Some(run_id.from_string(next_child(state, others))),
           )
       }
   }
@@ -1330,7 +1331,7 @@ fn call_model(env: Env(context), state: State) -> #(State, List(Effect)) {
       let turn = state.turns_used + 1
       let request =
         model.Request(
-          run: run.issued(state.run),
+          run: run_id.from_string(state.run),
           turn:,
           correlation: state.correlation,
           system: env.system,
@@ -1587,13 +1588,13 @@ pub fn never_started(
   parent: State,
   action: ActionId,
   child: String,
-  agent: Identity,
+  agent: DefinitionId,
 ) -> State {
   State(
     run: child,
     agent:,
     incarnation: 1,
-    parent: Some(run.AgentParent(run.issued(parent.run), action)),
+    parent: Some(run.AgentParent(run_id.from_string(parent.run), action)),
     depth: parent.depth + 1,
     limits: parent.limits,
     turns_used: 0,
@@ -1643,7 +1644,7 @@ pub fn status(state: State) -> Status {
                 run.AwaitingApproval(requirement, revision) ->
                   Ok(run.PendingApproval(
                     run.ApprovalRef(
-                      run.issued(state.run),
+                      run_id.from_string(state.run),
                       action.id,
                       requirement,
                       revision,
@@ -1658,7 +1659,7 @@ pub fn status(state: State) -> Status {
               case action.state {
                 run.Uncertain(evidence) ->
                   Ok(run.UncertainAction(
-                    run.ActionRef(run.issued(state.run), action.id),
+                    run.ActionRef(run_id.from_string(state.run), action.id),
                     action.call.name,
                     evidence,
                   ))
@@ -1687,7 +1688,7 @@ fn in_flight(actions: List(ActionRecord)) -> Bool {
 
 pub fn snapshot(state: State) -> run.Snapshot {
   run.Snapshot(
-    run: run.issued(state.run),
+    run: run_id.from_string(state.run),
     agent: state.agent,
     incarnation: state.incarnation,
     parent: state.parent,

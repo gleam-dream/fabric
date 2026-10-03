@@ -68,7 +68,7 @@ type Implementation(context, input, output) {
 
 pub opaque type Operation(context, input, output) {
   Operation(
-    identity: run.Identity,
+    identity: run.DefinitionId,
     input: Codec(input),
     output: Codec(output),
     recovery: Recovery,
@@ -100,7 +100,7 @@ pub type Error {
 /// Error classification remains application-specific. A body crash or lost
 /// task is handled by the runner as uncertainty, not a definite failure.
 pub fn new(
-  identity: run.Identity,
+  identity: run.DefinitionId,
   input: Codec(input),
   output: Codec(output),
   perform: fn(context, Invocation, input) -> Result(output, error),
@@ -230,7 +230,9 @@ pub fn with_replay(
   }
 }
 
-pub fn identity(operation: Operation(context, input, output)) -> run.Identity {
+pub fn identity(
+  operation: Operation(context, input, output),
+) -> run.DefinitionId {
   operation.identity
 }
 
@@ -273,7 +275,7 @@ pub fn deadline(operation: Operation(context, input, output)) -> Option(Int) {
 
 @internal
 pub fn subgraph(
-  identity: run.Identity,
+  identity: run.DefinitionId,
   input: Codec(input),
   output: Codec(output),
   driver: child_driver.Driver,
@@ -290,7 +292,7 @@ pub fn subgraph(
 
 @internal
 pub fn agent(
-  identity: run.Identity,
+  identity: run.DefinitionId,
   input: Codec(input),
   output: Codec(output),
   driver: child_driver.Driver,
@@ -307,7 +309,7 @@ pub fn agent(
 
 @internal
 pub fn parallel(
-  identity: run.Identity,
+  identity: run.DefinitionId,
   input: Codec(input),
   output: Codec(output),
   max_members: Int,

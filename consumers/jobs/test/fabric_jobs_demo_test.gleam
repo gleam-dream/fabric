@@ -6,7 +6,7 @@ import fabric/graph
 import fabric/graph/operation
 import fabric/run
 import fabric/store
-import fabric/testing
+import fabric/store/conformance
 import fabric_jobs_demo as demo
 import fabric_jobs_demo/client
 import fabric_jobs_demo/support
@@ -22,7 +22,7 @@ pub fn main() -> Nil {
 }
 
 pub fn a_restarted_sweeper_observes_the_real_job_without_manual_polling_test() {
-  let storage = testing.leased_memory()
+  let storage = conformance.leased_memory()
   let #(owner, #(runs, handle)) =
     support.owned(fn() {
       let runs = leased(storage.backend, "before")
@@ -54,7 +54,7 @@ pub fn a_restarted_sweeper_observes_the_real_job_without_manual_polling_test() {
   let assert Ok(spec) =
     fabric.sweeper(
       runs,
-      [graph.recovery(run.Identity("artifact-submit-and-wait", 1), build)],
+      [graph.recovery(run.DefinitionId("artifact-submit-and-wait", 1), build)],
       every: duration.milliseconds(20),
     )
   let assert Ok(sweeper) = spec.start()

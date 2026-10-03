@@ -1,5 +1,5 @@
 //// Emits Fabric's Sinal events for one committed transition, derived from
-//// the state before and after the commit (see `fabric/observation`). The
+//// the state before and after the commit (see `fabric/telemetry`). The
 //// runtime calls it after every successful commit. `sinal.emit` follows
 //// forwarder routes, so the application decides whether `[fabric]`
 //// handlers run in the committing process or in a forwarder; a dropped
@@ -8,8 +8,8 @@
 import fabric/internal/controller.{type State}
 import fabric/internal/invocation
 import fabric/model
-import fabric/observation.{ActionRef} as o
 import fabric/run.{type ActionId, type ActionRecord}
+import fabric/telemetry.{Action} as o
 import fabric/tool as fabric_tool
 import gleam/dict
 import gleam/list
@@ -199,7 +199,7 @@ fn action_changed(
   after: ActionRecord,
 ) -> Nil {
   let reference =
-    ActionRef(run_id, after.id.turn, after.id.call_id, after.call.name)
+    Action(run_id, after.id.turn, after.id.call_id, after.call.name)
   let old_state = option.map(before, fn(action) { action.state })
   let old_approvals = case before {
     Some(action) -> list.length(action.approvals)
@@ -253,7 +253,7 @@ fn action_changed(
 }
 
 fn tool_changed(
-  reference: o.ActionRef,
+  reference: o.Action,
   correlation: Correlation,
   before: Option(run.ActionState),
   after: run.ActionState,
@@ -284,7 +284,7 @@ fn tool_changed(
 }
 
 fn child_changed(
-  reference: o.ActionRef,
+  reference: o.Action,
   correlation: Correlation,
   child: String,
   before: Option(run.ActionState),
@@ -412,7 +412,7 @@ pub fn settlement_refused(
     o.settlement_refused(),
     Nil,
     o.SettlementRefused(
-      ActionRef(run, id.turn, id.call_id, tool),
+      Action(run, id.turn, id.call_id, tool),
       offered,
       reason,
       summary,

@@ -45,7 +45,7 @@ fn decision(
   settings: llm_wire.Config,
 ) -> operation.Operation(Nil, String, llm.Receipt(Bool)) {
   llm.new(
-    run.Identity("structured-review", 1),
+    run.DefinitionId("structured-review", 1),
     codec.string(),
     decision_codec(),
     "review",
@@ -87,7 +87,7 @@ fn runtime_with(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("decision-graph", 1),
+      run.DefinitionId("decision-graph", 1),
       id,
       [node],
       codec.string(),
@@ -159,7 +159,8 @@ pub fn policy_approval_precedes_the_provider_request_test() {
       support.store(),
       decision(fake.client, fake_provider.scripted(fake)),
       fn(_, action) {
-        action.operation |> should.equal(run.Identity("structured-review", 1))
+        action.operation
+        |> should.equal(run.DefinitionId("structured-review", 1))
         Ok(policy.RequireApproval(run.Requirement("external-model", 1)))
       },
     )
@@ -245,7 +246,7 @@ pub fn tool_catalog_is_rejected_before_network_io_test() {
     tool.new("lookup", "lookup", codecs.one_field("query", codec.string()))
   let op =
     llm.new(
-      run.Identity("structured-review", 1),
+      run.DefinitionId("structured-review", 1),
       codec.string(),
       decision_codec(),
       "review",

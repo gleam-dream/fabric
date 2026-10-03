@@ -128,8 +128,8 @@ import sinal/fields.{type Fields}
 
 /// An action of a run: model turn, provider call id, and tool or
 /// delegation name.
-pub type ActionRef {
-  ActionRef(run: String, turn: Int, call_id: String, tool: String)
+pub type Action {
+  Action(run: String, turn: Int, call_id: String, tool: String)
 }
 
 pub type RunStarted {
@@ -216,7 +216,7 @@ pub type Answered {
 
 pub type ApprovalRequested {
   ApprovalRequested(
-    action: ActionRef,
+    action: Action,
     requirement: String,
     requirement_version: Int,
     revision: Int,
@@ -226,7 +226,7 @@ pub type ApprovalRequested {
 
 pub type ApprovalAnswered {
   ApprovalAnswered(
-    action: ActionRef,
+    action: Action,
     revision: Int,
     answer: Answered,
     correlation: Correlation,
@@ -234,7 +234,7 @@ pub type ApprovalAnswered {
 }
 
 pub type ToolDispatched {
-  ToolDispatched(action: ActionRef, correlation: Correlation)
+  ToolDispatched(action: Action, correlation: Correlation)
 }
 
 /// How an action's result reached the run.
@@ -252,19 +252,19 @@ pub type Disposition {
 
 pub type ToolSettled {
   ToolSettled(
-    action: ActionRef,
+    action: Action,
     disposition: Disposition,
     correlation: Correlation,
   )
 }
 
 pub type ChildStarted {
-  ChildStarted(action: ActionRef, child: String, correlation: Correlation)
+  ChildStarted(action: Action, child: String, correlation: Correlation)
 }
 
 pub type ChildSettled {
   ChildSettled(
-    action: ActionRef,
+    action: Action,
     child: String,
     disposition: Disposition,
     correlation: Correlation,
@@ -283,7 +283,7 @@ pub type SettlementRefusal {
 
 pub type SettlementRefused {
   SettlementRefused(
-    action: ActionRef,
+    action: Action,
     /// What the settlement offered.
     offered: Disposition,
     reason: SettlementRefusal,
@@ -694,7 +694,7 @@ fn event(
   sinal.event(["fabric", ..name], measurements, metadata)
 }
 
-fn action_fields() -> Fields(ActionRef) {
+fn action_fields() -> Fields(Action) {
   use run <- fields.include(fields.string("run"), get: fn(action) { action.run })
   use turn <- fields.include(fields.int("turn"), get: fn(action) { action.turn })
   use call_id <- fields.include(fields.string("call_id"), get: fn(action) {
@@ -703,7 +703,7 @@ fn action_fields() -> Fields(ActionRef) {
   use tool <- fields.include(fields.string("tool"), get: fn(action) {
     action.tool
   })
-  fields.success(ActionRef(run:, turn:, call_id:, tool:))
+  fields.success(Action(run:, turn:, call_id:, tool:))
 }
 
 /// Both keys present, or both absent for an unreported attempt. A map with

@@ -6,6 +6,8 @@ import fabric/agent
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
+import fabric/store/conformance
 import fabric/support
 import fabric/support/probe
 import fabric/support/scripted
@@ -25,7 +27,7 @@ pub fn unsupported_write_versions_are_refused_before_startup_test() {
   })
 }
 
-fn writes(backend: store.LeasedBackend, id: run.RunId, version: Int) {
+fn writes(backend: backend.LeasedBackend, id: run.RunId, version: Int) {
   let assert Ok(row) = backend.get(run.id_to_string(id))
   string.contains(row.record, "\"version\":" <> int.to_string(version) <> ",")
   |> should.be_true
@@ -65,7 +67,7 @@ fn reviewed(body) {
 }
 
 pub fn configured_writes_remain_readable_by_the_version_2_decoder_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = node(memory.backend, 2)
   let body = probe.new()
   let agent = reviewed(body)
@@ -95,7 +97,7 @@ pub fn the_write_target_does_not_restrict_what_can_be_read_test() {
   list.each(
     [#(6, 2), #(2, 6), #(6, 3), #(3, 6), #(6, 4), #(4, 6), #(6, 5), #(5, 6)],
     fn(versions) {
-      let memory = testing.leased_memory()
+      let memory = conformance.leased_memory()
       let body = probe.new()
       let agent = reviewed(body)
       let first = node(memory.backend, versions.0)
@@ -134,7 +136,7 @@ import gleam/time/duration
 import json/blueprint/codec
 
 pub fn a_child_cancelled_before_storage_is_a_version_2_tombstone_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = node(memory.backend, 2)
   let prompt = probe.new()
   let child_calls = probe.new()
@@ -189,7 +191,7 @@ pub fn a_child_cancelled_before_storage_is_a_version_2_tombstone_test() {
 }
 
 pub fn a_drained_run_keeps_version_2_through_handoff_and_recovery_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let assert Ok(runs) =
     store.leased(
       process.new_name("version-drain"),
@@ -234,7 +236,7 @@ pub fn a_drained_run_keeps_version_2_through_handoff_and_recovery_test() {
 }
 
 pub fn automatic_crash_recovery_and_reconciliation_keep_version_2_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = node(memory.backend, 2)
   let b = node(memory.backend, 2)
   let body = probe.new()
@@ -259,7 +261,7 @@ pub fn automatic_crash_recovery_and_reconciliation_keep_version_2_test() {
   let assert Ok(runner) = restart.runner(a, fabric.id(started))
   restart.kill(runner)
   let assert Ok(row) = memory.backend.get(run.id_to_string(fabric.id(started)))
-  let assert store.Held(owner, True) = row.holder
+  let assert backend.Held(owner, True) = row.holder
   let assert Ok(_) =
     memory.backend.renew(owner, [run.id_to_string(fabric.id(started))], 0)
   let assert Ok(spec) =
@@ -293,7 +295,7 @@ fn await_uncertain(run, tries) {
 }
 
 pub fn cancelling_without_an_agent_keeps_the_selected_write_version_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = node(memory.backend, 2)
   let body = probe.new()
   let assert Ok(started) =
@@ -315,7 +317,7 @@ pub fn cancelling_without_an_agent_keeps_the_selected_write_version_test() {
 
 pub fn an_old_writer_stops_before_effects_and_recovery_with_the_new_writer_runs_once_test() {
   list.each([2, 3], fn(version) {
-    let memory = testing.leased_memory()
+    let memory = conformance.leased_memory()
     let old = node(memory.backend, version)
     let assert Ok(current) = store.with_record_version(old, 4)
     let body = probe.new()

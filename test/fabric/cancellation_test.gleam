@@ -9,16 +9,18 @@ import fabric
 import fabric/agent.{type Agent}
 import fabric/internal/controller
 import fabric/internal/record
+import fabric/internal/store as store_core
 import fabric/model
-import fabric/observation as o
 import fabric/policy
 import fabric/run.{type RunId, ActionId}
 import fabric/store
+import fabric/store/backend
 import fabric/support
 import fabric/support/apps
 import fabric/support/flaky
 import fabric/support/probe.{type Probe}
 import fabric/support/scripted
+import fabric/telemetry as o
 import fabric/tool
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
@@ -428,7 +430,7 @@ fn store_stopping_root(store: store.Store, id: String) -> Nil {
   let root =
     controller.State(
       run: id,
-      agent: run.Identity("agent", 1),
+      agent: run.DefinitionId("agent", 1),
       incarnation: 1,
       parent: None,
       depth: 0,
@@ -458,7 +460,8 @@ fn store_stopping_root(store: store.Store, id: String) -> Nil {
       family_budget: None,
       correlation: correlation.from_key(id),
     )
-  let assert Ok(1) = store.insert(store, id, record.encode(root), store.Keep)
+  let assert Ok(1) =
+    store_core.insert(store, id, record.encode(root), store_core.Keep)
   Nil
 }
 
@@ -467,7 +470,7 @@ fn store_stopping_root(store: store.Store, id: String) -> Nil {
 fn store_orphaned_child(
   store: store.Store,
   id: String,
-  agent: run.Identity,
+  agent: run.DefinitionId,
   transcript: List(model.Message),
   phase: controller.Phase,
 ) -> RunId {
@@ -490,7 +493,7 @@ fn store_orphaned_child(
       correlation: correlation.from_key(child),
     )
   let assert Ok(1) =
-    store.insert(store, child, record.encode(state), store.Keep)
+    store_core.insert(store, child, record.encode(state), store_core.Keep)
   support.id(child)
 }
 
@@ -506,7 +509,7 @@ pub fn a_tool_under_a_stopping_ancestor_never_starts_test() {
     store_orphaned_child(
       store,
       "run-ancestor",
-      run.Identity("payer", 1),
+      run.DefinitionId("payer", 1),
       [
         model.UserMessage("x"),
         model.AssistantMessage(model.AssistantTurn("", [t1], None)),
@@ -539,7 +542,7 @@ pub fn a_model_under_a_stopping_ancestor_never_starts_test() {
     store_orphaned_child(
       store,
       "run-elder",
-      run.Identity("agent", 1),
+      run.DefinitionId("agent", 1),
       [model.UserMessage("x")],
       controller.AwaitingModel(1),
     )
@@ -551,8 +554,8 @@ pub fn a_model_under_a_stopping_ancestor_never_starts_test() {
   states(recovered) |> should.equal([])
   probe.entries(probe) |> should.equal([])
   // Cancellation precedes the model request, so no delegation is reserved.
-  store.get(store, support.text(child) <> "-1")
-  |> should.equal(Error(store.NotFound))
+  store_core.get(store, support.text(child) <> "-1")
+  |> should.equal(Error(backend.NotFound))
 }
 
 /// An answer to a child races its parent's cancellation: the answer's
@@ -645,7 +648,7 @@ pub fn a_start_racing_an_ancestor_cancellation_never_runs_test() {
   let held = flaky.hold(backend, fn(run) { run == child })
   // A read through the backend: the hold is in place before the runner
   // writes again.
-  let _ = store.get(flaky.store(backend), child)
+  let _ = store_core.get(flaky.store(backend), child)
   process.send(armed, Nil)
   let assert Ok(_) = process.receive(held, 5000)
   let _ = sinal.detach(attached)
@@ -672,7 +675,7 @@ pub fn a_reattached_sub_agent_under_a_stopping_ancestor_never_starts_test() {
     store_orphaned_child(
       store,
       "run-elders",
-      run.Identity("agent", 1),
+      run.DefinitionId("agent", 1),
       [
         model.UserMessage("x"),
         model.AssistantMessage(model.AssistantTurn("", [r], None)),
@@ -694,8 +697,8 @@ pub fn a_reattached_sub_agent_under_a_stopping_ancestor_never_starts_test() {
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   probe.entries(probe) |> should.equal([])
   // The grandchild is a tombstone: cancelled before it ever started.
-  let assert Ok(store.Entry(record: stored, ..)) =
-    store.get(store, support.text(child) <> "-1")
+  let assert Ok(store_core.Entry(record: stored, ..)) =
+    store_core.get(store, support.text(child) <> "-1")
   let assert Ok(controller.State(phase: controller.NeverStarted, ..)) =
     record.decode(stored)
 }
@@ -719,7 +722,7 @@ fn settling_child(
           Ok(apps.Forecast("never"))
         },
         fn(_: Nil) { tool.Explain("failed") },
-        within: duration.milliseconds(5000),
+        settle_within: duration.milliseconds(5000),
       ),
     ],
     policy.always_allow(),

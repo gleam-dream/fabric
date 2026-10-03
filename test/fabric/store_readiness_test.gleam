@@ -2,16 +2,18 @@
 
 import fabric
 import fabric/agent
-import fabric/observation
+import fabric/internal/store as store_core
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
+import fabric/store/conformance
 import fabric/support
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
-import fabric/testing
+import fabric/telemetry
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/string
@@ -23,7 +25,7 @@ pub fn fresh_idle_stores_are_ready_before_their_first_renewal_test() {
   let runs = support.store()
   store.readiness(runs)
   |> should.equal(Ok(store.Readiness(store.Accepting, 0, store.Unleased)))
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let leased = nodes.node(memory.backend, "ready", nodes.long)
   store.readiness(leased)
   |> should.equal(
@@ -54,26 +56,26 @@ fn renewed(runs: store.Store, remaining: Int) -> Int {
 }
 
 pub fn claims_cover_initial_work_and_only_successful_renewals_refresh_age_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let bodies = probe.new()
   let failures = probe.new()
   let renewals = probe.new()
   let failed = process.new_subject()
   let attachment =
-    sinal.observe(observation.renewal_failed(), fn(_, failure) {
+    sinal.observe(telemetry.renewal_failed(), fn(_, failure) {
       case string.starts_with(failure.owner, "readiness/") {
         True -> process.send(failed, Nil)
         False -> Nil
       }
     })
   let backend =
-    store.LeasedBackend(..memory.backend, renew: fn(owner, runs, ttl) {
+    backend.LeasedBackend(..memory.backend, renew: fn(owner, runs, ttl) {
       case probe.count(failures, "fail") {
         0 -> {
           probe.gate(renewals, "renewal")
           memory.backend.renew(owner, runs, ttl)
         }
-        _ -> Error(store.Unavailable("renewal offline"))
+        _ -> Error(backend.Unavailable("renewal offline"))
       }
     })
   let runs = nodes.node(backend, "readiness", nodes.long)
@@ -94,7 +96,7 @@ pub fn claims_cover_initial_work_and_only_successful_renewals_refresh_age_test()
   )
   memory.backend.get(support.text(fabric.id(handle)))
   |> should.equal(Ok(before))
-  store.renew_now(runs)
+  store_core.renew_now(runs)
   let renewing = probe.arrival(renewals)
   // Renewal age includes the request's round trip, not just its response.
   process.sleep(20)
@@ -102,7 +104,7 @@ pub fn claims_cover_initial_work_and_only_successful_renewals_refresh_age_test()
   let first_age = renewed(runs, 1000)
   should.be_true(first_age >= 20)
   probe.record(failures, "fail")
-  store.renew_now(runs)
+  store_core.renew_now(runs)
   let assert Ok(Nil) = process.receive(failed, 5000)
   let assert Ok(report) = store.readiness(runs)
   report.status |> should.equal(store.Accepting)
@@ -117,56 +119,61 @@ pub fn claims_cover_initial_work_and_only_successful_renewals_refresh_age_test()
 }
 
 pub fn a_backend_failure_is_not_a_ready_store_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let offline =
-    store.LeasedBackend(..memory.backend, get: fn(_) {
-      Error(store.Unavailable("storage offline"))
+    backend.LeasedBackend(..memory.backend, get: fn(_) {
+      Error(backend.Unavailable("storage offline"))
     })
   store.readiness(nodes.node(offline, "offline", nodes.long))
-  |> should.equal(Error(store.Unavailable("storage offline")))
+  |> should.equal(Error(backend.Unavailable("storage offline")))
   let crashed =
-    store.LeasedBackend(..memory.backend, get: fn(_) {
+    backend.LeasedBackend(..memory.backend, get: fn(_) {
       panic as "storage crashed"
     })
-  let assert Error(store.Unavailable(_)) =
+  let assert Error(backend.Unavailable(_)) =
     store.readiness(nodes.node(crashed, "crashed", nodes.long))
 }
 
 pub fn a_slow_probe_is_bounded_and_does_not_block_other_reads_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let gates = probe.new()
   let backend =
-    store.LeasedBackend(..memory.backend, get: fn(key) {
+    backend.LeasedBackend(..memory.backend, get: fn(key) {
       case memory.backend.get(key) {
-        Error(store.NotFound) -> {
+        Error(backend.NotFound) -> {
           probe.gate(gates, "probe")
-          Error(store.NotFound)
+          Error(backend.NotFound)
         }
         found -> found
       }
     })
   let runs =
     nodes.node(backend, "bounded", nodes.long)
-    |> store.with_backend_timeout(100)
+    |> store_core.with_backend_timeout(100)
   let assert Ok(_) =
-    store.insert(runs, "existing", "record", store.Detached(False, False))
+    store_core.insert(
+      runs,
+      "existing",
+      "record",
+      store_core.Detached(False, False),
+    )
   let reply = process.new_subject()
   process.spawn(fn() { process.send(reply, store.readiness(runs)) })
   let _ = probe.arrival(gates)
-  let assert Ok(row) = store.get(runs, "existing")
+  let assert Ok(row) = store_core.get(runs, "existing")
   row.record |> should.equal("record")
-  let assert Ok(Error(store.Unavailable(_))) = process.receive(reply, 5000)
+  let assert Ok(Error(backend.Unavailable(_))) = process.receive(reply, 5000)
 }
 
 pub fn a_probe_finishing_after_drain_starts_reports_the_current_state_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let gates = probe.new()
   let bodies = probe.new()
   let backend =
-    store.LeasedBackend(..memory.backend, get: fn(key) {
+    backend.LeasedBackend(..memory.backend, get: fn(key) {
       let found = memory.backend.get(key)
       case found, probe.count(gates, "armed") {
-        Error(store.NotFound), armed if armed > 0 -> probe.gate(gates, "probe")
+        Error(backend.NotFound), armed if armed > 0 -> probe.gate(gates, "probe")
         _, _ -> Nil
       }
       found
@@ -201,11 +208,11 @@ pub fn a_probe_finishing_after_drain_starts_reports_the_current_state_test() {
   report.runners |> should.equal(1)
   probe.release(body)
   restart.stopped(app)
-  let assert Error(store.Unavailable(_)) = store.readiness(runs)
+  let assert Error(backend.Unavailable(_)) = store.readiness(runs)
 }
 
 pub fn a_restart_does_not_reuse_the_previous_process_renewal_time_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let bodies = probe.new()
   let assert Ok(runs) =
     store.leased(
@@ -225,7 +232,7 @@ pub fn a_restart_does_not_reuse_the_previous_process_renewal_time_test() {
       correlation: None,
     )
   let body = probe.arrival(bodies)
-  store.renew_now(runs)
+  store_core.renew_now(runs)
   let _ = renewed(runs, 1000)
   probe.release(body)
   let assert Ok(_) = fabric.await(handle, within: duration.milliseconds(5000))
@@ -239,14 +246,15 @@ pub fn a_restart_does_not_reuse_the_previous_process_renewal_time_test() {
 }
 
 pub fn a_delayed_report_cannot_reuse_an_expired_lease_window_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let bodies = probe.new()
   let probes = probe.new()
   let backend =
-    store.LeasedBackend(..memory.backend, get: fn(key) {
+    backend.LeasedBackend(..memory.backend, get: fn(key) {
       let found = memory.backend.get(key)
       case found, probe.count(probes, "armed") {
-        Error(store.NotFound), armed if armed > 0 -> probe.gate(probes, "probe")
+        Error(backend.NotFound), armed if armed > 0 ->
+          probe.gate(probes, "probe")
         _, _ -> Nil
       }
       found
@@ -266,7 +274,7 @@ pub fn a_delayed_report_cannot_reuse_an_expired_lease_window_test() {
   let reply = process.new_subject()
   process.spawn(fn() { process.send(reply, store.readiness(runs)) })
   let checking = probe.arrival(probes)
-  let assert Ok(owner) = store.pid(runs)
+  let assert Ok(owner) = store_core.pid(runs)
   restart.suspend(owner)
   probe.release(checking)
   queued(owner, 1000)

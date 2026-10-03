@@ -6,12 +6,12 @@
 
 import fabric
 import fabric/agent
-import fabric/observation as o
 import fabric/policy
 import fabric/run
 import fabric/support
 import fabric/support/apps.{type City, type Forecast, Forecast}
 import fabric/support/scripted
+import fabric/telemetry as o
 import fabric/tool
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -67,7 +67,7 @@ fn settling_tool(
       }
     },
     fn(_: Nil) { tool.Explain("failed") },
-    within: duration.milliseconds(within),
+    settle_within: duration.milliseconds(within),
   )
 }
 
@@ -267,7 +267,7 @@ fn named_settling(
       Ok(Forecast("never"))
     },
     fn(_: Nil) { tool.Explain("failed") },
-    within: duration.milliseconds(within),
+    settle_within: duration.milliseconds(within),
   )
 }
 
@@ -393,7 +393,7 @@ pub fn a_refused_settlement_is_observed_test() {
   #(second.offered, second.reason, second.summary)
   |> should.equal(#(o.ModelVisible, o.NotAwaited, "the service reported cloudy"))
   first.action
-  |> should.equal(o.ActionRef(
+  |> should.equal(o.Action(
     support.text(fabric.id(run)),
     1,
     "w",

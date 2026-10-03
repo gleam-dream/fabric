@@ -2,6 +2,7 @@
 //// and observation use the ordinary public graph and agent APIs.
 
 import fabric/budget as quota
+import fabric/internal/checked_agent
 
 import fabric
 import fabric/agent
@@ -16,10 +17,11 @@ import fabric/internal/graph/controller as graph_control
 import fabric/internal/graph/record as graph_record
 import fabric/internal/record
 import fabric/internal/runner
+import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
 import fabric/run
-import fabric/store
+import fabric/store/backend
 import fabric/support
 import fabric/support/flaky
 import fabric/support/probe
@@ -53,7 +55,7 @@ fn limits() {
 }
 
 fn declared(runs, kind) {
-  let assert Ok(entry) = store.get(runs, "root")
+  let assert Ok(entry) = store_core.get(runs, "root")
   case kind {
     Agent -> {
       let assert Ok(state) = record.decode(entry.record)
@@ -87,13 +89,18 @@ fn fixture(runs, kind, initialized, calls) {
           policy.always_allow(),
         )
         |> support.agent
-      let setup = runner.setup(runs, agent.admitted(worker), Nil, None)
+      let setup = runner.setup(runs, checked_agent.admitted(worker), Nil, None)
       let #(state, _) =
         runner.root_state(setup, "root", "go", correlation.from_key("root"))
       let state = controller.State(..state, family_budget: declaration)
-      let assert Ok(encoded) = store.encode(runs, state)
+      let assert Ok(encoded) = store_core.encode(runs, state)
       let assert Ok(_) =
-        store.insert(runs, "root", encoded, store.Detached(True, False))
+        store_core.insert(
+          runs,
+          "root",
+          encoded,
+          store_core.Detached(True, False),
+        )
       let assert Ok(handle) = fabric.open(runs, worker, Nil, support.id("root"))
       Fixture(
         fn() {
@@ -124,7 +131,7 @@ fn fixture(runs, kind, initialized, calls) {
       let assert Ok(node) = definition.node_id("work")
       let op =
         operation.new(
-          run.Identity("work", 1),
+          run.DefinitionId("work", 1),
           codec.int(),
           codec.int(),
           fn(_, _, value) {
@@ -143,7 +150,7 @@ fn fixture(runs, kind, initialized, calls) {
         )
       let assert Ok(spec) =
         definition.build(definition.Spec(
-          run.Identity("graph", 1),
+          run.DefinitionId("graph", 1),
           node,
           [step],
           codec.int(),
@@ -156,7 +163,12 @@ fn fixture(runs, kind, initialized, calls) {
       let state = graph_control.State(..state, family_budget: declaration)
       let assert Ok(encoded) = graph_record.encode(state)
       let assert Ok(_) =
-        store.insert(runs, "root", encoded, store.Detached(True, False))
+        store_core.insert(
+          runs,
+          "root",
+          encoded,
+          store_core.Detached(True, False),
+        )
       let runtime =
         graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
       let handle = graph.attach(runtime, support.id("root"))
@@ -238,7 +250,7 @@ pub fn an_initialized_root_with_a_missing_ledger_never_gets_fresh_capacity_test(
     f.recover() |> should.equal(Error(Nil))
     f.idle() |> should.be_true
     ledger.read(runs, "root")
-    |> should.equal(Error(ledger.Storage(store.NotFound)))
+    |> should.equal(Error(ledger.Storage(backend.NotFound)))
     declared(runs, kind)
     |> should.equal(Some(budget.Declaration(limits(), True)))
     probe.entries(calls) |> should.equal([])

@@ -4,7 +4,7 @@
 //// statement fails with 40001, which the backend reads back or retries,
 //// so its callers see the same results at both levels.
 
-import fabric/store
+import fabric/store/backend
 import fabric_postgres
 import fabric_postgres/support
 import gleam/dynamic/decode
@@ -97,10 +97,10 @@ pub fn a_blocked_update_fails_only_under_repeatable_read_test() {
       |> pog.execute(connection)
     }
   }
-  let assert Ok(Nil) = backend.insert("run-a1", "a", store.Release)
+  let assert Ok(Nil) = backend.insert("run-a1", "a", backend.Release)
   let assert Ok(returned) = behind(holder, bump, raw(support.pool(1), "run-a1"))
   returned.count |> should.equal(0)
-  let assert Ok(Nil) = backend.insert("run-a2", "a", store.Release)
+  let assert Ok(Nil) = backend.insert("run-a2", "a", backend.Release)
   let rr = repeatable_read(1)
   isolation(rr) |> should.equal("repeatable read")
   let assert Error(pog.PostgresqlError(code: "40001", ..)) =
@@ -123,25 +123,25 @@ pub fn blocked_writes_report_the_committed_row_at_both_levels_test() {
       fabric_postgres.settings(connection, node: "a")
       |> fabric_postgres.with_schema(schema)
     let backend = fabric_postgres.backend(settings)
-    let assert Ok(Nil) = backend.insert("run-a1", "a", store.Release)
+    let assert Ok(Nil) = backend.insert("run-a1", "a", backend.Release)
     behind(
       holder,
       "UPDATE " <> table(schema) <> " SET revision = 2, record = 'b'",
-      fn() { backend.compare_and_set("run-a1", 1, "c", store.Release) },
+      fn() { backend.compare_and_set("run-a1", 1, "c", backend.Release) },
     )
-    |> should.equal(Error(store.Conflict(2)))
+    |> should.equal(Error(backend.Conflict(2)))
     behind(
       holder,
       "UPDATE "
         <> table(schema)
         <> " SET lease_owner = 'o2', lease_until = clock_timestamp() + interval '1 minute'",
       fn() {
-        backend.compare_and_set("run-a1", 2, "c", store.Claim("o1", 60_000))
+        backend.compare_and_set("run-a1", 2, "c", backend.Claim("o1", 60_000))
       },
     )
-    |> should.equal(Error(store.LeaseRefused(store.Held("o2", True))))
+    |> should.equal(Error(backend.LeaseRefused(backend.Held("o2", True))))
     backend.get("run-a1")
-    |> should.equal(Ok(store.Current(2, "b", store.Held("o2", True))))
+    |> should.equal(Ok(backend.Current(2, "b", backend.Held("o2", True))))
   })
 }
 
@@ -158,7 +158,7 @@ pub fn a_blocked_renewal_still_renews_at_both_levels_test() {
       |> fabric_postgres.with_schema(schema)
     let backend = fabric_postgres.backend(settings)
     let assert Ok(Nil) =
-      backend.insert("run-a1", "a", store.Claim("o1", 60_000))
+      backend.insert("run-a1", "a", backend.Claim("o1", 60_000))
     behind(
       holder,
       "UPDATE " <> table(schema) <> " SET revision = 2, record = 'b'",
@@ -166,7 +166,7 @@ pub fn a_blocked_renewal_still_renews_at_both_levels_test() {
     )
     |> should.equal(Ok(["run-a1"]))
     backend.get("run-a1")
-    |> should.equal(Ok(store.Current(2, "b", store.Held("o1", True))))
+    |> should.equal(Ok(backend.Current(2, "b", backend.Held("o1", True))))
   })
 }
 
@@ -176,7 +176,7 @@ pub fn racing_writers_under_repeatable_read_have_one_winner_per_revision_test() 
   let connection = repeatable_read(16)
   let settings = support.migrated(connection, "a", support.schema())
   let backend = fabric_postgres.backend(settings)
-  let assert Ok(Nil) = backend.insert("run-a1", "0", store.Release)
+  let assert Ok(Nil) = backend.insert("run-a1", "0", backend.Release)
   let results = process.new_subject()
   list.each(list.repeat(Nil, 16), fn(_) {
     process.spawn(fn() {
@@ -187,7 +187,7 @@ pub fn racing_writers_under_repeatable_read_have_one_winner_per_revision_test() 
             "run-a1",
             current.revision,
             "w",
-            store.Release,
+            backend.Release,
           )
         process.send(results, #(current.revision, outcome))
       })
@@ -208,7 +208,7 @@ pub fn racing_writers_under_repeatable_read_have_one_winner_per_revision_test() 
   list.length(list.unique(wins)) |> should.equal(list.length(wins))
   list.filter(outcomes, fn(outcome) {
     case outcome.1 {
-      Ok(Nil) | Error(store.Conflict(_)) -> False
+      Ok(Nil) | Error(backend.Conflict(_)) -> False
       Error(_) -> True
     }
   })

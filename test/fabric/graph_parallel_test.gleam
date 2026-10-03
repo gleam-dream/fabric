@@ -4,6 +4,7 @@ import fabric/graph/fork
 import fabric/graph/operation
 import fabric/internal/graph/controller
 import fabric/internal/graph/record
+import fabric/internal/store as store_core
 import fabric/policy
 import fabric/run
 import fabric/store
@@ -46,7 +47,7 @@ fn member_with_policy(
     definition.node(
       node_id("work"),
       operation.new(
-        run.Identity(name <> "-work", 1),
+        run.DefinitionId(name <> "-work", 1),
         input,
         output,
         fn(_, _, value) { perform(value) },
@@ -58,7 +59,7 @@ fn member_with_policy(
     )
   let assert Ok(definition) =
     definition.build(definition.Spec(
-      run.Identity(name, 1),
+      run.DefinitionId(name, 1),
       node_id("work"),
       [node],
       input,
@@ -90,12 +91,13 @@ fn paired_with(
     Result(definition.Command(#(Int, String), #(Int, String)), String),
 ) -> graph.Runtime(Nil, #(Int, String), #(Int, String)) {
   let values = codec.pair(codec.int(), codec.string())
-  let assert Ok(both) = graph.both(run.Identity("paired-work", 1), left, right)
+  let assert Ok(both) =
+    graph.both(run.DefinitionId("paired-work", 1), left, right)
   let node =
     definition.node(node_id("pair"), both, fn(state) { Ok(state) }, accept, [])
   let assert Ok(definition) =
     definition.build(definition.Spec(
-      run.Identity("pair-parent", 1),
+      run.DefinitionId("pair-parent", 1),
       node_id("pair"),
       [node],
       values,
@@ -114,7 +116,7 @@ fn mapped(
   let values = codec.list(codec.int())
   let assert Ok(map) =
     graph.map(
-      run.Identity("mapped-work", 1),
+      run.DefinitionId("mapped-work", 1),
       child,
       max_members: maximum,
       concurrency: concurrency,
@@ -134,7 +136,7 @@ fn mapped(
     )
   let assert Ok(definition) =
     definition.build(definition.Spec(
-      run.Identity("map-parent", 1),
+      run.DefinitionId("map-parent", 1),
       node_id("map"),
       [node],
       values,
@@ -188,9 +190,9 @@ pub fn map_validates_bounds_and_handles_empty_and_oversized_input_test() {
       process.send(started, n)
       Ok(n)
     })
-  graph.map(run.Identity("map", 1), child, max_members: 0, concurrency: 1)
+  graph.map(run.DefinitionId("map", 1), child, max_members: 0, concurrency: 1)
   |> should.be_error
-  graph.map(run.Identity("map", 1), child, max_members: 2, concurrency: 0)
+  graph.map(run.DefinitionId("map", 1), child, max_members: 2, concurrency: 0)
   |> should.be_error
   let runtime = mapped(runs, child, 2, 1)
   let assert Ok(empty) = graph.start(runtime, support.id("map-empty"), [])
@@ -543,7 +545,7 @@ pub fn typed_pair_rejects_changed_members_and_saved_outputs_test() {
     graph.start(paired(runs, left, right), id, #(41, "two"))
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(#(42, "two")))
-  let assert Ok(entry) = store.get(runs, run.id_to_string(id))
+  let assert Ok(entry) = store_core.get(runs, run.id_to_string(id))
   let assert Ok(saved) = record.decode(entry.record)
   let assert [scope] = saved.forks
   let assert [first, second] = scope.members
@@ -562,12 +564,12 @@ pub fn typed_pair_rejects_changed_members_and_saved_outputs_test() {
       ])
     let assert Ok(bytes) = record.encode(corrupt)
     let assert Ok(revision) =
-      store.commit(
+      store_core.commit(
         runs,
         run.id_to_string(id),
         revision,
         bytes,
-        store.Detached(False, False),
+        store_core.Detached(False, False),
       )
     graph.read(handle) |> should.be_error
     graph.recover(handle) |> should.be_error

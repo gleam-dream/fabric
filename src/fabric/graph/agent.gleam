@@ -6,14 +6,18 @@ import fabric/agent as worker
 import fabric/graph
 import fabric/graph/child
 import fabric/graph/operation
+import fabric/internal/checked_agent
 import fabric/internal/controller
 import fabric/internal/family
 import fabric/internal/graph/agent_child
 import fabric/internal/graph/child_driver
+import fabric/internal/run_id
 import fabric/internal/runner
+import fabric/internal/store as store_core
 import fabric/model
 import fabric/run
 import fabric/store
+import fabric/store/backend
 import gleam/dict
 import gleam/int
 import gleam/list
@@ -29,7 +33,7 @@ import sinal/correlation
 /// call them again. Only the agent runner performs model and tool effects.
 pub type Definition(context, input, output) {
   Definition(
-    identity: run.Identity,
+    identity: run.DefinitionId,
     agent: worker.Agent(context),
     input: Codec(input),
     output: Codec(output),
@@ -55,7 +59,7 @@ pub fn new(
   runs: store.Store,
   context: fn() -> context,
 ) -> Result(Runtime(context, input, output), ConfigurationError) {
-  let admitted = worker.admitted(definition.agent)
+  let admitted = checked_agent.admitted(definition.agent)
   let maximum =
     string.length(child.reserved_id("parent", 1))
     + suffix_length(admitted, admitted.max_depth)
@@ -65,7 +69,10 @@ pub fn new(
   }
 }
 
-fn suffix_length(agent: worker.Admitted(context), remaining: Int) -> Int {
+fn suffix_length(
+  agent: checked_agent.Admitted(context),
+  remaining: Int,
+) -> Int {
   let remaining = int.min(remaining, agent.max_depth)
   case
     remaining <= 0 || agent.max_children == 0 || dict.size(agent.children) == 0
@@ -93,7 +100,7 @@ pub fn as_operation(
     runtime.definition.input,
     output,
     child_driver.Driver(
-      store: fn() { store.pid(runs) },
+      store: fn() { store_core.pid(runs) },
       reserve: fn(parent, id, input, reservation) {
         reserve(runtime, parent, id, input, reservation, 3)
       },
@@ -132,7 +139,10 @@ pub fn child(
   runtime: Runtime(context, input, output),
 ) -> Result(fabric.Run(context), OpenError) {
   use _ <- result.try(
-    case store.pid(graph.backing_store(parent)), store.pid(runtime.store) {
+    case
+      store_core.pid(graph.backing_store(parent)),
+      store_core.pid(runtime.store)
+    {
       Ok(parent_store), Ok(child_store) if parent_store == child_store -> Ok(Nil)
       _, _ -> Error(DifferentStore)
     },
@@ -144,7 +154,7 @@ pub fn child(
       runtime.store,
       runtime.definition.agent,
       runtime.context(),
-      run.issued(id),
+      run_id.from_string(id),
     )
     |> result.map_error(Unreadable),
   )
@@ -192,7 +202,7 @@ fn cancel(
           runner.cancel_unattended(
             runtime.store,
             id,
-            worker.admitted(runtime.definition.agent).command_timeout,
+            checked_agent.admitted(runtime.definition.agent).command_timeout,
             tries,
           )
           |> result.replace(Nil)
@@ -200,7 +210,7 @@ fn cancel(
       }
     }
     Error(runner.NotFound) -> {
-      let agent = worker.admitted(runtime.definition.agent)
+      let agent = checked_agent.admitted(runtime.definition.agent)
       let tombstone =
         controller.State(
           run: id,
@@ -224,14 +234,19 @@ fn cancel(
           correlation: correlation.from_key(id),
         )
       use encoded <- result.try(
-        store.encode(runtime.store, tombstone)
+        store_core.encode(runtime.store, tombstone)
         |> result.map_error(string.inspect),
       )
       case
-        store.insert(runtime.store, id, encoded, store.Detached(False, False))
+        store_core.insert(
+          runtime.store,
+          id,
+          encoded,
+          store_core.Detached(False, False),
+        )
       {
         Ok(_) -> Ok(Nil)
-        Error(store.AlreadyExists) if tries > 1 ->
+        Error(backend.AlreadyExists) if tries > 1 ->
           cancel(runtime, parent, id, tries - 1)
         Error(error) -> Error(string.inspect(error))
       }
@@ -251,7 +266,7 @@ fn start(
   let setup =
     runner.setup(
       runtime.store,
-      worker.admitted(definition.agent),
+      checked_agent.admitted(definition.agent),
       runtime.context(),
       None,
     )
@@ -287,7 +302,7 @@ fn start(
       )
       case runner.launch_new(setup, initial, effects) {
         Ok(_) -> Ok(Nil)
-        Error(store.AlreadyExists) if tries > 1 ->
+        Error(backend.AlreadyExists) if tries > 1 ->
           start(runtime, parent, id, encoded, tries - 1)
         Error(error) -> Error(string.inspect(error))
       }

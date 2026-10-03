@@ -63,7 +63,7 @@ pub fn runtime(
 ) -> graph.Runtime(client.Config, String, String) {
   let reviewer =
     fabric_typesafe.new(
-      run.Identity("arithmetic-classifier", 1),
+      run.DefinitionId("arithmetic-classifier", 1),
       codec.string(),
       questions(),
       fn(settings, input) {
@@ -71,7 +71,7 @@ pub fn runtime(
       },
     )
   routing.runtime(
-    run.Identity("arithmetic-classifier-graph", 1),
+    run.DefinitionId("arithmetic-classifier-graph", 1),
     runs,
     fn() { config },
     reviewer,

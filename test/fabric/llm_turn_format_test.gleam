@@ -8,6 +8,7 @@
 
 import fabric
 import fabric/agent
+import fabric/internal/model_port
 import fabric/llm
 import fabric/model
 import fabric/policy
@@ -150,7 +151,7 @@ fn replaying(fixture: Fixture, wire: model.Model) -> model.Model {
   model.new(fn(request: model.Request) {
     case list.any(request.messages, is_assistant) {
       False -> Ok(model.ToolRequest(stored, None))
-      True -> model.call(wire, request)
+      True -> model_port.call(wire, request)
     }
   })
 }

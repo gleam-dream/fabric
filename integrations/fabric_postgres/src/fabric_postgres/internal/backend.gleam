@@ -19,14 +19,14 @@
 //// rows with `FOR UPDATE SKIP LOCKED` so that concurrent claimers never
 //// take the same run. Neither changes a revision.
 
-import fabric/discovery
-import fabric/retention
-import fabric/statistics
-import fabric/store.{
+import fabric/store/backend.{
   type Current, type Holder, type Lease, type LeasedBackend, type StoreError,
   AlreadyExists, Claim, Conflict, Current, Free, Held, Hold, LeaseRefused,
   LeasedBackend, NotFound, Release, Seize, Unavailable,
 }
+import fabric/store/discovery
+import fabric/store/retention
+import fabric/store/statistics
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json

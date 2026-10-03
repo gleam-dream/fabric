@@ -2,6 +2,7 @@ import fabric
 import fabric/agent
 import fabric/internal/invocation
 import fabric/internal/registry
+import fabric/internal/run_id
 import fabric/model
 import fabric/policy
 import fabric/run
@@ -270,7 +271,7 @@ pub fn a_drifted_definition_fails_the_policy_closed_test() {
 
 fn call() -> tool.Call {
   tool.Call(
-    run: run.issued("registry"),
+    run: run_id.from_string("registry"),
     action: run.ActionId(1, "c1"),
     correlation: correlation.from_key("registry"),
   )

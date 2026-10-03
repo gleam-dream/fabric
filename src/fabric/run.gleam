@@ -54,12 +54,6 @@ pub fn id_to_string(id: RunId) -> String {
   run_id.to_string(id)
 }
 
-/// A run id Fabric issued or read from a record it wrote.
-@internal
-pub fn issued(text: String) -> RunId {
-  run_id.from_string(text)
-}
-
 /// Identifies an action within one run. A provider call id alone is not
 /// unique: providers reuse ids on later turns.
 pub type ActionId {
@@ -136,14 +130,14 @@ pub type Approval {
 
 /// The agent definition a run was started with. A stored run continues
 /// only under the same name and version.
-pub type Identity {
-  Identity(name: String, version: Int)
+pub type DefinitionId {
+  DefinitionId(name: String, version: Int)
 }
 
 /// Why a stored run cannot continue under a given agent.
 pub type Incompatibility {
   /// The run was started by another agent definition.
-  OtherAgent(stored: Identity)
+  OtherAgent(stored: DefinitionId)
   /// An action that may still run names a tool the agent does not have.
   ToolNotRegistered(id: ActionId, tool: String)
   /// An action that has not started yet names a tool whose input codec no
@@ -255,7 +249,7 @@ pub type TokenUsage {
 pub type Snapshot {
   Snapshot(
     run: RunId,
-    agent: Identity,
+    agent: DefinitionId,
     /// Increases by one each time recovery takes over work that no live
     /// runner owned.
     incarnation: Int,

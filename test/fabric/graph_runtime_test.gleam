@@ -2,15 +2,17 @@ import fabric/budget
 import fabric/graph
 import fabric/graph/definition
 import fabric/graph/operation
+import fabric/internal/store as store_core
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
+import fabric/store/conformance
 import fabric/support
 import fabric/support/flaky
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
-import fabric/testing
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -40,7 +42,7 @@ fn loop(
     definition.node(
       id("generate"),
       operation.new(
-        run.Identity("generate", 1),
+        run.DefinitionId("generate", 1),
         codec.int(),
         codec.int(),
         perform,
@@ -54,7 +56,7 @@ fn loop(
     definition.node(
       id("review"),
       operation.new(
-        run.Identity("review", 1),
+        run.DefinitionId("review", 1),
         codec.int(),
         codec.bool(),
         fn(_, _, n) { Ok(n >= 3) },
@@ -71,7 +73,7 @@ fn loop(
     )
   let assert Ok(definition) =
     definition.build(definition.Spec(
-      run.Identity("review-loop", 1),
+      run.DefinitionId("review-loop", 1),
       id("generate"),
       [generate, review],
       codec.int(),
@@ -261,7 +263,7 @@ pub fn approval_uses_fresh_context_and_passes_it_to_the_admitted_body_test() {
   let body = probe.new()
   let op =
     operation.new(
-      run.Identity("publish", 1),
+      run.DefinitionId("publish", 1),
       codec.int(),
       codec.int(),
       fn(role, _, n) {
@@ -280,7 +282,7 @@ pub fn approval_uses_fresh_context_and_passes_it_to_the_admitted_body_test() {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("publish", 1),
+      run.DefinitionId("publish", 1),
       id("publish"),
       [node],
       codec.int(),
@@ -343,7 +345,7 @@ fn one(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("single", 1),
+      run.DefinitionId("single", 1),
       id("only"),
       [node],
       codec.int(),
@@ -355,7 +357,7 @@ fn one(
 
 fn effect(ledger: probe.Probe) -> definition.Definition(context, Int, Int) {
   one(operation.new(
-    run.Identity("effect", 1),
+    run.DefinitionId("effect", 1),
     codec.int(),
     codec.int(),
     fn(_, _, n) {
@@ -464,7 +466,7 @@ pub fn operation_timeout_blocks_with_uncertainty_and_kills_the_body_test() {
   let started = process.new_subject()
   let spec =
     one(operation.new(
-      run.Identity("slow", 1),
+      run.DefinitionId("slow", 1),
       codec.int(),
       codec.int(),
       fn(_, _, n) {
@@ -494,7 +496,7 @@ pub fn operation_timeout_blocks_with_uncertainty_and_kills_the_body_test() {
 pub fn cancelled_reconciliation_retains_output_without_calling_a_broken_route_test() {
   let op =
     operation.new(
-      run.Identity("body", 1),
+      run.DefinitionId("body", 1),
       codec.int(),
       codec.int(),
       fn(_, _, n) { Ok(n + 1) },
@@ -510,7 +512,7 @@ pub fn cancelled_reconciliation_retains_output_without_calling_a_broken_route_te
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("broken-route", 1),
+      run.DefinitionId("broken-route", 1),
       id("broken-route"),
       [node],
       codec.int(),
@@ -531,7 +533,7 @@ pub fn cancelled_reconciliation_retains_output_without_calling_a_broken_route_te
   done.value |> should.equal(0)
   let assert [receipt] = done.receipts
   receipt.output_json |> should.equal("1")
-  receipt.route |> should.equal(graph.Canceled)
+  receipt.route |> should.equal(graph.Stopped)
 }
 
 pub fn replay_after_process_loss_is_bounded_and_keeps_the_logical_identity_test() {
@@ -539,7 +541,7 @@ pub fn replay_after_process_loss_is_bounded_and_keeps_the_logical_identity_test(
   let gate = probe.new()
   let op =
     operation.new(
-      run.Identity("replayable", 1),
+      run.DefinitionId("replayable", 1),
       codec.int(),
       codec.int(),
       fn(_, invocation, n) {
@@ -626,13 +628,13 @@ pub fn a_draining_graph_finishes_its_body_and_hands_off_the_saved_successor_test
 }
 
 pub fn a_live_foreign_lease_is_not_taken_by_graph_recovery_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let first = nodes.node(memory.backend, "graph-a", nodes.long)
   let second = nodes.node(memory.backend, "graph-b", nodes.long)
   let ledger = probe.new()
   let spec =
     one(operation.new(
-      run.Identity("held", 1),
+      run.DefinitionId("held", 1),
       codec.int(),
       codec.int(),
       fn(_, _, n) {
@@ -698,7 +700,7 @@ pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
   probe.record(requirements, "changed")
   let assert Ok(changed) = graph.approve(handle, first)
   let assert graph.AwaitingApproval(second) = changed.status
-  graph.approval_requirement(second)
+  second.requirement
   |> should.equal(run.Requirement("publish", 2))
   let assert Error(graph.CommandRefused(_)) = graph.approve(handle, first)
   probe.entries(ledger) |> should.equal([])
@@ -719,7 +721,7 @@ pub fn incompatible_definitions_are_refused_but_do_not_prevent_cancellation_test
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(1000))
   let changed =
     one(operation.new(
-      run.Identity("effect", 2),
+      run.DefinitionId("effect", 2),
       codec.int(),
       codec.int(),
       fn(_, _, n) {
@@ -742,12 +744,12 @@ pub fn incompatible_definitions_are_refused_but_do_not_prevent_cancellation_test
 }
 
 pub fn losing_a_lease_kills_the_graph_body_before_recovery_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let first = nodes.node(memory.backend, "lease-a", nodes.long)
   let started = process.new_subject()
   let spec =
     one(operation.new(
-      run.Identity("held", 1),
+      run.DefinitionId("held", 1),
       codec.int(),
       codec.int(),
       fn(_, _, n) {
@@ -766,10 +768,10 @@ pub fn losing_a_lease_kills_the_graph_body_before_recovery_test() {
     "lease-loss",
     current.revision,
     current.record,
-    store.Seize("another", nodes.long),
+    backend.Seize("another", nodes.long),
   )
   |> should.equal(Ok(Nil))
-  store.renew_now(first)
+  store_core.renew_now(first)
   restart.gone(body)
   memory.advance(nodes.long + 1)
   let second = nodes.node(memory.backend, "lease-b", nodes.long)
@@ -847,7 +849,7 @@ pub fn restart_uses_the_saved_branch_even_when_the_decision_producer_changes_its
   let branches = probe.new()
   let choose =
     operation.new(
-      run.Identity("choose", 1),
+      run.DefinitionId("choose", 1),
       codec.string(),
       codec.bool(),
       fn(_, _, _) {
@@ -874,7 +876,7 @@ pub fn restart_uses_the_saved_branch_even_when_the_decision_producer_changes_its
   let branch = fn(name) {
     let op =
       operation.new(
-        run.Identity(name, 1),
+        run.DefinitionId(name, 1),
         codec.string(),
         codec.string(),
         fn(_, _, _) {
@@ -893,7 +895,7 @@ pub fn restart_uses_the_saved_branch_even_when_the_decision_producer_changes_its
   }
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("choice", 1),
+      run.DefinitionId("choice", 1),
       id("choose"),
       [chooser, branch("left"), branch("right")],
       codec.string(),

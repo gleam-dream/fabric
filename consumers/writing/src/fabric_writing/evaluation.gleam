@@ -28,7 +28,7 @@ pub fn runtime(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("writing-decision-evaluation", 1),
+      run.DefinitionId("writing-decision-evaluation", 1),
       id,
       [review],
       domain.draft_codec(),

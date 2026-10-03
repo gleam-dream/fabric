@@ -6,15 +6,15 @@ import fabric/graph
 import fabric/graph/definition
 import fabric/graph/job
 import fabric/graph/operation
-import fabric/observation as o
 import fabric/policy
 import fabric/run
-import fabric/store
+import fabric/store/backend
+import fabric/store/conformance
 import fabric/support
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
-import fabric/testing
+import fabric/telemetry as o
 import gleam/erlang/process
 import gleam/result
 import gleam/time/duration
@@ -25,7 +25,7 @@ import sinal
 fn runtime(runs, every, read) {
   let observer =
     job.observe(
-      run.Identity("scheduled-job", 1),
+      run.DefinitionId("scheduled-job", 1),
       codec.string(),
       codec.int(),
       fn(_, receipt) { read(receipt) },
@@ -43,7 +43,7 @@ fn runtime(runs, every, read) {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("scheduled-flow", 1),
+      run.DefinitionId("scheduled-flow", 1),
       id,
       [node],
       codec.string(),
@@ -60,7 +60,7 @@ fn scan(runs, build) {
   let assert Ok(spec) =
     fabric.sweeper(
       runs,
-      [graph.recovery(run.Identity("scheduled-flow", 1), build)],
+      [graph.recovery(run.DefinitionId("scheduled-flow", 1), build)],
       every: duration.milliseconds(60_000),
     )
   let assert Ok(started) = spec.start()
@@ -72,7 +72,7 @@ fn scan(runs, build) {
 }
 
 pub fn scheduled_observation_reuses_one_work_grant_and_waits_for_backend_time_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "schedule", nodes.long)
   let calls = probe.new()
   let build = fn(runs) {
@@ -98,7 +98,7 @@ pub fn scheduled_observation_reuses_one_work_grant_and_waits_for_backend_time_te
   let assert graph.AwaitingJob(_) = waiting.status
   scan(runs, build).recovered |> should.equal(1)
   probe.entries(calls) |> should.equal(["observe"])
-  nodes.holder(memory.backend, id) |> should.equal(store.Free)
+  nodes.holder(memory.backend, id) |> should.equal(backend.Free)
   scan(runs, build).claimed |> should.equal(0)
   probe.entries(calls) |> should.equal(["observe"])
   memory.advance(60_000)
@@ -111,9 +111,12 @@ pub fn scheduled_observation_reuses_one_work_grant_and_waits_for_backend_time_te
 
 pub fn polling_intervals_are_bounded_and_part_of_definition_compatibility_test() {
   let observer =
-    job.observe(run.Identity("job", 1), codec.string(), codec.int(), fn(_, _) {
-      Ok(job.Completed(42))
-    })
+    job.observe(
+      run.DefinitionId("job", 1),
+      codec.string(),
+      codec.int(),
+      fn(_, _) { Ok(job.Completed(42)) },
+    )
   job.with_poll_interval(observer, duration.milliseconds(0)) |> should.be_error
   job.with_poll_interval(observer, duration.milliseconds(-1)) |> should.be_error
   job.with_poll_interval(observer, duration.milliseconds(4_294_967_296))
@@ -137,7 +140,7 @@ pub fn polling_intervals_are_bounded_and_part_of_definition_compatibility_test()
 }
 
 pub fn a_failed_observer_keeps_a_retry_claim_until_expiry_and_recovers_after_store_loss_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let #(owner, #(runs, handle)) =
     restart.owned(fn() {
       let runs = nodes.node(memory.backend, "old-job-owner", nodes.long)
@@ -156,7 +159,7 @@ pub fn a_failed_observer_keeps_a_retry_claim_until_expiry_and_recovers_after_sto
     runtime(runs, 1000, fn(_) { Error("service unavailable") })
   }).failed
   |> should.equal(1)
-  let assert store.Held(_, True) = nodes.holder(memory.backend, reference.run)
+  let assert backend.Held(_, True) = nodes.holder(memory.backend, reference.run)
   restart.crash(owner, runs)
   let restored = nodes.node(memory.backend, "new-job-owner", nodes.long)
   let build = fn(runs) { runtime(runs, 1000, fn(_) { Ok(job.Completed(42)) }) }
@@ -169,7 +172,7 @@ pub fn a_failed_observer_keeps_a_retry_claim_until_expiry_and_recovers_after_sto
 }
 
 pub fn discovery_of_a_parent_does_not_poll_an_unclaimed_job_early_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "nested-job", nodes.long)
   let calls = probe.new()
   let build_child = fn(runs) {
@@ -194,7 +197,7 @@ pub fn discovery_of_a_parent_does_not_poll_an_unclaimed_job_early_test() {
       )
     let assert Ok(spec) =
       definition.build(definition.Spec(
-        run.Identity("scheduled-flow", 1),
+        run.DefinitionId("scheduled-flow", 1),
         id,
         [node],
         codec.string(),
@@ -222,12 +225,12 @@ pub fn discovery_of_a_parent_does_not_poll_an_unclaimed_job_early_test() {
 }
 
 pub fn each_new_visit_is_eligible_without_waiting_for_the_previous_interval_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "poll-cycle", nodes.long)
   let build = fn(runs) {
     let observer =
       job.observe(
-        run.Identity("cycle-job", 1),
+        run.DefinitionId("cycle-job", 1),
         codec.int(),
         codec.int(),
         fn(_, n) { Ok(job.Completed(n + 1)) },
@@ -250,7 +253,7 @@ pub fn each_new_visit_is_eligible_without_waiting_for_the_previous_interval_test
       )
     let assert Ok(spec) =
       definition.build(definition.Spec(
-        run.Identity("scheduled-flow", 1),
+        run.DefinitionId("scheduled-flow", 1),
         id,
         [node],
         codec.int(),
@@ -272,12 +275,12 @@ pub fn each_new_visit_is_eligible_without_waiting_for_the_previous_interval_test
 }
 
 pub fn discovery_rechecks_a_claim_released_after_its_initial_read_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let id = support.id("released-job-claim")
   let race = probe.new()
   let calls = probe.new()
   let backend =
-    store.LeasedBackend(..memory.backend, get: fn(key) {
+    backend.LeasedBackend(..memory.backend, get: fn(key) {
       use current <- result.map(memory.backend.get(key))
       case
         key == run.id_to_string(id),
@@ -285,7 +288,7 @@ pub fn discovery_rechecks_a_claim_released_after_its_initial_read_test() {
         probe.count(race, "armed"),
         probe.count(race, "released")
       {
-        True, store.Held(_, True), armed, 0 if armed > 0 -> {
+        True, backend.Held(_, True), armed, 0 if armed > 0 -> {
           // A real competing write releases the lease immediately after the
           // first discovery read. Its returned snapshot is now stale.
           let assert Ok(Nil) =
@@ -293,7 +296,7 @@ pub fn discovery_rechecks_a_claim_released_after_its_initial_read_test() {
               key,
               current.revision,
               current.record,
-              store.Release,
+              backend.Release,
             )
           probe.record(race, "released")
         }
@@ -328,7 +331,7 @@ pub fn discovery_rechecks_a_claim_released_after_its_initial_read_test() {
 }
 
 pub fn losing_a_scan_releases_its_local_observation_without_releasing_the_claim_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "lost-job-scan", nodes.long)
   let calls = probe.new()
   let build = fn(runs) {
@@ -345,14 +348,14 @@ pub fn losing_a_scan_releases_its_local_observation_without_releasing_the_claim_
   let assert Ok(spec) =
     fabric.sweeper(
       runs,
-      [graph.recovery(run.Identity("scheduled-flow", 1), build)],
+      [graph.recovery(run.DefinitionId("scheduled-flow", 1), build)],
       every: duration.milliseconds(60_000),
     )
   let assert Ok(started) = spec.start()
   let _ = probe.arrival(calls)
   process.unlink(started.pid)
   restart.kill(started.pid)
-  let assert store.Held(_, True) = nodes.holder(memory.backend, id)
+  let assert backend.Held(_, True) = nodes.holder(memory.backend, id)
   let finish = fn(runs) {
     runtime(runs, 60_000, fn(_) { Ok(job.Completed(42)) })
   }

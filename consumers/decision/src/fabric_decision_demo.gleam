@@ -47,14 +47,14 @@ pub fn runtime(
 ) -> graph.Runtime(Nil, String, String) {
   let reviewer =
     llm.new(
-      run.Identity("arithmetic-review", 1),
+      run.DefinitionId("arithmetic-review", 1),
       codec.string(),
       decision_codec(),
       "review",
       fn(_, input) { #(client, settings, review_request(model, input)) },
     )
   routing.runtime(
-    run.Identity("arithmetic-review-graph", 1),
+    run.DefinitionId("arithmetic-review-graph", 1),
     runs,
     fn() { Nil },
     reviewer,

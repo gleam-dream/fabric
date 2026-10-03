@@ -92,7 +92,7 @@ pub fn runtime(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("source-writing", 1),
+      run.DefinitionId("source-writing", 1),
       node("source"),
       [source, generate, review, publish],
       domain.state_codec(),

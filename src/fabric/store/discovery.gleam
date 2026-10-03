@@ -9,8 +9,9 @@ import fabric/graph/operation
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/fork as scope
 import fabric/internal/graph/record
-import fabric/retention
+import fabric/internal/run_id
 import fabric/run
+import fabric/store/retention
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -73,7 +74,7 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
             None -> None
             Some(due) ->
               Some(Wait(
-                run.issued(state.run),
+                run_id.from_string(state.run),
                 json.array(
                   [
                     json.string("signal_deadline"),
@@ -98,7 +99,7 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
             operation.Job(job.Every(every))
             | operation.OwnedJob(job.Every(every)) ->
               Some(Wait(
-                run.issued(state.run),
+                run_id.from_string(state.run),
                 json.array(
                   list.append(
                     [
@@ -125,7 +126,7 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
                 None -> None
                 Some(at) ->
                   Some(Wait(
-                    run.issued(state.run),
+                    run_id.from_string(state.run),
                     json.array(
                       [
                         json.string("job_deadline"),
@@ -178,7 +179,7 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
           }
         _ -> None
       }
-      Ok(#(run.issued(state.run), wait))
+      Ok(#(run_id.from_string(state.run), wait))
     }
   }
 }
@@ -201,7 +202,11 @@ fn dependency(
       fn(value) { value },
     )
     |> json.to_string
-  Wait(run.issued(state.run), key, Changed(list.map(ids, run.issued), deadline))
+  Wait(
+    run_id.from_string(state.run),
+    key,
+    Changed(list.map(ids, run_id.from_string), deadline),
+  )
 }
 
 fn fork_deadline(state: graph.State, a: graph.Activation, due: Int) -> Wait {
@@ -216,7 +221,7 @@ fn fork_deadline(state: graph.State, a: graph.Activation, due: Int) -> Wait {
       fn(value) { value },
     )
     |> json.to_string
-  Wait(run.issued(state.run), key, At(due))
+  Wait(run_id.from_string(state.run), key, At(due))
 }
 
 /// Metadata for a backend index. Check its version and source revision before

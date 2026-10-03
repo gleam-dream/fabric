@@ -2,6 +2,7 @@
 //// processes whose death takes down every Fabric process they started, and
 //// access to a run's live runner.
 
+import fabric/internal/store as store_core
 import fabric/run.{type RunId}
 import fabric/store.{type Store}
 import gleam/erlang/atom.{type Atom}
@@ -64,19 +65,19 @@ pub fn gone(pid: Pid) -> Nil {
 
 /// The process of the runner the store has registered for `run`.
 pub fn runner(store: Store, id: RunId) -> Result(Pid, Nil) {
-  case store.get(store, run.id_to_string(id)) {
-    Ok(store.Entry(live: Some(store.Live(mailbox:, ..)), ..)) ->
+  case store_core.get(store, run.id_to_string(id)) {
+    Ok(store_core.Entry(live: Some(store_core.Live(mailbox:, ..)), ..)) ->
       process.subject_owner(mailbox)
-    Ok(store.Entry(live: Some(store.GraphLive(mailbox:, ..)), ..)) ->
+    Ok(store_core.Entry(live: Some(store_core.GraphLive(mailbox:, ..)), ..)) ->
       process.subject_owner(mailbox)
-    Ok(store.Entry(live: None, ..)) | Error(_) -> Error(Nil)
+    Ok(store_core.Entry(live: None, ..)) | Error(_) -> Error(Nil)
   }
 }
 
 /// Kills `owner` and waits until `store`, whose process it started, is
 /// gone with it.
 pub fn crash(owner: Pid, store: Store) -> Nil {
-  let store_process = store.pid(store)
+  let store_process = store_core.pid(store)
   kill(owner)
   case store_process {
     Ok(pid) -> gone(pid)
@@ -162,7 +163,7 @@ pub fn stop(application: Application) -> Nil {
 /// Waits until `store`'s runners are draining: its process hands out no
 /// runner factory any more.
 pub fn draining(store: Store) -> Nil {
-  case store.runners(store) {
+  case store_core.runners(store) {
     Error(Nil) -> Nil
     Ok(_) -> {
       process.sleep(1)

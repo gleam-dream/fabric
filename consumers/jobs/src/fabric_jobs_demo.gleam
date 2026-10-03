@@ -25,7 +25,7 @@ pub fn runtime(
 ) -> graph.Runtime(Nil, client.Request, client.Receipt) {
   let submit =
     operation.new(
-      run.Identity("artifact-submission", 1),
+      run.DefinitionId("artifact-submission", 1),
       client.request_codec(),
       client.receipt_codec(),
       fn(_, invocation, request) { submit(invocation, request) },
@@ -49,7 +49,7 @@ pub fn runtime(
     )
   let assert Ok(definition) =
     definition.build(definition.Spec(
-      run.Identity("artifact-job", 1),
+      run.DefinitionId("artifact-job", 1),
       node_id,
       [node],
       client.request_codec(),
@@ -140,7 +140,7 @@ fn wait_with(
   let assert Ok(wait_id) = definition.node_id("wait")
   let submit =
     operation.new(
-      run.Identity("artifact-submission", 1),
+      run.DefinitionId("artifact-submission", 1),
       client.request_codec(),
       client.receipt_codec(),
       fn(_, invocation, request) { submit(invocation, request) },
@@ -162,7 +162,7 @@ fn wait_with(
     )
   let observer =
     job.observe(
-      run.Identity("artifact-observation", 1),
+      run.DefinitionId("artifact-observation", 1),
       client.receipt_codec(),
       codec.string(),
       fn(_, receipt) {
@@ -215,7 +215,7 @@ fn wait_with(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("artifact-submit-and-wait", 1),
+      run.DefinitionId("artifact-submit-and-wait", 1),
       submit_id,
       [submission, waiting],
       state_codec(),
@@ -239,7 +239,7 @@ pub fn cancellation_runtime(
   let assert Ok(wait_id) = definition.node_id("confirm-stop")
   let stop =
     operation.new(
-      run.Identity("artifact-stop-request", 1),
+      run.DefinitionId("artifact-stop-request", 1),
       client.receipt_codec(),
       client.cancel_reply_codec(),
       fn(_, invocation, receipt) { request(invocation, receipt) },
@@ -268,7 +268,7 @@ pub fn cancellation_runtime(
     )
   let observer =
     job.observe(
-      run.Identity("artifact-stop-outcome", 1),
+      run.DefinitionId("artifact-stop-outcome", 1),
       client.receipt_codec(),
       client.cancellation_outcome_codec(),
       fn(_, receipt) {
@@ -292,7 +292,7 @@ pub fn cancellation_runtime(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("artifact-cancellation", 1),
+      run.DefinitionId("artifact-cancellation", 1),
       stop_id,
       [request_node, wait_node],
       client.receipt_codec(),

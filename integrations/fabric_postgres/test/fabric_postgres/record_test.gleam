@@ -2,7 +2,7 @@
 //// lets Fabric recognise its own write by its token after an
 //// `Unavailable`; the `phase` column follows the record's phase tag.
 
-import fabric/store
+import fabric/store/backend
 import fabric_postgres
 import fabric_postgres/support
 import gleam/dynamic/decode
@@ -57,14 +57,15 @@ pub fn records_come_back_byte_for_byte_test() {
   list.index_map(records, fn(entry, index) {
     let #(record, tag) = entry
     let run = "run-b" <> string.repeat("0", index)
-    backend.insert(run, record, store.Release) |> should.equal(Ok(Nil))
-    backend.get(run) |> should.equal(Ok(store.Current(1, record, store.Free)))
+    backend.insert(run, record, backend.Release) |> should.equal(Ok(Nil))
+    backend.get(run)
+    |> should.equal(Ok(backend.Current(1, record, backend.Free)))
     phase(connection, schema, run) |> should.equal(tag)
     // The same record written again: a new revision, the same bytes.
-    backend.compare_and_set(run, 1, record, store.Claim("o1", 60_000))
+    backend.compare_and_set(run, 1, record, backend.Claim("o1", 60_000))
     |> should.equal(Ok(Nil))
     backend.get(run)
-    |> should.equal(Ok(store.Current(2, record, store.Held("o1", True))))
+    |> should.equal(Ok(backend.Current(2, record, backend.Held("o1", True))))
     phase(connection, schema, run) |> should.equal(tag)
   })
 }
@@ -75,7 +76,7 @@ pub fn a_malformed_run_id_is_refused_test() {
   let connection = support.pool(1)
   let backend =
     fabric_postgres.backend(support.migrated(connection, "a", support.schema()))
-  let assert Error(store.Unavailable(_)) =
-    backend.insert("run a1; --", "x", store.Release)
-  backend.get("run a1; --") |> should.equal(Error(store.NotFound))
+  let assert Error(backend.Unavailable(_)) =
+    backend.insert("run a1; --", "x", backend.Release)
+  backend.get("run a1; --") |> should.equal(Error(backend.NotFound))
 }

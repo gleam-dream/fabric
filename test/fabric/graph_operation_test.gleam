@@ -19,7 +19,7 @@ pub fn native_body_receives_the_stable_logical_identity_and_current_attempt_test
   let calls = process.new_subject()
   let op =
     operation.new(
-      run.Identity("counter", 1),
+      run.DefinitionId("counter", 1),
       codec.int(),
       codec.int(),
       fn(calls, invocation, n) {
@@ -46,7 +46,7 @@ pub fn undecodable_input_does_not_enter_the_native_body_test() {
   let calls = process.new_subject()
   let op =
     operation.new(
-      run.Identity("counter", 1),
+      run.DefinitionId("counter", 1),
       codec.int(),
       codec.int(),
       fn(_, _, n) {
@@ -71,7 +71,7 @@ pub fn unusable_output_retains_evidence_of_the_returned_value_test() {
     )
   let op =
     operation.new(
-      run.Identity("counter", 1),
+      run.DefinitionId("counter", 1),
       codec.int(),
       output,
       fn(_, _, n) { Ok(n + 1) },
@@ -89,7 +89,7 @@ type DomainFailure {
 pub fn application_error_classification_preserves_uncertainty_test() {
   let op =
     operation.new(
-      run.Identity("external", 1),
+      run.DefinitionId("external", 1),
       codec.int(),
       codec.int(),
       fn(failure: DomainFailure, _, _) { Error(failure) },
@@ -123,7 +123,7 @@ pub fn signal_operations_cannot_be_executed_or_declared_replayable_test() {
   let op =
     operation.await_signal(
       codec.int(),
-      signal.new(run.Identity("human", 1), codec.bool()),
+      signal.new(run.DefinitionId("human", 1), codec.bool()),
     )
   operation.kind(op) |> should.equal(operation.Signal)
   operation.invoke(op, Nil, invocation(1), "1")

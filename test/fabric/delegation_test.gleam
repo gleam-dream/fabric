@@ -8,6 +8,7 @@
 import fabric
 import fabric/agent.{type Agent}
 import fabric/internal/record
+import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
 import fabric/run.{ActionId, Requirement}
@@ -305,7 +306,7 @@ pub fn a_sub_agent_starts_only_after_approval_even_across_a_restart_test() {
   let assert Some(child_id) = action.child
   let assert Ok(child) = fabric.child(run, child_id)
   let assert Ok(snapshot) = fabric.snapshot(child)
-  snapshot.agent |> should.equal(run.Identity("researcher", 1))
+  snapshot.agent |> should.equal(run.DefinitionId("researcher", 1))
   snapshot.parent
   |> should.equal(Some(run.AgentParent(fabric.id(run), ActionId(1, "r"))))
   snapshot.status |> should.equal(run.Finished(run.Completed("found gleam")))
@@ -1137,8 +1138,8 @@ pub fn an_identical_child_record_by_another_writer_is_recovered_test() {
     )
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))
-  let assert Ok(store.Entry(record: stored, ..)) =
-    store.get(flaky.store(backend), support.text(fabric.id(run)) <> "-1")
+  let assert Ok(store_core.Entry(record: stored, ..)) =
+    store_core.get(flaky.store(backend), support.text(fabric.id(run)) <> "-1")
   let assert Ok(child) = record.decode(stored)
   child.incarnation |> should.equal(2)
   probe.count(probe, "pay:bob") |> should.equal(1)

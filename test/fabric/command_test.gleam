@@ -4,12 +4,12 @@
 
 import fabric
 import fabric/agent
-import fabric/observation as o
 import fabric/policy
 import fabric/run
 import fabric/support
 import fabric/support/apps
 import fabric/support/scripted
+import fabric/telemetry as o
 import fabric/tool
 import gleam/erlang/process.{type Subject}
 import gleam/option.{None}

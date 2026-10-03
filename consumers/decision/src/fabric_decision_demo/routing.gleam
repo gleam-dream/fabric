@@ -27,7 +27,7 @@ pub fn decision_codec() -> codec.Codec(Decision) {
 }
 
 pub fn runtime(
-  identity: run.Identity,
+  identity: run.DefinitionId,
   runs: store.Store,
   context: fn() -> context,
   reviewer: operation.Operation(context, String, receipt),
@@ -76,7 +76,7 @@ fn finish(
 ) -> definition.Node(context, String, String) {
   let op =
     operation.new(
-      run.Identity(name, 1),
+      run.DefinitionId(name, 1),
       codec.string(),
       codec.string(),
       fn(_, _, _) { Ok(answer) },

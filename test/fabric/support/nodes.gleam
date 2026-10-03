@@ -2,7 +2,8 @@
 //// shared in-memory leased backend, whose clock the test moves.
 
 import fabric/run.{type RunId}
-import fabric/store.{type LeasedBackend, type Store}
+import fabric/store.{type Store}
+import fabric/store/backend.{type LeasedBackend}
 import fabric/support
 import gleam/erlang/process
 import gleam/string
@@ -26,7 +27,7 @@ pub fn node(backend: LeasedBackend, node: String, lease: Int) -> Store {
 }
 
 /// The run's lease as the backend has it.
-pub fn holder(backend: LeasedBackend, id: RunId) -> store.Holder {
+pub fn holder(backend: LeasedBackend, id: RunId) -> backend.Holder {
   let assert Ok(current) = backend.get(run.id_to_string(id))
   current.holder
 }
@@ -38,12 +39,12 @@ pub fn holding(
   id: RunId,
 ) -> Result(#(String, Bool), Nil) {
   case holder(backend, id) {
-    store.Held(owner, live) ->
+    backend.Held(owner, live) ->
       case string.split_once(owner, "/") {
         Ok(#(node, _)) -> Ok(#(node, live))
         Error(Nil) -> Ok(#(owner, live))
       }
-    store.Free -> Error(Nil)
+    backend.Free -> Error(Nil)
   }
 }
 

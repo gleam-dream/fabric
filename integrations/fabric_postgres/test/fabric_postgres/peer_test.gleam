@@ -4,6 +4,7 @@
 import fabric
 import fabric/run
 import fabric/store
+import fabric/store/backend
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -102,7 +103,7 @@ pub fn a_killed_peer_is_recovered_once_without_replaying_its_tool_test() {
   |> should.equal(Ok(run.Working))
   incarnation(seen) |> should.equal(1)
   let backend = fabric_postgres.backend(settings)
-  let assert Ok(store.Current(holder: store.Held(owner, True), ..)) =
+  let assert Ok(backend.Current(holder: backend.Held(owner, True), ..)) =
     backend.get(run.id_to_string(id))
   string.starts_with(owner, "peer/") |> should.be_true
 

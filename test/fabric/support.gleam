@@ -3,7 +3,7 @@
 import fabric/agent.{type Agent, type Spec}
 import fabric/run.{type RunId}
 import fabric/store.{type Store}
-import fabric/testing
+import fabric/store/conformance
 import gleam/erlang/process
 import gleam/int
 import gleam/time/duration
@@ -45,7 +45,7 @@ fn leased_store() -> Store {
       process.new_name("fabric-test-store"),
       node: "fabric-test",
       lease: duration.milliseconds(1500),
-      backend: testing.leased_memory().backend,
+      backend: conformance.leased_memory().backend,
     )
   leased
 }

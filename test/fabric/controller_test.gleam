@@ -68,7 +68,7 @@ fn begin(env: controller.Env(Nil), limits: controller.Limits) -> State {
     controller.start(
       env,
       "run-1",
-      run.Identity("bank", 1),
+      run.DefinitionId("bank", 1),
       limits,
       "hello",
       None,
@@ -143,7 +143,7 @@ pub fn start_requests_the_first_turn_with_declarations_test() {
     controller.start(
       env(),
       "run-1",
-      run.Identity("bank", 1),
+      run.DefinitionId("bank", 1),
       limits(),
       "hello",
       None,

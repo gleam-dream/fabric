@@ -73,7 +73,7 @@ fn suspended() -> #(State, run.PendingApproval) {
     controller.start(
       env,
       "run-1",
-      run.Identity("desk", 1),
+      run.DefinitionId("desk", 1),
       controller.Limits(
         max_turns: 5,
         token_budget: None,
@@ -306,7 +306,7 @@ fn batch(calls: List(model.ToolCall)) -> State {
     controller.start(
       env,
       "run-1",
-      run.Identity("desk", 1),
+      run.DefinitionId("desk", 1),
       controller.Limits(
         max_turns: 3,
         token_budget: None,
@@ -359,7 +359,7 @@ pub fn recovery_issues_a_lost_model_call_again_against_the_budget_test() {
     controller.start(
       env,
       "run-1",
-      run.Identity("desk", 1),
+      run.DefinitionId("desk", 1),
       controller.Limits(
         max_turns: 2,
         token_budget: None,

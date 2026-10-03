@@ -1,20 +1,22 @@
 //// F6–F8: expiration retains fork ownership until every admitted member settles.
 
-import fabric/discovery
 import fabric/graph
 import fabric/graph/definition
 import fabric/graph/fork
 import fabric/graph/operation
 import fabric/graph/signal
+import fabric/internal/store as store_core
 import fabric/policy
-import fabric/retention
 import fabric/run
 import fabric/store
+import fabric/store/backend
+import fabric/store/conformance
+import fabric/store/discovery
+import fabric/store/retention
 import fabric/support
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
-import fabric/testing
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
@@ -32,7 +34,7 @@ fn leaf(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
     runs,
     operation.await_signal(
       codec.int(),
-      signal.new(run.Identity("answer", 1), codec.int()),
+      signal.new(run.DefinitionId("answer", 1), codec.int()),
     ),
   )
 }
@@ -51,7 +53,7 @@ fn member(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("fork-leaf", 1),
+      run.DefinitionId("fork-leaf", 1),
       node_id(),
       [node],
       codec.int(),
@@ -74,13 +76,14 @@ fn parent_with(
     Result(definition.Command(List(Int), List(Int)), String),
 ) {
   let values = codec.list(codec.int())
-  let assert Ok(op) = graph.map(run.Identity("expiring-map", 1), child, 3, 2)
+  let assert Ok(op) =
+    graph.map(run.DefinitionId("expiring-map", 1), child, 3, 2)
   let assert Ok(op) = operation.with_deadline(op, duration.milliseconds(60_000))
   let node =
     definition.node(node_id(), op, fn(values) { Ok(values) }, accept, [])
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("fork-deadline", 1),
+      run.DefinitionId("fork-deadline", 1),
       node_id(),
       [node],
       values,
@@ -94,7 +97,7 @@ fn action(runs, perform) {
   member(
     runs,
     operation.new(
-      run.Identity("effect", 1),
+      run.DefinitionId("effect", 1),
       codec.int(),
       codec.int(),
       fn(_, _, input) { perform(input) },
@@ -104,7 +107,7 @@ fn action(runs, perform) {
 }
 
 pub fn a_failed_join_cannot_reconcile_past_its_original_deadline_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let calls = probe.new()
   let runs = nodes.node(memory.backend, "blocked-join", 300_000)
   let runtime =
@@ -119,7 +122,7 @@ pub fn a_failed_join_cannot_reconcile_past_its_original_deadline_test() {
   let assert graph.Blocked(reference, graph.InvalidResult(output, _)) =
     blocked.status
   let assert Some(due) = blocked.deadline
-  let assert Ok(row) = store.get(runs, run.id_to_string(graph.id(root)))
+  let assert Ok(row) = store_core.get(runs, run.id_to_string(graph.id(root)))
   let assert Ok(Some(wait)) = discovery.inspect(row.record)
   wait.trigger |> should.equal(discovery.At(due))
   memory.advance(60_001)
@@ -131,7 +134,7 @@ pub fn a_failed_join_cannot_reconcile_past_its_original_deadline_test() {
 }
 
 pub fn a_failed_join_reconciles_before_deadline_without_repeating_members_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let calls = probe.new()
   let runs = nodes.node(memory.backend, "corrected-join", 300_000)
   let runtime =
@@ -166,7 +169,7 @@ pub fn a_failed_join_reconciles_before_deadline_without_repeating_members_test()
 }
 
 pub fn a_join_callback_crossing_the_deadline_keeps_results_without_routing_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "join", 300_000)
   let runtime =
     parent_with(runs, action(runs, fn(n) { Ok(n) }), fn(state, _) {
@@ -188,7 +191,7 @@ pub fn a_join_callback_crossing_the_deadline_keeps_results_without_routing_test(
 }
 
 pub fn expired_uncertain_fork_retains_cleanup_and_reconciles_without_replay_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let calls = probe.new()
   let runs = nodes.node(memory.backend, "uncertain", 300_000)
   let child =
@@ -213,7 +216,7 @@ pub fn expired_uncertain_fork_retains_cleanup_and_reconciles_without_replay_test
     graph.await(root, within: duration.milliseconds(5000))
   let assert graph.Fork(saved, Some(operation.DeadlineReached(_))) =
     stopping.status
-  let assert Ok(row) = store.get(runs, run.id_to_string(graph.id(root)))
+  let assert Ok(row) = store_core.get(runs, run.id_to_string(graph.id(root)))
   let assert Ok(metadata) = retention.inspect(row.record)
   metadata.settled |> should.be_false
   let assert Ok(Some(wait)) = discovery.inspect(row.record)
@@ -242,9 +245,9 @@ pub fn expired_uncertain_fork_retains_cleanup_and_reconciles_without_replay_test
   probe.count(calls, "effect") |> should.equal(started)
 }
 
-fn parked(backend: store.LeasedBackend, id: run.RunId, left: Int) -> Nil {
+fn parked(backend: backend.LeasedBackend, id: run.RunId, left: Int) -> Nil {
   case nodes.holder(backend, id), left {
-    store.Free, _ -> Nil
+    backend.Free, _ -> Nil
     _, n if n > 0 -> {
       process.sleep(10)
       parked(backend, id, n - 1)
@@ -254,7 +257,7 @@ fn parked(backend: store.LeasedBackend, id: run.RunId, left: Int) -> Nil {
 }
 
 pub fn overdue_fork_recovers_the_same_children_and_withdraws_pending_members_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let id = support.id("expired-fork")
   let #(owner, #(runs, root)) =
     restart.owned(fn() {
@@ -296,7 +299,7 @@ pub fn overdue_fork_recovers_the_same_children_and_withdraws_pending_members_tes
     let assert Ok(stopped) = graph.read(graph.attach(leaf(runs), id))
     stopped.status |> should.equal(graph.Cancelled(graph.BeforeStart))
   })
-  let assert Ok(row) = store.get(runs, run.id_to_string(id))
+  let assert Ok(row) = store_core.get(runs, run.id_to_string(id))
   let assert Ok(metadata) = retention.inspect(row.record)
   metadata.settled |> should.be_true
   list.map(metadata.children, fn(link) { link.run }) |> should.equal(branches)

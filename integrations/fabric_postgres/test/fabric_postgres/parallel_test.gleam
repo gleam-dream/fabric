@@ -8,6 +8,7 @@ import fabric/graph/signal
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -18,7 +19,7 @@ import gleeunit/should
 import json/blueprint/codec
 
 fn response() -> signal.Signal(Int) {
-  signal.new(run.Identity("pg-branch-signal", 1), codec.int())
+  signal.new(run.DefinitionId("pg-branch-signal", 1), codec.int())
 }
 
 fn leaf(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
@@ -33,7 +34,7 @@ fn leaf(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("pg-branch", 1),
+      run.DefinitionId("pg-branch", 1),
       id,
       [node],
       codec.int(),
@@ -46,7 +47,7 @@ fn leaf(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
 fn mapped(runs: store.Store) -> graph.Runtime(Nil, List(Int), List(Int)) {
   let assert Ok(op) =
     graph.map(
-      run.Identity("pg-map", 1),
+      run.DefinitionId("pg-map", 1),
       leaf(runs),
       max_members: 3,
       concurrency: 3,
@@ -68,7 +69,7 @@ fn mapped(runs: store.Store) -> graph.Runtime(Nil, List(Int), List(Int)) {
   let values = codec.list(codec.int())
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("pg-parallel", 1),
+      run.DefinitionId("pg-parallel", 1),
       id,
       [node],
       values,
@@ -85,17 +86,17 @@ fn start_store(settings: fabric_postgres.Settings) -> store.Store {
   runs
 }
 
-fn release(backend: store.LeasedBackend, id: String) -> Nil {
+fn release(backend: backend.LeasedBackend, id: String) -> Nil {
   let assert Ok(row) = backend.get(id)
   let assert Ok(_) =
-    backend.compare_and_set(id, row.revision, row.record, store.Release)
+    backend.compare_and_set(id, row.revision, row.record, backend.Release)
   Nil
 }
 
-fn idle(backend: store.LeasedBackend, id: String, left: Int) -> Nil {
+fn idle(backend: backend.LeasedBackend, id: String, left: Int) -> Nil {
   let assert Ok(row) = backend.get(id)
   case row.holder, left {
-    store.Free, _ -> Nil
+    backend.Free, _ -> Nil
     _, n if n > 0 -> {
       process.sleep(10)
       idle(backend, id, n - 1)
@@ -166,7 +167,7 @@ pub fn all_branch_revisions_are_claimed_once_and_swept_after_store_loss_test() {
   let assert Ok(spec) =
     fabric.sweeper(
       runs,
-      [graph.recovery(run.Identity("pg-parallel", 1), mapped)],
+      [graph.recovery(run.DefinitionId("pg-parallel", 1), mapped)],
       every: duration.milliseconds(20),
     )
   let assert Ok(sweeper) = spec.start()

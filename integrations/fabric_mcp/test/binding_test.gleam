@@ -67,7 +67,7 @@ fn runtime_converting(
 ) -> graph.Runtime(client.Client, Increment, fabric_mcp.Receipt(Int)) {
   let assert Ok(op) =
     fabric_mcp.bind(
-      run.Identity("increment-counter", 1),
+      run.DefinitionId("increment-counter", 1),
       tool,
       increment_codec(),
       codec.int(),
@@ -85,7 +85,7 @@ fn runtime_converting(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("counter-graph", 1),
+      run.DefinitionId("counter-graph", 1),
       id,
       [node],
       increment_codec(),
@@ -127,7 +127,7 @@ pub fn policy_holds_the_real_effect_until_approval_test() {
   use connection, tool, _ <- fixture
   let definition =
     runtime(connection, tool, memory(), fn(_, action) {
-      action.operation |> should.equal(run.Identity("increment-counter", 1))
+      action.operation |> should.equal(run.DefinitionId("increment-counter", 1))
       Ok(policy.RequireApproval(run.Requirement("counter-owner", 1)))
     })
   let assert Ok(handle) =
@@ -292,12 +292,8 @@ pub fn a_saved_receipt_recovers_without_a_live_connection_after_store_loss_test(
   let assert Ok(before) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(_) = before.status
-  let assert Ok(store_pid) = store.pid(runs)
-  let monitor = process.monitor(store_pid)
   process.kill(owner)
-  process.new_selector()
-  |> process.select_specific_monitor(monitor, fn(_) { Nil })
-  |> process.selector_receive_forever
+  let assert Ok(Nil) = store.stop(runs)
   client.stop(connection)
   let assert Ok(tool) =
     codec.decode_json(fabric_mcp.tool_codec(), pinned_descriptor)
@@ -420,7 +416,7 @@ pub fn pinned_descriptors_refuse_invalid_identities_and_schema_dialects_test() {
 pub fn incompatible_native_input_and_corrupt_receipts_are_rejected_test() {
   use connection, tool, _ <- fixture
   fabric_mcp.bind(
-    run.Identity("bad", 1),
+    run.DefinitionId("bad", 1),
     tool,
     codec.string(),
     codec.int(),

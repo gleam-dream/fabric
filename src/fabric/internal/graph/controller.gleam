@@ -12,6 +12,7 @@ import fabric/graph/operation.{
 }
 import fabric/internal/budget/model as budget
 import fabric/internal/graph/fork as scope
+import fabric/internal/run_id
 import fabric/policy
 import fabric/run
 import gleam/list
@@ -22,7 +23,7 @@ import gleam/string
 pub type Prepared {
   Prepared(
     node: String,
-    operation: run.Identity,
+    operation: run.DefinitionId,
     input: String,
     recovery: Recovery,
     kind: operation.Kind,
@@ -48,7 +49,11 @@ pub type Approval {
 }
 
 pub type Definition {
-  Definition(identity: run.Identity, signature: String, max_activations: Int)
+  Definition(
+    identity: run.DefinitionId,
+    signature: String,
+    max_activations: Int,
+  )
 }
 
 pub type Decision {
@@ -59,7 +64,7 @@ pub type Decision {
 pub type Route {
   Next(node: String)
   Finished
-  Canceled
+  StoppedRoute
 }
 
 pub type Receipt {
@@ -256,7 +261,7 @@ pub fn step(
           _ -> Error("activation is not a fork")
         })
         scope.new(
-          fork.Occurrence(run.issued(state.run), a.id),
+          fork.Occurrence(run_id.from_string(state.run), a.id),
           members,
           maximum,
           concurrency,
@@ -779,7 +784,7 @@ fn stopped_result(
     State(
       ..state,
       receipts: list.append(state.receipts, [
-        Receipt(a, output, state.value, Canceled),
+        Receipt(a, output, state.value, StoppedRoute),
       ]),
     ),
     a,
@@ -929,7 +934,7 @@ fn cancelled_result(
     State(
       ..state,
       receipts: list.append(state.receipts, [
-        Receipt(activation, output, state.value, Canceled),
+        Receipt(activation, output, state.value, StoppedRoute),
       ]),
     ),
     Cancelled(activation, AfterResult),

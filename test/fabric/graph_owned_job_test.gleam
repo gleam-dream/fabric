@@ -6,10 +6,10 @@ import fabric/graph/child
 import fabric/graph/definition
 import fabric/graph/job
 import fabric/graph/operation
+import fabric/internal/store as store_core
 import fabric/policy
-import fabric/retention
 import fabric/run
-import fabric/store
+import fabric/store/retention
 import fabric/support
 import fabric/support/flaky
 import fabric/support/probe
@@ -35,7 +35,7 @@ fn runtime_with(runs, read, request, policy) {
 fn runtime_version(runs, read, request, policy, version) {
   let observer =
     job.observe(
-      run.Identity("owned-job", 1),
+      run.DefinitionId("owned-job", 1),
       codec.string(),
       codec.int(),
       fn(_, receipt) { read(receipt) },
@@ -57,7 +57,7 @@ fn runtime_version(runs, read, request, policy, version) {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("owned-flow", version),
+      run.DefinitionId("owned-flow", version),
       id,
       [node],
       codec.string(),
@@ -187,7 +187,7 @@ pub fn owned_cleanup_continues_under_a_cancelled_parent_with_no_unused_work_budg
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("owned-parent", 1),
+      run.DefinitionId("owned-parent", 1),
       id,
       [node],
       codec.string(),
@@ -295,7 +295,7 @@ pub fn accepted_cancellation_survives_restart_until_confirmed_test() {
     job.RequestAccepted,
     operation.CancellationRequested,
   ))
-  let assert Ok(entry) = store.get(runs, "owned-stop")
+  let assert Ok(entry) = store_core.get(runs, "owned-stop")
   entry.live |> should.equal(None)
   let assert Ok(metadata) = retention.inspect(entry.record)
   metadata.settled |> should.equal(False)
@@ -313,7 +313,7 @@ pub fn accepted_cancellation_survives_restart_until_confirmed_test() {
   recovered.status |> should.equal(pending.status)
   let assert Ok(done) = graph.poll_job(handle, reference)
   done.status |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
-  let assert Ok(entry) = store.get(runs, "owned-stop")
+  let assert Ok(entry) = store_core.get(runs, "owned-stop")
   let assert Ok(metadata) = retention.inspect(entry.record)
   metadata.settled |> should.equal(True)
   restart.remove_dir(directory)
@@ -363,7 +363,7 @@ pub fn an_interrupted_stop_is_not_replayed_and_completion_settles_without_routin
   done.status |> should.equal(graph.Cancelled(graph.AfterResult))
   let assert [receipt] = done.receipts
   receipt.output_json |> should.equal("42")
-  receipt.route |> should.equal(graph.Canceled)
+  receipt.route |> should.equal(graph.Stopped)
   graph.poll_job(handle, reference) |> should.equal(Ok(done))
   restart.remove_dir(directory)
 }

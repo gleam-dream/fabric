@@ -1,7 +1,7 @@
 //// Refresh scheduling metadata without changing execution bytes, revisions,
 //// leases or retention ages. Row locks serialize refresh with ordinary writes.
 
-import fabric/discovery
+import fabric/store/discovery
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list

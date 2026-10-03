@@ -11,6 +11,7 @@ import fabric/internal/budget/config as budget_config
 import fabric/internal/graph/controller as g
 import fabric/internal/graph/fork as scope
 import fabric/internal/graph/fork_record
+import fabric/internal/run_id
 import fabric/run
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
@@ -101,7 +102,7 @@ fn tag(name: String, fields: List(#(String, Json))) -> Json {
   json.object([#("tag", json.string(name)), ..fields])
 }
 
-fn identity_json(identity: run.Identity) -> Json {
+fn identity_json(identity: run.DefinitionId) -> Json {
   json.object([
     #("name", json.string(identity.name)),
     #("version", json.int(identity.version)),
@@ -184,7 +185,7 @@ fn route_json(route: g.Route) -> Json {
   case route {
     g.Next(node) -> tag("next", [#("node", json.string(node))])
     g.Finished -> tag("finished", [])
-    g.Canceled -> tag("canceled", [])
+    g.StoppedRoute -> tag("canceled", [])
   }
 }
 
@@ -444,10 +445,10 @@ fn tagged(
   }
 }
 
-fn identity_decoder() -> Decoder(run.Identity) {
+fn identity_decoder() -> Decoder(run.DefinitionId) {
   use name <- decode.field("name", decode.string)
   use version <- decode.field("version", decode.int)
-  decode.success(run.Identity(name, version))
+  decode.success(run.DefinitionId(name, version))
 }
 
 fn prepared_decoder() -> Decoder(g.Prepared) {
@@ -537,7 +538,7 @@ fn route_decoder() -> Decoder(g.Route) {
         decode.success(g.Next(node))
       })
     "finished" -> Ok(decode.success(g.Finished))
-    "canceled" -> Ok(decode.success(g.Canceled))
+    "canceled" -> Ok(decode.success(g.StoppedRoute))
     _ -> Error(Nil)
   }
 }
@@ -784,8 +785,9 @@ fn state_decoder(found: Int) -> Decoder(g.State) {
         decode.optional(decode.int),
       )
       decode.success(case member {
-        None -> run.GraphParent(run.issued(run), activation)
-        Some(member) -> run.GraphBranch(run.issued(run), activation, member)
+        None -> run.GraphParent(run_id.from_string(run), activation)
+        Some(member) ->
+          run.GraphBranch(run_id.from_string(run), activation, member)
       })
     }),
   )
@@ -1132,7 +1134,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
         "a canceled result requires an activity or owned job",
       ))
       use _ <- result.try(check_activation(a))
-      use _ <- result.try(finished(state, count, last, g.Canceled))
+      use _ <- result.try(finished(state, count, last, g.StoppedRoute))
       case last {
         Some(receipt) ->
           require(
@@ -1223,7 +1225,7 @@ fn check_receipts(
       use _ <- result.try(require(
         { receipt.activation.prepared.deadline == None }
           == { receipt.activation.deadline == None }
-          || receipt.route == g.Canceled
+          || receipt.route == g.StoppedRoute
           && is_owned_job(receipt.activation.prepared.kind),
         "accepted wait must retain its configured deadline",
       ))
@@ -1233,7 +1235,7 @@ fn check_receipts(
       ))
       use _ <- result.try(follows(previous, receipt.activation.prepared.node))
       use _ <- result.try(case previous, receipt.route {
-        Some(previous), g.Canceled ->
+        Some(previous), g.StoppedRoute ->
           require(
             receipt.state == previous.state,
             "cancelled result changed application state",
@@ -1311,7 +1313,7 @@ fn check_expired(
         is_job(a.prepared.kind),
         "expired result receipt requires a job",
       ))
-      use _ <- result.try(finished(state, count, last, g.Canceled))
+      use _ <- result.try(finished(state, count, last, g.StoppedRoute))
       case last {
         Some(receipt) ->
           require(
@@ -1364,7 +1366,7 @@ fn validate_forks(state: g.State) -> Result(Nil, String) {
         scope.restore(saved) |> result.map_error(string.inspect),
       )
       use _ <- result.try(require(
-        saved.occurrence.run == run.issued(state.run)
+        saved.occurrence.run == run_id.from_string(state.run)
           && saved.occurrence.activation > previous,
         "fork scopes have invalid occurrence order",
       ))

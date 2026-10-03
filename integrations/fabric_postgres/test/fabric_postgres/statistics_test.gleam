@@ -9,6 +9,7 @@ import fabric/graph/signal
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/statistics
@@ -142,9 +143,13 @@ pub fn counts_follow_real_runs_and_lease_backlog_without_mutation_test() {
     |> pog.parameter(pog.text(run.id_to_string(lost)))
     |> pog.execute(connection)
   let assert Ok(Nil) =
-    backend.insert("unknown-live", "{}", store.Claim("other/store/one", 60_000))
+    backend.insert(
+      "unknown-live",
+      "{}",
+      backend.Claim("other/store/one", 60_000),
+    )
   let assert Ok(Nil) =
-    backend.insert("unknown-expired", "{}", store.Claim("old/store/one", 0))
+    backend.insert("unknown-expired", "{}", backend.Claim("old/store/one", 0))
   execute(
     connection,
     "UPDATE "
@@ -210,7 +215,7 @@ pub fn stale_statistics_are_unknown_until_explicit_refresh_and_keep_record_age_t
   let assert Ok(run.Suspended([_], [])) =
     fabric.await(waiting, within: duration.milliseconds(5000))
   let backend = fabric_postgres.backend(settings)
-  let assert Ok(Nil) = backend.insert("broken", "not-json", store.Release)
+  let assert Ok(Nil) = backend.insert("broken", "not-json", backend.Release)
   execute(
     connection,
     "UPDATE "
@@ -254,11 +259,11 @@ pub fn a_graph_wait_is_neither_unattended_work_nor_a_budget_run_test() {
   use connection <- support.using_pool(2)
   let settings = support.migrated(connection, "graph", support.schema())
   let runs = started(settings)
-  let signal = signal.new(run.Identity("answer", 1), codec.bool())
+  let signal = signal.new(run.DefinitionId("answer", 1), codec.bool())
   let assert Ok(node) = definition.node_id("wait")
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("stats-graph", 1),
+      run.DefinitionId("stats-graph", 1),
       node,
       [
         definition.node(
@@ -334,7 +339,12 @@ pub fn a_concurrent_write_and_refresh_leave_current_statistics_test() {
   })
   process.spawn(fn() {
     let assert Ok(Nil) =
-      backend.compare_and_set(id, before.revision, before.record, store.Release)
+      backend.compare_and_set(
+        id,
+        before.revision,
+        before.record,
+        backend.Release,
+      )
     process.send(results, Nil)
   })
   let assert Ok(Nil) = process.receive(results, 5000)

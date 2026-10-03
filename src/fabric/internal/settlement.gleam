@@ -4,9 +4,11 @@
 
 import fabric/internal/controller
 import fabric/internal/observe
+import fabric/internal/run_id
 import fabric/internal/runner
+import fabric/internal/store
 import fabric/run
-import fabric/store
+import fabric/store/backend
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -91,7 +93,7 @@ fn settle_at(
     list.try_map(state.history, fn(action) {
       case action.state, action.child {
         run.Uncertain(_), Some(child) -> {
-          let expected = run.AgentParent(run.issued(id), action.id)
+          let expected = run.AgentParent(run_id.from_string(id), action.id)
           case
             settle_at(
               runs,
@@ -165,8 +167,8 @@ fn commit(
           observe.committed(Some(before), after)
           Ok(after)
         }
-        Error(store.Conflict(_)) if tries > 1 -> retry()
-        Error(store.Conflict(_)) -> Error(Contended)
+        Error(backend.Conflict(_)) if tries > 1 -> retry()
+        Error(backend.Conflict(_)) -> Error(Contended)
         Error(error) -> Error(Unreadable(runner.StoreFailed(error)))
       }
     }

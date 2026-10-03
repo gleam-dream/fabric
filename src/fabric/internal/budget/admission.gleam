@@ -6,8 +6,8 @@ import fabric/budget
 import fabric/internal/ancestry
 import fabric/internal/budget/ledger
 import fabric/internal/budget/model as reservations
+import fabric/internal/store
 import fabric/run
-import fabric/store
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string

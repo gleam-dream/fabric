@@ -1,9 +1,9 @@
 //// `prune` deletes finished runs a whole family at a time, never an ended
 //// sub-agent run on its own.
 
-import fabric/retention
 import fabric/run
-import fabric/store
+import fabric/store/backend
+import fabric/store/retention
 import fabric_postgres
 import fabric_postgres/internal/migrations
 import fabric_postgres/support
@@ -146,24 +146,24 @@ pub fn budget_ledgers_are_pruned_only_with_their_matching_root_test() {
       #("claims", json.array([], fn(value) { value })),
     ])
     |> json.to_string
-  let assert Ok(_) = backend.insert("root", root, store.Release)
+  let assert Ok(_) = backend.insert("root", root, backend.Release)
   // The root has ended, but its named ledger is absent.
   fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
   |> should.equal(Ok(0))
   let changed = string.replace(ledger, "\"work\":8", "\"work\":9")
-  let assert Ok(_) = backend.insert(ledger_id, changed, store.Release)
+  let assert Ok(_) = backend.insert(ledger_id, changed, backend.Release)
   // Both records are valid, but the reciprocal limit contract disagrees.
   fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
   |> should.equal(Ok(0))
   let assert Ok(_) =
-    backend.compare_and_set(ledger_id, 1, ledger, store.Release)
+    backend.compare_and_set(ledger_id, 1, ledger, backend.Release)
   fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
   |> should.equal(Ok(2))
-  backend.get("root") |> should.equal(Error(store.NotFound))
-  backend.get(ledger_id) |> should.equal(Error(store.NotFound))
+  backend.get("root") |> should.equal(Error(backend.NotFound))
+  backend.get(ledger_id) |> should.equal(Error(backend.NotFound))
   // Delayed bookkeeping cannot recreate a ledger after the family was pruned.
-  let assert Error(store.Unavailable(_)) =
-    backend.insert(ledger_id, ledger, store.Release)
+  let assert Error(backend.Unavailable(_)) =
+    backend.insert(ledger_id, ledger, backend.Release)
 }
 
 pub fn prune_deletes_only_whole_finished_families_test() {
@@ -172,21 +172,21 @@ pub fn prune_deletes_only_whole_finished_families_test() {
   let rows = [
     // A finished family: the root, a child and a grandchild ended, a
     // child that never started.
-    #("run-aa", "ended", store.Release),
-    #("run-aa-1", "ended", store.Release),
-    #("run-aa-1-1", "ended", store.Release),
-    #("run-aa-2", "never_started", store.Release),
+    #("run-aa", "ended", backend.Release),
+    #("run-aa-1", "ended", backend.Release),
+    #("run-aa-1-1", "ended", backend.Release),
+    #("run-aa-2", "never_started", backend.Release),
     // An ended root whose child still works.
-    #("run-bb", "ended", store.Release),
-    #("run-bb-1", "acting", store.Claim("o1", 60_000)),
+    #("run-bb", "ended", backend.Release),
+    #("run-bb-1", "acting", backend.Claim("o1", 60_000)),
     // A working root whose child ended.
-    #("run-cc", "acting", store.Claim("o1", 60_000)),
-    #("run-cc-1", "ended", store.Release),
+    #("run-cc", "acting", backend.Claim("o1", 60_000)),
+    #("run-cc-1", "ended", backend.Release),
     // An ended root whose ended child still holds a live lease.
-    #("run-dd", "ended", store.Release),
-    #("run-dd-1", "ended", store.Claim("sweeper", 60_000)),
+    #("run-dd", "ended", backend.Release),
+    #("run-dd-1", "ended", backend.Claim("sweeper", 60_000)),
     // A finished run on its own.
-    #("run-ee", "ended", store.Release),
+    #("run-ee", "ended", backend.Release),
   ]
   list.each(rows, fn(row) {
     let #(run, phase, lease) = row
@@ -252,20 +252,20 @@ pub fn prune_deletes_at_most_limit_families_oldest_first_test() {
       backend.insert(
         run,
         record(run, "ended", None, [run <> "-1"]),
-        store.Release,
+        backend.Release,
       )
     let assert Ok(Nil) =
       backend.insert(
         run <> "-1",
         record(run <> "-1", "ended", Some(run), []),
-        store.Release,
+        backend.Release,
       )
     process.sleep(5)
   })
   fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 2)
   |> should.equal(Ok(4))
-  backend.get("run-a1") |> should.equal(Error(store.NotFound))
-  backend.get("run-a2-1") |> should.equal(Error(store.NotFound))
+  backend.get("run-a1") |> should.equal(Error(backend.NotFound))
+  backend.get("run-a2-1") |> should.equal(Error(backend.NotFound))
   let assert Ok(_) = backend.get("run-a3")
   fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 2)
   |> should.equal(Ok(2))
@@ -281,13 +281,13 @@ pub fn concurrent_prunes_delete_each_family_once_test() {
       backend.insert(
         run,
         record(run, "ended", None, [run <> "-1"]),
-        store.Release,
+        backend.Release,
       )
     let assert Ok(Nil) =
       backend.insert(
         run <> "-1",
         record(run <> "-1", "ended", Some(run), []),
-        store.Release,
+        backend.Release,
       )
   })
   let results = process.new_subject()
@@ -354,7 +354,7 @@ pub fn missing_unreadable_and_unexpected_children_keep_the_entire_family_test() 
       backend.insert(
         "custom",
         record("custom", "ended", None, children),
-        store.Release,
+        backend.Release,
       )
     case kind {
       0 -> Nil
@@ -365,7 +365,7 @@ pub fn missing_unreadable_and_unexpected_children_keep_the_entire_family_test() 
           2 -> string.replace(child, "\"turn\":1", "\"turn\":99")
           _ -> child
         }
-        let assert Ok(_) = backend.insert("custom-1", child, store.Release)
+        let assert Ok(_) = backend.insert("custom-1", child, backend.Release)
         Nil
       }
     }
@@ -386,34 +386,34 @@ pub fn id_prefixes_do_not_define_families_and_a_blocked_root_does_not_starve_oth
     backend.insert(
       "run-aa",
       record("run-aa", "ended", None, ["run-aa-9"]),
-      store.Release,
+      backend.Release,
     )
   let assert Ok(_) =
     backend.insert(
       "run-aa-1",
       record("run-aa-1", "ended", None, []),
-      store.Release,
+      backend.Release,
     )
   fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
   |> should.equal(Ok(1))
-  backend.get("run-aa-1") |> should.equal(Error(store.NotFound))
+  backend.get("run-aa-1") |> should.equal(Error(backend.NotFound))
   backend.get("run-aa") |> should.be_ok
   let assert Ok(_) =
     backend.insert(
       "run-aa-9",
       record("run-aa-9", "never_started", Some("run-aa"), []),
-      store.Release,
+      backend.Release,
     )
   fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
   |> should.equal(Ok(2))
   // A delayed duplicate start cannot recreate an orphan after deletion.
-  let assert Error(store.Unavailable(_)) =
+  let assert Error(backend.Unavailable(_)) =
     backend.insert(
       "run-aa-9",
       record("run-aa-9", "ended", Some("run-aa"), []),
-      store.Release,
+      backend.Release,
     )
-  backend.get("run-aa-9") |> should.equal(Error(store.NotFound))
+  backend.get("run-aa-9") |> should.equal(Error(backend.NotFound))
 }
 
 pub fn unresolved_agent_effects_and_recent_child_changes_prevent_pruning_test() {
@@ -428,16 +428,16 @@ pub fn unresolved_agent_effects_and_recent_child_changes_prevent_pruning_test() 
       "\"tag\":\"succeeded\"",
       "\"tag\":\"uncertain\",\"evidence\":\"lost\"",
     )
-  let assert Ok(_) = backend.insert("root", uncertain, store.Release)
+  let assert Ok(_) = backend.insert("root", uncertain, backend.Release)
   let assert Ok(_) =
     backend.insert(
       "root-1",
       record("root-1", "ended", Some("root"), []),
-      store.Release,
+      backend.Release,
     )
   fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
   |> should.equal(Ok(0))
-  let assert Ok(_) = backend.compare_and_set("root", 1, root, store.Release)
+  let assert Ok(_) = backend.compare_and_set("root", 1, root, backend.Release)
   let assert Ok(_) =
     pog.query(
       "UPDATE \""
@@ -503,9 +503,9 @@ pub fn migration_refresh_preserves_bytes_and_old_writer_changes_invalidate_metad
   fabric_postgres.refresh_retention(settings, 10) |> should.equal(Ok(0))
   let backend = fabric_postgres.backend(settings)
   backend.get("old-root")
-  |> should.equal(Ok(store.Current(1, root, store.Free)))
+  |> should.equal(Ok(backend.Current(1, root, backend.Free)))
   backend.get("old-root-1")
-  |> should.equal(Ok(store.Current(1, child, store.Free)))
+  |> should.equal(Ok(backend.Current(1, child, backend.Free)))
   // A pre-upgrade backend writes the bytes and revision but no projection.
   let assert Ok(_) =
     pog.query(
@@ -530,7 +530,8 @@ pub fn migration_refresh_preserves_bytes_and_old_writer_changes_invalidate_metad
     limit: 10,
   )
   |> should.equal(Ok(0))
-  backend.compare_and_set("old-root-1", 2, child, store.Release) |> should.be_ok
+  backend.compare_and_set("old-root-1", 2, child, backend.Release)
+  |> should.be_ok
   fabric_postgres.prune(
     settings,
     ended_for: duration.milliseconds(0),
@@ -567,13 +568,13 @@ pub fn pruning_cannot_delete_a_child_whose_lease_is_renewed_concurrently_test() 
     backend.insert(
       "root",
       record("root", "ended", None, ["root-1"]),
-      store.Release,
+      backend.Release,
     )
   let assert Ok(_) =
     backend.insert(
       "root-1",
       record("root-1", "ended", Some("root"), []),
-      store.Claim("owner", 0),
+      backend.Claim("owner", 0),
     )
   let ready = process.new_subject()
   let renewed = process.new_subject()
@@ -627,10 +628,12 @@ pub fn attachment_keys_with_nul_survive_the_metadata_index_test() {
   }
   let root = record("root", "ended", None, ["root-1"]) |> with_nul
   let child = record("root-1", "ended", Some("root"), []) |> with_nul
-  let assert Ok(_) = backend.insert("root", root, store.Release)
-  let assert Ok(_) = backend.insert("root-1", child, store.Release)
-  backend.get("root") |> should.equal(Ok(store.Current(1, root, store.Free)))
-  backend.get("root-1") |> should.equal(Ok(store.Current(1, child, store.Free)))
+  let assert Ok(_) = backend.insert("root", root, backend.Release)
+  let assert Ok(_) = backend.insert("root-1", child, backend.Release)
+  backend.get("root")
+  |> should.equal(Ok(backend.Current(1, root, backend.Free)))
+  backend.get("root-1")
+  |> should.equal(Ok(backend.Current(1, child, backend.Free)))
   fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
   |> should.equal(Ok(2))
 }

@@ -1,7 +1,7 @@
 //// Diagnostic evidence for one factory's shutdown. Handoff confirmation and
 //// process exit are independent: a confirmed runner can still be force killed.
 
-import fabric/observation
+import fabric/telemetry
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid}
 import gleam/int
@@ -94,39 +94,38 @@ pub fn exited(state: Accounting, runner: Pid, exit: Exit) -> Accounting {
   }
 }
 
-pub fn report(state: Accounting, now: Int) -> Option(observation.Drain) {
+pub fn report(state: Accounting, now: Int) -> Option(telemetry.Drain) {
   use #(factory, started) <- option.map(state.draining)
   dict.fold(
     state.members,
-    observation.Drain(0, 0, 0, 0, 0, 0, 0, int.max(0, now - started)),
+    telemetry.Drain(0, 0, 0, 0, 0, 0, 0, int.max(0, now - started)),
     fn(summary, _, member) {
       case member.factory == factory {
         False -> summary
         True -> {
-          let summary =
-            observation.Drain(..summary, runners: summary.runners + 1)
+          let summary = telemetry.Drain(..summary, runners: summary.runners + 1)
           let summary = case member.handoff {
             NotAttempted -> summary
             Pending ->
-              observation.Drain(
+              telemetry.Drain(
                 ..summary,
                 pending_handoffs: summary.pending_handoffs + 1,
               )
             Confirmed ->
-              observation.Drain(..summary, handed_off: summary.handed_off + 1)
+              telemetry.Drain(..summary, handed_off: summary.handed_off + 1)
             Failed ->
-              observation.Drain(
+              telemetry.Drain(
                 ..summary,
                 failed_handoffs: summary.failed_handoffs + 1,
               )
           }
           case member.exit {
             None ->
-              observation.Drain(..summary, unobserved: summary.unobserved + 1)
+              telemetry.Drain(..summary, unobserved: summary.unobserved + 1)
             Some(Killed) ->
-              observation.Drain(..summary, killed: summary.killed + 1)
+              telemetry.Drain(..summary, killed: summary.killed + 1)
             Some(Exited) ->
-              observation.Drain(..summary, exited: summary.exited + 1)
+              telemetry.Drain(..summary, exited: summary.exited + 1)
           }
         }
       }

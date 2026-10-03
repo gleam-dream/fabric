@@ -9,6 +9,7 @@ import fabric/graph/operation
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -23,7 +24,7 @@ fn runtime(runs, identity, op) {
   let assert Ok(id) = definition.node_id("work")
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity(identity, 1),
+      run.DefinitionId(identity, 1),
       id,
       [
         definition.node(
@@ -46,7 +47,7 @@ fn leaf(runs) {
     runs,
     "pg-uncertain-child",
     operation.new(
-      run.Identity("uncertain-effect", 1),
+      run.DefinitionId("uncertain-effect", 1),
       codec.int(),
       codec.int(),
       fn(_, _, _) {
@@ -75,17 +76,17 @@ fn sweep(runs) {
   let assert Ok(spec) =
     fabric.sweeper(
       runs,
-      [graph.recovery(run.Identity("pg-child-deadline", 1), parent)],
+      [graph.recovery(run.DefinitionId("pg-child-deadline", 1), parent)],
       every: duration.milliseconds(20),
     )
   let assert Ok(started) = spec.start()
   started
 }
 
-fn idle(backend: store.LeasedBackend, remaining: Int) {
+fn idle(backend: backend.LeasedBackend, remaining: Int) {
   let assert Ok(row) = backend.get("pg-child-deadline")
   case row.holder, remaining {
-    store.Free, _ -> Nil
+    backend.Free, _ -> Nil
     _, n if n > 0 -> {
       process.sleep(10)
       idle(backend, n - 1)

@@ -21,7 +21,7 @@ fn no_error(_error: Nil) -> operation.Failure {
 
 fn increment() -> operation.Operation(Nil, Int, Int) {
   operation.new(
-    run.Identity("increment", 1),
+    run.DefinitionId("increment", 1),
     codec.int(),
     codec.int(),
     fn(_, _, input) { Ok(input + 1) },
@@ -44,7 +44,7 @@ fn counter(
 
 fn spec(nodes: List(graph.Node(Nil, Int, Int))) -> graph.Spec(Nil, Int, Int) {
   graph.Spec(
-    run.Identity("counter-loop", 1),
+    run.DefinitionId("counter-loop", 1),
     id("counter"),
     nodes,
     codec.int(),
@@ -111,7 +111,7 @@ pub fn native_boolean_decision_routes_alongside_integer_generation_test() {
     graph.node(
       id("review"),
       operation.new(
-        run.Identity("review", 1),
+        run.DefinitionId("review", 1),
         codec.int(),
         codec.bool(),
         fn(_, _, draft) { Ok(draft >= 1) },
@@ -145,7 +145,7 @@ pub fn validation_never_repeats_selection_operations_or_routing_test() {
   let state = completed_visit(loop(), started(loop()))
   let forbidden =
     operation.new(
-      run.Identity("increment", 1),
+      run.DefinitionId("increment", 1),
       codec.int(),
       codec.int(),
       fn(_, _, _) { panic as "body ran during validation" },
@@ -170,8 +170,8 @@ pub fn construction_rejects_invalid_bounds_identity_and_destinations_test() {
   |> should.equal(Error(graph.DuplicateNode(id("counter"))))
   graph.build(graph.Spec(..base, max_activations: 0))
   |> should.equal(Error(graph.InvalidActivationLimit(0)))
-  graph.build(graph.Spec(..base, identity: run.Identity("", 1)))
-  |> should.equal(Error(graph.InvalidIdentity(run.Identity("", 1))))
+  graph.build(graph.Spec(..base, identity: run.DefinitionId("", 1)))
+  |> should.equal(Error(graph.InvalidIdentity(run.DefinitionId("", 1))))
   graph.build(graph.Spec(..base, entry: id("missing")))
   |> should.equal(Error(graph.MissingEntry(id("missing"))))
   graph.build(
@@ -235,7 +235,10 @@ pub fn saved_payloads_must_decode_under_the_current_native_contract_test() {
   let assert Error(graph.OperationRejected(operation.InputDecodingFailed(_))) =
     graph.validate(definition, malformed)
   let wrong_version =
-    controller.Prepared(..a.prepared, operation: run.Identity("increment", 99))
+    controller.Prepared(
+      ..a.prepared,
+      operation: run.DefinitionId("increment", 99),
+    )
   graph.validate(
     definition,
     controller.State(
@@ -268,7 +271,7 @@ pub fn codecs_without_provider_schema_are_sufficient_for_durable_values_test() {
   codec.schema(native) |> result.is_error |> should.be_true
   let op =
     operation.new(
-      run.Identity("increment", 1),
+      run.DefinitionId("increment", 1),
       native,
       native,
       fn(_, _, n) { Ok(n + 1) },

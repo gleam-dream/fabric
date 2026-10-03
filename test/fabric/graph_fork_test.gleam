@@ -1,17 +1,18 @@
 import fabric/graph/fork as value
 import fabric/internal/graph/fork
+import fabric/internal/run_id
 import fabric/run
 import gleam/list
 import gleam/option.{None, Some}
 import gleeunit/should
 
 fn request() -> value.Request {
-  value.Request(run.Identity("review", 1), "42")
+  value.Request(run.DefinitionId("review", 1), "42")
 }
 
 // F1–F4: equal inputs are distinct work; reverse completion cannot reorder a join.
 pub fn pair_retains_distinct_members_and_joins_in_declared_order_test() {
-  let occurrence = value.Occurrence(run.issued("parent"), 3)
+  let occurrence = value.Occurrence(run_id.from_string("parent"), 3)
   let assert Ok(scope) = fork.new(occurrence, [request(), request()], 2, 2)
   let left = value.Reference(occurrence, 1)
   let right = value.Reference(occurrence, 2)
@@ -29,7 +30,7 @@ pub fn pair_retains_distinct_members_and_joins_in_declared_order_test() {
 fn fresh(count: Int, concurrency: Int) -> fork.Scope {
   let assert Ok(scope) =
     fork.new(
-      value.Occurrence(run.issued("parent"), 3),
+      value.Occurrence(run_id.from_string("parent"), 3),
       list.repeat(request(), count),
       4,
       concurrency,
@@ -85,9 +86,10 @@ pub fn bounded_map_releases_capacity_only_for_settled_members_test() {
 // F3: neither another parent nor an earlier loop visit can satisfy this scope.
 pub fn stale_and_foreign_member_observations_are_refused_test() {
   let scope = fresh(2, 2) |> admit(1)
-  let previous = value.Reference(value.Occurrence(run.issued("parent"), 2), 1)
+  let previous =
+    value.Reference(value.Occurrence(run_id.from_string("parent"), 2), 1)
   let sibling =
-    value.Reference(value.Occurrence(run.issued("other-parent"), 3), 1)
+    value.Reference(value.Occurrence(run_id.from_string("other-parent"), 3), 1)
   list.each([previous, sibling], fn(ref) {
     fork.observe(scope, ref, value.Succeeded("1"))
     |> should.equal(Error(fork.WrongOccurrence))
@@ -232,9 +234,9 @@ pub fn empty_oversized_and_invalid_membership_have_explicit_outcomes_test() {
   })
   list.each(
     [
-      value.Occurrence(run.issued("parent"), 0),
-      value.Occurrence(run.issued("parent"), -1),
-      value.Occurrence(run.issued("not/a/run"), 1),
+      value.Occurrence(run_id.from_string("parent"), 0),
+      value.Occurrence(run_id.from_string("parent"), -1),
+      value.Occurrence(run_id.from_string("not/a/run"), 1),
     ],
     fn(occurrence) {
       fork.new(occurrence, [], 1, 1)
@@ -243,9 +245,9 @@ pub fn empty_oversized_and_invalid_membership_have_explicit_outcomes_test() {
   )
   list.each(
     [
-      value.Request(run.Identity(" ", 1), "1"),
-      value.Request(run.Identity("review", 0), "1"),
-      value.Request(run.Identity("review", 1), "not-json"),
+      value.Request(run.DefinitionId(" ", 1), "1"),
+      value.Request(run.DefinitionId("review", 0), "1"),
+      value.Request(run.DefinitionId("review", 1), "not-json"),
     ],
     fn(request) {
       fork.new(occurrence, [request], 1, 1)
@@ -318,7 +320,7 @@ pub fn restoration_rejects_broken_admission_order_capacity_and_stop_evidence_tes
         members: [failed, withdrawn],
         stop: Some(
           value.MemberFailed(value.Reference(
-            value.Occurrence(run.issued("another"), 3),
+            value.Occurrence(run_id.from_string("another"), 3),
             1,
           )),
         ),

@@ -2,14 +2,15 @@
 //// performs, and on request tells the test about the next read.
 
 import fabric/store.{type Store}
+import fabric/store/backend
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
 type Message {
-  Get(String, Subject(Result(store.Stored, store.StoreError)))
-  Write(String, Option(Int), String, Subject(Result(Nil, store.StoreError)))
+  Get(String, Subject(Result(backend.Stored, backend.StoreError)))
+  Write(String, Option(Int), String, Subject(Result(Nil, backend.StoreError)))
   Writes(Subject(Int))
   NotifyRead(Subject(String))
 }
@@ -20,7 +21,7 @@ pub opaque type Watched {
 
 type State {
   State(
-    records: Dict(String, store.Stored),
+    records: Dict(String, backend.Stored),
     writes: Int,
     notify: Option(Subject(String)),
   )
@@ -84,7 +85,7 @@ fn loop(subject: Subject(Message), state: State) -> Nil {
     Get(run, reply) -> {
       process.send(
         reply,
-        dict.get(state.records, run) |> result.replace_error(store.NotFound),
+        dict.get(state.records, run) |> result.replace_error(backend.NotFound),
       )
       case state.notify {
         Some(reads) -> process.send(reads, run)
@@ -94,12 +95,12 @@ fn loop(subject: Subject(Message), state: State) -> Nil {
     }
     Write(run, expected, record, reply) -> {
       let outcome = case expected, dict.get(state.records, run) {
-        None, Ok(_) -> Error(store.AlreadyExists)
-        None, Error(Nil) -> Ok(store.Stored(1, record))
-        Some(_), Error(Nil) -> Error(store.NotFound)
+        None, Ok(_) -> Error(backend.AlreadyExists)
+        None, Error(Nil) -> Ok(backend.Stored(1, record))
+        Some(_), Error(Nil) -> Error(backend.NotFound)
         Some(expected), Ok(current) if current.revision == expected ->
-          Ok(store.Stored(expected + 1, record))
-        Some(_), Ok(current) -> Error(store.Conflict(current.revision))
+          Ok(backend.Stored(expected + 1, record))
+        Some(_), Ok(current) -> Error(backend.Conflict(current.revision))
       }
       case outcome {
         Ok(stored) -> {

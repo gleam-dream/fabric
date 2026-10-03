@@ -6,12 +6,13 @@ import fabric/budget as quota
 
 import fabric/internal/budget/model as budget
 import fabric/internal/budget/record
+import fabric/internal/store
 import fabric/run
-import fabric/store
+import fabric/store/backend
 import gleam/result
 
 pub type Error {
-  Storage(store.StoreError)
+  Storage(backend.StoreError)
   Unreadable(record.Error)
   InvalidRoot
   ChangedLimits
@@ -28,7 +29,7 @@ pub fn ensure(
   use initial <- result.try(budget.new(limits) |> result.map_error(Reservation))
   case read(runs, root) {
     Ok(#(_, state)) -> compatible(state, limits)
-    Error(Storage(store.NotFound)) -> {
+    Error(Storage(backend.NotFound)) -> {
       let encoded = record.encode(record.Record(root, initial))
       case
         store.insert(
@@ -39,7 +40,7 @@ pub fn ensure(
         )
       {
         Ok(_) -> Ok(initial)
-        Error(store.AlreadyExists) -> {
+        Error(backend.AlreadyExists) -> {
           use #(_, state) <- result.try(read(runs, root))
           compatible(state, limits)
         }
@@ -102,9 +103,9 @@ fn reserve_attempt(runs, root, limits, claim, tries) {
         )
       {
         Ok(_) -> Ok(next)
-        Error(store.Conflict(_)) if tries > 1 ->
+        Error(backend.Conflict(_)) if tries > 1 ->
           reserve_attempt(runs, root, limits, claim, tries - 1)
-        Error(store.Conflict(_)) -> Error(Contended)
+        Error(backend.Conflict(_)) -> Error(Contended)
         Error(error) -> Error(Storage(error))
       }
     }

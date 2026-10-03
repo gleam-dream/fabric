@@ -1,6 +1,7 @@
 //// S7 O1/O5: a real table read is required and it leaves durable work alone.
 
 import fabric/store
+import fabric/store/backend
 import fabric_postgres
 import fabric_postgres/support
 import gleam/dynamic/decode
@@ -18,11 +19,11 @@ pub fn readiness_requires_a_migrated_store_and_leaves_records_untouched_test() {
   let assert Ok(runs) =
     fabric_postgres.store(process.new_name("readiness"), settings)
   let assert Ok(Nil) = store.start(runs)
-  let assert Error(store.Unavailable(_)) = store.readiness(runs)
+  let assert Error(backend.Unavailable(_)) = store.readiness(runs)
   let assert Ok(Nil) = fabric_postgres.migrate(settings)
   let backend = fabric_postgres.backend(settings)
   let assert Ok(Nil) =
-    backend.insert("kept", "record", store.Claim("owner", 60_000))
+    backend.insert("kept", "record", backend.Claim("owner", 60_000))
   let assert Ok(before) = backend.get("kept")
   store.readiness(runs)
   |> should.equal(

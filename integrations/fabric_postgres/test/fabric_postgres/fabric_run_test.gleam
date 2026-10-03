@@ -5,6 +5,7 @@
 import fabric
 import fabric/run
 import fabric/store
+import fabric/store/backend
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -82,12 +83,12 @@ fn lost_replies(version: Int) {
   let backend = fabric_postgres.backend(settings)
   let lost = fn(outcome) {
     case outcome {
-      Ok(Nil) -> Error(store.Unavailable("the reply was lost"))
+      Ok(Nil) -> Error(backend.Unavailable("the reply was lost"))
       refused -> refused
     }
   }
   let lossy =
-    store.LeasedBackend(
+    backend.LeasedBackend(
       ..backend,
       insert: fn(run, record, lease) {
         lost(backend.insert(run, record, lease))
@@ -121,7 +122,7 @@ fn lost_replies(version: Int) {
   stored_version(backend, fabric.id(started)) |> should.equal(version)
 }
 
-fn stored_version(backend: store.LeasedBackend, id: run.RunId) -> Int {
+fn stored_version(backend: backend.LeasedBackend, id: run.RunId) -> Int {
   let assert Ok(row) = backend.get(run.id_to_string(id))
   let header = {
     use version <- decode.field("version", decode.int)

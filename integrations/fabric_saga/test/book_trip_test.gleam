@@ -13,10 +13,10 @@
 import fabric
 import fabric/agent
 import fabric/model
-import fabric/observation as o
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/telemetry as o
 import fabric/testing
 import fabric/tool
 import fabric_saga

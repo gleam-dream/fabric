@@ -3,16 +3,18 @@ import fabric/agent
 import fabric/graph
 import fabric/graph/definition
 import fabric/graph/operation
+import fabric/internal/store as store_core
 import fabric/model
-import fabric/observation as o
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
+import fabric/store/conformance
 import fabric/support
 import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
-import fabric/testing
+import fabric/telemetry as o
 import gleam/erlang/process
 import gleam/option.{None}
 import gleam/time/duration
@@ -83,7 +85,7 @@ fn reported(events: process.Subject(o.Drain), expected: o.Drain) -> o.Drain {
 
 fn leased(
   name: process.Name(store.Message),
-  backend: store.LeasedBackend,
+  backend: backend.LeasedBackend,
   milliseconds: Int,
 ) -> store.Store {
   let assert Ok(runs) =
@@ -95,16 +97,16 @@ fn leased(
 
 pub fn a_lost_handoff_acknowledgment_is_confirmed_by_readback_test() {
   let name = process.new_name("drain-readback")
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let backend =
-    store.LeasedBackend(
+    backend.LeasedBackend(
       ..memory.backend,
       compare_and_set: fn(id, revision, encoded, lease) {
         let result =
           memory.backend.compare_and_set(id, revision, encoded, lease)
         case lease, result {
-          store.Claim(_, 0), Ok(_) ->
-            Error(store.Unavailable("lost acknowledgment"))
+          backend.Claim(_, 0), Ok(_) ->
+            Error(backend.Unavailable("lost acknowledgment"))
           _, _ -> result
         }
       },
@@ -133,13 +135,13 @@ pub fn a_lost_handoff_acknowledgment_is_confirmed_by_readback_test() {
 
 pub fn an_unconfirmed_handoff_is_reported_as_failed_test() {
   let name = process.new_name("drain-failed")
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let backend =
-    store.LeasedBackend(
+    backend.LeasedBackend(
       ..memory.backend,
       compare_and_set: fn(id, revision, encoded, lease) {
         case lease {
-          store.Claim(_, 0) -> Error(store.Unavailable("offline"))
+          backend.Claim(_, 0) -> Error(backend.Unavailable("offline"))
           _ -> memory.backend.compare_and_set(id, revision, encoded, lease)
         }
       },
@@ -191,14 +193,14 @@ pub fn the_supervisor_deadline_is_counted_as_a_forced_exit_test() {
 
 pub fn a_commit_still_pending_after_the_deadline_is_not_reported_as_success_or_failure_test() {
   let name = process.new_name("drain-pending")
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let writes = probe.new()
   let backend =
-    store.LeasedBackend(
+    backend.LeasedBackend(
       ..memory.backend,
       compare_and_set: fn(id, revision, encoded, lease) {
         case lease {
-          store.Claim(_, 0) -> probe.gate(writes, "handoff")
+          backend.Claim(_, 0) -> probe.gate(writes, "handoff")
           _ -> Nil
         }
         memory.backend.compare_and_set(id, revision, encoded, lease)
@@ -342,7 +344,7 @@ pub fn graph_runners_are_included_in_the_same_summary_test() {
   let assert Ok(node) = definition.node_id("work")
   let work =
     operation.new(
-      run.Identity("work", 1),
+      run.DefinitionId("work", 1),
       codec.int(),
       codec.int(),
       fn(_, _, n) {
@@ -353,7 +355,7 @@ pub fn graph_runners_are_included_in_the_same_summary_test() {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("graph-drain-summary", 1),
+      run.DefinitionId("graph-drain-summary", 1),
       node,
       [
         definition.node(
@@ -384,10 +386,10 @@ pub fn graph_runners_are_included_in_the_same_summary_test() {
 
 pub fn a_runner_admitted_before_drain_is_counted_while_its_first_write_is_pending_test() {
   let name = process.new_name("drain-starting")
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let writes = probe.new()
   let backend =
-    store.LeasedBackend(..memory.backend, insert: fn(id, encoded, lease) {
+    backend.LeasedBackend(..memory.backend, insert: fn(id, encoded, lease) {
       probe.gate(writes, "insert")
       memory.backend.insert(id, encoded, lease)
     })
@@ -447,7 +449,7 @@ pub fn store_loss_during_drain_reports_unavailable_accounting_test() {
   let _ = probe.arrival(ledger)
   restart.begin_stop(application)
   restart.draining(runs)
-  let assert Ok(pid) = store.pid(runs)
+  let assert Ok(pid) = store_core.pid(runs)
   restart.kill(pid)
   restart.stopped_within(application, 3000) |> should.be_true
   process.receive(unavailable, 1000) |> should.equal(Ok(Nil))

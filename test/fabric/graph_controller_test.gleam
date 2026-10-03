@@ -9,7 +9,7 @@ import gleeunit/should
 fn prepared(node: String) -> graph.Prepared {
   graph.Prepared(
     node,
-    run.Identity(node, 1),
+    run.DefinitionId(node, 1),
     "{}",
     operation.RequireReconciliation,
     operation.Activity,
@@ -19,7 +19,7 @@ fn prepared(node: String) -> graph.Prepared {
 
 fn initial(limit: Int) -> graph.State {
   let definition =
-    graph.Definition(run.Identity("review-loop", 1), "signature-1", limit)
+    graph.Definition(run.DefinitionId("review-loop", 1), "signature-1", limit)
   let assert Ok(#(state, [graph.Inspect(_)])) =
     graph.start("graph-1", definition, "0", prepared("generate"))
   state
@@ -267,7 +267,9 @@ pub fn cancellation_preserves_an_inflight_result_without_routing_test() {
   done.allocated |> should.equal(1)
   done.value |> should.equal(state.value)
   done.receipts
-  |> should.equal([graph.Receipt(activation, "1", state.value, graph.Canceled)])
+  |> should.equal([
+    graph.Receipt(activation, "1", state.value, graph.StoppedRoute),
+  ])
 }
 
 pub fn cancellation_distinguishes_unstarted_and_unresolved_work_test() {

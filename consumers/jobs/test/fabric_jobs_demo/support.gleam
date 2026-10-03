@@ -30,11 +30,13 @@ fn gone(pid: Pid) -> Nil {
   |> process.selector_receive_forever
 }
 
+/// Kills the store's owner, as a crash would, and waits until the store's
+/// process is gone.
 pub fn crash(owner: Pid, runs: store.Store) -> Nil {
-  let assert Ok(pid) = store.pid(runs)
   process.kill(owner)
   gone(owner)
-  gone(pid)
+  let assert Ok(Nil) = store.stop(runs)
+  Nil
 }
 
 @external(erlang, "fabric_jobs_test_ffi", "getenv")

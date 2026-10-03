@@ -6,9 +6,9 @@ import fabric/graph/child
 import fabric/graph/definition
 import fabric/graph/job
 import fabric/graph/operation
+import fabric/internal/store as store_core
 import fabric/policy
 import fabric/run
-import fabric/store
 import fabric/support
 import fabric/support/flaky
 import fabric/support/probe
@@ -30,7 +30,7 @@ fn runtime_with(runs, read, gate, accept) {
   let output = codec.integer_between(0, 100)
   let observer =
     job.observe(
-      run.Identity("external-job", 1),
+      run.DefinitionId("external-job", 1),
       codec.string(),
       output,
       fn(_, receipt) { read(receipt) },
@@ -46,7 +46,7 @@ fn runtime_with(runs, read, gate, accept) {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("job-observer", 1),
+      run.DefinitionId("job-observer", 1),
       id,
       [node],
       codec.string(),
@@ -72,7 +72,7 @@ pub fn a_job_wait_survives_restart_and_commits_completion_once_test() {
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
-  let assert Ok(entry) = store.get(runs, "job-restart")
+  let assert Ok(entry) = store_core.get(runs, "job-restart")
   entry.live |> should.equal(None)
   graph.poll_job(handle, reference) |> should.equal(Ok(waiting))
   restart.crash(owner, runs)
@@ -114,7 +114,7 @@ pub fn job_observation_requires_admission_and_a_current_reference_test() {
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
-  let guess = job.Reference(id, 1, 1, run.Identity("external-job", 1))
+  let guess = job.Reference(id, 1, 1, run.DefinitionId("external-job", 1))
   graph.poll_job(handle, guess) |> should.be_error
   probe.entries(calls) |> should.equal([])
   let assert Ok(approved) = graph.approve(handle, approval)
@@ -128,7 +128,7 @@ pub fn job_observation_requires_admission_and_a_current_reference_test() {
   |> should.be_error
   graph.poll_job(
     handle,
-    job.Reference(..reference, operation: run.Identity("external-job", 2)),
+    job.Reference(..reference, operation: run.DefinitionId("external-job", 2)),
   )
   |> should.be_error
   probe.entries(calls) |> should.equal([])
@@ -320,7 +320,7 @@ pub fn managed_parents_park_while_their_child_observes_a_job_test() {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("job-parent", 1),
+      run.DefinitionId("job-parent", 1),
       id,
       [node],
       codec.string(),
@@ -348,7 +348,7 @@ fn with_successor(runs, read, calls) {
   let assert Ok(next) = definition.node_id("next")
   let observer =
     job.observe(
-      run.Identity("external-job", 1),
+      run.DefinitionId("external-job", 1),
       codec.string(),
       codec.int(),
       fn(_, receipt) { read(receipt) },
@@ -363,7 +363,7 @@ fn with_successor(runs, read, calls) {
     )
   let effect =
     operation.new(
-      run.Identity("successor", 1),
+      run.DefinitionId("successor", 1),
       codec.string(),
       codec.int(),
       fn(_, _, _) {
@@ -382,7 +382,7 @@ fn with_successor(runs, read, calls) {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("job-with-successor", 1),
+      run.DefinitionId("job-with-successor", 1),
       wait,
       [waiting, successor],
       codec.string(),

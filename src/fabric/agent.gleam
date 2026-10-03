@@ -6,12 +6,16 @@
 //// `fabric.recover` take,
 //// so a run never starts under an invalid agent. Building starts nothing.
 
-import fabric/internal/registry.{type Registry}
+import fabric/internal/checked_agent.{type Admitted, Admitted}
+import fabric/internal/registry
+import fabric/internal/tool as core_tool
 import fabric/model.{type Model}
 import fabric/policy.{type Policy}
-import fabric/run.{type Identity, type Timeout, After, Identity, Infinity}
+import fabric/run.{
+  type DefinitionId, type Timeout, After, DefinitionId, Infinity,
+}
 import fabric/tool.{type Tool}
-import gleam/dict.{type Dict}
+import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -20,7 +24,7 @@ import gleam/time/duration.{type Duration}
 /// An agent's description, checked by `build`.
 pub opaque type Spec(context) {
   Spec(
-    identity: Identity,
+    identity: DefinitionId,
     model: Model,
     tools: List(Tool(context)),
     policy: Policy(context),
@@ -32,9 +36,8 @@ pub opaque type Spec(context) {
 }
 
 /// A checked agent. Only `build` makes one.
-pub opaque type Agent(context) {
-  Agent(admitted: Admitted(context))
-}
+pub type Agent(context) =
+  checked_agent.Agent(context)
 
 /// The bounds of every run of an agent. Start from `default_limits()` and
 /// override what differs, by label:
@@ -200,7 +203,7 @@ pub fn new(
   policy: Policy(context),
 ) -> Spec(context) {
   Spec(
-    identity: Identity(name, 1),
+    identity: DefinitionId(name, 1),
     model:,
     tools:,
     policy:,
@@ -213,7 +216,7 @@ pub fn new(
 /// Changes the version a run records. Change it when a change to the agent
 /// must not continue older runs.
 pub fn with_version(spec: Spec(context), version: Int) -> Spec(context) {
-  Spec(..spec, identity: Identity(spec.identity.name, version))
+  Spec(..spec, identity: DefinitionId(spec.identity.name, version))
 }
 
 pub fn with_system_prompt(spec: Spec(context), text: String) -> Spec(context) {
@@ -250,51 +253,23 @@ pub fn with_sub_agent(
   output output: fn(String) -> Result(output, String),
 ) -> Spec(context) {
   let delegation =
-    tool.delegation(definition, child.admitted.identity, prompt, output:)
+    core_tool.delegation(
+      definition,
+      checked_agent.admitted(child).identity,
+      prompt,
+      output:,
+    )
   Spec(
     ..spec,
     tools: list.append(spec.tools, [delegation]),
-    children: list.append(spec.children, [#(tool.name(delegation), child)]),
+    children: list.append(spec.children, [#(core_tool.name(delegation), child)]),
   )
 }
 
 /// Checks `spec` and reports every problem at once. A sub-agent was checked
 /// by its own `build`.
 pub fn build(spec: Spec(context)) -> Result(Agent(context), List(ConfigError)) {
-  admit(spec) |> result.map(Agent)
-}
-
-/// A validated agent, ready for the runtime.
-@internal
-pub type Admitted(context) {
-  Admitted(
-    identity: Identity,
-    model: Model,
-    registry: Registry(context),
-    policy: Policy(context),
-    system_prompt: Option(String),
-    max_turns: Int,
-    max_concurrency: Int,
-    token_budget: Option(Int),
-    /// Milliseconds, like every bound below.
-    policy_timeout: Int,
-    model_retry_delay: Int,
-    command_timeout: Int,
-    /// `None`: unbounded.
-    model_timeout: Option(Int),
-    tool_timeout: Option(Int),
-    max_result_bytes: Int,
-    /// The admitted sub-agent of each delegation, by delegation name.
-    children: Dict(String, Admitted(context)),
-    max_children: Int,
-    max_depth: Int,
-  )
-}
-
-/// The checked agent, for the runtime.
-@internal
-pub fn admitted(agent: Agent(context)) -> Admitted(context) {
-  agent.admitted
+  admit(spec) |> result.map(checked_agent.new)
 }
 
 fn admit(spec: Spec(context)) -> Result(Admitted(context), List(ConfigError)) {
@@ -361,9 +336,9 @@ fn admit(spec: Spec(context)) -> Result(Admitted(context), List(ConfigError)) {
       },
       positive(max_result_bytes, MaxResultBytesNotPositive),
       case spec.identity {
-        Identity(name, version) if name == "" || version < 1 ->
+        DefinitionId(name, version) if name == "" || version < 1 ->
           Error(InvalidIdentity(name, version))
-        Identity(..) -> Ok(Nil)
+        DefinitionId(..) -> Ok(Nil)
       },
       not_negative(max_children, MaxChildrenNegative),
       not_negative(max_depth, MaxDepthNegative),
@@ -400,7 +375,7 @@ fn admit(spec: Spec(context)) -> Result(Admitted(context), List(ConfigError)) {
         tool_timeout: milliseconds(tool_timeout),
         max_result_bytes:,
         children: spec.children
-          |> list.map(fn(entry) { #(entry.0, { entry.1 }.admitted) })
+          |> list.map(fn(entry) { #(entry.0, checked_agent.admitted(entry.1)) })
           |> dict.from_list,
         max_children:,
         max_depth:,

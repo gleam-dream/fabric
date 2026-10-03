@@ -399,7 +399,7 @@ pub fn a_completed_owned_job_keeps_its_artifact_when_local_cancellation_wins_tes
   let assert [_, outcome] = done.receipts
   codec.decode_json(codec.string(), outcome.output_json)
   |> should.equal(Ok(digest))
-  outcome.route |> should.equal(graph.Canceled)
+  outcome.route |> should.equal(graph.Stopped)
   client.artifact(support.url(), receipt)
   |> should.equal(Ok("ALREADY PUBLISHED"))
 }
