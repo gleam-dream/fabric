@@ -8,6 +8,7 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/time/duration
 import saga
 import saga/execution
 import wc/agent.{type ActionId}
@@ -16,7 +17,7 @@ import wc/runtime.{type ExecutorHandle, type Hooks, ExecutorHandle}
 import wc/tool
 
 pub type Settings {
-  Settings(step_timeout: Int, settle_timeout: Int)
+  Settings(step_timeout: duration.Duration, settle_timeout: duration.Duration)
 }
 
 /// What one step returns: `None` when the fence refused the start.
@@ -117,7 +118,7 @@ fn start_batch(
     let config =
       execution.config()
       |> execution.with_max_concurrency(hooks.max_in_flight)
-      |> execution.with_step_timeout(settings.step_timeout)
+      |> execution.with_step_timeout(execution.After(settings.step_timeout))
       |> execution.with_settle_timeout(settings.settle_timeout)
     let assert Ok(batch) = execution.start(workflow, Nil, config)
     process.send(parent, BatchStarted(number, batch))
@@ -152,7 +153,7 @@ fn start_batch(
 }
 
 fn await(batch: Batch) -> execution.Outcome(List(StepResult), Nil, Nil) {
-  case execution.await(batch, timeout: 60_000) {
+  case execution.await(batch, timeout: duration.seconds(60)) {
     Ok(outcome) -> outcome
     Error(execution.AwaitTimedOut) -> await(batch)
     Error(_) -> execution.Completed([])

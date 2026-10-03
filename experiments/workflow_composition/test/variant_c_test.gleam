@@ -6,6 +6,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import gleam/time/duration
 import saga
 import saga/execution
 import wc/app
@@ -15,7 +16,7 @@ import wc/variant_c.{ApprovalRequest, HoldForApproval, WaitInStep}
 const lisbon = "{\"city\":\"Lisbon\",\"celsius\":21}"
 
 fn config() -> execution.Config {
-  execution.config() |> execution.with_settle_timeout(50)
+  execution.config() |> execution.with_settle_timeout(duration.milliseconds(50))
 }
 
 fn workflow(probe: Probe, mode: variant_c.ApprovalMode, max_turns: Int) {
@@ -46,7 +47,7 @@ pub fn c_row1_2_4_in_process_approval_completes_test() {
   let assert "transfer_funds" = call.name
   process.send(reply, True)
   let assert Ok(execution.Completed(conversation)) =
-    execution.await(run, timeout: 5000)
+    execution.await(run, timeout: duration.seconds(5))
   assert conversation.answer
     == Some("c1=" <> lisbon <> ";c2={\"receipt\":\"rcpt-acct-b\"}")
 }
@@ -62,7 +63,7 @@ pub fn c_row3_restart_breaks_pause_and_repeats_effects_test() {
     process.spawn_unlinked(fn() {
       let assert Ok(run) =
         execution.start(wf, variant_c.begin("weather and transfer"), config())
-      execution.await(run, timeout: 60_000)
+      execution.await(run, timeout: duration.seconds(60))
     })
   let assert Ok(ApprovalRequest(_, _)) = process.receive(approver, 5000)
   process.kill(owner)
@@ -71,7 +72,8 @@ pub fn c_row3_restart_breaks_pause_and_repeats_effects_test() {
     execution.start(wf, variant_c.begin("weather and transfer"), config())
   let assert Ok(ApprovalRequest(_, reply)) = process.receive(approver, 5000)
   process.send(reply, True)
-  let assert Ok(execution.Completed(_)) = execution.await(run, timeout: 5000)
+  let assert Ok(execution.Completed(_)) =
+    execution.await(run, timeout: duration.seconds(5))
   let assert 2 = probe.count(probe, "weather:start:Lisbon")
   let assert ["model:1", "model:1", "model:4"] = model_calls(probe)
 }
@@ -107,7 +109,7 @@ pub fn c_row5_cancel_reports_batch_not_call_test() {
   let assert "gated-Lisbon" = arrival.name
   execution.cancel(run)
   let assert Ok(execution.Cancelled(execution.CancelRequested, settlement)) =
-    execution.await(run, timeout: 5000)
+    execution.await(run, timeout: duration.seconds(5))
   let assert ["tools-1"] = list.map(settlement.interrupted, fn(a) { a.name })
   let assert 0 = probe.count(probe, "weather:end:gated-Lisbon")
 }
@@ -129,7 +131,7 @@ pub fn c_row6_uncertain_effect_breaks_continuation_test() {
     step,
     variant_c.UncertainEffect(call, _),
     _,
-  )) = execution.await(run, timeout: 5000)
+  )) = execution.await(run, timeout: duration.seconds(5))
   let assert "tools-1" = step.name
   let assert "c2" = call.id
   let assert ["model:1"] = model_calls(probe)
@@ -163,6 +165,7 @@ pub fn c_row8_saga_tool_and_delegate_in_process_test() {
   let assert "delegate" = call.name
   let assert 0 = probe.count(probe, "child-model")
   process.send(reply, True)
-  let assert Ok(execution.Completed(_)) = execution.await(run, timeout: 5000)
+  let assert Ok(execution.Completed(_)) =
+    execution.await(run, timeout: duration.seconds(5))
   let assert 2 = probe.count(probe, "child-model")
 }

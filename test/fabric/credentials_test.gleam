@@ -11,7 +11,7 @@ import fabric/support/fake_provider
 import gleam/string
 import gleeunit/should
 import json/blueprint/codec
-import llm_wire/types
+import llm_wire
 
 const secret = "fabric-inspect-secret-key-3b8d"
 
@@ -22,8 +22,7 @@ fn hidden(value: a) -> Nil {
 pub fn inspecting_an_llm_model_or_operation_never_prints_the_key_test() {
   let fake = fake_provider.start([])
   let settings = fake_provider.google(fake, secret)
-  let assert Ok(model_id) = types.model_id("inspect-model")
-  hidden(llm.model(fake.client, settings, model_id))
+  hidden(llm.model(fake.client, settings, "inspect-model"))
   hidden(
     graph_llm.new(
       run.Identity("inspect-decision", 1),
@@ -34,7 +33,7 @@ pub fn inspecting_an_llm_model_or_operation_never_prints_the_key_test() {
         #(
           fake.client,
           settings,
-          types.new_request(model_id, [types.UserMessage(text)]),
+          llm_wire.request("inspect-model", [llm_wire.user(text)]),
         )
       },
     ),

@@ -19,6 +19,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import saga
@@ -69,7 +70,7 @@ fn start(
       workflow,
       execution.config()
         |> execution.with_max_concurrency(2)
-        |> execution.with_settle_timeout(5000),
+        |> execution.with_settle_timeout(duration.seconds(5)),
       explain: fn(failure) { "typed error: " <> string.inspect(failure) },
       rollback_within: 5000,
     )

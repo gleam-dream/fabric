@@ -1,7 +1,7 @@
 //// The llm_wire adapter over a caller-owned HTTP Gun client and a loopback
-//// fake provider: OpenAI Responses and Anthropic SSE bytes routed through
-//// real provider configurations, and llm_wire's scripted reply builders. No
-//// external service is contacted.
+//// fake provider: llm_wire's scripted replies, lowered into OpenAI
+//// Responses and Anthropic SSE by `testing.events_for` and routed through
+//// real provider configurations. No external service is contacted.
 
 import fabric
 import fabric/agent
@@ -14,14 +14,13 @@ import fabric/support/apps
 import fabric/support/fake_provider
 import fabric/support/scripted
 import gleam/dynamic/decode
-import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
+import llm_wire/message
 import llm_wire/testing
-import llm_wire/types
 
 /// A model whose OpenAI requests the fake provider answers.
 fn openai_model(fake: fake_provider.Fake) -> model.Model {
@@ -33,88 +32,8 @@ fn scripted_model(fake: fake_provider.Fake) -> model.Model {
   llm.model(fake.client, fake_provider.scripted(fake), model_id())
 }
 
-fn model_id() -> types.ModelId {
-  let assert Ok(model_id) = types.model_id("gpt-scripted")
-  model_id
-}
-
-fn event(name: String, data: String) -> String {
-  "event: " <> name <> "\ndata: " <> data <> "\n\n"
-}
-
-fn function_call(
-  index: Int,
-  call_id: String,
-  name: String,
-  args: String,
-) -> String {
-  let item = "item_" <> int.to_string(index)
-  let at = "\"output_index\":" <> int.to_string(index)
-  event(
-    "response.output_item.added",
-    "{"
-      <> at
-      <> ",\"item\":{\"id\":\""
-      <> item
-      <> "\",\"type\":\"function_call\",\"call_id\":\""
-      <> call_id
-      <> "\",\"name\":\""
-      <> name
-      <> "\"}}",
-  )
-  <> event(
-    "response.function_call_arguments.delta",
-    "{"
-      <> at
-      <> ",\"item_id\":\""
-      <> item
-      <> "\",\"delta\":"
-      <> json.to_string(json.string(args))
-      <> "}",
-  )
-  <> event(
-    "response.output_item.done",
-    "{" <> at <> ",\"item\":{\"id\":\"" <> item <> "\"}}",
-  )
-}
-
-fn completed(id: String, input: Int, output: Int) -> String {
-  event(
-    "response.completed",
-    "{\"response\":{\"id\":\""
-      <> id
-      <> "\",\"status\":\"completed\",\"usage\":{"
-      <> "\"input_tokens\":"
-      <> int.to_string(input)
-      <> ",\"output_tokens\":"
-      <> int.to_string(output)
-      <> ",\"total_tokens\":"
-      <> int.to_string(input + output)
-      <> "}}}",
-  )
-}
-
-fn text(id: String, content: String) -> String {
-  event(
-    "response.output_item.added",
-    "{\"output_index\":0,\"item\":{\"id\":\""
-      <> id
-      <> "\",\"type\":\"message\"}}",
-  )
-  <> event(
-    "response.output_text.delta",
-    "{\"output_index\":0,\"item_id\":\""
-      <> id
-      <> "\",\"delta\":"
-      <> json.to_string(json.string(content))
-      <> "}",
-  )
-  <> event(
-    "response.output_item.done",
-    "{\"output_index\":0,\"item\":{\"id\":\""
-      <> id
-      <> "\",\"type\":\"message\"}}",
-  )
+fn model_id() -> String {
+  "gpt-scripted"
 }
 
 /// The `input` items of a Responses request, as (type, call id or role).
@@ -153,20 +72,19 @@ fn function_output(body: String, call_id: String) -> String {
 pub fn two_tool_calls_round_trip_through_llm_wire_test() {
   let fake =
     fake_provider.start([
-      testing.Events([
-        function_call(0, "call_a", "lookup_weather", "{\"city\":\"Paris\"}")
-        <> function_call(
-          1,
+      testing.tool_calls("", [
+        testing.ScriptedCall("call_a", "lookup_weather", "{\"city\":\"Paris\"}"),
+        testing.ScriptedCall(
           "call_b",
           "transfer_funds",
           "{\"to\":\"bob\",\"amount\":10}",
-        )
-        <> completed("resp_1", 11, 7),
-      ]),
-      testing.Events([
-        text("msg_1", "Sunny in Paris; bob is paid.")
-        <> completed("resp_2", 30, 9),
-      ]),
+        ),
+      ])
+        |> testing.with_usage(message.Usage(11, 7, 18))
+        |> testing.events_for(message.OpenAI, _),
+      testing.text("Sunny in Paris; bob is paid.")
+        |> testing.with_usage(message.Usage(30, 9, 39))
+        |> testing.events_for(message.OpenAI, _),
     ])
   let agent =
     agent.new(
@@ -248,7 +166,7 @@ pub fn unsupported_or_corrupt_stored_adapter_data_stops_before_provider_io_test(
       let assert Ok(run.Suspended([pending], [])) = fabric.await(started, 5000)
       let fake =
         fake_provider.start([
-          testing.Events([text("answer", "unused") <> completed("r", 1, 1)]),
+          testing.events_for(message.OpenAI, testing.text("unused")),
         ])
       let resumed_agent =
         agent.new("metadata", openai_model(fake), [apps.weather_tool()], policy)
@@ -300,7 +218,8 @@ pub fn invalid_calls_through_llm_wire_get_per_call_feedback_test() {
   invalid
   |> string.starts_with("{\"error\":\"invalid_arguments\"")
   |> should.be_true
-  // The stored turn keeps llm_wire's issues for the replayed request.
+  // The stored turn keeps llm_wire's replay data; the issues are Fabric's
+  // own per-call results, so they are not stored with the turn.
   let assert [
     _,
     model.AssistantMessage(model.AssistantTurn(
@@ -310,13 +229,11 @@ pub fn invalid_calls_through_llm_wire_get_per_call_feedback_test() {
     )),
     ..
   ] = snapshot.transcript
-  let issue = {
-    use id <- decode.field("call_id", decode.string)
-    use reason <- decode.field("reason", decode.optional(decode.string))
-    decode.success(#(id, option.is_some(reason)))
-  }
-  json.parse(data, decode.at(["issues"], decode.list(issue)))
-  |> should.equal(Ok([#("call_a", True), #("call_b", False)]))
+  data
+  |> should.equal(
+    "{\"provider\":{\"kind\":\"custom\",\"name\":\"scripted\"},"
+    <> "\"response_id\":null,\"provider_data\":null}",
+  )
   let assert [_, continued] = fake_provider.bodies(fake)
   let call_ids = {
     use calls <- decode.optional_field(
@@ -334,7 +251,8 @@ pub fn invalid_calls_through_llm_wire_get_per_call_feedback_test() {
 pub fn refusal_and_truncation_through_llm_wire_end_the_run_test() {
   let fake =
     fake_provider.start([
-      testing.refusal("not allowed") |> testing.with_usage(types.Usage(3, 1, 4)),
+      testing.refusal("not allowed")
+        |> testing.with_usage(message.Usage(3, 1, 4)),
       testing.output_limited("partial ans"),
     ])
   let agent =
@@ -379,73 +297,6 @@ pub fn http_statuses_through_llm_wire_are_classified_for_retry_test() {
   fake_provider.stop(fake)
 }
 
-fn sse(name: String, data: String) -> String {
-  "event: " <> name <> "\ndata: " <> data <> "\n\n"
-}
-
-fn anthropic_message(blocks: String, stop_reason: String) -> String {
-  sse(
-    "message_start",
-    "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"m\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}",
-  )
-  <> blocks
-  <> sse(
-    "message_delta",
-    "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\""
-      <> stop_reason
-      <> "\"},\"usage\":{\"output_tokens\":2}}",
-  )
-  <> sse("message_stop", "{\"type\":\"message_stop\"}")
-}
-
-fn anthropic_tool_use(
-  id: String,
-  name: String,
-  partial_json: String,
-) -> String {
-  anthropic_message(
-    sse(
-      "content_block_start",
-      "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\""
-        <> id
-        <> "\",\"name\":\""
-        <> name
-        <> "\"}}",
-    )
-      <> sse(
-      "content_block_delta",
-      "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":"
-        <> json.to_string(json.string(partial_json))
-        <> "}}",
-    )
-      <> sse(
-      "content_block_stop",
-      "{\"type\":\"content_block_stop\",\"index\":0}",
-    ),
-    "tool_use",
-  )
-}
-
-fn anthropic_text(text: String) -> String {
-  anthropic_message(
-    sse(
-      "content_block_start",
-      "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
-    )
-      <> sse(
-      "content_block_delta",
-      "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":"
-        <> json.to_string(json.string(text))
-        <> "}}",
-    )
-      <> sse(
-      "content_block_stop",
-      "{\"type\":\"content_block_stop\",\"index\":0}",
-    ),
-    "end_turn",
-  )
-}
-
 /// Anthropic requires a replayed `tool_use` input to be a JSON object. A
 /// call whose arguments were not even JSON is answered with
 /// `invalid_arguments`, and the next turn still reaches the model: the
@@ -454,10 +305,14 @@ fn anthropic_text(text: String) -> String {
 pub fn unparseable_arguments_replay_to_anthropic_as_an_object_test() {
   let fake =
     fake_provider.start([
-      testing.Events([
-        anthropic_tool_use("toolu_1", "lookup_weather", "{\"city\": "),
-      ]),
-      testing.Events([anthropic_text("I will ask properly.")]),
+      testing.tool_calls("", [
+        testing.ScriptedCall("toolu_1", "lookup_weather", "{\"city\": "),
+      ])
+        |> testing.events_for(message.Anthropic, _),
+      testing.events_for(
+        message.Anthropic,
+        testing.text("I will ask properly."),
+      ),
     ])
   let agent =
     agent.new(
@@ -507,13 +362,11 @@ pub fn unparseable_arguments_replay_to_anthropic_as_an_object_test() {
 pub fn unparseable_arguments_replay_to_openai_verbatim_test() {
   let fake =
     fake_provider.start([
-      testing.Events([
-        function_call(0, "call_a", "lookup_weather", "{\"city\": ")
-        <> completed("resp_1", 3, 2),
-      ]),
-      testing.Events([
-        text("msg_1", "I will ask properly.") <> completed("resp_2", 5, 3),
-      ]),
+      testing.tool_calls("", [
+        testing.ScriptedCall("call_a", "lookup_weather", "{\"city\": "),
+      ])
+        |> testing.events_for(message.OpenAI, _),
+      testing.events_for(message.OpenAI, testing.text("I will ask properly.")),
     ])
   let agent =
     agent.new(

@@ -29,6 +29,20 @@ integration packages under `integrations/` keep their own changelogs.
 
 ### Changed
 
+- **Breaking:** Fabric and its packages build on the wave 4 APIs of LLM Wire,
+  HTTP Gun and Saga. `fabric/llm.model` takes an `llm_wire.Config` and a
+  `String` model; `fabric/graph/llm.new`'s request builder returns an
+  `llm_wire.Config` and a plain `llm_wire.Request(String)`, to which Fabric
+  adds the structured output; `Receipt.usage` is a `message.Usage`. Failure
+  details come from `llm_wire.describe_failure` and retry decisions from
+  `llm_wire.advise`. Receipt bytes are unchanged.
+- `fabric/llm` stores a turn's provider data with LLM Wire's
+  `message.turn_replay_to_json` under the same `llm_wire.turn.v1` tag and
+  restores it with `turn_replay_decoder`. New records omit the `issues`
+  list, which Fabric answers per call itself; records from the previous
+  release still restore and replay the same request JSON
+  (`test/fabric/llm_turn_format_test.gleam` keeps their exact bytes). A
+  release before this one cannot read records written by this one.
 - Fabric and its packages build on the wave 3 APIs of HTTP Gun and Saga.
   The tests play cassettes with `http_gun/testing.playback`, and
   `test/fixtures/llm/hello.json` is converted to HTTP Gun's cassette schema

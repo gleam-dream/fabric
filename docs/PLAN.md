@@ -807,8 +807,10 @@ change preserves the provider data that the previous adapter discarded.
   has a definite, model-visible outcome. Effect identities remain scoped by
   Fabric run and round, so provider call ids may repeat across rounds.
 - **Adapter-owned meaning.** `fabric/llm` encodes the provider identity,
-  response id, raw provider data and reported call issues in its versioned
-  `llm_wire.turn.v1` envelope. Text and calls have one authoritative copy in
+  response id and raw provider data under the versioned `llm_wire.turn.v1`
+  tag, with llm_wire's `message.turn_replay_to_json` since llm_wire's wave 4
+  (records written before also carry the reported call issues, which the
+  decoder ignores). Text and calls have one authoritative copy in
   the assistant turn. Fabric's controller and store do not interpret the
   envelope; the adapter checks its format and reconstructs a wire turn,
   then llm_wire checks provider origin, result coverage and raw signed data.
@@ -1222,7 +1224,7 @@ pub opaque type Model
 pub fn new(call: fn(Request) -> Result(Reply, ModelError)) -> Model
 
 // fabric/llm — llm_wire adapter; Fabric neither starts nor stops the client
-pub fn model(client: http_gun.Client, settings: llm_wire/config.Config, model_id: llm_wire/types.ModelId) -> Model
+pub fn model(client: http_gun.Client, config: llm_wire.Config, model_id: String) -> Model
 
 // fabric/agent — pure configuration
 pub opaque type Agent(context)

@@ -15,9 +15,8 @@ import http_gun
 import http_gun/config as http_config
 import http_gun/testing as http_testing
 import json/blueprint/codec
-import llm_wire/session
+import llm_wire
 import llm_wire/testing
-import llm_wire/types
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -115,9 +114,8 @@ type Fixture {
 
 const source_text = "The library opens on 12 May. Admission is free."
 
-fn model() -> types.ModelId {
-  let assert Ok(model) = types.model_id("scripted-writer")
-  model
+fn model() -> String {
+  "scripted-writer"
 }
 
 /// One provider request the graph is expected to make, with its reply.
@@ -159,32 +157,24 @@ fn exchanges(
     [] -> list.reverse(done)
     [Generate(body), ..rest] -> {
       let assert Ok(call) =
-        session.prepare_structured(
+        llm_wire.prepare(
           testing.config(),
-          provider.generation_request(model(), current),
-          "draft",
-          domain.body_codec(),
+          provider.generation_request(model(), current)
+            |> llm_wire.with_output("draft", domain.body_codec()),
         )
       let assert Ok(raw) = codec.encode_json(domain.body_codec(), body)
       let next =
         domain.Draft(domain.Text(..current.text, body:), current.generation + 1)
-      exchanges(next, rest, [
-        testing.structured_exchange(call, testing.text(raw)),
-        ..done
-      ])
+      exchanges(next, rest, [testing.exchange(call, testing.text(raw)), ..done])
     }
     [Review(reply), ..rest] -> {
       let assert Ok(call) =
-        session.prepare_structured(
+        llm_wire.prepare(
           testing.config(),
-          provider.review_request(model(), current),
-          "review",
-          domain.decision_codec(),
+          provider.review_request(model(), current)
+            |> llm_wire.with_output("review", domain.decision_codec()),
         )
-      exchanges(current, rest, [
-        testing.structured_exchange(call, reply),
-        ..done
-      ])
+      exchanges(current, rest, [testing.exchange(call, reply), ..done])
     }
   }
 }

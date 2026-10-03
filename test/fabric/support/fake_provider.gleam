@@ -6,12 +6,11 @@ import gleam/list
 import http_gun
 import http_gun/config as http_config
 import http_gun/destination
-import llm_wire/config
-import llm_wire/provider/anthropic
-import llm_wire/provider/google
-import llm_wire/provider/openai
+import llm_wire
+import llm_wire/anthropic
+import llm_wire/google
+import llm_wire/openai
 import llm_wire/testing
-import llm_wire/types
 
 pub type Server
 
@@ -47,33 +46,29 @@ pub fn remaining(fake: Fake) -> Int {
 }
 
 /// llm_wire's scripted provider, sent to this server.
-pub fn scripted(fake: Fake) -> config.Config {
-  testing.config() |> config.with_endpoint(endpoint(fake, ""))
+pub fn scripted(fake: Fake) -> llm_wire.Config {
+  testing.config() |> llm_wire.with_endpoint(fake.url)
 }
 
-pub fn openai(fake: Fake) -> config.Config {
-  let assert Ok(key) = types.api_key("sk-scripted")
-  config.openai(openai.options(key))
-  |> config.with_endpoint(endpoint(fake, "/v1"))
+pub fn openai(fake: Fake) -> llm_wire.Config {
+  openai.new("sk-scripted")
+  |> openai.config
+  |> llm_wire.with_endpoint(fake.url <> "/v1")
 }
 
-pub fn anthropic(fake: Fake) -> config.Config {
-  let assert Ok(key) = types.api_key("sk-scripted")
-  config.anthropic(anthropic.options(key))
-  |> config.with_endpoint(endpoint(fake, "/v1"))
+pub fn anthropic(fake: Fake) -> llm_wire.Config {
+  anthropic.new("sk-scripted")
+  |> anthropic.config
+  |> llm_wire.with_endpoint(fake.url <> "/v1")
 }
 
-pub fn google(fake: Fake, key: String) -> config.Config {
-  let assert Ok(key) = types.api_key(key)
-  config.google(google.options(key))
-  |> config.with_endpoint(endpoint(fake, "/v1beta"))
+pub fn google(fake: Fake, key: String) -> llm_wire.Config {
+  google.new(key)
+  |> google.config
+  |> llm_wire.with_endpoint(fake.url <> "/v1beta")
 }
 
-fn endpoint(fake: Fake, path: String) -> types.Endpoint {
-  let assert Ok(endpoint) = types.endpoint(fake.url <> path)
-  endpoint
-}
-
+/// `testing.http_reply` is private, so the server lowers each reply itself.
 fn wire(reply: testing.Reply) -> #(Int, List(String), Bool) {
   case reply {
     testing.Events(chunks) -> #(200, chunks, True)

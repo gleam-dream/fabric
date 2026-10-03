@@ -6,6 +6,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{Some}
 import gleam/string
+import gleam/time/duration
 import wc/agent
 import wc/app
 import wc/exec_saga
@@ -33,8 +34,8 @@ pub fn harness(variant: Variant, max_in_flight: Int) -> Harness {
     A -> exec_tasks.executor()
     B ->
       exec_saga.executor(exec_saga.Settings(
-        step_timeout: 10_000,
-        settle_timeout: 50,
+        step_timeout: duration.seconds(10),
+        settle_timeout: duration.milliseconds(50),
       ))
   }
   let env =

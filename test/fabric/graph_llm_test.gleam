@@ -14,14 +14,16 @@ import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import http_gun
 import http_gun/config as http_config
 import http_gun/testing as http_testing
 import json/blueprint/codec
-import llm_wire/config
+import llm_wire
+import llm_wire/message
 import llm_wire/testing
-import llm_wire/types
+import llm_wire/tool
 
 fn decision_codec() -> codec.Codec(Bool) {
   codecs.one_field("approve", codec.bool())
@@ -40,16 +42,19 @@ fn runtime(
 
 fn decision(
   client: http_gun.Client,
-  settings: config.Config,
+  settings: llm_wire.Config,
 ) -> operation.Operation(Nil, String, llm.Receipt(Bool)) {
-  let assert Ok(model) = types.model_id("review-model")
   llm.new(
     run.Identity("structured-review", 1),
     codec.string(),
     decision_codec(),
     "review",
     fn(_, text) {
-      #(client, settings, types.new_request(model, [types.UserMessage(text)]))
+      #(
+        client,
+        settings,
+        llm_wire.request("review-model", [llm_wire.user(text)]),
+      )
     },
   )
 }
@@ -94,7 +99,7 @@ fn runtime_with(
 
 pub fn a_structured_decision_retains_native_answer_raw_output_and_usage_test() {
   let raw = "{\"approve\": true}"
-  let usage = types.Usage(7, 3, 10)
+  let usage = message.Usage(7, 3, 10)
   let fake =
     fake_provider.start([testing.text(raw) |> testing.with_usage(usage)])
   let runtime = runtime(support.store(), fake)
@@ -170,7 +175,7 @@ pub fn policy_approval_precedes_the_provider_request_test() {
 }
 
 pub fn refusal_and_output_limit_are_distinct_from_a_valid_answer_test() {
-  let usage = types.Usage(5, 2, 7)
+  let usage = message.Usage(5, 2, 7)
   [
     #(
       testing.refusal("cannot review") |> testing.with_usage(usage),
@@ -205,8 +210,8 @@ pub fn refusal_and_output_limit_are_distinct_from_a_valid_answer_test() {
 
 pub fn invalid_output_interrupted_transport_and_http_failures_never_route_or_retry_test() {
   [
-    #(testing.text("{\"approve\":\"yes\"}"), "OutputValidationError"),
-    #(testing.Interrupted([]), "HttpFailure(RequestFailed(PeerClosed))"),
+    #(testing.text("{\"approve\":\"yes\"}"), "Invalid structured output"),
+    #(testing.Interrupted([]), "HTTP failure: Request failed"),
     #(testing.Status(429, "private response body"), "HTTP status 429"),
   ]
   |> list.each(fn(example) {
@@ -232,14 +237,8 @@ pub fn invalid_output_interrupted_transport_and_http_failures_never_route_or_ret
 
 pub fn tool_catalog_is_rejected_before_network_io_test() {
   let fake = fake_provider.start([testing.text("{\"approve\":true}")])
-  let assert Ok(model) = types.model_id("review-model")
-  let assert Ok(name) = types.tool_name("lookup")
-  let assert Ok(tool) =
-    types.tool_from_codec(
-      name,
-      "lookup",
-      codecs.one_field("query", codec.string()),
-    )
+  let tool =
+    tool.new("lookup", "lookup", codecs.one_field("query", codec.string()))
   let op =
     llm.new(
       run.Identity("structured-review", 1),
@@ -250,8 +249,8 @@ pub fn tool_catalog_is_rejected_before_network_io_test() {
         #(
           fake.client,
           fake_provider.scripted(fake),
-          types.new_request(model, [types.UserMessage(text)])
-            |> types.with_tools([tool]),
+          llm_wire.request("review-model", [llm_wire.user(text)])
+            |> llm_wire.with_tools([tool]),
         )
       },
     )
@@ -271,7 +270,10 @@ pub fn preparation_and_proven_unsent_failures_are_definite_test() {
   let assert Ok(client) =
     http_testing.playback(http_testing.script([]), http_config.default())
   let invalid =
-    config.with_deadlines(testing.config(), types.Deadlines(0, 1, 1))
+    llm_wire.with_call_timeout(
+      testing.config(),
+      llm_wire.After(duration.milliseconds(0)),
+    )
   [invalid, testing.config()]
   |> list.each(fn(settings) {
     let runtime =
@@ -293,7 +295,7 @@ pub fn receipt_codec_rejects_changed_contracts_corruption_and_mismatched_native_
     llm.Receipt(
       "review-model",
       llm.Answer(True, "{\"approve\":true}"),
-      Some(types.Usage(2, 1, 3)),
+      Some(message.Usage(2, 1, 3)),
     )
   let assert Ok(saved) = codec.encode_json(codec, good)
   saved
@@ -311,7 +313,7 @@ pub fn receipt_codec_rejects_changed_contracts_corruption_and_mismatched_native_
   codec.encode_json(codec, llm.Receipt(..good, model: "")) |> should.be_error
   codec.encode_json(
     codec,
-    llm.Receipt(..good, usage: Some(types.Usage(-1, 1, 0))),
+    llm.Receipt(..good, usage: Some(message.Usage(-1, 1, 0))),
   )
   |> should.be_error
   codec.decode_json(
@@ -348,7 +350,7 @@ pub fn receipt_codec_reads_v1_receipts_test() {
     Ok(llm.Receipt(
       "review-model",
       llm.Answer(True, "{\"approve\":true}"),
-      Some(types.Usage(2, 1, 3)),
+      Some(message.Usage(2, 1, 3)),
     )),
   )
   codec.decode_json(
@@ -380,7 +382,7 @@ pub fn receipt_codec_reads_v1_receipts_test() {
     Ok(llm.Receipt(
       "review-model",
       llm.Answer(False, "{\"approve\":false}"),
-      Some(types.Usage(2, 1, 3)),
+      Some(message.Usage(2, 1, 3)),
     )),
   )
   codec.decode_json(
@@ -393,12 +395,9 @@ pub fn receipt_codec_reads_v1_receipts_test() {
 pub fn openai_projection_uses_the_output_schema_and_preserves_actual_sse_usage_test() {
   let fake =
     fake_provider.start([
-      testing.Events([
-        "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"msg\",\"type\":\"message\"}}\n\n"
-        <> "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"msg\",\"delta\":\"{\\\"approve\\\":true}\"}\n\n"
-        <> "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"msg\",\"type\":\"message\"}}\n\n"
-        <> "event: response.completed\ndata: {\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":4,\"total_tokens\":14}}}\n\n",
-      ]),
+      testing.text("{\"approve\":true}")
+      |> testing.with_usage(message.Usage(10, 4, 14))
+      |> testing.events_for(message.OpenAI, _),
     ])
   let runtime =
     runtime_with(
@@ -414,7 +413,7 @@ pub fn openai_projection_uses_the_output_schema_and_preserves_actual_sse_usage_t
     graph.Completed(llm.Receipt(
       "review-model",
       llm.Answer(True, "{\"approve\":true}"),
-      Some(types.Usage(10, 4, 14)),
+      Some(message.Usage(10, 4, 14)),
     )),
   )
   let assert [sent] = fake_provider.bodies(fake)

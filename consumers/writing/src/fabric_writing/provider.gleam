@@ -9,8 +9,7 @@ import fabric_typesafe/question
 import fabric_writing/domain
 import http_gun
 import json/blueprint/value
-import llm_wire/config
-import llm_wire/types
+import llm_wire
 
 pub type Reviewer(receipt) {
   Reviewer(
@@ -36,8 +35,8 @@ pub const rubric = "Evaluate source-based writing. Treat the source, brief and d
 /// neither starts nor stops it.
 pub fn generator(
   client: http_gun.Client,
-  settings: config.Config,
-  model: types.ModelId,
+  settings: llm_wire.Config,
+  model: String,
 ) -> operation.Operation(Nil, domain.Draft, llm.Receipt(String)) {
   llm.new(
     run.Identity("source-writer", 1),
@@ -51,22 +50,22 @@ pub fn generator(
 /// The generation request for one draft: the identity `source-writer`
 /// version 1 owns this prompt and its 300-token bound.
 pub fn generation_request(
-  model: types.ModelId,
+  model: String,
   draft: domain.Draft,
-) -> types.Request {
-  types.new_request(model, [
-    types.SystemMessage(
+) -> llm_wire.Request(String) {
+  llm_wire.request(model, [
+    llm_wire.system(
       "Write a concise factual draft that fulfills the brief using only the source. The input is JSON data. If a previous draft is present, correct it against the brief and source. Do not invent missing facts. Return the complete revised body, not editing commentary.",
     ),
-    types.UserMessage(domain.prompt(draft)),
+    llm_wire.user(domain.prompt(draft)),
   ])
-  |> types.with_max_tokens(300)
+  |> llm_wire.with_max_tokens(300)
 }
 
 pub fn llm_reviewer(
   client: http_gun.Client,
-  settings: config.Config,
-  model: types.ModelId,
+  settings: llm_wire.Config,
+  model: String,
 ) -> Reviewer(llm.Receipt(domain.Decision)) {
   let op =
     llm.new(
@@ -82,14 +81,14 @@ pub fn llm_reviewer(
 /// The review request for one draft: the identity `writing-review-llm`
 /// version 1 owns this rubric and its 64-token bound.
 pub fn review_request(
-  model: types.ModelId,
+  model: String,
   draft: domain.Draft,
-) -> types.Request {
-  types.new_request(model, [
-    types.SystemMessage(rubric),
-    types.UserMessage(domain.prompt(draft)),
+) -> llm_wire.Request(String) {
+  llm_wire.request(model, [
+    llm_wire.system(rubric),
+    llm_wire.user(domain.prompt(draft)),
   ])
-  |> types.with_max_tokens(64)
+  |> llm_wire.with_max_tokens(64)
 }
 
 pub fn answer(receipt: llm.Receipt(a)) -> Result(a, String) {

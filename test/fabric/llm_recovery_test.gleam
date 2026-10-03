@@ -26,14 +26,13 @@ import http_gun/cassette
 import http_gun/config as http_config
 import http_gun/testing as http_testing
 import json/blueprint/codec
-import llm_wire/config
-import llm_wire/provider/openai
+import llm_wire
+import llm_wire/message
+import llm_wire/openai
 import llm_wire/testing
-import llm_wire/types
 
-fn model_id() -> types.ModelId {
-  let assert Ok(id) = types.model_id("cassette-model")
-  id
+fn model_id() -> String {
+  "cassette-model"
 }
 
 fn calculation(
@@ -59,7 +58,7 @@ fn calculation(
 
 fn calculating_agent(
   client: http_gun.Client,
-  settings: config.Config,
+  settings: llm_wire.Config,
   ledger: probe.Probe,
   policy: policy.Policy(Nil),
 ) -> agent.Agent(Nil) {
@@ -78,6 +77,8 @@ fn reviewed() -> policy.Policy(Nil) {
   }
 }
 
+/// `testing.events_for` sends no `thoughtSignature`, so signed Gemini parts
+/// are written here.
 fn google_reply(parts: List(json.Json), response_id: String) -> testing.Reply {
   testing.Events([
     "data: "
@@ -131,7 +132,7 @@ fn signed_call(name: String, value: Int, signature: String) -> json.Json {
 }
 
 fn google_final() -> testing.Reply {
-  google_reply([json.object([#("text", json.string("finished"))])], "final")
+  testing.events_for(message.Google, testing.text("finished"))
 }
 
 fn contents(body: String) -> List(Dynamic) {
@@ -293,7 +294,7 @@ pub fn repeated_provider_call_ids_remain_paired_with_their_own_round_test() -> N
 
 fn text_agent(
   client: http_gun.Client,
-  settings: config.Config,
+  settings: llm_wire.Config,
   max_turns: Int,
 ) -> agent.Agent(Nil) {
   agent.new(
@@ -358,20 +359,12 @@ pub fn http_503_retries_only_within_the_existing_turn_budget_test() -> Nil {
   })
 }
 
-fn openai_text(answer: String) -> testing.Reply {
-  testing.Events([
-    "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"text\",\"type\":\"message\"}}\n\n",
-    "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"text\",\"delta\":"
-      <> json.to_string(json.string(answer))
-      <> "}\n\n",
-    "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"text\",\"type\":\"message\"}}\n\n",
-    "event: response.completed\ndata: {\"response\":{\"id\":\"final\",\"status\":\"completed\"}}\n\n",
-  ])
-}
-
 pub fn blueprint_descriptions_reach_the_outgoing_provider_schema_test() -> Nil {
   let ledger = probe.new()
-  let fake = fake_provider.start([openai_text("finished")])
+  let fake =
+    fake_provider.start([
+      testing.events_for(message.OpenAI, testing.text("finished")),
+    ])
   let agent =
     calculating_agent(
       fake.client,
@@ -400,8 +393,7 @@ pub fn a_disk_cassette_runs_through_the_public_fabric_flow_test() -> Nil {
   let assert Ok(tape) = cassette.load("test/fixtures/llm/hello.json", 10_000)
   // Offline playback: an unmatched or extra request fails; nothing is sent.
   let assert Ok(client) = http_testing.playback(tape, http_config.default())
-  let assert Ok(key) = types.api_key("local-script-key")
-  let settings = config.openai(openai.options(key))
+  let settings = openai.new("local-script-key") |> openai.config
   let assert Ok(started) =
     fabric.start(support.store(), text_agent(client, settings, 2), Nil, "Hello")
   fabric.await(started, 5000)
