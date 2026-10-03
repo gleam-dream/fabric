@@ -1,0 +1,86 @@
+{
+  "format": "fabric.run",
+  "version": 7,
+  "write": "096bc1d2f05fd20fb903ae5b75d9a85f",
+  "run": "run-delegated",
+  "agent": {
+    "name": "lead",
+    "version": 1
+  },
+  "incarnation": 1,
+  "parent": null,
+  "depth": 0,
+  "limits": {
+    "max_turns": 8,
+    "token_budget": null,
+    "max_children": 4,
+    "max_depth": 1
+  },
+  "turns_used": 2,
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "unreported_replies": 2
+  },
+  "transcript": [
+    {
+      "tag": "user",
+      "text": "research Paris"
+    },
+    {
+      "tag": "assistant",
+      "text": "",
+      "calls": [
+        {
+          "id": "c1",
+          "name": "research",
+          "arguments": "{\"topic\":\"Paris\"}",
+          "provider_id": null,
+          "provider_state": null
+        }
+      ],
+      "data": null
+    },
+    {
+      "tag": "tool_result",
+      "call_id": "c1",
+      "content": "\"{\\\"summary\\\":\\\"Paris is sunny\\\"}\""
+    },
+    {
+      "tag": "assistant",
+      "text": "lead: \"{\\\"summary\\\":\\\"Paris is sunny\\\"}\"",
+      "calls": [],
+      "data": null
+    }
+  ],
+  "history": [
+    {
+      "id": {
+        "turn": 1,
+        "call_id": "c1"
+      },
+      "call": {
+        "id": "c1",
+        "name": "research",
+        "arguments": "{\"topic\":\"Paris\"}",
+        "provider_id": null,
+        "provider_state": null
+      },
+      "state": {
+        "tag": "succeeded",
+        "content": "\"{\\\"summary\\\":\\\"Paris is sunny\\\"}\""
+      },
+      "approvals": [],
+      "child": "run-delegated-1"
+    }
+  ],
+  "approvals_issued": 0,
+  "phase": {
+    "tag": "ended",
+    "outcome": {
+      "tag": "completed",
+      "text": "lead: \"{\\\"summary\\\":\\\"Paris is sunny\\\"}\""
+    }
+  },
+  "family_budget": null
+}

@@ -1,0 +1,56 @@
+{
+  "format": "fabric.run",
+  "version": 7,
+  "write": "1bb624b7a9e41391e27de9651508c8d4",
+  "run": "run-delegated-1",
+  "agent": {
+    "name": "researcher",
+    "version": 1
+  },
+  "incarnation": 1,
+  "parent": {
+    "tag": "agent",
+    "run": "run-delegated",
+    "action": {
+      "turn": 1,
+      "call_id": "c1"
+    }
+  },
+  "depth": 1,
+  "limits": {
+    "max_turns": 8,
+    "token_budget": null,
+    "max_children": 4,
+    "max_depth": 1
+  },
+  "turns_used": 1,
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "unreported_replies": 1
+  },
+  "transcript": [
+    {
+      "tag": "user",
+      "text": "Paris"
+    },
+    {
+      "tag": "assistant",
+      "text": "{\"summary\":\"Paris is sunny\"}",
+      "calls": [],
+      "data": null
+    }
+  ],
+  "history": [],
+  "approvals_issued": 0,
+  "phase": {
+    "tag": "ended",
+    "outcome": {
+      "tag": "completed",
+      "text": "{\"summary\":\"Paris is sunny\"}"
+    }
+  },
+  "family_budget": null,
+  "correlation": "run-delegated",
+  "root": "run-delegated"
+}

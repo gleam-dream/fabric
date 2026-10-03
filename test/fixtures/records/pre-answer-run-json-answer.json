@@ -1,0 +1,47 @@
+{
+  "format": "fabric.run",
+  "version": 7,
+  "write": "01deba50b98e9fcb5af10605b3ff589a",
+  "run": "run-json-answer",
+  "agent": {
+    "name": "desk",
+    "version": 1
+  },
+  "incarnation": 1,
+  "parent": null,
+  "depth": 0,
+  "limits": {
+    "max_turns": 8,
+    "token_budget": null,
+    "max_children": 4,
+    "max_depth": 1
+  },
+  "turns_used": 1,
+  "usage": {
+    "input_tokens": 3,
+    "output_tokens": 4,
+    "unreported_replies": 0
+  },
+  "transcript": [
+    {
+      "tag": "user",
+      "text": "weather in Paris?"
+    },
+    {
+      "tag": "assistant",
+      "text": "{\"city\":\"Paris\",\"sunny\":true}",
+      "calls": [],
+      "data": null
+    }
+  ],
+  "history": [],
+  "approvals_issued": 0,
+  "phase": {
+    "tag": "ended",
+    "outcome": {
+      "tag": "completed",
+      "text": "{\"city\":\"Paris\",\"sunny\":true}"
+    }
+  },
+  "family_budget": null
+}
