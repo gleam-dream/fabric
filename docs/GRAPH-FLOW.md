@@ -223,7 +223,7 @@ Limits must count graph activations as well as model attempts. Pure routing
 can loop forever without a model turn. Reserve activation/fan-out budgets
 before creating work, and define child depth/count, active work and resource
 accounting. Shared family work/child/depth budgets are implemented through
-root `start_with_budget` APIs and one persistent reservation ledger. These are
+root budgets (`agent.with_family_budget`, `graph.with_family_budget`) and one persistent reservation ledger. These are
 additional to per-run activation and chat limits. Admitted signals, jobs,
 children and fork scopes support retained deadlines. See the
 [reservation contract](implementation/graph-flow/managed-composition.md#shared-family-reservations)

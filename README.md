@@ -341,29 +341,39 @@ Every step and every wait is bounded unless the caller asks for
 `run.Infinity`. A run's own length is then bounded by its turns, its model
 and tool timeouts, and the answers it waits for.
 
-| Bound                                       | Default                         | Change it with                                            | When it is reached                                                        |
-| ------------------------------------------- | ------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------- |
-| Model attempts per run                      | 8                               | `agent.with_max_turns`                                    | the run ends `BudgetExhausted(TurnLimit(8))`                              |
-| One model call                              | 600 s                           | `agent.with_model_timeout`                                | the call stops; a retryable `model.TimedOut` that spends a turn           |
-| One tool body                               | 60 s                            | `agent.with_tool_timeout`, `tool.with_timeout`            | the body stops; uncertain, or started again (`tool.with_replay`)          |
-| Tool result size                            | 1 MiB                           | `agent.with_max_result_bytes`                             | the run fails with `OutputEncodingFailed`, naming the limit               |
-| Concurrent tool bodies                      | 4                               | `agent.with_max_concurrency`                              | later tools queue                                                         |
-| One policy decision                         | 5 s                             | `agent.with_policy_timeout`                               | the run stops closed (`PolicyFailed`)                                     |
-| A command waiting for a busy runner         | 5 s                             | `agent.with_command_timeout`                              | `RunnerBusy`                                                              |
-| First model retry delay                     | 200 ms, doubling up to 64 times | `agent.with_model_retry_delay`                            | a provider's `Retry-After` is waited instead when longer (10 min at most) |
-| Sub-agents per run, depth                   | 4, 1                            | `agent.with_max_children`, `agent.with_max_depth`         | the delegation is refused and the model sees why                          |
-| An approval request                         | 7 days                          | `agent.with_approval_expiry`                              | the request expires: the action is rejected, the model sees it            |
-| Token budget                                | none (opt in)                   | `agent.with_token_budget`                                 | `BudgetExhausted(TokenLimit(..))`                                         |
-| Family budget                               | none (opt in)                   | `agent.with_family_budget`                                | `BudgetExhausted(FamilyLimit(..))`                                        |
-| Replays of a crashed tool body              | none (opt in)                   | `tool.with_replay`                                        | the action is an uncertain effect                                         |
-| Drain window on shutdown                    | 25 s                            | `store.with_drain`                                        | the runner is killed; running tools become uncertain                      |
-| Graph callbacks, operation bodies, commands | 1 s, 60 s, 1 s                  | `graph.with_timeouts(callbacks:, operations:, commands:)` | `CallbackFailed`, an uncertain operation, `Busy`                          |
+| Bound                                         | Default                         | Change it with                                           | When it is reached                                                       |
+| --------------------------------------------- | ------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Model attempts per run                        | 8                               | `agent.with_max_turns`                                   | the run ends `BudgetExhausted(TurnLimit(8))`                             |
+| One model call                                | 600 s                           | `agent.with_model_timeout`                               | the call stops; a retryable `model.TimedOut` that spends a turn          |
+| One tool body                                 | 60 s                            | `agent.with_tool_timeout`, `tool.with_timeout`           | the body stops; uncertain, or started again (`tool.with_replay`)         |
+| Tool result size                              | 1 MiB                           | `agent.with_max_result_bytes`                            | the run fails with `OutputEncodingFailed`, naming the limit              |
+| Concurrent tool bodies                        | 4                               | `agent.with_max_concurrency`                             | later tools queue                                                        |
+| One policy decision                           | 5 s                             | `agent.with_policy_timeout`                              | the run stops closed (`PolicyFailed`)                                    |
+| A command waiting for a busy runner           | 5 s                             | `agent.with_command_timeout`                             | `RunnerBusy`                                                             |
+| First model retry delay                       | 200 ms, doubling up to 64 times | `agent.with_model_retry_delay`                           | a provider's `Retry-After` is waited instead when longer                 |
+| A provider's retry delay                      | 10 min at most                  | none (a cap)                                             | a longer `Retry-After` is cut to 10 min                                  |
+| Sub-agents per run, depth                     | 4, 1                            | `agent.with_max_children`, `agent.with_max_depth`        | the delegation is refused and the model sees why                         |
+| An approval request                           | 7 days                          | `agent.with_approval_expiry`                             | the request expires: the action is rejected, the model sees it           |
+| Token budget                                  | none (opt in)                   | `agent.with_token_budget`                                | `BudgetExhausted(TokenLimit(..))`                                        |
+| Family budget                                 | none (opt in)                   | `agent.with_family_budget`, `graph.with_family_budget`   | `BudgetExhausted(FamilyLimit(..))`, `graph.FamilyBudget(..)`             |
+| Family children, depth (once a budget is set) | as many as `work`, 16 levels    | `budget.with_children`, `budget.with_depth` (at most 63) | the child is refused (`ChildLimit`, `DepthLimit`)                        |
+| Replays of a crashed tool body                | none (opt in)                   | `tool.with_replay`                                       | the action is an uncertain effect                                        |
+| Drain window on shutdown                      | 25 s                            | `store.with_drain`                                       | the runner is killed; running tools become uncertain                     |
+| Graph pure callbacks                          | 1 s                             | `graph.with_callback_timeout`                            | `graph.CallbackFailed`                                                   |
+| One graph activity body                       | 60 s                            | `graph.with_operation_timeout`                           | the body stops; the run is `Blocked` on an uncertain effect              |
+| A graph command waiting for its runner        | 1 s                             | `graph.with_command_timeout`                             | `graph.RunnerBusy` (a cancellation is committed to the record instead)   |
+| A graph approval request                      | 7 days                          | `graph.with_approval_expiry`                             | the request expires: the run fails with `ExpiredApproval`                |
+| A graph signal, job, child or fork wait       | 7 days                          | `operation.with_deadline`                                | the run fails or expires with `DeadlineExpired`, after stopping children |
+| Graph activations per run                     | 100                             | `definition.with_max_activations`                        | the run ends `Exhausted`                                                 |
 
-Every timeout is a `gleam/time/duration.Duration`. An approval request
-stores its deadline (`run.PendingApproval.expires`); one stored before
-deadlines existed never expires. A graph signal, job, child or fork wait
-stays unbounded until `operation.with_deadline` bounds it (the graph's
-defaults follow with its vocabulary).
+Every timeout is a `gleam/time/duration.Duration`; one that may be lifted
+is a `run.Timeout` (`run.After(duration)` or `run.Infinity`). Every deadline
+is set and judged by the store's clock (`store.now`), so every node judges
+it alike. An approval request or a graph wait stores its deadline
+(`run.PendingApproval.expires`, `graph.Snapshot.deadline`); one stored
+before deadlines had defaults keeps none and never expires. A bound written
+in source code that is out of range is a bug: `agent.build` reports it, and
+a graph runtime setter panics with its name.
 
 ### Failures
 
@@ -372,12 +382,15 @@ Every function of `fabric` returns one `fabric.Error`. Branch on
 the request, such as `ApprovalExpired` or `AlreadyStarted`), `Retry` (a
 transient conflict), `Unavailable` (the store or the runner, with a write
 whose outcome may be unknown) or `Incompatible`; log with
-`fabric.describe_error`. A model fails with an opaque `model.ModelError`:
+`fabric.describe_error`. `fabric/graph` returns one `graph.Error`, which
+`graph.error_kind` classifies with the same `fabric.ErrorKind`. A model
+fails with an opaque `model.ModelError`:
 `model.error_kind`, `model.is_retryable` and the provider's
 `model.retry_after`. The unions that may grow (`fabric.Error`,
 `agent.ConfigError`, `model.ErrorKind`, `run.Outcome`, `run.HostFailure`,
-`run.ActionState`, `graph.Status`) each have such a classification or a
-`describe_*` function.
+`run.ActionState`, `graph.Error`, `graph.Failure`,
+`definition.BuildError`, `graph.Status`) each have such a classification or
+a `describe_*` function.
 
 ### Correlation
 
@@ -388,7 +401,35 @@ run and its sub-agents, in every `model.Request` (with the run id and the
 turn), and in every tool's `tool.Call`. Every run event also names its
 family's root run (`root`), so a sub-agent's events join their root's. `fabric/llm` puts it on each
 turn's HTTP Gun client view, so one agent serves every run, and
-`fabric_saga` starts each Saga run with it.
+`fabric_saga` starts each Saga run with it. A graph run takes its
+correlation the same way (`graph.start(.., correlation:)`): it is stored,
+carried in every `graph_*` and `activation_*` event, in every operation's
+`operation.Invocation`, and inherited by the graph's child runs, managed
+agents included, which name the graph's root as theirs.
+
+### Graph runs
+
+A graph runtime speaks the agent's vocabulary: the same `policy.Policy`
+(an action's `step` is `policy.Activation(..)` and its `target`
+`policy.RunOperation(node:, operation:, kind:)`), the same `tool.Failure`
+for operation bodies, approvals answered with a `reviewer.Reviewer` and the
+current context, a context built from the run id, and one classified
+`graph.Error`.
+
+```gleam
+let runtime =
+  graph.new(publishing, runs, context: fn(_run) { ctx }, policy:)
+  |> graph.with_approval_expiry(run.After(duration.hours(48)))
+let assert Ok(handle) =
+  graph.start(runtime, id: run.new_id(), initial: draft, correlation: None)
+let assert Ok(graph.Snapshot(status: graph.AwaitingApproval(pending), ..)) =
+  graph.await(handle, within: duration.seconds(5))
+graph.approve(handle, pending, reviewer:, context: ctx)
+```
+
+A request handler reopens a run with `graph.open(runtime, id)`, which checks
+the stored record against the deployed definition (`IncompatibleDefinition`
+otherwise; `graph.cancel_stored(store, id)` then cancels it without one).
 
 ### Waiting for a run or a cancellation
 
@@ -467,7 +508,8 @@ See the [rollout procedure](integrations/fabric_postgres/README.md#record-versio
 for compatibility and rollback limits.
 
 Use `agent.with_family_budget(spec, limits)` (checked by `agent.build`) or
-`graph.start_with_budget(runtime, id, initial, limits)` to bound the whole family.
+`graph.with_family_budget(runtime, limits)` to bound the whole family of
+every root run the agent or runtime starts.
 For example, `budget.limits(work: 40) |> budget.with_children(6) |> budget.with_depth(3)`
 allows up to 40 work admissions and six children, at most three levels below
 the root.
@@ -492,9 +534,13 @@ this scan. PostgreSQL schema version 5 indexes these waits; refresh existing row
 `fabric_postgres.refresh_discovery` after migration. Only the backend's clock
 determines when a polling interval is due. Failed observations retry after lease
 expiry. Polls reuse the admitted wait's work grant.
-Signal waits without a deadline require explicit delivery.
+Signal waits without a deadline (`run.Infinity`, or stored before waits
+had one) require explicit delivery.
 
-For a bounded signal wait, apply `operation.with_deadline(wait, duration.minutes(1))` before
+Every wait is bounded: 7 days after admission unless its operation says
+otherwise. For a one-minute signal wait, apply
+`operation.with_deadline(wait, run.After(duration.minutes(1)))` (or
+`run.Infinity` to wait without a deadline) before
 binding it to a node. Approval admits the wait; the runner then saves its due
 time from the backend clock. `snapshot.deadline` exposes that UTC timestamp.
 Late delivery or recovery commits `Failed(DeadlineExpired(due))` without accepting

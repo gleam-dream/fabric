@@ -8,6 +8,9 @@ package uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Breaking:** the TypeSafe binding classifies its failures with
+  `fabric/tool.Failure` (`Explain`, `Uncertain`), Fabric's one failure
+  type for agent tools and graph operations; `operation.Failure` is gone.
 - **Breaking:** `question.placeholder` is no longer public: the receipt
   codec reads the batch's placeholder through
   `fabric_typesafe/internal/batch`.

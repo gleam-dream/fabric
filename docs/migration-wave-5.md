@@ -560,3 +560,294 @@ scanning after a script or a test ended. `sweeper.supervised` is
 unchanged.
 
 Dependents: none outside this repository (no app starts a sweeper).
+
+## Slice F5: one vocabulary for agents and graphs
+
+The graph runtime ships in fabric 1.0 (release decision 2), so it now speaks
+the agent runtime's vocabulary: one `policy.Action`, one `tool.Failure`,
+one approval shape with a typed reviewer and a 7-day expiry, the context
+built from the run id, and one classified error. Graph waits are bounded by
+default, every deadline is judged by the store's clock, and graph runs emit
+telemetry with a correlation.
+
+Graph records are now version 15. Records written before this slice
+(version 14 and earlier) still read and recover: a run stored without a
+correlation derives it from its id, a child stored without a root names its
+parent, and an approval request or wait stored without a deadline keeps
+none, even under the new 7-day defaults. The fixtures
+`test/fixtures/records/graph-*.json` were written by the fabric of slice F2
+(`graph_stored_record_test`). New keys (`correlation`, `root`,
+`expires_at`, `approvals`) are written only when they say something, so a
+version-14 reader of a new record that has none of them sees its old shape.
+
+No `oversight/apps` program uses `fabric/graph`; the graph dependents are
+this repository's consumers and integrations (migrated). The agent-side
+changes (`reviewer.new`, `policy.Action`) are listed with their dependents.
+
+### `reviewer.new` and `reviewer.with_issuer` check their input
+
+A subject and an issuer come from a token, so they are runtime data: both
+functions return `Result(Reviewer, reviewer.Error)` and refuse an empty part
+or one longer than 256 bytes (`reviewer.Empty(part)`,
+`reviewer.TooLong(part:, bytes:, limit:)`, `reviewer.describe_error`).
+Stored reviewers read unchecked.
+
+```gleam
+// Before
+let alice = reviewer.new(claims.subject) |> reviewer.with_issuer(claims.issuer)
+
+// After
+use alice <- result.try(
+  reviewer.new(claims.subject)
+  |> result.try(reviewer.with_issuer(_, claims.issuer))
+  |> result.replace_error(Unauthenticated),
+)
+```
+
+Dependents: no app calls `reviewer.new` yet (they move to the typed
+reviewer of slice F2 and build it this way); `consumers/app/test`,
+`integrations/fabric_postgres/test` (migrated).
+
+### Approval deadlines by the store's clock
+
+Agent approval deadlines are now set and judged by the store's clock
+(`store.now`), like graph deadlines, not by the clock of the node that
+checks them. A command or a recovery reads the store's clock first; a store
+that cannot be read is `fabric.StoreUnavailable`, and nothing is judged
+expired while it cannot be read. No signature changed. Dependents: none.
+
+### One `policy.Action`
+
+`policy.Action` serves both runtimes. `id` became `step`, which says where
+the action comes from, and `tool` became `name`, what the action calls.
+`policy.Target` gains `RunOperation` for graph nodes. `graph.Action` and
+`graph.Policy` are gone: a graph runtime takes a `policy.Policy`.
+
+```gleam
+// Before (agent)
+policy.Action(run:, id: ActionId(turn, call_id), tool: "refund", arguments_json:, target: policy.InvokeTool)
+case action.tool { "refund" -> .. }
+// Before (graph)
+graph.Action(invocation:, node: "publish", operation:, input_json:, recovery:, kind:)
+fn(_, action: graph.Action) { case action.node { "publish" -> .. } }
+
+// After (both)
+policy.Action(run:, step: policy.ToolCall(id), name: "refund", arguments_json:, target: policy.InvokeTool)
+policy.Action(run:, step: policy.Activation(activation, attempt), name: "publish-post",
+  arguments_json:, target: policy.RunOperation(node: "publish", operation:, kind: policy.Activity))
+case action.name { "refund" -> .. }
+case action.target { policy.RunOperation(node: "publish", ..) -> .. }
+```
+
+`policy.OperationKind` (`Activity`, `Signal`, `Job`, `OwnedJob`, `Subgraph`,
+`Agent`, `Fork`) is the graph kind a policy sees. A `case` on
+`action.target` needs a branch for `RunOperation` (or a catch-all).
+`tool.input(definition, action)` matches `action.name`, so it also reads a
+graph node whose operation has the tool's name.
+
+Dependents: `oversight/apps/support_desk/src/support_desk/desk.gleam` and
+`research_agent/src/research_agent/researcher.gleam` take a
+`policy.Action` and read it only through `tool.input`: they compile
+unchanged. `consumers/app/src/app.gleam` (`case action.target`), core tests
+(migrated).
+
+### One `tool.Failure`; `operation.Failure` is gone
+
+A graph operation classifies its errors with the agent's `tool.Failure`.
+
+```gleam
+// Before
+operation.new(identity, input, output, perform, fn(_) { operation.DefiniteFailure("declined") })
+operation.UncertainEffect("gateway timed out")
+operation.BodyFailed(operation.DefiniteFailure(reason))
+
+// After
+operation.new(identity, input, output, perform, fn(_) { tool.Explain("declined") })
+tool.Uncertain("gateway timed out")
+operation.BodyFailed(tool.Explain(reason))
+```
+
+`Explain` fails the run (`graph.OperationFailed`), `Uncertain` blocks it
+for reconciliation, as before. `operation.own_job`'s `classify` and
+`fabric/graph/llm` use it too. Dependents: `integrations/fabric_mcp`,
+`fabric_typesafe`, `consumers/jobs`, `decision`, `writing` (migrated).
+
+### A graph runtime: context from the run id, setters, family budget
+
+```gleam
+// Before
+graph.new(definition, runs, fn() { ctx }, policy)
+|> graph.with_timeouts(callbacks: d1, operations: d2, commands: d3)  // Result
+graph.start_with_budget(runtime, id, initial, limits)
+
+// After
+graph.new(definition, runs, context: fn(run_id) { ctx }, policy:)
+|> graph.with_callback_timeout(d1)
+|> graph.with_operation_timeout(run.After(d2))   // or run.Infinity
+|> graph.with_command_timeout(d3)
+|> graph.with_approval_expiry(run.After(duration.hours(24)))
+|> graph.with_family_budget(limits)
+```
+
+The context function gets the run's id, as the sweeper's agent roots do.
+A setter's bound is written in source code, so a value out of range is a
+bug and panics with the setter's name (release decision 4);
+`InvalidTimeout` is gone. `start_with_budget` is gone: a runtime with a
+family budget declares it for every root it starts, and a store that cannot
+hold one is `FamilyBudgetUnsupported`. An activity body is now bounded by
+the executor that runs it (still 60 s by default; `Infinity` allowed).
+
+Dependents: every graph consumer and integration test (migrated).
+
+### `graph.start`, `open`, `snapshot`, `cancel`, `cancel_stored`
+
+```gleam
+// Before
+let assert Ok(handle) = graph.start(runtime, id, initial)
+let handle = graph.attach(runtime, id)
+let assert Ok(snapshot) = graph.read(handle)
+let assert Ok(Nil) = graph.cancel(handle)
+
+// After
+let assert Ok(handle) = graph.start(runtime, id:, initial:, correlation: None)
+let assert Ok(handle) = graph.open(runtime, id)   // reads and checks the record
+let assert Ok(snapshot) = graph.snapshot(handle)
+let assert Ok(cancelled) = graph.cancel(handle)   // the snapshot after the commit
+graph.cancel_stored(runs, id)                     // a run that no longer opens
+```
+
+`start` takes the run's correlation (`None` derives it from the id) and
+stores it: it reaches every operation (`operation.Invocation.correlation`),
+every child run and every event. A second start with a stored id is
+`AlreadyStarted(id, same_input:)`. `open` reads the record and checks it
+against the definition, as `fabric.open` does: a run whose definition
+changed is `IncompatibleDefinition`, and `cancel_stored(store, id)`
+cancels it without one. `cancel` on an ended run is `RunEnded`.
+
+Dependents: every graph consumer and integration (migrated).
+
+### Approvals: reviewer, current context, expiry
+
+```gleam
+// Before
+graph.approve(handle, approval)
+graph.reject(handle, approval, "not today")
+
+// After
+graph.approve(handle, approval, reviewer:, context: current_context)
+graph.reject(handle, approval, reason: "not today", reviewer:)
+```
+
+The policy is checked again with `context`, and the approved operation runs
+with it, as for agents. The reviewer is stored with the answer:
+`graph.Snapshot.approvals` (the current activation's) and
+`graph.Receipt.approvals` hold `run.Approval`s. A policy that now requires
+another approval refuses the answer with `RequirementChanged(new_ref)`; a
+superseded request is `StaleReference`, an answered one `AlreadyAnswered`.
+
+Approval requests expire after 7 days by default
+(`graph.with_approval_expiry`, `run.Infinity` to keep them). The deadline
+is stored with the request and shown as `Snapshot.deadline`. An expired
+request fails the run with `graph.ExpiredApproval(due)`; a late answer is
+`ApprovalExpired`. `await`, an answer, `recover` and the sweeper expire it
+(`store/discovery` version 12 projects its deadline). Requests stored
+without a deadline never expire.
+
+Dependents: graph consumers and integrations (migrated).
+
+### Typed graph errors
+
+`CommandRefused(String)` and the strings built with `string.inspect` are
+gone. `graph.Error` names each refusal like the agent's, and
+`graph.error_kind` classifies it with `fabric.ErrorKind`;
+`graph.describe_error` gives a line for logs.
+
+| Before                                                             | After                                                                                                  |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `StoreFailed(backend.NotFound)`                                    | `RunNotFound`                                                                                          |
+| `StoreFailed(..)`                                                  | `StoreUnavailable(reason)`, `Contended`, `RunUnattended`                                               |
+| `UnsupportedRecordVersion(n)`                                      | `UnsupportedVersion(n)`                                                                                |
+| `DefinitionRejected(e)`                                            | `IncompatibleDefinition(e)`; a delivered or reconciled value the definition refuses: `ValueRefused(e)` |
+| `CommandRefused("… belongs to another run")`                       | `WrongReference`                                                                                       |
+| `CommandRefused("… is not current")`, `"no signal is awaited"`     | `StaleReference`, or `RunEnded` for an ended run                                                       |
+| `CommandRefused("signal conflicts …")`                             | `SignalConflict`                                                                                       |
+| `CommandRefused("no unresolved result")`                           | `NotReconcilable`                                                                                      |
+| `CommandRefused("reconcile the child …")`                          | `ReconcileChildFirst`                                                                                  |
+| `CommandRefused("child runtime does not use the parent store")`    | `ChildMismatch(DifferentStore)`                                                                        |
+| `CommandRefused("child belongs to a different parent activation")` | `ChildMismatch(OtherParent)`                                                                           |
+| `CallbackFailed("parent no longer accepts child work")`            | `RunEnded`                                                                                             |
+| `Busy`, `OwnerUnknown`                                             | `RunnerBusy`, `RunUnattended`                                                                          |
+| `InvalidTimeout(d)`                                                | gone (setters panic)                                                                                   |
+
+New variants: `AlreadyStarted`, `FamilyBudgetUnsupported`,
+`AlreadyAnswered`, `ApprovalExpired`, `RequirementChanged`, `ValueRefused`.
+`graph.Failure` gains `ExpiredApproval(due)`; `graph.describe_failure`.
+
+Dependents: graph consumers and integrations (migrated).
+
+### Definitions are built, with every problem at once
+
+```gleam
+// Before
+let assert Ok(id) = definition.node_id("review")
+definition.build(definition.Spec(identity, id, nodes, state_codec, answer_codec, 20))
+let assert Ok(op) = operation.with_deadline(op, duration.minutes(5))
+let assert Ok(op) = operation.with_replay(op, 3)
+let assert Ok(observer) = job.with_poll_interval(observer, duration.seconds(5))
+
+// After
+let id = definition.node_id("review")
+definition.new(identity, entry: id, nodes:, state: state_codec, answer: answer_codec)
+|> definition.with_max_activations(20)        // default 100
+|> definition.build                           // Result(Definition, List(BuildError))
+let op = operation.with_deadline(op, run.After(duration.minutes(5)))  // or run.Infinity
+let op = operation.with_replay(op, 3)
+let observer = job.with_poll_interval(observer, duration.seconds(5))
+```
+
+`definition.Spec` is opaque. `build` checks the graph and every operation's
+settings and reports every problem: `InvalidNodeId(name)`,
+`InvalidOperation(node, operation.ConfigurationError)` (now including
+`InvalidPollInterval`; `job.ConfigurationError` is gone), and the others
+as before; `definition.describe_build_error`.
+
+### Waits are bounded by default
+
+A signal, job, child or fork wait without `operation.with_deadline` now
+expires 7 days after admission. `operation.with_deadline(op, run.Infinity)`
+waits without one. The default, and 7 days set explicitly, leave the
+definition's stored structure as it was, so stored runs keep opening; a
+run stored without a deadline keeps none. A deployment whose waits may
+last longer than a week sets the deadline.
+
+### `fabric/graph/agent` and `fabric/graph/llm` are built with constructors
+
+```gleam
+// Before
+agent_node.new(agent_node.Definition(identity, agent, input, output, prompt, answer), runs, fn() { ctx })
+graph_llm.new(identity, input, output, "review", fn(ctx, text) { #(client, config, request) })
+
+// After
+agent_node.new(identity, agent, input:, output:, prompt:, answer:)
+|> agent_node.runtime(runs, context: fn(child_run) { ctx })
+graph_llm.decision(identity, input:, output:, name: "review", call: fn(ctx, text) {
+  graph_llm.call(client:, config:, request:)
+})
+```
+
+A decision's HTTP requests carry the run's correlation
+(`http_gun.with_correlation`); a managed agent child inherits its graph
+parent's correlation and root. Dependents: `consumers/graph`, `decision`,
+`writing`, `integrations/fabric_postgres/test` (migrated).
+
+### Graph telemetry
+
+Graph runs now emit `graph_started` (`[fabric, graph, start]`),
+`activation_started` (`[fabric, graph, activation, start]`: an activity
+queued or a wait begun, with its kind and deadline), `activation_settled`
+(`[fabric, graph, activation, stop]`), `graph_approval_requested` and
+`graph_approval_answered` (`[fabric, graph, approval, request|answer]`),
+`graph_cancelled` (`[fabric, graph, cancel]`) and `graph_finished`
+(`[fabric, graph, stop]`). Each carries the run's `correlation` and its
+family's `root`; a graph run's `lease_lost` now carries its stored
+correlation and root. Additive: no dependent breaks.

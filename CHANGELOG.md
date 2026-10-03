@@ -11,6 +11,85 @@ Wave 5 is described with before/after snippets in
 [docs/migration-wave-5.md](docs/migration-wave-5.md), round 5 in
 [docs/migration-round-5.md](docs/migration-round-5.md).
 
+### Wave 5, one vocabulary for agents and graphs (slice F5)
+
+#### Added
+
+- `policy.Step` (`ToolCall(id)`, `Activation(activation:, attempt:)`),
+  `policy.Target.RunOperation(node:, operation:, kind:)` and
+  `policy.OperationKind`: one `policy.Action` for both runtimes.
+- Graph approvals take a `reviewer.Reviewer` and the current context, and
+  record the answer (`graph.Snapshot.approvals`, `graph.Receipt.approvals`).
+- Graph approval expiry: `graph.with_approval_expiry(runtime, run.Timeout)`,
+  7 days by default, stored with the request; an expired request fails the
+  run (`graph.ExpiredApproval(due)`) and a late answer is
+  `graph.ApprovalExpired`. `await`, an answer, `recover` and the sweeper
+  expire it (`store/discovery` version 12).
+- Graph waits (signal, job, child, fork) expire after 7 days by default;
+  `operation.with_deadline(op, run.Infinity)` waits without one.
+- Graph runtime setters: `graph.with_callback_timeout`,
+  `with_operation_timeout` (`run.Timeout`), `with_command_timeout`,
+  `with_family_budget`.
+- `graph.start(.., correlation:)`: a graph run's correlation is stored,
+  passed to `operation.Invocation.correlation`, inherited by child runs
+  (managed agents too) with the family's root, and carried in its events.
+- Graph telemetry: `graph_started`, `activation_started`,
+  `activation_settled`, `graph_approval_requested`,
+  `graph_approval_answered`, `graph_cancelled`, `graph_finished`.
+- `graph.error_kind` (`fabric.ErrorKind`), `graph.describe_error`,
+  `graph.describe_failure`, `graph.open`, `graph.snapshot`,
+  `graph.cancel_stored`, `graph.ChildProblem`.
+- `definition.new`, `definition.with_max_activations` (default 100),
+  `definition.describe_build_error`; `graph_agent.new` and
+  `graph_agent.runtime`; `graph_llm.decision` and `graph_llm.call`.
+- `reviewer.Error`, `reviewer.Part`, `reviewer.describe_error`,
+  `reviewer.max_bytes`.
+
+#### Changed
+
+- **Breaking:** `policy.Action.id` is `step`, `tool` is `name`;
+  `policy.Target` gains `RunOperation`. `graph.Action` and `graph.Policy`
+  are gone.
+- **Breaking:** `operation.Failure` is gone: graph operations classify with
+  `tool.Failure` (`operation.new`, `operation.own_job`,
+  `operation.BodyFailed`, `fabric/graph/llm`).
+- **Breaking:** `graph.new(definition, store, context: fn(RunId) -> context,
+policy:)`; `graph.with_timeouts` and `graph.start_with_budget` are gone.
+- **Breaking:** `graph.attach` is `graph.open` (it reads and checks the
+  record), `graph.read` is `graph.snapshot`; `graph.cancel` returns the
+  snapshot after the commit; `graph.approve(handle, ref, reviewer:,
+context:)`, `graph.reject(handle, ref, reason:, reviewer:)`,
+  `graph.reconcile(handle, ref, content)`.
+- **Breaking:** `graph.Error` is typed: `CommandRefused(String)`,
+  `StoreFailed`, `DefinitionRejected`, `UnsupportedRecordVersion`,
+  `InvalidTimeout`, `Busy` and `OwnerUnknown` are replaced by
+  `RunNotFound`, `StoreUnavailable`, `IncompatibleDefinition`,
+  `ValueRefused`, `UnsupportedVersion`, `WrongReference`,
+  `StaleReference`, `AlreadyAnswered`, `RequirementChanged`,
+  `SignalConflict`, `NotReconcilable`, `ReconcileChildFirst`,
+  `ChildMismatch`, `RunEnded`, `RunnerBusy`, `RunUnattended`, and a start
+  with a stored id is `AlreadyStarted(id, same_input:)`.
+- **Breaking:** `definition.Spec` is opaque (`definition.new`);
+  `definition.build` returns every problem, `List(BuildError)`, including
+  each operation's settings (`InvalidOperation`); `definition.node_id` is
+  total; `operation.with_deadline` takes a `run.Timeout`; it,
+  `operation.with_replay` and `job.with_poll_interval` are total
+  (`job.ConfigurationError` is gone); `graph.both` and `graph.map` return
+  the operation and panic on bounds below 1.
+- **Breaking:** `fabric/graph/agent.Definition` is opaque
+  (`graph_agent.new`, `graph_agent.runtime`); `fabric/graph/llm.new` is
+  `decision` with an opaque `Call`.
+- **Breaking:** `operation.Invocation` gains `correlation`.
+- **Breaking:** `reviewer.new` and `reviewer.with_issuer` return
+  `Result(Reviewer, reviewer.Error)` and refuse an empty part or one over
+  256 bytes.
+- Agent approval deadlines are set and judged by the store's clock
+  (`store.now`), as graph deadlines are, not by the checking node's.
+- Graph records are version 15 (`correlation`, `root`, approval
+  `expires_at` and `approvals`, the `approval_expired` failure, all
+  optional on read); records of version 14 and earlier read and recover
+  unchanged, and a request or wait stored without a deadline keeps none.
+
 ### Wave 5, failures and configuration (slice F2)
 
 #### Added
