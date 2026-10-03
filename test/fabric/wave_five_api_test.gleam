@@ -128,8 +128,8 @@ pub fn an_answer_records_its_typed_reviewer_test() {
     )
   let assert Ok(run.Suspended([pending], [])) =
     fabric.await(handle, within: duration.seconds(5))
-  let alice =
-    reviewer.new("alice") |> reviewer.with_issuer("https://id.example")
+  let assert Ok(alice) =
+    support.reviewer("alice") |> reviewer.with_issuer("https://id.example")
   let assert Ok(_) =
     fabric.approve(handle, pending.reference, reviewer: alice, context: Nil)
   let assert Ok(run.Finished(_)) =
@@ -259,4 +259,19 @@ pub fn every_error_has_a_kind_and_a_description_test() {
     fabric.error_kind(error) |> should.equal(kind)
     { fabric.describe_error(error) != "" } |> should.be_true
   })
+}
+
+pub fn a_reviewer_from_a_token_is_checked_test() {
+  reviewer.new("") |> should.equal(Error(reviewer.Empty(reviewer.Subject)))
+  let long = string.repeat("é", 129)
+  reviewer.new(long)
+  |> should.equal(Error(reviewer.TooLong(reviewer.Subject, 258, 256)))
+  let assert Ok(at_limit) = reviewer.new(string.repeat("a", 256))
+  reviewer.subject(at_limit) |> should.equal(string.repeat("a", 256))
+  reviewer.with_issuer(at_limit, "")
+  |> should.equal(Error(reviewer.Empty(reviewer.Issuer)))
+  reviewer.with_issuer(at_limit, string.repeat("i", 257))
+  |> should.equal(Error(reviewer.TooLong(reviewer.Issuer, 257, 256)))
+  reviewer.describe_error(reviewer.TooLong(reviewer.Subject, 258, 256))
+  |> should.equal("the reviewer's subject is 258 bytes, longer than 256")
 }

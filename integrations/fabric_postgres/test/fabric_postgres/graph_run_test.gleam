@@ -790,7 +790,7 @@ pub fn a_managed_agent_keeps_its_approval_and_identity_after_postgres_restart_te
   let assert Ok(agent) = agent_node.child(handle, reference.activation, agent)
   fabric.id(agent) |> should.equal(reference.child)
   let assert Ok(_) =
-    fabric.approve(agent, approval.reference, reviewer.new("reviewer"), Nil)
+    fabric.approve(agent, approval.reference, as_reviewer("reviewer"), Nil)
   let arrival = agents.arrival(gate)
   arrival.amount |> should.equal(120)
   agents.release(arrival)
@@ -843,7 +843,7 @@ pub fn a_restarted_managed_agent_cannot_reset_its_family_work_budget_test() {
   let handle = graph.attach(parent, id)
   graph.recover(handle) |> should.be_ok
   let assert Ok(worker) = agent_node.child(handle, reference.activation, worker)
-  fabric.approve(worker, approval.reference, reviewer.new("reviewer"), Nil)
+  fabric.approve(worker, approval.reference, as_reviewer("reviewer"), Nil)
   |> should.be_ok
   fabric.await(worker, within: duration.seconds(30))
   |> should.equal(
@@ -888,7 +888,7 @@ pub fn a_registered_graph_recovers_its_agent_after_postgres_store_loss_test() {
         agent_node.child(handle, reference.activation, worker)
       #(handle, worker, approval)
     })
-  fabric.approve(worker, approval.reference, reviewer.new("reviewer"), Nil)
+  fabric.approve(worker, approval.reference, as_reviewer("reviewer"), Nil)
   |> should.be_ok
   let _started = agents.arrival(gate)
   agents.kill(owner)
@@ -950,7 +950,7 @@ pub fn canceled_agent_evidence_settles_after_postgres_restart_test() {
     waiting.status
   let assert Ok(worker) = agent_node.child(handle, reference.activation, worker)
   let assert Ok(_) =
-    fabric.approve(worker, approval.reference, reviewer.new("reviewer"), Nil)
+    fabric.approve(worker, approval.reference, as_reviewer("reviewer"), Nil)
   let _started = agents.arrival(gate)
   let assert Ok(_) = graph.cancel(handle)
   let assert Ok(done) = graph.await(handle, within: duration.seconds(30))
@@ -988,4 +988,9 @@ pub fn canceled_agent_evidence_settles_after_postgres_restart_test() {
   |> should.equal(Ok(2))
   fabric_postgres.backend(settings).get(run.id_to_string(reference.child))
   |> should.equal(Error(backend.NotFound))
+}
+
+fn as_reviewer(subject: String) -> reviewer.Reviewer {
+  let assert Ok(reviewer) = reviewer.new(subject)
+  reviewer
 }

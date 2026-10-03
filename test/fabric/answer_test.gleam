@@ -7,7 +7,6 @@ import fabric/internal/invocation
 import fabric/internal/registry
 import fabric/model.{ToolRequest, ToolResultMessage, Usage}
 import fabric/policy.{type Action}
-import fabric/reviewer
 import fabric/run.{ActionId, Requirement}
 import fabric/support
 import fabric/support/apps
@@ -155,7 +154,7 @@ pub fn an_approval_queues_the_action_and_records_the_reviewer_test() {
       controller.Answer(
         pending.reference,
         run.Approve,
-        Some(reviewer.new("alice")),
+        Some(support.reviewer("alice")),
       ),
     )
   effects |> should.equal([Dispatch([#(ActionId(1, "t"), transfer())])])
@@ -169,7 +168,7 @@ pub fn an_approval_queues_the_action_and_records_the_reviewer_test() {
         Requirement("transfer", 1),
         1,
         run.Approve,
-        Some(reviewer.new("alice")),
+        Some(support.reviewer("alice")),
       ),
     ],
     None,

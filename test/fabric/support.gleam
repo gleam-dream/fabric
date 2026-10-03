@@ -1,6 +1,7 @@
 //// Shorthands that keep the tests about behaviour rather than set-up.
 
 import fabric/agent.{type Agent, type Spec}
+import fabric/reviewer.{type Reviewer}
 import fabric/run.{type RunId}
 import fabric/store.{type Store}
 import fabric/store/conformance
@@ -12,6 +13,12 @@ import gleam/time/duration
 pub fn id(text: String) -> RunId {
   let assert Ok(id) = run.parse_id(text)
   id
+}
+
+/// The reviewer `subject`, which must be valid.
+pub fn reviewer(subject: String) -> Reviewer {
+  let assert Ok(reviewer) = reviewer.new(subject)
+  reviewer
 }
 
 /// The text of a run id, for backend-level instruments that key by it.

@@ -11,7 +11,6 @@ import fabric/internal/record
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
-import fabric/reviewer
 import fabric/run.{type RunId, ActionId}
 import fabric/store.{type Store}
 import fabric/store/backend
@@ -681,7 +680,7 @@ pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
     fabric.approve(
       run_a,
       p.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: support.reviewer("reviewer"),
       context: Nil,
     )
   let started = probe.arrival(probe)
@@ -690,14 +689,14 @@ pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
   fabric.approve(
     run_b,
     p.reference,
-    reviewer: reviewer.new("reviewer"),
+    reviewer: support.reviewer("reviewer"),
     context: Nil,
   )
   |> should.equal(Error(fabric.AlreadyAnswered))
   fabric.approve(
     run_b,
     q.reference,
-    reviewer: reviewer.new("reviewer"),
+    reviewer: support.reviewer("reviewer"),
     context: Nil,
   )
   |> should.equal(Error(fabric.RunUnattended))
@@ -709,7 +708,7 @@ pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
     fabric.approve(
       run_b,
       q.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: support.reviewer("reviewer"),
       context: Nil,
     )
   probe.release(probe.arrival(probe))
@@ -834,7 +833,7 @@ pub fn an_approval_through_an_opened_handle_runs_the_action_test() {
     fabric.approve(
       opened,
       p.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: support.reviewer("reviewer"),
       context: Nil,
     )
   probe.release(probe.arrival(probe))
@@ -845,7 +844,7 @@ pub fn an_approval_through_an_opened_handle_runs_the_action_test() {
       opened,
       q.reference,
       reason: "no",
-      reviewer: reviewer.new("reviewer"),
+      reviewer: support.reviewer("reviewer"),
     )
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(opened, within: duration.milliseconds(5000))

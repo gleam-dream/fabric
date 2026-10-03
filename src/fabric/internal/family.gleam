@@ -327,7 +327,12 @@ pub fn take_over(
     // Nothing in flight: an approval request whose deadline passed is
     // expired here, so that a recovery or the sweeper moves the run on.
     None, False, False -> {
-      case controller.has_expired_approvals(setup.env, state) {
+      let expired = case runner.clocked(setup.env, setup.store) {
+        Ok(env) -> controller.has_expired_approvals(env, state)
+        // The store's clock cannot be read: nothing is judged expired now.
+        Error(_) -> False
+      }
+      case expired {
         True -> {
           let _ =
             runner.command(setup, id, setup.env, controller.ExpireApprovals, 3)
@@ -339,8 +344,14 @@ pub fn take_over(
       Ok(Nil)
     }
     None, False, True -> {
+      use env <- result.try(
+        runner.clocked(setup.env, setup.store)
+        |> result.map_error(fn(error) {
+          TakeOverUnreadable(runner.StoreFailed(error))
+        }),
+      )
       let #(next, effects) = case controller.needs_runner(state) {
-        True -> controller.recover(setup.env, state)
+        True -> controller.recover(env, state)
         // Cancellation can land before budget initialization finishes. Seal
         // that bookkeeping without reviving any completed or canceled work.
         False -> #(state, [])

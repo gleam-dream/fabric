@@ -9,7 +9,6 @@ import fabric
 import fabric/agent
 import fabric/internal/clock
 import fabric/policy
-import fabric/reviewer
 import fabric/run.{After, Infinity, Requirement}
 import fabric/store/conformance
 import fabric/support
@@ -144,7 +143,7 @@ pub fn a_late_answer_is_approval_expired_test() {
   fabric.approve(
     handle,
     pending.reference,
-    reviewer: reviewer.new("alice"),
+    reviewer: support.reviewer("alice"),
     context: Nil,
   )
   |> should.equal(Error(fabric.ApprovalExpired))
@@ -154,7 +153,7 @@ pub fn a_late_answer_is_approval_expired_test() {
     handle,
     pending.reference,
     reason: "too late",
-    reviewer: reviewer.new("alice"),
+    reviewer: support.reviewer("alice"),
   )
   |> should.equal(Error(fabric.ApprovalExpired))
   ended_unpaid(handle, probe)
@@ -168,7 +167,7 @@ pub fn an_answer_in_time_is_applied_test() {
     fabric.approve(
       handle,
       pending.reference,
-      reviewer: reviewer.new("alice"),
+      reviewer: support.reviewer("alice"),
       context: Nil,
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -225,4 +224,29 @@ pub fn the_deadline_is_a_timestamp_test() {
   let #(_, pending) = start(support.store(), expiring(probe.new(), 60_000))
   let assert Some(at) = pending.expires
   timestamp.compare(at, timestamp.system_time()) |> should.equal(order.Gt)
+}
+
+/// Deadlines are set and judged by the store's clock (`store.now`), not
+/// by the clock of the node that checks them: over a backend whose clock
+/// runs a day ahead, a request issued for an hour expires once the
+/// backend's clock passes its deadline, though this node's has not.
+pub fn deadlines_follow_the_store_clock_test() {
+  let probe = probe.new()
+  let hour = 60 * 60 * 1000
+  let memory = conformance.leased_memory()
+  memory.advance(24 * hour)
+  let runs = nodes.node(memory.backend, "clock-node", nodes.long)
+  let #(handle, pending) = start(runs, expiring(probe, hour))
+  let assert Some(at) = pending.expires
+  { clock.to_milliseconds(at) >= clock.now() + 24 * hour }
+  |> should.be_true
+  memory.advance(2 * hour)
+  fabric.approve(
+    handle,
+    pending.reference,
+    reviewer: support.reviewer("alice"),
+    context: Nil,
+  )
+  |> should.equal(Error(fabric.ApprovalExpired))
+  ended_unpaid(handle, probe)
 }

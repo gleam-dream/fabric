@@ -36,7 +36,6 @@ import fabric/internal/budget/bootstrap
 import fabric/internal/budget/model as reservations
 import fabric/internal/checked_agent
 import fabric/internal/claim
-import fabric/internal/clock
 import fabric/internal/controller.{type Effect, type Event, type State}
 import fabric/internal/executor.{type Executor}
 import fabric/internal/invocation
@@ -111,7 +110,7 @@ pub fn setup(
       context:,
       system: admitted.system_prompt,
       approval_expiry: admitted.approval_expiry,
-      clock: clock.now,
+      clock: store_clock(store),
     ),
     model: admitted.model,
     max_concurrency: admitted.max_concurrency,
@@ -132,6 +131,32 @@ pub fn setup(
     max_result_bytes: admitted.max_result_bytes,
     parent:,
   )
+}
+
+/// The store's clock (`store.now`), read when a step judges or issues an
+/// approval deadline, so that every node judges deadlines alike. A caller
+/// that steps a run samples it first (`clocked`) and reports a failure as
+/// a store failure; a runner reads it lazily, and a failure to read it
+/// stops the runner as a failed commit would: the run is recovered later.
+fn store_clock(runs: Store) -> fn() -> Int {
+  fn() {
+    case store.now(runs) {
+      Ok(now) -> now
+      Error(error) ->
+        panic as {
+          "the store's clock could not be read: " <> string.inspect(error)
+        }
+    }
+  }
+}
+
+/// `env` judging deadlines by the store's clock read now.
+pub fn clocked(
+  env: controller.Env(context),
+  runs: Store,
+) -> Result(controller.Env(context), backend.StoreError) {
+  use now <- result.map(store.now(runs))
+  controller.Env(..env, clock: fn() { now })
 }
 
 /// The work of `setup`'s run performed with `context`: tool bodies are
@@ -1875,6 +1900,12 @@ pub fn command(
     _ -> load_checked(setup, id)
   }
   use #(entry, state) <- result.try(loaded |> result.map_error(Unreadable))
+  use env <- result.try(case controller.reads_clock(event) {
+    True ->
+      clocked(env, setup.store)
+      |> result.map_error(fn(error) { Unreadable(StoreFailed(error)) })
+    False -> Ok(env)
+  })
   let retry = fn() {
     case tries > 1 {
       True -> command(setup, id, env, event, tries - 1)

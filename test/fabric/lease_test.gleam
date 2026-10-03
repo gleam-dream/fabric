@@ -9,7 +9,6 @@ import fabric/agent.{type Agent}
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
-import fabric/reviewer
 import fabric/run.{Requirement}
 import fabric/store
 import fabric/store/backend
@@ -212,7 +211,7 @@ pub fn an_approval_of_an_idle_run_on_another_node_claims_the_lease_test() {
     fabric.approve(
       there,
       pending.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: support.reviewer("reviewer"),
       context: Nil,
     )
   let running = probe.arrival(probe)
@@ -256,7 +255,7 @@ pub fn an_approval_needing_another_nodes_runner_is_unattended_test() {
   fabric.approve(
     there,
     pending.reference,
-    reviewer: reviewer.new("reviewer"),
+    reviewer: support.reviewer("reviewer"),
     context: Nil,
   )
   |> should.equal(Error(fabric.RunUnattended))
@@ -265,7 +264,7 @@ pub fn an_approval_needing_another_nodes_runner_is_unattended_test() {
     fabric.approve(
       run,
       pending.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: support.reviewer("reviewer"),
       context: Nil,
     )
   let second = probe.arrival(probe)

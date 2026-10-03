@@ -7,7 +7,6 @@ import fabric/internal/store as store_core
 import fabric/llm
 import fabric/model
 import fabric/policy
-import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric/support
@@ -232,7 +231,7 @@ pub fn google_signed_parts_survive_approval_and_directory_restart_test() -> Nil 
     fabric.approve(
       resumed,
       approval.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: support.reviewer("reviewer"),
       context: Nil,
     )
   fabric.await(resumed, within: duration.milliseconds(5000))

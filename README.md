@@ -215,16 +215,26 @@ pub type Verdict {
   Happened(content: String)
 }
 
+/// The application authenticates whoever answers an approval, then names
+/// them. A subject and an issuer come from a token, so `reviewer.new` and
+/// `reviewer.with_issuer` check them (1 to 256 bytes each).
+pub fn reviewer_of(
+  subject: String,
+  issuer: String,
+) -> Result(reviewer.Reviewer, reviewer.Error) {
+  reviewer.new(subject) |> result.try(reviewer.with_issuer(_, issuer))
+}
+
 /// A later request opens the run by the id it kept and acts on its status.
 /// Opening takes nothing over, and every command is checked against the
-/// stored record. The application authenticates the reviewer and names it
-/// with `reviewer.new`; an approval checks the policy again with the context
+/// stored record. An approval checks the policy again with the context
 /// passed here, and one that comes after the request expired (7 days by
 /// default, `agent.with_approval_expiry`) is `fabric.ApprovalExpired`.
 pub fn review(
   runs: store.Store,
   desk: Agent(Context),
   context: Context,
+  reviewer: reviewer.Reviewer,
   stored_id: String,
   verdict: Verdict,
 ) -> Result(run.Status, fabric.Error) {
@@ -234,7 +244,6 @@ pub fn review(
   )
   use handle <- result.try(fabric.open(runs, desk, context, id))
   use status <- result.try(fabric.await(handle, within: duration.seconds(5)))
-  let reviewer = reviewer.new(context.user)
   case status, verdict {
     run.Suspended([pending, ..], _), Approve ->
       fabric.approve(handle, pending.reference, reviewer:, context:)

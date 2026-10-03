@@ -7,7 +7,6 @@ import fabric
 import fabric/agent.{type Agent}
 import fabric/model
 import fabric/policy
-import fabric/reviewer
 import fabric/run.{ActionId, Requirement}
 import fabric/support
 import fabric/support/apps
@@ -93,7 +92,7 @@ fn approve(
   fabric.approve(
     run,
     reference,
-    reviewer: reviewer.new("reviewer"),
+    reviewer: support.reviewer("reviewer"),
     context: open_desk(),
   )
 }
@@ -129,7 +128,7 @@ pub fn an_approved_tool_runs_once_after_a_restart_test() {
     fabric.approve(
       run,
       pending.reference,
-      reviewer: reviewer.new("alice"),
+      reviewer: support.reviewer("alice"),
       context: open_desk(),
     )
   fabric.await(run, within: duration.milliseconds(5000))
@@ -145,7 +144,7 @@ pub fn an_approved_tool_runs_once_after_a_restart_test() {
       pending.reference.requirement,
       pending.reference.revision,
       run.Approve,
-      Some(reviewer.new("alice")),
+      Some(support.reviewer("alice")),
     ),
   ])
   snapshot.incarnation |> should.equal(1)
@@ -160,7 +159,7 @@ pub fn a_rejected_tool_never_runs_and_the_model_sees_the_reason_test() {
       run,
       pending.reference,
       reason: "not today",
-      reviewer: reviewer.new("bob"),
+      reviewer: support.reviewer("bob"),
     )
   fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
@@ -212,7 +211,7 @@ pub fn a_rejection_never_runs_the_policy_test() {
       run,
       pending.reference,
       reason: "not today",
-      reviewer: reviewer.new("bob"),
+      reviewer: support.reviewer("bob"),
     )
   fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
@@ -294,7 +293,7 @@ pub fn the_policy_at_answer_time_wins_over_an_approval_test() {
     fabric.approve(
       run,
       pending.reference,
-      reviewer: reviewer.new("alice"),
+      reviewer: support.reviewer("alice"),
       context: Desk(..open_desk(), frozen: True),
     )
   fabric.await(run, within: duration.milliseconds(5000))
@@ -316,13 +315,18 @@ pub fn a_changed_requirement_issues_a_new_request_test() {
   let #(run, pending) = suspended(probe)
   let stricter = Desk(..open_desk(), requirement_version: 2)
   let assert Error(fabric.RequirementChanged(renewed)) =
-    fabric.approve(run, pending.reference, reviewer.new("reviewer"), stricter)
+    fabric.approve(
+      run,
+      pending.reference,
+      support.reviewer("reviewer"),
+      stricter,
+    )
   renewed.reference.requirement |> should.equal(Requirement("transfer", 2))
   fabric.pending(run) |> should.equal(Ok([renewed]))
   probe.count(probe, "pay:bob") |> should.equal(0)
 
   let assert Ok(_) =
-    fabric.approve(run, renewed.reference, reviewer.new("carol"), stricter)
+    fabric.approve(run, renewed.reference, support.reviewer("carol"), stricter)
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))
   probe.count(probe, "pay:bob") |> should.equal(1)
@@ -513,7 +517,7 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
         handle,
         pending.reference,
         reason:,
-        reviewer: reviewer.new("reviewer"),
+        reviewer: support.reviewer("reviewer"),
       ),
     )
   })
@@ -524,7 +528,7 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
       run,
       pending.reference,
       reason:,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: support.reviewer("reviewer"),
     )
   let calling = probe.arrival(probe)
   // The held write is lost.

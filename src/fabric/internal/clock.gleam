@@ -1,5 +1,6 @@
-//// The UTC clock that approval deadlines are judged by, in Unix
-//// milliseconds, and its conversion to `gleam/time` timestamps.
+//// This node's UTC clock in Unix milliseconds, and the conversion of Unix
+//// milliseconds to and from `gleam/time` timestamps. Deadlines are judged
+//// by the store's clock (`store.now`), not by this one.
 
 import gleam/time/timestamp.{type Timestamp}
 

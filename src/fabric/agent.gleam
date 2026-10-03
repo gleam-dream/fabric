@@ -311,7 +311,8 @@ pub fn with_max_result_bytes(spec: Spec(context), bytes: Int) -> Spec(context) {
 /// An expired request is rejected by whoever touches the run next:
 /// `fabric.await`, an answer, `fabric.recover`, or on a leased store the
 /// sweeper (`fabric/sweeper`), which finds it when it is due. Deadlines are
-/// judged by the UTC clock of the node that checks them. Default 7 days;
+/// set and judged by the store's clock (`store.now`), so every node judges
+/// them alike. Default 7 days;
 /// `run.Infinity` never expires. Requests stored without a deadline never
 /// expire.
 pub fn with_approval_expiry(

@@ -140,7 +140,7 @@ pub fn a_guardian_approves_a_junior_reservation_test() {
     fabric.approve(
       run,
       pending.reference,
-      reviewer: reviewer.new("guardian-ann"),
+      reviewer: as_reviewer("guardian-ann"),
       context: app.member("junior"),
     )
   fabric.await(run, within: duration.milliseconds(5000))
@@ -170,7 +170,7 @@ pub fn a_rejected_reservation_is_explained_to_the_model_test() {
       run,
       pending.reference,
       reason: "ask again tomorrow",
-      reviewer: reviewer.new("guardian-ann"),
+      reviewer: as_reviewer("guardian-ann"),
     )
   fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
@@ -198,7 +198,7 @@ pub fn a_paused_reservation_can_be_cancelled_test() {
   fabric.approve(
     run,
     pending.reference,
-    reviewer: reviewer.new("reviewer"),
+    reviewer: as_reviewer("reviewer"),
     context: app.member("junior"),
   )
   |> should.equal(Error(fabric.RunEnded))
@@ -247,7 +247,7 @@ pub fn a_paused_reservation_survives_a_restart_test() {
     fabric.approve(
       run,
       pending.reference,
-      reviewer: reviewer.new("guardian-ann"),
+      reviewer: as_reviewer("guardian-ann"),
       context: app.member("junior"),
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -293,7 +293,7 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
     fabric.approve(
       desk,
       committee.reference,
-      reviewer: reviewer.new("committee-chair"),
+      reviewer: as_reviewer("committee-chair"),
       context: app.member("ada"),
     )
 
@@ -305,7 +305,7 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
     fabric.approve(
       desk,
       treasurer.reference,
-      reviewer: reviewer.new("treasurer-tom"),
+      reviewer: as_reviewer("treasurer-tom"),
       context: app.member("ada"),
     )
   fabric.await(desk, within: duration.milliseconds(5000))
@@ -336,7 +336,7 @@ pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
     fabric.approve(
       desk,
       committee.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: as_reviewer("reviewer"),
       context: app.member("ada"),
     )
   let assert Ok(run.Suspended([treasurer], [])) =
@@ -351,7 +351,7 @@ pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
   fabric.approve(
     desk,
     treasurer.reference,
-    reviewer: reviewer.new("reviewer"),
+    reviewer: as_reviewer("reviewer"),
     context: app.member("ada"),
   )
   |> should.equal(Error(fabric.RunEnded))
@@ -437,7 +437,7 @@ pub fn observations_show_what_a_run_did_test() {
     fabric.approve(
       desk,
       committee.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: as_reviewer("reviewer"),
       context: app.member("ada"),
     )
   let assert Ok(run.Suspended([treasurer], [])) =
@@ -446,7 +446,7 @@ pub fn observations_show_what_a_run_did_test() {
     fabric.approve(
       desk,
       treasurer.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: as_reviewer("reviewer"),
       context: app.member("ada"),
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -526,8 +526,13 @@ pub fn a_run_outlives_the_request_that_started_it_test() {
       run,
       pending.reference,
       reason: "not today",
-      reviewer: reviewer.new("reviewer"),
+      reviewer: as_reviewer("reviewer"),
     )
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))
+}
+
+fn as_reviewer(subject: String) -> reviewer.Reviewer {
+  let assert Ok(reviewer) = reviewer.new(subject)
+  reviewer
 }
