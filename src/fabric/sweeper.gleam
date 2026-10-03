@@ -37,6 +37,7 @@ import fabric/store.{type Store}
 import gleam/erlang/process.{type Pid}
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/static_supervisor
 import gleam/otp/supervision
@@ -131,7 +132,7 @@ pub fn supervised(
   roots: List(Root),
   every every: Duration,
 ) -> Result(supervision.ChildSpecification(Nil), List(SweeperError)) {
-  use child <- result.map(worker(store, roots, every))
+  use child <- result.map(worker(store, roots, every, None))
   supervision.supervisor(fn() {
     static_supervisor.new(static_supervisor.RestForOne)
     |> static_supervisor.restart_tolerance(intensity: 3, period: 5)
@@ -143,7 +144,8 @@ pub fn supervised(
 }
 
 /// Starts the sweeper of a store already started with `store.start`, for
-/// scripts and tests, linked to the caller; it stops when the store does.
+/// scripts and tests, linked to the caller; it stops when the store or the
+/// caller stops, also when the caller exits normally.
 /// Returns the sweeper's process. Under a supervisor use `supervised`,
 /// which also orders the sweeper after the store.
 pub fn start(
@@ -151,7 +153,7 @@ pub fn start(
   roots: List(Root),
   every every: Duration,
 ) -> Result(Pid, List(SweeperError)) {
-  use child <- result.try(worker(store, roots, every))
+  use child <- result.try(worker(store, roots, every, Some(process.self())))
   child.start()
   |> result.map(fn(started) { started.pid })
   |> result.replace_error([StoreNotRunning])
@@ -161,8 +163,9 @@ fn worker(
   store: Store,
   roots: List(Root),
   every: Duration,
+  caller: Option(Pid),
 ) -> Result(supervision.ChildSpecification(Nil), List(SweeperError)) {
-  sweeper.new(store, roots, duration.to_milliseconds(every))
+  sweeper.new(store, roots, duration.to_milliseconds(every), caller)
   |> result.map_error(
     list.map(_, fn(error) {
       case error {

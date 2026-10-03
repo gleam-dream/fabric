@@ -68,6 +68,12 @@ Wave 5 is described with before/after snippets in
   replay count and a model failure without a kind all read (fixtures in
   `test/fixtures/records`). New keys are written only when they apply.
 
+#### Fixed
+
+- A sweeper started with `sweeper.start` stops when its caller exits, also
+  normally; it used to keep scanning after a script or test ended, and its
+  sweep events reached other observers.
+
 ### Wave 5, structure (slice F1)
 
 #### Added

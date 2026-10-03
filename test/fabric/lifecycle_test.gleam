@@ -181,3 +181,26 @@ pub fn a_sweeper_needs_a_running_leased_store_test() {
   sweeper.describe_error(sweeper.StoreNotRunning)
   |> should.equal("the sweeper's store is not running")
 }
+
+/// A sweeper started outside a supervisor stops with the process that
+/// started it, also when that process ends normally, so it cannot outlive
+/// a script or a test and keep scanning.
+pub fn a_started_sweeper_stops_with_its_caller_test() {
+  let runs = leased("lifecycle-sweeper-caller")
+  let assert Ok(Nil) = store.start(runs)
+  let reply = process.new_subject()
+  let caller =
+    process.spawn_unlinked(fn() {
+      let assert Ok(started) =
+        sweeper.start(runs, [], every: duration.milliseconds(50))
+      process.unlink(started)
+      process.send(reply, started)
+    })
+  let assert Ok(started) = process.receive(reply, 5000)
+  let monitor = process.monitor(started)
+  process.new_selector()
+  |> process.select_specific_monitor(monitor, fn(_) { Nil })
+  |> process.selector_receive(5000)
+  |> should.equal(Ok(Nil))
+  process.is_alive(caller) |> should.be_false
+}
