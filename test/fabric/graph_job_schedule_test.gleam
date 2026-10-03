@@ -90,7 +90,7 @@ pub fn scheduled_observation_reuses_one_work_grant_and_waits_for_backend_time_te
       build(runs),
       id,
       "job-receipt",
-      budget.Limits(1, 1, 1),
+      budget.limits(work: 1) |> budget.with_children(1) |> budget.with_depth(1),
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))

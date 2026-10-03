@@ -238,6 +238,7 @@ fn action_changed(
         case approval.answer {
           run.Approve -> o.Approved
           run.Reject(_) -> o.Rejected
+          run.Expired -> o.Expired
         },
         root,
         correlation,
@@ -245,8 +246,8 @@ fn action_changed(
     )
   })
   case after.state {
-    run.AwaitingApproval(requirement, revision)
-      if old_state != Some(run.AwaitingApproval(requirement, revision))
+    run.AwaitingApproval(requirement, revision, _) as awaiting
+      if old_state != Some(awaiting)
     ->
       emit(
         o.approval_requested(),

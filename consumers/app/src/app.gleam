@@ -11,8 +11,8 @@
 
 import fabric/agent.{type Agent}
 import fabric/model.{
-  type Message, type Reply, FinalAnswer, ToolCall, ToolRequest,
-  ToolResultMessage, Usage, UserMessage,
+  type Message, type Reply, FinalAnswer, ToolRequest, ToolResultMessage, Usage,
+  UserMessage,
 }
 import fabric/policy
 import fabric/run
@@ -242,7 +242,7 @@ pub fn desk_policy(
 // --- model ----------------------------------------------------------------------
 
 fn call(id: String, name: String, arguments: String) -> model.ToolCall {
-  ToolCall(id, name, arguments, None, None)
+  model.tool_call(id: id, name: name, arguments_json: arguments)
 }
 
 fn results(messages: List(Message)) -> List(String) {
@@ -313,14 +313,9 @@ pub fn librarian_spec() -> agent.Spec(Member) {
     desk_policy,
   )
   |> agent.with_system_prompt("You help library members.")
-  |> agent.with_limits(
-    agent.Limits(
-      ..agent.default_limits(),
-      max_turns: 4,
-      max_concurrency: 2,
-      token_budget: Some(10_000),
-    ),
-  )
+  |> agent.with_max_turns(4)
+  |> agent.with_max_concurrency(2)
+  |> agent.with_token_budget(10_000)
 }
 
 /// Built once, at boot: every problem is reported before any run.
@@ -330,7 +325,7 @@ pub fn librarian() -> Result(Agent(Member), List(agent.ConfigError)) {
 
 pub fn misconfigured() -> Result(Agent(Member), List(agent.ConfigError)) {
   librarian_spec()
-  |> agent.with_limits(agent.Limits(..agent.default_limits(), max_turns: 0))
+  |> agent.with_max_turns(0)
   |> agent.build
 }
 

@@ -18,6 +18,7 @@ import fabric/internal/runner
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric/store/backend
@@ -112,6 +113,7 @@ pub fn ancestry_follows_mixed_parents_and_checks_both_sides_of_each_link_test() 
           run.Delegated,
           [],
           Some(support.id(descendant)),
+          0,
         ),
       ]),
     )
@@ -129,7 +131,8 @@ pub fn ancestry_follows_mixed_parents_and_checks_both_sides_of_each_link_test() 
   |> should.equal(Ok(Some(ancestry.Family(parent.run, 2, None))))
   // This agent's local depth is zero. Family depth still includes its graph
   // attachment, and only the root supplies a declaration.
-  let limits = quota.Limits(8, 3, 2)
+  let limits =
+    quota.limits(work: 8) |> quota.with_children(3) |> quota.with_depth(2)
   let parent =
     graph.State(..parent, family_budget: Some(budget.Declaration(limits, True)))
   let assert Ok(encoded) = graph_record.encode(parent)
@@ -194,7 +197,7 @@ pub fn graph_cancellation_prevents_a_model_retry_test() {
       model.new(fn(_) {
         probe.record(calls, "called")
         probe.gate(calls, "reply")
-        Error(model.ModelError("retry", retryable: True))
+        Error(model.error(model.Overloaded, "retry"))
       }),
     )
   let #(setup, state, effects) = child_state(runs, worker, id)
@@ -226,7 +229,8 @@ pub fn graph_cancellation_refuses_agent_approval_without_starting_its_tool_test(
   let assert Ok(run.Suspended([approval], [])) =
     fabric.await(handle, within: duration.milliseconds(5000))
   stop_parent(runs, parent)
-  fabric.approve(handle, approval.reference, None, Nil) |> should.be_error
+  fabric.approve(handle, approval.reference, reviewer.new("reviewer"), Nil)
+  |> should.be_error
   probe.entries(body) |> should.equal([])
 }
 

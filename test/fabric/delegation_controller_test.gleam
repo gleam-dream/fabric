@@ -9,7 +9,7 @@ import fabric/internal/controller.{
 import fabric/internal/invocation
 import fabric/internal/registry
 import fabric/internal/tool as core_tool
-import fabric/model.{ToolCall, ToolRequest}
+import fabric/model.{ToolRequest}
 import fabric/policy
 import fabric/run.{ActionId}
 import fabric/support
@@ -42,6 +42,8 @@ fn env() -> controller.Env(Nil) {
     policy: policy.always_allow(),
     context: Nil,
     system: None,
+    approval_expiry: None,
+    clock: fn() { 0 },
   )
 }
 
@@ -56,7 +58,7 @@ fn scripted_slow() -> tool.Tool(Nil) {
 }
 
 fn ask_call(id: String) -> model.ToolCall {
-  ToolCall(id, "ask", "\"why?\"", None, None)
+  model.tool_call(id: id, name: "ask", arguments_json: "\"why?\"")
 }
 
 fn step(state: State, event: controller.Event) -> #(State, List(Effect)) {
@@ -125,6 +127,7 @@ pub fn an_allowed_delegation_names_its_child_before_the_child_exists_test() {
     run.Running,
     [],
     Some(support.id("run-p-1")),
+    0,
   ))
   // Starting a child is work in flight; waiting on a started child is not.
   controller.needs_runner(state) |> should.be_true

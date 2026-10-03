@@ -19,13 +19,24 @@
 //// registry answers an unknown tool or malformed arguments per call, as for
 //// any other model. Names outside the tool-name grammar, duplicate call ids,
 //// and bounds still fail the turn in llm_wire.
+////
+//// A failed call becomes a `model.ModelError` whose kind follows
+//// `llm_wire.advise`: a failure llm_wire says another attempt may help is
+//// `RateLimited` (HTTP 429 or a rate-limit code), `TimedOut` (a timer or
+//// HTTP 408), `Unreachable` (the connection) or `Overloaded`, and is
+//// retried; a provider's `Retry-After` becomes the error's `retry_after`,
+//// which Fabric waits before the retry. Any other failure is `Rejected` (a
+//// status the provider will answer again), `InvalidRequest` (nothing was
+//// sent), `InvalidReply` or `Other`, and stops the run.
 
 import fabric/model.{type Model, type ModelError, type Reply, type Request}
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import http_gun
+import http_gun/error as http_error
 import json/blueprint/contract
 import llm_wire
 import llm_wire/error
@@ -64,7 +75,7 @@ fn call(
   use prepared <- result.try(
     llm_wire.prepare(config, wire_request)
     |> result.map_error(fn(error) {
-      model.ModelError(error.describe_prepare_error(error), retryable: False)
+      model.error(model.InvalidRequest, error.describe_prepare_error(error))
     }),
   )
   let client = http_gun.with_correlation(client, request.correlation)
@@ -87,7 +98,7 @@ fn declaration(spec: model.ToolSpec) -> Result(tool.Tool, ModelError) {
   // not help.
   tool.from_contract(spec.name, spec.description, contract)
   |> result.map_error(fn(error) {
-    model.ModelError(tool.describe_error(error), retryable: False)
+    model.error(model.InvalidRequest, tool.describe_error(error))
   })
 }
 
@@ -124,12 +135,14 @@ fn to_wire_call(call: model.ToolCall) -> message.ToolCall {
 }
 
 fn from_wire_call(call: message.ToolCall) -> model.ToolCall {
-  model.ToolCall(
+  model.tool_call(
     id: call.id,
     name: call.name,
     arguments_json: call.arguments_json,
-    provider_id: call.provider_id,
-    provider_state: call.provider_state,
+  )
+  |> model.with_provider_replay(
+    id: call.provider_id,
+    state: call.provider_state,
   )
 }
 
@@ -142,14 +155,46 @@ fn usage_of(usage: Option(message.Usage)) -> Option(model.Usage) {
   })
 }
 
-/// The wire library classifies the cause; Fabric chooses its retry policy.
-/// Unknown prospects stop. Every accepted retry still spends a model turn.
+/// The wire library classifies the cause and Fabric chooses its retry
+/// policy: only a failure that `llm_wire.advise` says another attempt may
+/// help becomes a retryable kind, and its provider delay the error's
+/// `retry_after`. Unknown prospects stop. Every accepted retry still spends
+/// a model turn.
 fn failure_of(failure: llm_wire.Failure) -> ModelError {
-  let retryable = case llm_wire.advise(failure).prospect {
-    llm_wire.MayHelp -> True
-    llm_wire.WillNotHelpUnchanged | llm_wire.Unknown -> False
+  let advice = llm_wire.advise(failure)
+  let kind = case advice.prospect, failure.error {
+    llm_wire.MayHelp, error.Status(429, ..) -> model.RateLimited
+    llm_wire.MayHelp, error.Status(408, ..) -> model.TimedOut
+    llm_wire.MayHelp, error.Provider(Some(code), _) ->
+      case string.contains(code, "rate") || code == "slow_down" {
+        True -> model.RateLimited
+        False -> model.Overloaded
+      }
+    llm_wire.MayHelp, error.DeadlineExceeded(_) -> model.TimedOut
+    llm_wire.MayHelp, error.Http(http) ->
+      case http_error.kind(http) {
+        http_error.TimedOut -> model.TimedOut
+        _ -> model.Unreachable
+      }
+    llm_wire.MayHelp, _ -> model.Overloaded
+    _, error.Status(..) -> model.Rejected
+    _, error.Http(http) ->
+      case http_error.kind(http) {
+        http_error.InvalidInput | http_error.Refused -> model.InvalidRequest
+        http_error.TooLarge -> model.InvalidReply
+        _ -> model.Other
+      }
+    _, error.Protocol(_)
+    | _, error.InvalidOutput(..)
+    | _, error.LimitExceeded(..)
+    -> model.InvalidReply
+    _, _ -> model.Other
   }
-  model.ModelError(llm_wire.describe_failure(failure), retryable:)
+  let error = model.error(kind, llm_wire.describe_failure(failure))
+  case advice.delay {
+    llm_wire.ProviderDelay(delay) -> model.with_retry_after(error, delay)
+    llm_wire.Backoff -> error
+  }
 }
 
 // The tag of the stored provider data: llm_wire's replay fields (`provider`,
@@ -183,14 +228,14 @@ fn restore_turn(
       ))
     Some(model.ProviderData(format, data)) if format == turn_format ->
       json.parse(data, message.turn_replay_decoder(turn.text, calls))
-      |> result.replace_error(model.ModelError(
+      |> result.replace_error(model.error(
+        model.InvalidRequest,
         "Corrupt assistant provider data",
-        False,
       ))
     Some(_) ->
-      Error(model.ModelError(
+      Error(model.error(
+        model.InvalidRequest,
         "Unsupported assistant provider data format",
-        False,
       ))
   }
 }

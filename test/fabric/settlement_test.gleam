@@ -237,9 +237,12 @@ pub fn a_settlement_bound_must_be_positive_test() {
   |> agent.build
   |> should.equal(
     Error([
-      agent.SettlementBoundNotPositive(
+      agent.InvalidToolLimit(
         "lookup_weather",
-        duration.milliseconds(0),
+        agent.SettleWithin,
+        0,
+        1,
+        4_294_967_295,
       ),
     ]),
   )
@@ -413,9 +416,12 @@ pub fn a_settlement_bound_must_fit_a_timer_test() {
   |> agent.build
   |> should.equal(
     Error([
-      agent.SettlementBoundTooLarge(
+      agent.InvalidToolLimit(
         "lookup_weather",
-        duration.milliseconds(5_000_000_000),
+        agent.SettleWithin,
+        5_000_000_000,
+        1,
+        4_294_967_295,
       ),
     ]),
   )

@@ -11,6 +11,7 @@ import fabric/internal/record
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
+import fabric/reviewer
 import fabric/run.{ActionId, Requirement}
 import fabric/store.{type Store}
 import fabric/support
@@ -295,7 +296,12 @@ pub fn a_sub_agent_starts_only_after_approval_even_across_a_restart_test() {
   fabric.pending(run) |> should.equal(Ok([pending]))
   restart.list_dir(dir) |> should.equal(Ok([support.text(fabric.id(run))]))
   let assert Ok(_) =
-    fabric.approve(run, pending.reference, reviewer: None, context: Nil)
+    fabric.approve(
+      run,
+      pending.reference,
+      reviewer: reviewer.new("reviewer"),
+      context: Nil,
+    )
   fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"found gleam\"}"))),
@@ -344,7 +350,7 @@ pub fn a_rejected_sub_agent_never_starts_test() {
       run,
       pending.reference,
       reason: "not today",
-      reviewer: Some("ann"),
+      reviewer: reviewer.new("ann"),
     )
   fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
@@ -405,7 +411,12 @@ pub fn a_child_pause_surfaces_to_the_parent_and_is_answered_through_it_test() {
   probe.count(probe, "pay:bob") |> should.equal(0)
 
   let assert Ok(_) =
-    fabric.approve(run, pending.reference, reviewer: None, context: Nil)
+    fabric.approve(
+      run,
+      pending.reference,
+      reviewer: reviewer.new("reviewer"),
+      context: Nil,
+    )
   fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
@@ -415,7 +426,12 @@ pub fn a_child_pause_surfaces_to_the_parent_and_is_answered_through_it_test() {
     ),
   )
   probe.count(probe, "pay:bob") |> should.equal(1)
-  fabric.approve(run, pending.reference, reviewer: None, context: Nil)
+  fabric.approve(
+    run,
+    pending.reference,
+    reviewer: reviewer.new("reviewer"),
+    context: Nil,
+  )
   |> should.equal(Error(fabric.AlreadyAnswered))
 }
 
@@ -446,7 +462,12 @@ pub fn cancelling_the_parent_cancels_a_paused_child_test() {
   child_states(child) |> should.equal([run.NotStarted])
   only_action(run).state
   |> should.equal(run.ToolFailed("{\"error\":\"the sub-agent was cancelled\"}"))
-  fabric.approve(run, pending.reference, reviewer: None, context: Nil)
+  fabric.approve(
+    run,
+    pending.reference,
+    reviewer: reviewer.new("reviewer"),
+    context: Nil,
+  )
   |> should.equal(Error(fabric.RunEnded))
   probe.count(probe, "pay:bob") |> should.equal(0)
 }
@@ -682,9 +703,7 @@ pub fn delegations_beyond_the_child_limit_are_refused_test() {
       quick_researcher(probe),
       policy.always_allow(),
     )
-    |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), max_children: 2),
-    )
+    |> agent.with_max_children(2)
     |> support.agent
   let assert Ok(run) =
     fabric.start(
@@ -734,7 +753,7 @@ pub fn nested_delegation_is_bounded_by_the_root_depth_test() {
       prompt: fn(topic: Topic) { topic.topic },
       output: fn(text) { Ok(Summary(text)) },
     )
-    |> agent.with_limits(agent.Limits(..agent.default_limits(), max_depth:))
+    |> agent.with_max_depth(max_depth)
     |> support.agent
   }
 
@@ -776,13 +795,15 @@ pub fn a_delegation_is_validated_with_its_child_test() {
   // A sub-agent is checked by its own build, so an invalid one can never
   // be delegated to.
   quick_researcher_spec(probe)
-  |> agent.with_limits(agent.Limits(..agent.default_limits(), max_turns: 0))
+  |> agent.with_max_turns(0)
   |> agent.build
-  |> should.equal(Error([agent.MaxTurnsNotPositive(0)]))
+  |> should.equal(
+    Error([agent.InvalidLimit(agent.MaxTurns, 0, 1, 9_007_199_254_740_991)]),
+  )
   delegating_spec(probe, [], quick_researcher(probe), policy.always_allow())
-  |> agent.with_limits(agent.Limits(..agent.default_limits(), max_children: -1))
+  |> agent.with_max_children(-1)
   |> agent.build
-  |> should.equal(Error([agent.MaxChildrenNegative(-1)]))
+  |> should.equal(Error([agent.InvalidLimit(agent.MaxChildren, -1, 0, 999)]))
   agent.new(
     "agent",
     scripted.plan([]),
@@ -811,16 +832,15 @@ pub fn delegation_limits_keep_child_ids_valid_test() {
   let probe = probe.new()
   let limited = fn(max_children, max_depth) {
     delegating_spec(probe, [], quick_researcher(probe), policy.always_allow())
-    |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), max_children:, max_depth:),
-    )
+    |> agent.with_max_children(max_children)
+    |> agent.with_max_depth(max_depth)
     |> agent.build
   }
   limited(1000, 17)
   |> should.equal(
     Error([
-      agent.MaxChildrenTooLarge(value: 1000, limit: 999),
-      agent.MaxDepthTooLarge(value: 17, limit: 16),
+      agent.InvalidLimit(agent.MaxChildren, 1000, 0, 999),
+      agent.InvalidLimit(agent.MaxDepth, 17, 0, 16),
     ]),
   )
   let assert Ok(_) = limited(999, 16)
@@ -849,7 +869,12 @@ pub fn cancel_stored_cancels_the_children_first_test() {
   fabric.await(child, within: duration.milliseconds(0))
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert run.Uncertain(_) = only_action(run).state
-  fabric.approve(run, pending.reference, reviewer: None, context: Nil)
+  fabric.approve(
+    run,
+    pending.reference,
+    reviewer: reviewer.new("reviewer"),
+    context: Nil,
+  )
   |> should.equal(Error(fabric.RunEnded))
 }
 
@@ -881,7 +906,12 @@ pub fn a_transient_store_failure_does_not_leave_a_child_uncancelled_test() {
   fabric.await(child, within: duration.milliseconds(0))
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.pending(run) |> should.equal(Ok([]))
-  fabric.approve(run, pending.reference, reviewer: None, context: Nil)
+  fabric.approve(
+    run,
+    pending.reference,
+    reviewer: reviewer.new("reviewer"),
+    context: Nil,
+  )
   |> should.equal(Error(fabric.RunEnded))
   probe.count(probe, "pay:bob") |> should.equal(0)
 }
@@ -913,9 +943,19 @@ pub fn a_child_that_cannot_be_cancelled_can_no_longer_act_test() {
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert run.Uncertain(evidence) = only_action(run).state
   string.contains(evidence, "could not be cancelled") |> should.be_true
-  fabric.approve(run, pending.reference, reviewer: None, context: Nil)
+  fabric.approve(
+    run,
+    pending.reference,
+    reviewer: reviewer.new("reviewer"),
+    context: Nil,
+  )
   |> should.equal(Error(fabric.RunEnded))
-  fabric.approve(child, pending.reference, reviewer: None, context: Nil)
+  fabric.approve(
+    child,
+    pending.reference,
+    reviewer: reviewer.new("reviewer"),
+    context: Nil,
+  )
   |> should.equal(Error(fabric.RunEnded))
   probe.count(probe, "pay:bob") |> should.equal(0)
 }

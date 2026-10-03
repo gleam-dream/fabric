@@ -2,6 +2,7 @@ import fabric
 import fabric/agent.{type Agent}
 import fabric/model.{type Model}
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric/tool
@@ -51,7 +52,7 @@ pub fn transfer_definition() -> tool.Definition(Transfer, Receipt) {
 /// never retried and waits for a person to reconcile it. The handler also
 /// gets the `tool.Call` it answers: its run, its action and the run's
 /// correlation, for the requests it makes. A body runs for at most the
-/// agent's `tool_timeout` (60 s by default).
+/// agent's tool timeout (`agent.with_tool_timeout`, 60 s by default).
 pub fn transfer_tool(
   pay: fn(Transfer) -> Result(Receipt, TransferError),
 ) -> tool.Tool(Context) {
@@ -90,13 +91,8 @@ pub fn desk(
   pay: fn(Transfer) -> Result(Receipt, TransferError),
 ) -> Result(Agent(Context), List(agent.ConfigError)) {
   agent.new("desk", model, [transfer_tool(pay)], desk_policy)
-  |> agent.with_limits(
-    agent.Limits(
-      ..agent.default_limits(),
-      max_turns: 6,
-      token_budget: Some(20_000),
-    ),
-  )
+  |> agent.with_max_turns(6)
+  |> agent.with_token_budget(20_000)
   |> agent.build
 }
 
@@ -121,16 +117,16 @@ pub fn supervise(path: String) -> Result(store.Store, actor.StartError) {
 }
 
 /// A request starts a run under an id it chooses and keeps (in a link, a
-/// job, a table). A job derives the id from its own (`run.parse_id`), so a
-/// retried start finds the run (`fabric.AlreadyStarted`) instead of paying
-/// twice. The run's correlation is in every event, model request and tool
+/// job, a table). A job derives the id from its own
+/// (`run.id_from_parts("job", [job_id])`), so a retried start finds the run
+/// (`fabric.AlreadyStarted`) instead of paying twice. The run's correlation is in every event, model request and tool
 /// call of the run; `None` derives it from the id.
 pub fn start_payment(
   runs: store.Store,
   desk: Agent(Context),
   context: Context,
   prompt: String,
-) -> Result(String, fabric.StartError) {
+) -> Result(String, fabric.Error) {
   let id = run.new_id()
   use _handle <- result.map(fabric.start(
     runs,
@@ -153,27 +149,24 @@ pub type Verdict {
 
 /// A later request opens the run by the id it kept and acts on its status.
 /// Opening takes nothing over, and every command is checked against the
-/// stored record. The application authenticates the reviewer; an approval
-/// checks the policy again with the context passed here.
+/// stored record. The application authenticates the reviewer and names it
+/// with `reviewer.new`; an approval checks the policy again with the context
+/// passed here, and one that comes after the request expired (7 days by
+/// default, `agent.with_approval_expiry`) is `fabric.ApprovalExpired`.
 pub fn review(
   runs: store.Store,
   desk: Agent(Context),
   context: Context,
   stored_id: String,
   verdict: Verdict,
-) -> Result(run.Status, fabric.CommandError) {
+) -> Result(run.Status, fabric.Error) {
   use id <- result.try(
     run.parse_id(stored_id)
-    |> result.replace_error(fabric.Unreadable(fabric.RunNotFound)),
+    |> result.replace_error(fabric.RunNotFound),
   )
-  use handle <- result.try(
-    fabric.open(runs, desk, context, id) |> result.map_error(fabric.Unreadable),
-  )
-  use status <- result.try(
-    fabric.await(handle, within: duration.seconds(5))
-    |> result.map_error(fabric.Unreadable),
-  )
-  let reviewer = Some(context.user)
+  use handle <- result.try(fabric.open(runs, desk, context, id))
+  use status <- result.try(fabric.await(handle, within: duration.seconds(5)))
+  let reviewer = reviewer.new(context.user)
   case status, verdict {
     run.Suspended([pending, ..], _), Approve ->
       fabric.approve(handle, pending.reference, reviewer:, context:)
@@ -190,7 +183,8 @@ pub fn review(
 /// At boot, when the previous owner is known to be gone, `recover` takes
 /// over work whose runner was lost. A run handed off by a drained shutdown
 /// goes on with nothing uncertain; after a crash, running tools become
-/// uncertain effects, never retried. On an unleased store, never recover
+/// uncertain effects, never retried, unless a tool is replayable
+/// (`tool.with_replay`). On an unleased store, never recover
 /// a run another process may drive; a leased store's `recover` leaves a run
 /// alone while another node holds its lease.
 pub fn resume(
@@ -198,10 +192,10 @@ pub fn resume(
   desk: Agent(Context),
   context: Context,
   stored_id: String,
-) -> Result(fabric.Run(Context), fabric.CommandError) {
+) -> Result(fabric.Run(Context), fabric.Error) {
   use id <- result.try(
     run.parse_id(stored_id)
-    |> result.replace_error(fabric.Unreadable(fabric.RunNotFound)),
+    |> result.replace_error(fabric.RunNotFound),
   )
   fabric.recover(runs, desk, context, id)
 }

@@ -236,6 +236,8 @@ pub type ModelTurn {
 pub type Answered {
   Approved
   Rejected
+  /// The request's deadline passed unanswered (`agent.with_approval_expiry`).
+  Expired
 }
 
 pub type ApprovalRequested {
@@ -566,7 +568,7 @@ pub fn approval_answered() -> Event(Nil, ApprovalAnswered) {
       answered.revision
     })
     use answer <- fields.include(
-      fields.enum("answer", [Approved, Rejected], answered_name),
+      fields.enum("answer", [Approved, Rejected, Expired], answered_name),
       get: fn(answered) { answered.answer },
     )
     use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
@@ -821,6 +823,7 @@ fn answered_name(answer: Answered) -> String {
   case answer {
     Approved -> "approved"
     Rejected -> "rejected"
+    Expired -> "expired"
   }
 }
 

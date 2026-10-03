@@ -4,6 +4,7 @@
 
 import fabric
 import fabric/agent
+import fabric/budget
 import fabric/model
 import fabric/policy
 import fabric/run.{After, Infinity}
@@ -20,10 +21,6 @@ import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
-fn with_limits(spec: agent.Spec(c), limits: agent.Limits) -> agent.Agent(c) {
-  spec |> agent.with_limits(limits) |> support.agent
-}
-
 fn start(desk: agent.Agent(Nil)) -> fabric.Run(Nil) {
   let assert Ok(handle) =
     fabric.start(
@@ -37,14 +34,48 @@ fn start(desk: agent.Agent(Nil)) -> fabric.Run(Nil) {
   handle
 }
 
-pub fn the_defaults_bound_every_wait_test() {
-  let limits = agent.default_limits()
-  limits.model_timeout |> should.equal(After(duration.seconds(600)))
-  limits.tool_timeout |> should.equal(After(duration.seconds(60)))
-  limits.max_result_bytes |> should.equal(1_048_576)
-  limits.policy_timeout |> should.equal(duration.seconds(5))
-  limits.command_timeout |> should.equal(duration.seconds(5))
-  limits.model_retry_delay |> should.equal(duration.milliseconds(200))
+/// Every bound `build` refuses names its setter, and all of them are
+/// reported at once.
+pub fn build_reports_every_bound_with_its_setter_test() {
+  let assert Error(errors) =
+    agent.new(
+      "bounded",
+      scripted.model(fn(_) { model.FinalAnswer("done", None) }),
+      [],
+      policy.always_allow(),
+    )
+    |> agent.with_max_turns(0)
+    |> agent.with_max_concurrency(0)
+    |> agent.with_token_budget(0)
+    |> agent.with_max_children(1000)
+    |> agent.with_max_depth(17)
+    |> agent.with_policy_timeout(duration.milliseconds(0))
+    |> agent.with_model_retry_delay(duration.milliseconds(-1))
+    |> agent.with_command_timeout(duration.milliseconds(0))
+    |> agent.with_approval_expiry(After(duration.milliseconds(0)))
+    |> agent.with_family_budget(
+      budget.limits(work: 10) |> budget.with_depth(64),
+    )
+    |> agent.build
+  list.map(errors, fn(error) {
+    let assert agent.InvalidLimit(limit:, ..) = error
+    limit
+  })
+  |> should.equal([
+    agent.MaxTurns,
+    agent.MaxConcurrency,
+    agent.TokenBudget,
+    agent.MaxChildren,
+    agent.MaxDepth,
+    agent.PolicyTimeout,
+    agent.ModelRetryDelay,
+    agent.CommandTimeout,
+    agent.ApprovalExpiry,
+    agent.FamilyDepth,
+  ])
+  let assert [first, ..] = errors
+  agent.describe_config_error(first)
+  |> should.equal("agent.with_max_turns is 0, outside 1..9007199254740991")
 }
 
 pub fn build_refuses_bounds_a_timer_cannot_hold_test() {
@@ -55,22 +86,16 @@ pub fn build_refuses_bounds_a_timer_cannot_hold_test() {
       [],
       policy.always_allow(),
     )
-  let longest = duration.milliseconds(4_294_967_295)
   let too_long = duration.milliseconds(4_294_967_296)
   spec
-  |> agent.with_limits(
-    agent.Limits(
-      ..agent.default_limits(),
-      model_timeout: After(duration.milliseconds(0)),
-      tool_timeout: After(too_long),
-      max_result_bytes: 0,
-    ),
-  )
+  |> agent.with_model_timeout(After(duration.milliseconds(0)))
+  |> agent.with_tool_timeout(After(too_long))
+  |> agent.with_max_result_bytes(0)
   |> agent.build
   |> should_fail_with([
-    agent.ModelTimeoutNotPositive(duration.milliseconds(0)),
-    agent.ToolTimeoutTooLarge(too_long, longest),
-    agent.MaxResultBytesNotPositive(0),
+    agent.InvalidLimit(agent.ModelTimeout, 0, 1, 4_294_967_295),
+    agent.InvalidLimit(agent.ToolTimeout, 4_294_967_296, 1, 4_294_967_295),
+    agent.InvalidLimit(agent.MaxResultBytes, 0, 1, 9_007_199_254_740_991),
   ])
   let lookup =
     tool.define(
@@ -89,17 +114,12 @@ pub fn build_refuses_bounds_a_timer_cannot_hold_test() {
   )
   |> agent.build
   |> should_fail_with([
-    agent.InvalidToolTimeout("lookup", duration.milliseconds(0)),
+    agent.InvalidToolLimit("lookup", agent.ToolTimeout, 0, 1, 4_294_967_295),
   ])
   // Unbounded is explicit, and accepted.
   spec
-  |> agent.with_limits(
-    agent.Limits(
-      ..agent.default_limits(),
-      model_timeout: Infinity,
-      tool_timeout: Infinity,
-    ),
-  )
+  |> agent.with_model_timeout(Infinity)
+  |> agent.with_tool_timeout(Infinity)
   |> agent.build
   |> should.be_ok
 }
@@ -129,13 +149,9 @@ pub fn a_slow_model_call_times_out_and_is_retried_test() {
     })
   let desk =
     agent.new("slow-model", model, [], policy.always_allow())
-    |> with_limits(
-      agent.Limits(
-        ..agent.default_limits(),
-        model_timeout: After(duration.milliseconds(50)),
-        model_retry_delay: duration.milliseconds(0),
-      ),
-    )
+    |> agent.with_model_timeout(After(duration.milliseconds(50)))
+    |> agent.with_model_retry_delay(duration.milliseconds(0))
+    |> support.agent
   let handle = start(desk)
   fabric.await(handle, within: duration.seconds(5))
   |> should.equal(Ok(run.Finished(run.Completed("on time"))))
@@ -153,14 +169,10 @@ pub fn a_model_that_never_answers_in_time_ends_on_its_turns_test() {
     })
   let desk =
     agent.new("stuck-model", model, [], policy.always_allow())
-    |> with_limits(
-      agent.Limits(
-        ..agent.default_limits(),
-        max_turns: 2,
-        model_timeout: After(duration.milliseconds(30)),
-        model_retry_delay: duration.milliseconds(0),
-      ),
-    )
+    |> agent.with_max_turns(2)
+    |> agent.with_model_timeout(After(duration.milliseconds(30)))
+    |> agent.with_model_retry_delay(duration.milliseconds(0))
+    |> support.agent
   fabric.await(start(desk), within: duration.seconds(5))
   |> should.equal(Ok(run.Finished(run.BudgetExhausted(run.TurnLimit(2)))))
 }
@@ -191,12 +203,8 @@ pub fn a_tool_body_past_its_timeout_is_an_uncertain_effect_test() {
       [sleeping_tool(5000)],
       policy.always_allow(),
     )
-    |> with_limits(
-      agent.Limits(
-        ..agent.default_limits(),
-        tool_timeout: After(duration.milliseconds(50)),
-      ),
-    )
+    |> agent.with_tool_timeout(After(duration.milliseconds(50)))
+    |> support.agent
   let assert Ok(run.Suspended([], [uncertain])) =
     fabric.await(start(desk), within: duration.seconds(5))
   uncertain.tool |> should.equal("slow")
@@ -212,12 +220,8 @@ pub fn a_tools_own_timeout_overrides_the_agents_test() {
       [sleeping_tool(150) |> tool.with_timeout(Infinity)],
       policy.always_allow(),
     )
-    |> with_limits(
-      agent.Limits(
-        ..agent.default_limits(),
-        tool_timeout: After(duration.milliseconds(50)),
-      ),
-    )
+    |> agent.with_tool_timeout(After(duration.milliseconds(50)))
+    |> support.agent
   fabric.await(start(desk), within: duration.seconds(5))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
 }
@@ -241,13 +245,12 @@ pub fn a_result_over_the_size_limit_stops_the_run_test() {
       [big],
       policy.always_allow(),
     )
-    |> with_limits(
-      agent.Limits(..agent.default_limits(), max_result_bytes: 100),
-    )
+    |> agent.with_max_result_bytes(100)
+    |> support.agent
   let assert Ok(run.Finished(run.Failed(run.OutputEncodingFailed(id, detail)))) =
     fabric.await(start(desk), within: duration.seconds(5))
   id |> should.equal(run.ActionId(1, "b"))
-  string.contains(detail, "agent.Limits.max_result_bytes") |> should.be_true
+  string.contains(detail, "agent.with_max_result_bytes") |> should.be_true
 }
 
 /// The shape of tool_hub's Relay handler: it waits for its run and for its

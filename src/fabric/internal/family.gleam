@@ -177,7 +177,7 @@ pub fn own_pending(state: State) -> List(PendingApproval) {
     controller.Acting(_, actions) ->
       list.filter_map(actions, fn(action) {
         case action.state {
-          run.AwaitingApproval(requirement, revision) ->
+          run.AwaitingApproval(requirement, revision, expires) ->
             Ok(run.PendingApproval(
               run.ApprovalRef(
                 run_id.from_string(state.run),
@@ -187,6 +187,7 @@ pub fn own_pending(state: State) -> List(PendingApproval) {
               ),
               action.call.name,
               action.call.arguments_json,
+              expires,
             ))
           _ -> Error(Nil)
         }
@@ -319,7 +320,21 @@ pub fn take_over(
       reattach(setup, id)
       Ok(Nil)
     }
-    Some(_), _, _ | None, False, False -> {
+    Some(_), _, _ -> {
+      reattach(setup, id)
+      Ok(Nil)
+    }
+    // Nothing in flight: an approval request whose deadline passed is
+    // expired here, so that a recovery or the sweeper moves the run on.
+    None, False, False -> {
+      case controller.has_expired_approvals(setup.env, state) {
+        True -> {
+          let _ =
+            runner.command(setup, id, setup.env, controller.ExpireApprovals, 3)
+          Nil
+        }
+        False -> Nil
+      }
       reattach(setup, id)
       Ok(Nil)
     }

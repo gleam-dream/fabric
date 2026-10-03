@@ -66,6 +66,9 @@ pub opaque type Tool(context, call, refusal) {
     /// This tool's own body timeout (`with_timeout`); `None`: the agent's
     /// `tool_timeout`.
     timeout: Option(Timeout),
+    /// For a replayable tool (`with_replay`): how many times its body may
+    /// start in all.
+    replay: Option(Int),
   )
 }
 
@@ -98,6 +101,7 @@ pub fn handler(
     kind: Handler,
     settles_within:,
     timeout: None,
+    replay: None,
   )
 }
 
@@ -120,6 +124,7 @@ pub fn delegation(
     check: checker(input),
     settles_within: None,
     timeout: None,
+    replay: None,
     invoke: fn(_, _, _, _) {
       invocation.ArgumentsRejected(
         "a delegation starts a run; it is not invoked",
@@ -198,13 +203,7 @@ pub fn call(
   input: input,
 ) -> Result(ToolCall, codec.EncodeError) {
   use arguments <- result.map(codec.encode_json(definition.input, input))
-  model.ToolCall(
-    id:,
-    name: definition.name,
-    arguments_json: arguments,
-    provider_id: None,
-    provider_state: None,
-  )
+  model.tool_call(id:, name: definition.name, arguments_json: arguments)
 }
 
 pub fn with_timeout(
@@ -212,6 +211,21 @@ pub fn with_timeout(
   timeout: Timeout,
 ) -> Tool(context, call, refusal) {
   Tool(..tool, timeout: Some(timeout))
+}
+
+pub fn with_replay(
+  tool: Tool(context, call, refusal),
+  max_attempts: Int,
+) -> Tool(context, call, refusal) {
+  Tool(..tool, replay: Some(max_attempts))
+}
+
+pub fn replay(tool: Tool(context, call, refusal)) -> Option(Int) {
+  tool.replay
+}
+
+pub fn definition_description(definition: Definition(input, output)) -> String {
+  definition.description
 }
 
 pub fn name(tool: Tool(context, call, refusal)) -> String {

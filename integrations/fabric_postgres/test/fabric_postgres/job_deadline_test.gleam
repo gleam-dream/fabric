@@ -116,7 +116,9 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
           build(runs),
           id,
           "receipt",
-          budget.Limits(1, 1, 1),
+          budget.limits(work: 1)
+            |> budget.with_children(1)
+            |> budget.with_depth(1),
         )
       let assert Ok(waiting) =
         graph.await(handle, within: duration.milliseconds(5000))

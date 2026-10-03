@@ -35,12 +35,15 @@ pub opaque type State {
   State(limits: Limits, claims: List(Claim), usage: Usage)
 }
 
+/// The deepest nesting a family budget allows.
+pub const max_depth = 63
+
 pub fn new(limits: Limits) -> Result(State, Error) {
   case
     limits.work >= 0
     && limits.children >= 0
     && limits.depth >= 0
-    && limits.depth <= 63
+    && limits.depth <= max_depth
   {
     True -> Ok(State(limits, [], Usage(0, 0)))
     False -> Error(InvalidLimits)

@@ -118,7 +118,7 @@ pub fn a_shared_work_budget_bounds_graph_cycles_before_the_next_body_test() {
       runtime,
       run_id("bounded-loop"),
       0,
-      budget.Limits(3, 0, 0),
+      budget.limits(work: 3) |> budget.with_children(0) |> budget.with_depth(0),
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status
@@ -131,7 +131,7 @@ pub fn a_shared_work_budget_bounds_graph_cycles_before_the_next_body_test() {
       runtime,
       run_id("zero-work"),
       0,
-      budget.Limits(0, 0, 0),
+      budget.limits(work: 0) |> budget.with_children(0) |> budget.with_depth(0),
     )
   let assert Ok(stopped) =
     graph.await(zero, within: duration.milliseconds(5000))
@@ -160,7 +160,9 @@ pub fn graph_approval_after_restart_reuses_its_reserved_work_unit_test() {
           runtime,
           run_id("budget-approval"),
           0,
-          budget.Limits(1, 0, 0),
+          budget.limits(work: 1)
+            |> budget.with_children(0)
+            |> budget.with_depth(0),
         )
       #(runs, handle)
     })

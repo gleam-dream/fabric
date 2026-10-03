@@ -97,7 +97,7 @@ pub fn the_readme_example_runs_test() {
   let assert Ok(run.Finished(_)) =
     fabric.await(handle, within: duration.milliseconds(0))
   readme_example.resume(runs, large, ann, "../etc")
-  |> should.equal(Error(fabric.Unreadable(fabric.RunNotFound)))
+  |> should.equal(Error(fabric.RunNotFound))
   restart.remove_dir(dir)
 }
 

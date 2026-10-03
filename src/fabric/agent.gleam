@@ -1,11 +1,42 @@
 //// Pure agent configuration.
 ////
-//// A `Spec` describes an agent: its name, model, tools, policy, and
-//// `Limits`. `build` checks it once and reports every problem at once; only
-//// `build` makes the `Agent` that `fabric.start`, `fabric.open` and
-//// `fabric.recover` take,
-//// so a run never starts under an invalid agent. Building starts nothing.
+//// A `Spec` describes an agent: its name, model, tools, policy, and the
+//// bounds of its runs, set with the `with_*` functions. `build` checks it
+//// once and reports every problem at once; only `build` makes the `Agent`
+//// that `fabric.start`, `fabric.open` and `fabric.recover` take, so a run
+//// never starts under an invalid agent. Building starts nothing.
+////
+//// ```gleam
+//// let assert Ok(desk) =
+////   agent.new("desk", model, [refund_tool], policy)
+////   |> agent.with_max_turns(6)
+////   |> agent.with_approval_expiry(run.After(duration.hours(24)))
+////   |> agent.build
+//// ```
+////
+//// Every wait is bounded by default:
+////
+//// | Bound | Default | Setter |
+//// | --- | --- | --- |
+//// | model attempts per run | 8 | `with_max_turns` |
+//// | tool bodies at once | 4 | `with_max_concurrency` |
+//// | tokens per run | none (opt-in) | `with_token_budget` |
+//// | sub-agent runs per run | 4 | `with_max_children` |
+//// | sub-agent nesting | 1 level | `with_max_depth` |
+//// | policy decision | 5 s | `with_policy_timeout` |
+//// | first model retry delay | 200 ms, doubling up to 64 times | `with_model_retry_delay` |
+//// | command waiting for the runner | 5 s | `with_command_timeout` |
+//// | model call | 600 s | `with_model_timeout` |
+//// | tool body | 60 s | `with_tool_timeout`, `tool.with_timeout` |
+//// | tool result | 1 MiB | `with_max_result_bytes` |
+//// | approval request | 7 days | `with_approval_expiry` |
+//// | family budget | none (opt-in) | `with_family_budget` |
+////
+//// A timeout that may be unbounded is a `run.Timeout`: `run.Infinity` must
+//// be asked for.
 
+import fabric/budget
+import fabric/internal/budget/model as reservations
 import fabric/internal/checked_agent.{type Admitted, Admitted}
 import fabric/internal/registry
 import fabric/internal/tool as core_tool
@@ -16,6 +47,7 @@ import fabric/run.{
 }
 import fabric/tool.{type Tool}
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -29,9 +61,21 @@ pub opaque type Spec(context) {
     tools: List(Tool(context)),
     policy: Policy(context),
     system_prompt: Option(String),
-    limits: Limits,
     /// The sub-agent each delegation starts, by delegation name.
     children: List(#(String, Agent(context))),
+    max_turns: Int,
+    max_concurrency: Int,
+    token_budget: Option(Int),
+    max_children: Int,
+    max_depth: Int,
+    policy_timeout: Duration,
+    model_retry_delay: Duration,
+    command_timeout: Duration,
+    model_timeout: Timeout,
+    tool_timeout: Timeout,
+    max_result_bytes: Int,
+    approval_expiry: Timeout,
+    family_budget: Option(budget.Limits),
   )
 }
 
@@ -39,144 +83,62 @@ pub opaque type Spec(context) {
 pub type Agent(context) =
   checked_agent.Agent(context)
 
-/// The bounds of every run of an agent. Start from `default_limits()` and
-/// override what differs, by label:
-///
-/// ```gleam
-/// agent.Limits(..agent.default_limits(), max_turns: 4,
-///   tool_timeout: run.After(duration.minutes(5)))
-/// ```
-///
-/// Every wait is bounded by default. A timeout that may be unbounded is a
-/// `run.Timeout`; `run.Infinity` must be asked for. Fabric may add fields:
-/// update from `default_limits()` rather than listing every field.
-pub type Limits {
-  Limits(
-    /// Model attempts per run, counting the first request and every retry.
-    max_turns: Int,
-    /// Tool bodies of one run that execute at the same time.
-    max_concurrency: Int,
-    /// Input plus output tokens as reported by the provider. A reply without
-    /// usage then stops the run with `run.BudgetUnverifiable`.
-    token_budget: Option(Int),
-    /// Sub-agent runs one run starts, at most 999. A delegation beyond it is
-    /// refused before the policy, and the model sees why.
-    max_children: Int,
-    /// Levels of sub-agents below a run of this agent, at most 16 (1: its
-    /// children may not delegate in turn). A child is bounded by its own
-    /// setting and by what its parent has left.
-    max_depth: Int,
-    /// How long one policy decision may take. A policy that gives no
-    /// decision in time has failed: the run stops closed. The policy runs in
-    /// its own process. At most 2^32 - 1 ms, the longest timer the runtime
-    /// can set.
-    policy_timeout: Duration,
-    /// The wait before the first retry of a retryable model failure. The
-    /// delay doubles with each consecutive retryable failure, up to 64 times
-    /// this value, and every attempt still counts against the turn limit. A
-    /// cancelled run does not wait for it. At most (2^32 - 1) / 64 ms, so the
-    /// longest delay still fits a timer.
-    model_retry_delay: Duration,
-    /// How long a command (`approve`, `reject`, `cancel`, `reconcile`)
-    /// waits for the run's live runner to take it. A runner busy for longer
-    /// (for example held by a synchronous telemetry handler) refuses the
-    /// command with `fabric.RunnerBusy`, and never applies it later. At most
-    /// 2^32 - 1 ms.
-    command_timeout: Duration,
-    /// How long one model call may take, from the moment it is issued (a
-    /// retry's delay is not counted). A call still running then is stopped
-    /// and counts as a retryable `ModelError`, which spends a turn like any
-    /// other retry. The default matches llm_wire's whole-call deadline, so
-    /// `fabric/llm` is never cut short by it. At most 2^32 - 1 ms.
-    model_timeout: Timeout,
-    /// How long one tool body may run once it has started. A body still
-    /// running then is stopped and its action becomes an uncertain effect
-    /// (it may have acted), which the run waits to have reconciled; a tool
-    /// bound with `tool.bind_settling` may still settle it. `tool.with_timeout`
-    /// overrides it for one tool. Sub-agent runs are bounded by their own
-    /// limits instead. At most 2^32 - 1 ms.
-    tool_timeout: Timeout,
-    /// The largest tool result, in bytes of its encoded content, that a run
-    /// keeps: a result is stored and sent to the model on every later turn.
-    /// A larger result stops the run with `run.OutputEncodingFailed`, naming
-    /// this limit; the tool's effect has happened.
-    max_result_bytes: Int,
-  )
-}
-
-/// 8 turns, 4 concurrent tools, no token budget, 4 children one level deep,
-/// 5 s for a policy decision and for a command, a first model retry after
-/// 200 ms, 600 s for a model call, 60 s for a tool body, and tool results
-/// of at most 1 MiB.
-pub fn default_limits() -> Limits {
-  Limits(
-    max_turns: 8,
-    max_concurrency: 4,
-    token_budget: None,
-    max_children: 4,
-    max_depth: 1,
-    policy_timeout: duration.seconds(5),
-    model_retry_delay: duration.milliseconds(200),
-    command_timeout: duration.seconds(5),
-    model_timeout: After(duration.seconds(600)),
-    tool_timeout: After(duration.seconds(60)),
-    max_result_bytes: 1_048_576,
-  )
-}
-
+/// Why `build` refused a spec. This union may grow: match the variants you
+/// handle and keep a catch-all, or use `describe_config_error`.
 pub type ConfigError {
   DuplicateToolName(String)
   /// Providers accept tool names matching `^[a-zA-Z0-9_-]{1,64}$`.
   InvalidToolName(String)
   /// The tool's input codec has no JSON Schema to declare to the model.
   ToolSchemaUnavailable(String)
-  /// A tool bound with `tool.bind_settling` waits less than 1 ms for its
-  /// settlement.
-  SettlementBoundNotPositive(name: String, within: Duration)
-  /// A tool bound with `tool.bind_settling` waits longer than the longest
-  /// timer the runtime can set (2^32 - 1 ms): its bound would never pass.
-  SettlementBoundTooLarge(name: String, within: Duration)
-  /// A tool's own timeout (`tool.with_timeout`) is shorter than 1 ms or
-  /// longer than the longest timer the runtime can set (2^32 - 1 ms).
-  InvalidToolTimeout(name: String, timeout: Duration)
-  MaxTurnsNotPositive(Int)
-  MaxConcurrencyNotPositive(Int)
-  TokenBudgetNotPositive(Int)
-  /// Shorter than 1 ms.
-  PolicyTimeoutNotPositive(Duration)
-  /// The policy timeout is longer than the longest timer the runtime can
-  /// set (`limit`, 2^32 - 1 ms).
-  PolicyTimeoutTooLarge(value: Duration, limit: Duration)
-  ModelRetryDelayNegative(Duration)
-  /// The first model retry delay, doubled up to 64 times, would exceed the
-  /// longest timer the runtime can set: `limit` is (2^32 - 1) / 64 ms.
-  ModelRetryDelayTooLarge(value: Duration, limit: Duration)
-  /// Shorter than 1 ms.
-  CommandTimeoutNotPositive(Duration)
-  /// The command timeout is longer than the longest timer the runtime can
-  /// set (`limit`, 2^32 - 1 ms).
-  CommandTimeoutTooLarge(value: Duration, limit: Duration)
-  /// Shorter than 1 ms.
-  ModelTimeoutNotPositive(Duration)
-  /// Longer than the longest timer the runtime can set (`limit`, 2^32 - 1
-  /// ms); `run.Infinity` leaves a model call unbounded.
-  ModelTimeoutTooLarge(value: Duration, limit: Duration)
-  /// Shorter than 1 ms.
-  ToolTimeoutNotPositive(Duration)
-  /// Longer than the longest timer the runtime can set (`limit`, 2^32 - 1
-  /// ms); `run.Infinity` leaves tool bodies unbounded.
-  ToolTimeoutTooLarge(value: Duration, limit: Duration)
-  MaxResultBytesNotPositive(Int)
   /// The name is empty or the version is not positive.
   InvalidIdentity(name: String, version: Int)
-  MaxChildrenNegative(Int)
-  MaxDepthNegative(Int)
-  /// More sub-agent runs per run than `limit`. With the depth limit, it
-  /// keeps every child run id (the parent's id, `-`, and a sequence number)
-  /// within the 128 characters of a run id.
-  MaxChildrenTooLarge(value: Int, limit: Int)
-  /// Deeper nesting of sub-agent runs below a root run than `limit`.
-  MaxDepthTooLarge(value: Int, limit: Int)
+  /// A bound is outside `minimum..maximum` (both included). Durations are
+  /// in milliseconds.
+  InvalidLimit(limit: Limit, value: Int, minimum: Int, maximum: Int)
+  /// A bound one tool sets for itself (`tool.bind_settling`,
+  /// `tool.with_timeout`, `tool.with_replay`) is outside
+  /// `minimum..maximum`.
+  InvalidToolLimit(
+    tool: String,
+    limit: Limit,
+    value: Int,
+    minimum: Int,
+    maximum: Int,
+  )
+}
+
+/// A bound `build` checks, named after its setter. This union may grow.
+pub type Limit {
+  MaxTurns
+  MaxConcurrency
+  TokenBudget
+  /// At most 999: with the depth limit, every child run id (the parent's
+  /// id, `-`, and a sequence number) fits the 128 characters of a run id.
+  MaxChildren
+  /// At most 16.
+  MaxDepth
+  /// At most 2^32 - 1 ms, the longest timer the runtime can set, like
+  /// every timeout below.
+  PolicyTimeout
+  /// At most (2^32 - 1) / 64 ms, so that the longest delay still fits a
+  /// timer.
+  ModelRetryDelay
+  CommandTimeout
+  ModelTimeout
+  ToolTimeout
+  MaxResultBytes
+  ApprovalExpiry
+  /// `budget.limits(work:)`.
+  FamilyWork
+  /// `budget.with_children`.
+  FamilyChildren
+  /// `budget.with_depth`, at most 63.
+  FamilyDepth
+  /// `tool.bind_settling`'s `settle_within`.
+  SettleWithin
+  /// `tool.with_replay`'s attempts, at most 100.
+  ReplayAttempts
 }
 
 const max_children_limit = 999
@@ -187,15 +149,20 @@ const max_depth_limit = 16
 /// crashes the process that waits.
 const longest_timer = 4_294_967_295
 
+/// The largest count or duration a record keeps exactly (2^53 - 1, the
+/// largest integer JSON readers agree on), the maximum of bounds that have
+/// no other.
+const largest = 9_007_199_254_740_991
+
 /// How many times the first model retry delay is doubled, at most (64
 /// times the first delay).
 const retry_delay_factor = 64
 
 /// An agent named `name`, with the given model, tools, and policy, version
-/// 1 and `default_limits()`. A stored run records the name and version it
-/// started with and continues only under the same pair. The policy is
-/// required: there is no implicit allow (`policy.always_allow()` is the
-/// explicit one).
+/// 1 and the default bounds (see the module documentation). A stored run
+/// records the name and version it started with and continues only under
+/// the same pair. The policy is required: there is no implicit allow
+/// (`policy.always_allow()` is the explicit one).
 pub fn new(
   name: String,
   model: Model,
@@ -208,8 +175,20 @@ pub fn new(
     tools:,
     policy:,
     system_prompt: None,
-    limits: default_limits(),
     children: [],
+    max_turns: 8,
+    max_concurrency: 4,
+    token_budget: None,
+    max_children: 4,
+    max_depth: 1,
+    policy_timeout: duration.seconds(5),
+    model_retry_delay: duration.milliseconds(200),
+    command_timeout: duration.seconds(5),
+    model_timeout: After(duration.seconds(600)),
+    tool_timeout: After(duration.seconds(60)),
+    max_result_bytes: 1_048_576,
+    approval_expiry: After(duration.hours(7 * 24)),
+    family_budget: None,
   )
 }
 
@@ -223,8 +202,136 @@ pub fn with_system_prompt(spec: Spec(context), text: String) -> Spec(context) {
   Spec(..spec, system_prompt: Some(text))
 }
 
-pub fn with_limits(spec: Spec(context), limits: Limits) -> Spec(context) {
-  Spec(..spec, limits:)
+/// Model attempts per run, counting the first request and every retry.
+/// Default 8.
+pub fn with_max_turns(spec: Spec(context), turns: Int) -> Spec(context) {
+  Spec(..spec, max_turns: turns)
+}
+
+/// Tool bodies of one run that execute at the same time. Default 4.
+pub fn with_max_concurrency(spec: Spec(context), tools: Int) -> Spec(context) {
+  Spec(..spec, max_concurrency: tools)
+}
+
+/// Input plus output tokens per run, as the provider reports them. A reply
+/// without usage then stops the run with `run.BudgetUnverifiable`, which
+/// is why there is no default.
+pub fn with_token_budget(spec: Spec(context), tokens: Int) -> Spec(context) {
+  Spec(..spec, token_budget: Some(tokens))
+}
+
+/// Sub-agent runs one run starts, at most 999. A delegation beyond it is
+/// refused before the policy, and the model sees why. Default 4.
+pub fn with_max_children(spec: Spec(context), children: Int) -> Spec(context) {
+  Spec(..spec, max_children: children)
+}
+
+/// Levels of sub-agents below a run of this agent, at most 16 (1: its
+/// children may not delegate in turn). A child is bounded by its own
+/// setting and by what its parent has left. Default 1.
+pub fn with_max_depth(spec: Spec(context), levels: Int) -> Spec(context) {
+  Spec(..spec, max_depth: levels)
+}
+
+/// How long one policy decision may take. A policy that gives no decision
+/// in time has failed: the run stops closed. The policy runs in its own
+/// process. Default 5 s.
+pub fn with_policy_timeout(
+  spec: Spec(context),
+  timeout: Duration,
+) -> Spec(context) {
+  Spec(..spec, policy_timeout: timeout)
+}
+
+/// The wait before the first retry of a retryable model failure. The delay
+/// doubles with each consecutive retryable failure, up to 64 times this
+/// value; a provider's own delay (`model.retry_after`) is waited when it is
+/// longer, up to 10 minutes. Every attempt still counts against the turn
+/// limit, and a cancelled run does not wait. Default 200 ms.
+pub fn with_model_retry_delay(
+  spec: Spec(context),
+  delay: Duration,
+) -> Spec(context) {
+  Spec(..spec, model_retry_delay: delay)
+}
+
+/// How long a command (`approve`, `reject`, `cancel`, `reconcile`) waits
+/// for the run's live runner to take it. A runner busy for longer (for
+/// example held by a synchronous telemetry handler) refuses the command
+/// with `fabric.RunnerBusy`, and never applies it later. Default 5 s.
+pub fn with_command_timeout(
+  spec: Spec(context),
+  timeout: Duration,
+) -> Spec(context) {
+  Spec(..spec, command_timeout: timeout)
+}
+
+/// How long one model call may take, from the moment it is issued (a
+/// retry's delay is not counted). A call still running then is stopped and
+/// is a `model.TimedOut` error, retried like any other and spending a turn.
+/// The default, 600 s, matches llm_wire's whole-call deadline, so
+/// `fabric/llm` is never cut short by it. `run.Infinity` leaves a model call
+/// unbounded.
+pub fn with_model_timeout(
+  spec: Spec(context),
+  timeout: Timeout,
+) -> Spec(context) {
+  Spec(..spec, model_timeout: timeout)
+}
+
+/// How long one tool body may run once it has started. A body still
+/// running then is stopped and its action becomes an uncertain effect (it
+/// may have acted), which the run waits to have reconciled, unless the tool
+/// is replayable (`tool.with_replay`); a tool bound with
+/// `tool.bind_settling` may still settle it. `tool.with_timeout` overrides
+/// it for one tool. Sub-agent runs are bounded by their own limits instead.
+/// Default 60 s; `run.Infinity` leaves tool bodies unbounded.
+pub fn with_tool_timeout(
+  spec: Spec(context),
+  timeout: Timeout,
+) -> Spec(context) {
+  Spec(..spec, tool_timeout: timeout)
+}
+
+/// The largest tool result, in bytes of its encoded content, that a run
+/// keeps: a result is stored and sent to the model on every later turn. A
+/// larger result stops the run with `run.OutputEncodingFailed`, naming this
+/// limit; the tool's effect has happened. Default 1 MiB.
+pub fn with_max_result_bytes(spec: Spec(context), bytes: Int) -> Spec(context) {
+  Spec(..spec, max_result_bytes: bytes)
+}
+
+/// How long an approval request this agent issues waits for an answer. Its
+/// deadline is stored with the request (`run.PendingApproval.expires`).
+/// After it the request expires: the action is rejected as `run.Expired`,
+/// the model sees that its approval expired, and the run goes on. A late
+/// `fabric.approve` or `fabric.reject` is refused with
+/// `fabric.ApprovalExpired`.
+///
+/// An expired request is rejected by whoever touches the run next:
+/// `fabric.await`, an answer, `fabric.recover`, or on a leased store the
+/// sweeper (`fabric/sweeper`), which finds it when it is due. Deadlines are
+/// judged by the UTC clock of the node that checks them. Default 7 days;
+/// `run.Infinity` never expires. Requests stored without a deadline never
+/// expire.
+pub fn with_approval_expiry(
+  spec: Spec(context),
+  expiry: Timeout,
+) -> Spec(context) {
+  Spec(..spec, approval_expiry: expiry)
+}
+
+/// One budget shared by a root run of this agent and all the runs it
+/// delegates to (see `fabric/budget`), stored with the root. Failed or
+/// uncertain reservations keep their charge. It complements the agent's
+/// own turn, token and delegation limits, and applies only when this agent
+/// starts a root run: a sub-agent shares its root's. The store must write
+/// agent records of version 7 or later (`fabric.FamilyBudgetUnsupported`).
+pub fn with_family_budget(
+  spec: Spec(context),
+  limits: budget.Limits,
+) -> Spec(context) {
+  Spec(..spec, family_budget: Some(limits))
 }
 
 /// Lets the model delegate to a sub-agent: a call to `definition` (declared
@@ -272,91 +379,118 @@ pub fn build(spec: Spec(context)) -> Result(Agent(context), List(ConfigError)) {
   admit(spec) |> result.map(checked_agent.new)
 }
 
+/// One line naming the problem and the setter that changes it.
+pub fn describe_config_error(error: ConfigError) -> String {
+  case error {
+    DuplicateToolName(name) -> "two tools are named " <> name
+    InvalidToolName(name) ->
+      "the tool name "
+      <> name
+      <> " does not match ^[a-zA-Z0-9_-]{1,64}$, which providers require"
+    ToolSchemaUnavailable(name) ->
+      "the input codec of the tool " <> name <> " has no JSON Schema"
+    InvalidIdentity(name, version) ->
+      "the agent identity "
+      <> name
+      <> " version "
+      <> int.to_string(version)
+      <> " needs a name and a positive version"
+    InvalidLimit(limit, value, minimum, maximum) ->
+      range(setter(limit), value, minimum, maximum)
+    InvalidToolLimit(name, limit, value, minimum, maximum) ->
+      range(setter(limit) <> " of the tool " <> name, value, minimum, maximum)
+  }
+}
+
+fn range(name: String, value: Int, minimum: Int, maximum: Int) -> String {
+  name
+  <> " is "
+  <> int.to_string(value)
+  <> ", outside "
+  <> int.to_string(minimum)
+  <> ".."
+  <> int.to_string(maximum)
+}
+
+fn setter(limit: Limit) -> String {
+  case limit {
+    MaxTurns -> "agent.with_max_turns"
+    MaxConcurrency -> "agent.with_max_concurrency"
+    TokenBudget -> "agent.with_token_budget"
+    MaxChildren -> "agent.with_max_children"
+    MaxDepth -> "agent.with_max_depth"
+    PolicyTimeout -> "agent.with_policy_timeout (ms)"
+    ModelRetryDelay -> "agent.with_model_retry_delay (ms)"
+    CommandTimeout -> "agent.with_command_timeout (ms)"
+    ModelTimeout -> "agent.with_model_timeout (ms)"
+    ToolTimeout -> "agent.with_tool_timeout or tool.with_timeout (ms)"
+    MaxResultBytes -> "agent.with_max_result_bytes"
+    ApprovalExpiry -> "agent.with_approval_expiry (ms)"
+    FamilyWork -> "budget.limits(work:)"
+    FamilyChildren -> "budget.with_children"
+    FamilyDepth -> "budget.with_depth"
+    SettleWithin -> "tool.bind_settling's settle_within (ms)"
+    ReplayAttempts -> "tool.with_replay"
+  }
+}
+
 fn admit(spec: Spec(context)) -> Result(Admitted(context), List(ConfigError)) {
   let registry =
     registry.new(spec.tools)
     |> result.map_error(list.map(_, tool_error))
-  let Limits(
-    max_turns:,
-    max_concurrency:,
-    token_budget:,
-    max_children:,
-    max_depth:,
-    policy_timeout:,
-    model_retry_delay:,
-    command_timeout:,
-    model_timeout:,
-    tool_timeout:,
-    max_result_bytes:,
-  ) = spec.limits
-  let longest = duration.milliseconds(longest_timer)
+  let ms = duration.to_milliseconds
+  let timeout = fn(timeout) {
+    case timeout {
+      After(within) -> Some(ms(within))
+      Infinity -> None
+    }
+  }
+  let family = fn(read: fn(budget.Limits) -> Int) {
+    option.map(spec.family_budget, read)
+  }
+  let bounds = [
+    #(MaxTurns, Some(spec.max_turns), 1, largest),
+    #(MaxConcurrency, Some(spec.max_concurrency), 1, largest),
+    #(TokenBudget, spec.token_budget, 1, largest),
+    #(MaxChildren, Some(spec.max_children), 0, max_children_limit),
+    #(MaxDepth, Some(spec.max_depth), 0, max_depth_limit),
+    #(PolicyTimeout, Some(ms(spec.policy_timeout)), 1, longest_timer),
+    #(
+      ModelRetryDelay,
+      Some(ms(spec.model_retry_delay)),
+      0,
+      longest_timer / retry_delay_factor,
+    ),
+    #(CommandTimeout, Some(ms(spec.command_timeout)), 1, longest_timer),
+    #(ModelTimeout, timeout(spec.model_timeout), 1, longest_timer),
+    #(ToolTimeout, timeout(spec.tool_timeout), 1, longest_timer),
+    #(MaxResultBytes, Some(spec.max_result_bytes), 1, largest),
+    #(ApprovalExpiry, timeout(spec.approval_expiry), 1, largest),
+    #(FamilyWork, family(fn(limits) { limits.work }), 0, largest),
+    #(FamilyChildren, family(fn(limits) { limits.children }), 0, largest),
+    #(
+      FamilyDepth,
+      family(fn(limits) { limits.depth }),
+      0,
+      reservations.max_depth,
+    ),
+  ]
   let problems =
-    [
-      positive(max_turns, MaxTurnsNotPositive),
-      positive(max_concurrency, MaxConcurrencyNotPositive),
-      case token_budget {
-        Some(tokens) -> positive(tokens, TokenBudgetNotPositive)
-        None -> Ok(Nil)
-      },
-      timer(policy_timeout, PolicyTimeoutNotPositive, PolicyTimeoutTooLarge(
-        _,
-        longest,
-      )),
-      timer(command_timeout, CommandTimeoutNotPositive, CommandTimeoutTooLarge(
-        _,
-        longest,
-      )),
-      case duration.to_milliseconds(model_retry_delay) >= 0 {
-        True -> Ok(Nil)
-        False -> Error(ModelRetryDelayNegative(model_retry_delay))
-      },
-      case
-        duration.to_milliseconds(model_retry_delay)
-        > longest_timer / retry_delay_factor
-      {
-        True ->
-          Error(ModelRetryDelayTooLarge(
-            model_retry_delay,
-            duration.milliseconds(longest_timer / retry_delay_factor),
-          ))
-        False -> Ok(Nil)
-      },
-      case model_timeout {
-        After(within) ->
-          timer(within, ModelTimeoutNotPositive, ModelTimeoutTooLarge(
-            _,
-            longest,
-          ))
-        Infinity -> Ok(Nil)
-      },
-      case tool_timeout {
-        After(within) ->
-          timer(within, ToolTimeoutNotPositive, ToolTimeoutTooLarge(_, longest))
-        Infinity -> Ok(Nil)
-      },
-      positive(max_result_bytes, MaxResultBytesNotPositive),
-      case spec.identity {
-        DefinitionId(name, version) if name == "" || version < 1 ->
-          Error(InvalidIdentity(name, version))
-        DefinitionId(..) -> Ok(Nil)
-      },
-      not_negative(max_children, MaxChildrenNegative),
-      not_negative(max_depth, MaxDepthNegative),
-      case max_children > max_children_limit {
-        True -> Error(MaxChildrenTooLarge(max_children, max_children_limit))
-        False -> Ok(Nil)
-      },
-      case max_depth > max_depth_limit {
-        True -> Error(MaxDepthTooLarge(max_depth, max_depth_limit))
-        False -> Ok(Nil)
-      },
-    ]
-    |> list.filter_map(fn(check) {
-      case check {
-        Ok(Nil) -> Error(Nil)
-        Error(error) -> Ok(error)
+    list.filter_map(bounds, fn(bound) {
+      case bound {
+        #(limit, Some(value), minimum, maximum)
+          if value < minimum || value > maximum
+        -> Ok(InvalidLimit(limit, value, minimum, maximum))
+        _ -> Error(Nil)
       }
     })
+  let problems = case spec.identity {
+    DefinitionId(name, version) if name == "" || version < 1 -> [
+      InvalidIdentity(name, version),
+      ..problems
+    ]
+    DefinitionId(..) -> problems
+  }
   case registry, problems {
     Ok(registry), [] ->
       Ok(Admitted(
@@ -365,65 +499,25 @@ fn admit(spec: Spec(context)) -> Result(Admitted(context), List(ConfigError)) {
         registry:,
         policy: spec.policy,
         system_prompt: spec.system_prompt,
-        max_turns:,
-        max_concurrency:,
-        token_budget:,
-        policy_timeout: duration.to_milliseconds(policy_timeout),
-        model_retry_delay: duration.to_milliseconds(model_retry_delay),
-        command_timeout: duration.to_milliseconds(command_timeout),
-        model_timeout: milliseconds(model_timeout),
-        tool_timeout: milliseconds(tool_timeout),
-        max_result_bytes:,
+        max_turns: spec.max_turns,
+        max_concurrency: spec.max_concurrency,
+        token_budget: spec.token_budget,
+        policy_timeout: ms(spec.policy_timeout),
+        model_retry_delay: ms(spec.model_retry_delay),
+        command_timeout: ms(spec.command_timeout),
+        model_timeout: timeout(spec.model_timeout),
+        tool_timeout: timeout(spec.tool_timeout),
+        max_result_bytes: spec.max_result_bytes,
+        approval_expiry: timeout(spec.approval_expiry),
+        family_budget: spec.family_budget,
         children: spec.children
           |> list.map(fn(entry) { #(entry.0, checked_agent.admitted(entry.1)) })
           |> dict.from_list,
-        max_children:,
-        max_depth:,
+        max_children: spec.max_children,
+        max_depth: spec.max_depth,
       ))
     Ok(_), errors -> Error(errors)
     Error(tool_errors), errors -> Error(list.append(tool_errors, errors))
-  }
-}
-
-fn positive(
-  value: Int,
-  error: fn(Int) -> ConfigError,
-) -> Result(Nil, ConfigError) {
-  case value > 0 {
-    True -> Ok(Nil)
-    False -> Error(error(value))
-  }
-}
-
-/// A wait the runtime sets a timer for: at least 1 ms and at most the
-/// longest timer.
-fn timer(
-  value: Duration,
-  not_positive: fn(Duration) -> ConfigError,
-  too_large: fn(Duration) -> ConfigError,
-) -> Result(Nil, ConfigError) {
-  let ms = duration.to_milliseconds(value)
-  case ms < 1, ms > longest_timer {
-    True, _ -> Error(not_positive(value))
-    _, True -> Error(too_large(value))
-    False, False -> Ok(Nil)
-  }
-}
-
-fn milliseconds(timeout: Timeout) -> Option(Int) {
-  case timeout {
-    After(within) -> Some(duration.to_milliseconds(within))
-    Infinity -> None
-  }
-}
-
-fn not_negative(
-  value: Int,
-  error: fn(Int) -> ConfigError,
-) -> Result(Nil, ConfigError) {
-  case value >= 0 {
-    True -> Ok(Nil)
-    False -> Error(error(value))
   }
 }
 
@@ -432,10 +526,17 @@ fn tool_error(error: registry.RegistryError) -> ConfigError {
     registry.DuplicateName(name) -> DuplicateToolName(name)
     registry.InvalidName(name) -> InvalidToolName(name)
     registry.SchemaUnavailable(name) -> ToolSchemaUnavailable(name)
-    registry.SettlementBoundNotPositive(name, within) ->
-      SettlementBoundNotPositive(name, within)
-    registry.SettlementBoundTooLarge(name, within) ->
-      SettlementBoundTooLarge(name, within)
-    registry.InvalidTimeout(name, timeout) -> InvalidToolTimeout(name, timeout)
+    registry.InvalidToolLimit(name, limit, value, minimum, maximum) ->
+      InvalidToolLimit(
+        name,
+        case limit {
+          registry.SettleWithin -> SettleWithin
+          registry.Timeout -> ToolTimeout
+          registry.ReplayAttempts -> ReplayAttempts
+        },
+        value,
+        minimum,
+        maximum,
+      )
   }
 }

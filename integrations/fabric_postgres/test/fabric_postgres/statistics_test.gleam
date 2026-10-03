@@ -282,7 +282,12 @@ pub fn a_graph_wait_is_neither_unattended_work_nor_a_budget_run_test() {
     graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
   let assert Ok(id) = run.parse_id("graph-stats")
   let assert Ok(handle) =
-    graph.start_with_budget(runtime, id, 1, budget.Limits(1, 1, 1))
+    graph.start_with_budget(
+      runtime,
+      id,
+      1,
+      budget.limits(work: 1) |> budget.with_children(1) |> budget.with_depth(1),
+    )
   let assert Ok(snapshot) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = snapshot.status

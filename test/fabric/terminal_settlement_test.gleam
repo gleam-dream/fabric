@@ -16,10 +16,11 @@ import sinal/correlation
 fn action(child) {
   run.ActionRecord(
     run.ActionId(1, "effect"),
-    model.ToolCall("effect", "removed-tool", "{}", None, None),
+    model.tool_call(id: "effect", name: "removed-tool", arguments_json: "{}"),
     run.Uncertain("result was lost"),
     [],
     child,
+    0,
   )
 }
 
@@ -140,7 +141,7 @@ pub fn an_interrupted_family_walk_resumes_after_partial_progress_test() {
   flaky.arm_run(backend, support.id("root-1-1"), [flaky.FailAfter])
   fabric.reconcile_stored(runs, effect("root-1-1"), "charged") |> should.be_ok
   flaky.arm_run(backend, support.id("root"), [flaky.FailBefore])
-  let assert Error(fabric.Unreadable(fabric.StoreUnavailable(_))) =
+  let assert Error(fabric.StoreUnavailable(_)) =
     fabric.settle_stored(runs, support.id("root"))
   read(runs, "root").1 |> should.equal(root)
   let child_entry = read(runs, "root-1").0
@@ -183,9 +184,9 @@ pub fn missing_wrong_and_active_children_never_clear_parent_uncertainty_test() {
     case kind {
       0 ->
         fabric.settle_stored(runs, support.id("root"))
-        |> should.equal(Error(fabric.Unreadable(fabric.RunNotFound)))
+        |> should.equal(Error(fabric.RunNotFound))
       1 -> {
-        let assert Error(fabric.Unreadable(fabric.CorruptRecord(_))) =
+        let assert Error(fabric.CorruptRecord(_)) =
           fabric.settle_stored(runs, support.id("root"))
         Nil
       }
@@ -229,7 +230,7 @@ pub fn old_writers_refuse_child_settlement_without_changing_the_parent_test() {
   fabric.reconcile_stored(runs, effect("root-1-1"), "charged") |> should.be_ok
   list.each([2, 3, 4, 5], fn(version) {
     let assert Ok(old) = store.with_record_version(runs, version)
-    let assert Error(fabric.Unreadable(fabric.StoreUnavailable(_))) =
+    let assert Error(fabric.StoreUnavailable(_)) =
       fabric.settle_stored(old, support.id("root"))
     read(runs, "root").1 |> should.equal(root)
   })

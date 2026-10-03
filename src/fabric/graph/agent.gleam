@@ -130,7 +130,7 @@ pub fn as_operation(
 
 pub type OpenError {
   DifferentStore
-  Unreadable(fabric.RecordError)
+  Unreadable(fabric.Error)
   InvalidAttachment
 }
 

@@ -5,7 +5,7 @@
 import fabric/internal/controller.{type State}
 import fabric/internal/invocation
 import fabric/internal/registry
-import fabric/model.{ToolCall, ToolRequest}
+import fabric/model.{ToolRequest}
 import fabric/policy
 import fabric/run.{ActionId}
 import fabric/support/apps.{Forecast}
@@ -31,6 +31,8 @@ fn env() -> controller.Env(Nil) {
     policy: policy.always_allow(),
     context: Nil,
     system: None,
+    approval_expiry: None,
+    clock: fn() { 0 },
   )
 }
 
@@ -64,8 +66,8 @@ fn cancelled() -> State {
       model.AssistantTurn(
         "",
         [
-          ToolCall("a", "wa", city, None, None),
-          ToolCall("b", "wb", city, None, None),
+          model.tool_call(id: "a", name: "wa", arguments_json: city),
+          model.tool_call(id: "b", name: "wb", arguments_json: city),
         ],
         None,
       ),

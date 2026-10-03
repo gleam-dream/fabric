@@ -7,6 +7,7 @@ import fabric/internal/controller
 import fabric/internal/record
 import fabric/model
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/support
 import fabric/support/agent_recipe as recipe
@@ -65,20 +66,24 @@ pub fn model_turns_preserve_typed_tool_results_provider_data_and_usage_test() {
     model.AssistantTurn(
       "checking",
       [
-        model.ToolCall(
-          "a",
-          "lookup_weather",
-          "{\"city\":\"Paris\"}",
-          Some("provider-a"),
-          Some("signature-a"),
-        ),
-        model.ToolCall(
-          "b",
-          "lookup_weather",
-          "{\"city\":\"Oslo\"}",
-          Some("provider-b"),
-          Some("signature-b"),
-        ),
+        model.tool_call(
+          id: "a",
+          name: "lookup_weather",
+          arguments_json: "{\"city\":\"Paris\"}",
+        )
+          |> model.with_provider_replay(
+            id: Some("provider-a"),
+            state: Some("signature-a"),
+          ),
+        model.tool_call(
+          id: "b",
+          name: "lookup_weather",
+          arguments_json: "{\"city\":\"Oslo\"}",
+        )
+          |> model.with_provider_replay(
+            id: Some("provider-b"),
+            state: Some("signature-b"),
+          ),
         scripted.call("c", "missing", "{}"),
       ],
       Some(model.ProviderData("test.provider.v1", "opaque replay data")),
@@ -151,13 +156,13 @@ pub fn final_outcomes_and_turn_token_limits_match_on_supported_paths_test() {
         [apps.weather_tool()],
         policy.always_allow(),
       )
-      |> agent.with_limits(
-        agent.Limits(
-          ..agent.default_limits(),
-          max_turns: example.1,
-          token_budget: example.2,
-        ),
-      )
+      |> agent.with_max_turns(example.1)
+      |> fn(spec) {
+        case example.2 {
+          Some(tokens) -> agent.with_token_budget(spec, tokens)
+          None -> spec
+        }
+      }
       |> support.agent
     let baseline = ordinary(worker)
     let #(snapshot, _) = candidate(worker)
@@ -213,7 +218,8 @@ pub fn an_agent_approval_cannot_be_replaced_by_approval_of_the_batch_test() {
   let assert Ok(inner) = record.decode(done.value)
   let assert run.Suspended([_], []) = controller.status(inner)
   // The existing agent API can recheck the action with fresh caller context.
-  fabric.approve(ordinary, pending.reference, None, True) |> should.be_ok
+  fabric.approve(ordinary, pending.reference, reviewer.new("reviewer"), True)
+  |> should.be_ok
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(ordinary, within: duration.milliseconds(5000))
   probe.entries(calls) |> should.equal([])
@@ -226,9 +232,7 @@ fn interrupted_worker(calls) {
     [scripted.gated_tool(calls)],
     policy.always_allow(),
   )
-  |> agent.with_limits(
-    agent.Limits(..agent.default_limits(), max_concurrency: 1),
-  )
+  |> agent.with_max_concurrency(1)
   |> support.agent
 }
 

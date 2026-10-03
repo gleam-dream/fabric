@@ -41,10 +41,11 @@ fn agent_state(id, parent, actions) {
 fn action(state, child) {
   run.ActionRecord(
     run.ActionId(1, "effect\u{0}id"),
-    model.ToolCall("effect\u{0}id", "tool", "{}", None, None),
+    model.tool_call(id: "effect\u{0}id", name: "tool", arguments_json: "{}"),
     state,
     [],
     child,
+    0,
   )
 }
 
@@ -81,7 +82,7 @@ pub fn agent_retention_uses_saved_links_and_preserves_uncertainty_test() {
       run.Delegated,
       run.Running,
       run.Queued,
-      run.AwaitingApproval(run.Requirement("review", 1), 1),
+      run.AwaitingApproval(run.Requirement("review", 1), 1, None),
     ],
     fn(state) {
       let record =

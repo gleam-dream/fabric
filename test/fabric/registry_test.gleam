@@ -183,15 +183,14 @@ pub fn unencodable_output_is_a_host_failure_test() {
 /// tools are bound from, so their arguments always decode.
 pub fn a_typed_call_encodes_its_input_with_the_definition_test() {
   testing.call(apps.transfer_definition(), "t", apps.Transfer("bob", 10))
-  |> should.equal(
-    Ok(model.ToolCall(
-      "t",
-      "transfer_funds",
-      "{\"to\":\"bob\",\"amount\":10}",
-      provider_id: option.None,
-      provider_state: option.None,
-    )),
-  )
+  |> should.equal(Ok(
+    model.tool_call(
+      id: "t",
+      name: "transfer_funds",
+      arguments_json: "{\"to\":\"bob\",\"amount\":10}",
+    )
+    |> model.with_provider_replay(id: option.None, state: option.None),
+  ))
 }
 
 /// No late settlement is expected from these tools.

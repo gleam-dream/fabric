@@ -13,10 +13,15 @@
 //// case fabric.await(handle, within: duration.seconds(5)) {
 ////   Ok(run.Suspended([pending, ..], _)) ->
 ////     fabric.approve(handle, pending.reference,
-////       reviewer: Some("alice"), context: current_context)
+////       reviewer: reviewer.new(user.id), context: current_context)
 ////   ...
 //// }
 //// ```
+////
+//// Every function returns the one `Error` type. Branch on `error_kind`
+//// (`NotFound`, `Refused`, `Retry`, `Unavailable`, `Incompatible`) and log
+//// with `describe_error`; match a variant only where it decides something,
+//// such as `AlreadyStarted`.
 ////
 //// A run's record lives in a store, and a run is named by its `run.RunId`,
 //// which the caller chooses: `run.new_id()`, or `run.parse_id` of an
@@ -66,15 +71,16 @@
 //// (`store.new`).
 
 import fabric/agent.{type Agent}
-import fabric/budget
 import fabric/internal/budget/model as reservations
 import fabric/internal/checked_agent
+import fabric/internal/clock
 import fabric/internal/controller.{type State}
 import fabric/internal/family
 import fabric/internal/run_id
 import fabric/internal/runner
 import fabric/internal/settlement
 import fabric/internal/store as store_core
+import fabric/reviewer.{type Reviewer}
 import fabric/run.{
   type ActionRef, type Answer, type ApprovalRef, type Incompatibility,
   type PendingApproval, type RunId, type Snapshot, type Status, id_to_string,
@@ -96,25 +102,30 @@ pub opaque type Run(context) {
   Run(id: String, setup: runner.Setup(context))
 }
 
-pub type StartError {
+/// Why a call to Fabric failed: one type for every function of this module.
+/// Branch on `error_kind` and log with `describe_error`; this union may
+/// grow, so match a variant only where it decides something (keep a
+/// catch-all).
+pub type Error {
   /// A run with this id is already stored: this start stored nothing. A
   /// start retried with the same id (by a job delivered again, say) gets
   /// this once the first start landed; `open` the run to read or command
-  /// it, or `recover` it to take over its work.
-  AlreadyStarted(id: RunId)
+  /// it, or `recover` it to take over its work. `same_input` says whether
+  /// the stored run was started by the same agent with the same prompt and
+  /// correlation, so that a retry can tell its own run from another start's
+  /// that reused the id; it is `False` when the stored run cannot be read. A
+  /// run's context is never stored, so it is not compared.
+  AlreadyStarted(id: RunId, same_input: Bool)
   /// The store did not confirm the run's first record, so its outcome is
   /// unknown: the backend may still store it later, as the run `id` with
   /// work in flight and no runner (`await` then reports `Unattended`).
   /// Starting again with the same id is safe: it is `AlreadyStarted` if the
   /// first start landed. `cancel_stored(store, id)` ends such a run instead.
   StartUnconfirmed(id: RunId, reason: String)
-  /// The start's configuration was refused (an invalid family budget, or a
-  /// store whose record version cannot hold one). Nothing was stored.
-  StartRefused(reason: String)
-}
-
-/// Why a stored run could not be read or continued.
-pub type RecordError {
+  /// The agent declares a family budget (`agent.with_family_budget`) and
+  /// the store writes agent records older than version 7, which cannot hold
+  /// one. Nothing was stored.
+  FamilyBudgetUnsupported
   RunNotFound
   /// The store failed. A write it reported unavailable has an unknown
   /// outcome: the backend may still perform it later.
@@ -124,9 +135,6 @@ pub type RecordError {
   CorruptRecord(detail: String)
   /// The run cannot continue under this agent.
   IncompatibleAgent(List(Incompatibility))
-}
-
-pub type CommandError {
   /// The run has finished (completed, failed, or cancelled); execution
   /// cannot continue. Terminal evidence can still be settled through
   /// `reconcile_stored` and `settle_stored`. A pending approval is void. Also
@@ -144,6 +152,10 @@ pub type CommandError {
   StaleReference
   /// This approval request was already answered.
   AlreadyAnswered
+  /// The approval request's deadline passed before this answer
+  /// (`agent.with_approval_expiry`): it expired, its action was rejected,
+  /// and the model sees that. The run goes on without the action.
+  ApprovalExpired
   /// The current policy now requires another approval for the action; the
   /// answer was not applied. Answer the new request.
   RequirementChanged(PendingApproval)
@@ -156,7 +168,7 @@ pub type CommandError {
   /// Nothing was changed. `cancel` never needs a runner.
   RunUnattended
   /// The run's runner did not take the command within the agent's command
-  /// timeout (`agent.Limits.command_timeout`): a synchronous observation
+  /// timeout (`agent.with_command_timeout`): a synchronous telemetry
   /// handler holds it, or the command was sent from such a handler running
   /// in the run's own runner. Nothing was changed, and the command will not
   /// be applied later. Try again, or route Fabric's events through a
@@ -165,10 +177,92 @@ pub type CommandError {
   RunnerBusy
   /// The command lost every retry against concurrent commits.
   Contended
-  /// The record could not be read or written. A write the store reported
-  /// unavailable (`Unreadable(StoreUnavailable(_))`) has an unknown
-  /// outcome: the backend may still perform it later.
-  Unreadable(RecordError)
+}
+
+/// A stable classification of `Error`, for callers that decide by kind.
+pub type ErrorKind {
+  /// The run or the action the reference names does not exist:
+  /// `RunNotFound`, `WrongReference`.
+  NotFound
+  /// The run's state refuses the request; trying it again unchanged does
+  /// not help: `AlreadyStarted`, `RunEnded`, `RunNotFinished`,
+  /// `StaleReference`, `AlreadyAnswered`, `ApprovalExpired`,
+  /// `RequirementChanged`, `NotReconcilable`.
+  Refused
+  /// A transient conflict: the same call may succeed soon (`RunnerBusy`,
+  /// `Contended`).
+  Retry
+  /// The store or the run's runner cannot be reached, and a write's
+  /// outcome may be unknown: `StartUnconfirmed`, `StoreUnavailable`,
+  /// `RunUnattended`.
+  Unavailable
+  /// The record and this Fabric, agent or store do not fit:
+  /// `UnsupportedVersion`, `CorruptRecord`, `IncompatibleAgent`,
+  /// `FamilyBudgetUnsupported`.
+  Incompatible
+}
+
+pub fn error_kind(error: Error) -> ErrorKind {
+  case error {
+    RunNotFound | WrongReference -> NotFound
+    AlreadyStarted(..)
+    | RunEnded
+    | RunNotFinished
+    | StaleReference
+    | AlreadyAnswered
+    | ApprovalExpired
+    | RequirementChanged(_)
+    | NotReconcilable -> Refused
+    RunnerBusy | Contended -> Retry
+    StartUnconfirmed(..) | StoreUnavailable(_) | RunUnattended -> Unavailable
+    UnsupportedVersion(_)
+    | CorruptRecord(_)
+    | IncompatibleAgent(_)
+    | FamilyBudgetUnsupported -> Incompatible
+  }
+}
+
+/// One line for logs.
+pub fn describe_error(error: Error) -> String {
+  case error {
+    AlreadyStarted(id, same_input) ->
+      "the run "
+      <> id_to_string(id)
+      <> " is already started"
+      <> case same_input {
+        True -> " with the same input"
+        False -> " with other input"
+      }
+    StartUnconfirmed(id, reason) ->
+      "the start of the run "
+      <> id_to_string(id)
+      <> " was not confirmed: "
+      <> reason
+    FamilyBudgetUnsupported ->
+      "a family budget needs a store that writes agent records of version 7 or later"
+    RunNotFound -> "the run does not exist"
+    StoreUnavailable(reason) -> "the store is unavailable: " <> reason
+    UnsupportedVersion(found) ->
+      "the record has version "
+      <> int.to_string(found)
+      <> ", which this Fabric cannot read"
+    CorruptRecord(detail) -> "the record is corrupt: " <> detail
+    IncompatibleAgent(problems) ->
+      "the run cannot continue under this agent ("
+      <> int.to_string(list.length(problems))
+      <> " incompatibilities)"
+    RunEnded -> "the run has ended"
+    RunNotFinished -> "the run has not finished"
+    WrongReference -> "no action of the run matches the reference"
+    StaleReference -> "the approval request has been superseded"
+    AlreadyAnswered -> "the approval request was already answered"
+    ApprovalExpired -> "the approval request expired before this answer"
+    RequirementChanged(_) -> "the policy now requires another approval"
+    NotReconcilable -> "the action is not an uncertain effect to reconcile"
+    RunUnattended -> "work is in flight and no runner drives the run"
+    RunnerBusy -> "the run's runner did not take the command in time"
+    Contended -> "the command lost every retry against concurrent commits"
+  }
 }
 
 const retries = 3
@@ -176,8 +270,12 @@ const retries = 3
 /// Starts a run of `agent` in `store` under `id`: stores its first record
 /// and hands the first model call to a new runner. `id` is the caller's:
 /// `run.new_id()` for a fresh run, or an id derived from the work that
-/// starts it (`run.parse_id(job_id)`), so that starting again finds the run
-/// (`AlreadyStarted`) instead of starting a second one.
+/// starts it (`run.id_from_parts("job", [job_id])`), so that starting again
+/// finds the run (`AlreadyStarted`) instead of starting a second one. A
+/// retry that must start afresh rather than continue (a job's next attempt
+/// after a business failure) includes its attempt among the parts. An agent
+/// with a family budget (`agent.with_family_budget`) declares it for this
+/// root run.
 ///
 /// `correlation` is carried in every event of the run, its sub-agent runs
 /// included, in every `model.Request` (which `fabric/llm` puts on its HTTP
@@ -192,51 +290,17 @@ pub fn start(
   context context: context,
   prompt prompt: String,
   correlation correlation: Option(Correlation),
-) -> Result(Run(context), StartError) {
-  start_root(store, agent, id, context, prompt, correlation, None)
-}
-
-/// Starts a root with one durable budget shared by all managed descendants.
-/// Failed or uncertain reservations keep their charge. These admission bounds
-/// complement the agent's own turn, token and delegation limits.
-pub fn start_with_budget(
-  store: Store,
-  agent: Agent(context),
-  id id: RunId,
-  context context: context,
-  prompt prompt: String,
-  correlation correlation: Option(Correlation),
-  limits limits: budget.Limits,
-) -> Result(Run(context), StartError) {
-  use _ <- result.try(
-    reservations.new(limits)
-    |> result.replace_error(StartRefused("invalid family budget limits")),
-  )
-  use Nil <- result.try(case store_core.supports_family_budget(store) {
-    True -> Ok(Nil)
-    False -> Error(StartRefused("family budgets require agent record writer 7"))
+) -> Result(Run(context), Error) {
+  let admitted = checked_agent.admitted(agent)
+  use declaration <- result.try(case admitted.family_budget {
+    None -> Ok(None)
+    Some(limits) ->
+      case store_core.supports_family_budget(store) {
+        True -> Ok(Some(reservations.Declaration(limits, False)))
+        False -> Error(FamilyBudgetUnsupported)
+      }
   })
-  start_root(
-    store,
-    agent,
-    id,
-    context,
-    prompt,
-    correlation,
-    Some(reservations.Declaration(limits, False)),
-  )
-}
-
-fn start_root(
-  store: Store,
-  agent: Agent(context),
-  id: RunId,
-  context: context,
-  prompt: String,
-  correlation: Option(Correlation),
-  declaration: Option(reservations.Declaration),
-) -> Result(Run(context), StartError) {
-  let setup = runner.setup(store, checked_agent.admitted(agent), context, None)
+  let setup = runner.setup(store, admitted, context, None)
   let text = id_to_string(id)
   let correlation =
     option.lazy_unwrap(correlation, fn() { correlation.from_key(text) })
@@ -244,18 +308,36 @@ fn start_root(
   let state = controller.State(..state, family_budget: declaration)
   case runner.launch_new(setup, state, effects) {
     Ok(_) -> Ok(Run(id: text, setup:))
-    Error(backend.AlreadyExists) -> Error(AlreadyStarted(id))
+    Error(backend.AlreadyExists) ->
+      Error(AlreadyStarted(id, same_input(store, state)))
     Error(error) -> Error(StartUnconfirmed(id, describe_store(error)))
+  }
+}
+
+/// Whether the stored run `fresh.run` is a root started by the same agent
+/// with the same prompt and correlation as `fresh`, the state a start
+/// wanted to store.
+fn same_input(store: Store, fresh: State) -> Bool {
+  case runner.load(store, fresh.run) {
+    Ok(#(_, stored)) ->
+      stored.parent == None
+      && stored.agent == fresh.agent
+      && stored.correlation == fresh.correlation
+      && list.first(stored.transcript) == list.first(fresh.transcript)
+    Error(_) -> False
   }
 }
 
 /// Opens the stored run `id` under `agent` and `context`. When work was in
 /// flight and no runner in this store drives it, recovery takes the work
 /// over as a new incarnation (committed with compare-and-set, so concurrent
-/// recoveries have one winner): running tools become uncertain effects,
-/// queued tools are dispatched again, and a lost model call is issued again
-/// against the turn budget. A suspended or finished run is opened
-/// unchanged. Calling it again is harmless.
+/// recoveries have one winner): running tools become uncertain effects
+/// (replayable ones, `tool.with_replay`, are started again while they have
+/// attempts left), queued tools are dispatched again, and a lost model call
+/// is issued again against the turn budget. A suspended or finished run is
+/// opened unchanged, except that an approval request whose deadline passed
+/// is rejected (the model sees it, and the run goes on). Calling it again
+/// is harmless.
 ///
 /// An approved tool or sub-agent start that had not started is not run
 /// with `context`: the context its answer was checked with is gone, and a
@@ -296,14 +378,13 @@ pub fn recover(
   agent: Agent(context),
   context: context,
   id: RunId,
-) -> Result(Run(context), CommandError) {
+) -> Result(Run(context), Error) {
   let id = id_to_string(id)
   let setup = runner.setup(store, checked_agent.admitted(agent), context, None)
   case family.take_over(setup, id, retries) {
     Ok(Nil) -> Ok(Run(id:, setup:))
     Error(family.TakeOverContended) -> Error(Contended)
-    Error(family.TakeOverUnreadable(problem)) ->
-      Error(Unreadable(record_error(problem)))
+    Error(family.TakeOverUnreadable(problem)) -> Error(record_error(problem))
   }
 }
 
@@ -327,7 +408,7 @@ pub fn open(
   agent: Agent(context),
   context: context,
   id: RunId,
-) -> Result(Run(context), RecordError) {
+) -> Result(Run(context), Error) {
   let id = id_to_string(id)
   let setup = runner.setup(store, checked_agent.admitted(agent), context, None)
   runner.load_checked(setup, id)
@@ -342,10 +423,7 @@ pub fn id(run: Run(context)) -> RunId {
 /// Opens the sub-agent run `id`, a descendant of `run`, with `run`'s agent
 /// and context: its snapshot, reconciling its uncertain effects, answering
 /// or cancelling it. Its end still reaches its parent.
-pub fn child(
-  run: Run(context),
-  id: RunId,
-) -> Result(Run(context), RecordError) {
+pub fn child(run: Run(context), id: RunId) -> Result(Run(context), Error) {
   let id = id_to_string(id)
   family.locate(run.setup, run.id, id)
   |> result.map(fn(setup) { Run(id:, setup:) })
@@ -374,7 +452,10 @@ pub fn child(
 /// With no store process running when it starts, or none registered again
 /// in time, it is `StoreUnavailable`. A run whose
 /// sub-agents work is working; one waiting only on paused sub-agents is
-/// suspended on their approvals. A `within` of zero (or less) reads the
+/// suspended on their approvals. A suspended run with an approval request
+/// whose deadline passed is not returned as is: the request is rejected
+/// first, and the wait goes on with the run. A `within` of zero (or less)
+/// reads the
 /// status now; one longer than the runtime's longest timer (2^32 - 1 ms) is
 /// waited in parts.
 ///
@@ -383,7 +464,7 @@ pub fn child(
 pub fn await(
   run: Run(context),
   within within: Duration,
-) -> Result(Status, RecordError) {
+) -> Result(Status, Error) {
   case await_with(run, within:, or: process.new_selector()) {
     Ok(Reached(status)) -> Ok(status)
     // An empty selector receives nothing: this branch never runs.
@@ -428,7 +509,7 @@ pub fn await_with(
   run: Run(context),
   within within: Duration,
   or interrupt: process.Selector(message),
-) -> Result(Awaited(message), RecordError) {
+) -> Result(Awaited(message), Error) {
   let deadline = now() + int.max(0, duration.to_milliseconds(within))
   attend(run, process.new_subject(), interrupt, deadline, None)
 }
@@ -436,7 +517,7 @@ pub fn await_with(
 /// What a wait ended with: an outcome, or the store process stopped (its
 /// watches are gone with it).
 type Waited(message) {
-  Waited(Result(Awaited(message), RecordError))
+  Waited(Result(Awaited(message), Error))
   StoreStopped
 }
 
@@ -449,13 +530,14 @@ fn attend(
   interrupt: process.Selector(message),
   deadline: Int,
   stopped: Option(Pid),
-) -> Result(Awaited(message), RecordError) {
+) -> Result(Awaited(message), Error) {
   case store_process(run.setup.store, interrupt, stopped, deadline) {
     Error(Nil) -> Error(StoreUnavailable("the store is not running"))
     Ok(Error(message)) -> Ok(Interrupted(message))
     Ok(Ok(pid)) -> {
       let monitor = process.monitor(pid)
-      let waited = wait(run, watcher, interrupt, pid, monitor, [], deadline)
+      let waited =
+        wait(run, watcher, interrupt, pid, monitor, [], deadline, False)
       process.demonitor_process(monitor)
       case waited {
         Waited(outcome) -> outcome
@@ -498,6 +580,7 @@ fn wait(
   monitor: process.Monitor,
   watched: List(String),
   deadline: Int,
+  expiring: Bool,
 ) -> Waited(message) {
   let done = fn(outcome) {
     list.each(watched, store_core.unwatch(run.setup.store, _, watcher))
@@ -535,12 +618,23 @@ fn wait(
             monitor,
             list.append(watched, fresh),
             deadline,
+            expiring,
           )
         // Unattended only when a second read finds the family unchanged.
         Ok(Nil), [], family.View(run.Working, False) ->
           case family.load(run.setup.store, run.id) {
             Ok(again) if again == node -> reached(run.Unattended)
-            _ -> wait(run, watcher, interrupt, pid, monitor, watched, deadline)
+            _ ->
+              wait(
+                run,
+                watcher,
+                interrupt,
+                pid,
+                monitor,
+                watched,
+                deadline,
+                expiring,
+              )
           }
         Ok(Nil), [], family.View(run.Working, True) -> {
           // Commits made through another node's store wake no watcher here:
@@ -557,18 +651,93 @@ fn wait(
             |> receive_until(wake)
           case woken {
             Error(Nil) if wake < deadline ->
-              wait(run, watcher, interrupt, pid, monitor, watched, deadline)
+              wait(
+                run,
+                watcher,
+                interrupt,
+                pid,
+                monitor,
+                watched,
+                deadline,
+                expiring,
+              )
             Error(Nil) -> reached(run.Working)
             Ok(Stopped) -> StoreStopped
             Ok(Caller(message)) -> done(Ok(Interrupted(message)))
             Ok(Woken) ->
-              wait(run, watcher, interrupt, pid, monitor, watched, deadline)
+              wait(
+                run,
+                watcher,
+                interrupt,
+                pid,
+                monitor,
+                watched,
+                deadline,
+                expiring,
+              )
           }
         }
+        // An approval request whose deadline passed is expired once, and
+        // the run read again: it goes on without the rejected action.
+        Ok(Nil), [], family.View(run.Suspended(approvals, _) as status, _) ->
+          case expiring, due(approvals) {
+            False, [_, ..] as due -> {
+              expire(run, due)
+              wait(
+                run,
+                watcher,
+                interrupt,
+                pid,
+                monitor,
+                watched,
+                deadline,
+                True,
+              )
+            }
+            _, _ -> reached(status)
+          }
         Ok(Nil), [], family.View(status, _) -> reached(status)
       }
     }
   }
+}
+
+/// The runs of the family that have an approval request whose deadline has
+/// passed.
+fn due(approvals: List(PendingApproval)) -> List(RunId) {
+  let now = clock.now()
+  list.filter_map(approvals, fn(pending) {
+    case pending.expires {
+      Some(at) ->
+        case clock.to_milliseconds(at) <= now {
+          True -> Ok(pending.reference.run)
+          False -> Error(Nil)
+        }
+      None -> Error(Nil)
+    }
+  })
+  |> list.unique
+}
+
+/// Expires the due approval requests of each of `runs`; a run that refuses
+/// (its requests were answered meanwhile) is read again by the caller.
+fn expire(run: Run(context), runs: List(RunId)) -> Nil {
+  list.each(runs, fn(id) {
+    case locate(run, id) {
+      Ok(#(target_id, target)) -> {
+        let _ =
+          runner.command(
+            target,
+            target_id,
+            target.env,
+            controller.ExpireApprovals,
+            retries,
+          )
+        Nil
+      }
+      Error(_) -> Nil
+    }
+  })
 }
 
 /// What woke a blocked wait.
@@ -599,7 +768,7 @@ fn receive_until(
 
 /// The run's own record, with the status of the run and its sub-agents
 /// (see `await`).
-pub fn snapshot(run: Run(context)) -> Result(Snapshot, RecordError) {
+pub fn snapshot(run: Run(context)) -> Result(Snapshot, Error) {
   use node <- result.map(
     family.load_settled(run.setup.store, run.id)
     |> result.map_error(record_error),
@@ -610,9 +779,7 @@ pub fn snapshot(run: Run(context)) -> Result(Snapshot, RecordError) {
 /// The approval requests waiting for an answer: the run's own, oldest
 /// first, then its sub-agents'. They can be answered while other work
 /// still runs.
-pub fn pending(
-  run: Run(context),
-) -> Result(List(PendingApproval), RecordError) {
+pub fn pending(run: Run(context)) -> Result(List(PendingApproval), Error) {
   family.load(run.setup.store, run.id)
   |> result.map(family.pending)
   |> result.map_error(record_error)
@@ -644,15 +811,20 @@ pub fn pending(
 /// sub-agent start, and one that finds an ancestor stopping or ended starts
 /// nothing and cancels itself.
 ///
-/// `reviewer` is recorded with the answer as given. Fabric does not
-/// authenticate it: the application must authenticate and authorize whoever
-/// answers before calling this.
+/// An answer after the request's deadline (`agent.with_approval_expiry`)
+/// is refused with `ApprovalExpired`: the request expires instead, its
+/// action is rejected, and the run goes on.
+///
+/// `reviewer` is recorded with the answer (`run.Approval.reviewer`). Fabric
+/// does not authenticate it: the application must authenticate and
+/// authorize whoever answers, and build the reviewer from that identity,
+/// before calling this.
 pub fn approve(
   run: Run(context),
   reference: ApprovalRef,
-  reviewer reviewer: Option(String),
+  reviewer reviewer: Reviewer,
   context context: context,
-) -> Result(Status, CommandError) {
+) -> Result(Status, Error) {
   use #(target_id, target) <- result.try(locate(run, reference.run))
   let recheck = controller.Env(..target.env, context:)
   use state <- result.try(answer(
@@ -669,10 +841,22 @@ pub fn approve(
       pending.reference.id == reference.id
       && pending.reference.revision != reference.revision
     })
-  case reissued {
-    Ok(pending) -> Error(RequirementChanged(pending))
-    Error(Nil) -> family_status_after(run, target_id, state)
+  case reissued, expired(state, reference) {
+    _, True -> Error(ApprovalExpired)
+    Ok(pending), False -> Error(RequirementChanged(pending))
+    Error(Nil), False -> family_status_after(run, target_id, state)
   }
+}
+
+/// Whether `state` records the request `reference` names as expired.
+fn expired(state: State, reference: ApprovalRef) -> Bool {
+  controller.snapshot(state).actions
+  |> list.any(fn(action) {
+    action.id == reference.id
+    && list.any(action.approvals, fn(approval) {
+      approval.revision == reference.revision && approval.answer == run.Expired
+    })
+  })
 }
 
 /// Rejects an approval request of the run or of one of its sub-agents (the
@@ -680,13 +864,14 @@ pub fn approve(
 /// `reason`. A rejection is not checked again, so it takes no context and
 /// never runs the policy; the run continues with its own context. It is
 /// committed like an approval (see `approve`), with the same refusals
-/// except `RequirementChanged`. `reviewer` is recorded as given.
+/// except `RequirementChanged`; a rejection after the request's deadline is
+/// `ApprovalExpired`. `reviewer` is recorded as for `approve`.
 pub fn reject(
   run: Run(context),
   reference: ApprovalRef,
   reason reason: String,
-  reviewer reviewer: Option(String),
-) -> Result(Status, CommandError) {
+  reviewer reviewer: Reviewer,
+) -> Result(Status, Error) {
   use #(target_id, target) <- result.try(locate(run, reference.run))
   use state <- result.try(answer(
     run,
@@ -697,7 +882,10 @@ pub fn reject(
     run.Reject(reason),
     reviewer,
   ))
-  family_status_after(run, target_id, state)
+  case expired(state, reference) {
+    True -> Error(ApprovalExpired)
+    False -> family_status_after(run, target_id, state)
+  }
 }
 
 /// The run `id` of `run`'s family, located by following the child links:
@@ -705,7 +893,7 @@ pub fn reject(
 fn locate(
   run: Run(context),
   id: RunId,
-) -> Result(#(String, runner.Setup(context)), CommandError) {
+) -> Result(#(String, runner.Setup(context)), Error) {
   let id = id_to_string(id)
   case id == run.id {
     True -> Ok(#(id, run.setup))
@@ -713,7 +901,7 @@ fn locate(
       case family.locate(run.setup, run.id, id) {
         Ok(setup) -> Ok(#(id, setup))
         Error(runner.NotFound) -> Error(WrongReference)
-        Error(problem) -> Error(Unreadable(record_error(problem)))
+        Error(problem) -> Error(record_error(problem))
       }
   }
 }
@@ -725,14 +913,14 @@ fn answer(
   env: controller.Env(context),
   reference: ApprovalRef,
   answer: Answer,
-  reviewer: Option(String),
-) -> Result(State, CommandError) {
+  reviewer: Reviewer,
+) -> Result(State, Error) {
   use Nil <- result.try(open_to_commands(run, target_id))
   runner.command(
     target,
     target_id,
     env,
-    controller.Answer(reference, answer, reviewer),
+    controller.Answer(reference, answer, Some(reviewer)),
     retries,
   )
   |> result.map_error(command_error)
@@ -743,13 +931,13 @@ fn family_status_after(
   run: Run(context),
   target_id: String,
   state: State,
-) -> Result(Status, CommandError) {
+) -> Result(Status, Error) {
   case target_id == run.id {
     True -> Ok(status_after(run, state))
     False ->
       family.load_settled(run.setup.store, run.id)
       |> result.map(family.status)
-      |> result.map_error(fn(problem) { Unreadable(record_error(problem)) })
+      |> result.map_error(record_error)
   }
 }
 
@@ -783,7 +971,7 @@ fn family_status_after(
 /// no sub-agent once its record moved on, and commits nothing more.
 /// A sub-agent is cancelled the same way; its delegation becomes an
 /// uncertain effect only when the store keeps failing.
-pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
+pub fn cancel(run: Run(context)) -> Result(Status, Error) {
   runner.command(run.setup, run.id, run.setup.env, controller.Cancel, retries)
   |> result.map(status_after(run, _))
   |> result.map_error(command_error)
@@ -838,8 +1026,7 @@ fn guard(run: Run(context), down: process.Selector(Nil)) -> Nil {
 /// to apply it (`await` on the parent reports `Unattended` until then). A run
 /// whose runner is live in this store is cancelled through that runner, as
 /// `cancel` would, which must take it within
-/// `agent.default_limits().command_timeout` (there is no agent to configure
-/// it); otherwise (a lost runner, or one a handler holds) the work of a lost
+/// 5 seconds (there is no agent to configure it); otherwise (a lost runner, or one a handler holds) the work of a lost
 /// runner is abandoned (running tools become uncertain effects) and the run
 /// ends `Cancelled` in one commit. Active sub-agent runs are cancelled first,
 /// the same way; their delegations are recorded as uncertain effects, since no
@@ -847,14 +1034,9 @@ fn guard(run: Run(context), down: process.Selector(Nil)) -> Nil {
 /// stopped tool's settlement) is recorded as such, and ends on its own. A
 /// sub-agent run that was never stored is stored as cancelled before it started
 /// (naming no agent), and its delegation is recorded as not started.
-pub fn cancel_stored(store: Store, id: RunId) -> Result(Status, CommandError) {
+pub fn cancel_stored(store: Store, id: RunId) -> Result(Status, Error) {
   let id = id_to_string(id)
-  runner.cancel_unattended(
-    store,
-    id,
-    duration.to_milliseconds(agent.default_limits().command_timeout),
-    retries,
-  )
+  runner.cancel_unattended(store, id, 5000, retries)
   |> result.map(committed_status(store, id, _))
   |> result.map_error(command_error)
 }
@@ -871,7 +1053,7 @@ pub fn reconcile_stored(
   store: Store,
   effect: ActionRef,
   content: String,
-) -> Result(Snapshot, CommandError) {
+) -> Result(Snapshot, Error) {
   settlement.reconcile(store, effect, content)
   |> result.map(controller.snapshot)
   |> result.map_error(settlement_error)
@@ -889,21 +1071,18 @@ pub fn reconcile_stored(
 /// to finish propagation. Repeating an unchanged walk performs no writes.
 /// For a graph-owned family, settle this agent root, then recover its graph
 /// parent to observe the saved outcome. The graph remains cancelled.
-pub fn settle_stored(
-  store: Store,
-  id: RunId,
-) -> Result(Snapshot, CommandError) {
+pub fn settle_stored(store: Store, id: RunId) -> Result(Snapshot, Error) {
   settlement.settle(store, id_to_string(id))
   |> result.map(controller.snapshot)
   |> result.map_error(settlement_error)
 }
 
-fn settlement_error(error: settlement.Error) -> CommandError {
+fn settlement_error(error: settlement.Error) -> Error {
   case error {
     settlement.NotFinished -> RunNotFinished
     settlement.UnknownAction -> WrongReference
     settlement.NotReconcilable -> NotReconcilable
-    settlement.Unreadable(error) -> Unreadable(record_error(error))
+    settlement.Unreadable(error) -> record_error(error)
     settlement.Contended -> Contended
   }
 }
@@ -926,7 +1105,7 @@ pub fn reconcile(
   run: Run(context),
   effect: ActionRef,
   content: String,
-) -> Result(Status, CommandError) {
+) -> Result(Status, Error) {
   use #(target_id, target) <- result.try(locate(run, effect.run))
   use Nil <- result.try(open_to_commands(run, target_id))
   use state <- result.try(
@@ -945,14 +1124,11 @@ pub fn reconcile(
 /// `RunEnded` when an ancestor of the run `id` is stopping or has ended:
 /// cancelling an ancestor wins over answers and reconciliations of its
 /// descendants.
-fn open_to_commands(
-  run: Run(context),
-  id: String,
-) -> Result(Nil, CommandError) {
+fn open_to_commands(run: Run(context), id: String) -> Result(Nil, Error) {
   case family.ancestors_open(run.setup.store, id) {
     Ok(True) -> Ok(Nil)
     Ok(False) -> Error(RunEnded)
-    Error(problem) -> Error(Unreadable(record_error(problem)))
+    Error(problem) -> Error(record_error(problem))
   }
 }
 
@@ -976,18 +1152,18 @@ fn committed_status(store: Store, id: String, state: State) -> Status {
   }
 }
 
-fn command_error(failure: runner.Failure) -> CommandError {
+fn command_error(failure: runner.Failure) -> Error {
   case failure {
     runner.CommandRefused(rejection) -> refusal(rejection)
     runner.OwnerUnknown -> RunUnattended
     runner.Contended
     | runner.Unreadable(runner.StoreFailed(backend.Conflict(_))) -> Contended
     runner.Busy -> RunnerBusy
-    runner.Unreadable(problem) -> Unreadable(record_error(problem))
+    runner.Unreadable(problem) -> record_error(problem)
   }
 }
 
-fn refusal(rejection: controller.Rejection) -> CommandError {
+fn refusal(rejection: controller.Rejection) -> Error {
   case rejection {
     controller.RunEnded -> RunEnded
     controller.UnknownAction(_)
@@ -1000,10 +1176,11 @@ fn refusal(rejection: controller.Rejection) -> CommandError {
     | controller.SettlementRecorded(_) -> NotReconcilable
     controller.StaleReference -> StaleReference
     controller.AlreadyAnswered -> AlreadyAnswered
+    controller.ApprovalExpired -> ApprovalExpired
   }
 }
 
-fn record_error(problem: runner.ReadError) -> RecordError {
+fn record_error(problem: runner.ReadError) -> Error {
   case problem {
     runner.NotFound -> RunNotFound
     runner.StoreFailed(error) -> store_error(error)
@@ -1017,7 +1194,7 @@ fn record_error(problem: runner.ReadError) -> RecordError {
 /// practice: a conflict is retried (and reported `Contended`), and a read
 /// reports a missing record as not found. A backend that breaks its
 /// contract is reported unavailable with what it said.
-fn store_error(error: backend.StoreError) -> RecordError {
+fn store_error(error: backend.StoreError) -> Error {
   case error {
     backend.NotFound -> RunNotFound
     backend.Unavailable(reason) -> StoreUnavailable(reason)

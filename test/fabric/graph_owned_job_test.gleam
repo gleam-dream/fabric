@@ -201,7 +201,7 @@ pub fn owned_cleanup_continues_under_a_cancelled_parent_with_no_unused_work_budg
       parent,
       support.id("owned-parent"),
       "receipt",
-      budget.Limits(2, 1, 1),
+      budget.limits(work: 2) |> budget.with_children(1) |> budget.with_depth(1),
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))

@@ -19,7 +19,8 @@ import gleam/string
 import gleeunit/should
 
 pub fn reservations_count_attempts_and_children_independently_test() {
-  let limits = quota.Limits(5, 1, 2)
+  let limits =
+    quota.limits(work: 5) |> quota.with_children(1) |> quota.with_depth(2)
   let claims = [
     budget.GraphAttempt("root", 1, 1),
     budget.GraphAttempt("root", 1, 2),
@@ -42,12 +43,18 @@ pub fn reservations_count_attempts_and_children_independently_test() {
 }
 
 pub fn zero_bounds_and_depth_refusals_never_spend_capacity_test() {
-  let assert Ok(empty) = budget.new(quota.Limits(0, 0, 0))
+  let assert Ok(empty) =
+    budget.new(
+      quota.limits(work: 0) |> quota.with_children(0) |> quota.with_depth(0),
+    )
   budget.reserve(empty, budget.GraphAttempt("root", 1, 1))
   |> should.equal(Error(budget.Denied(quota.WorkLimit(0))))
   budget.reserve(empty, budget.Child("child", 1))
   |> should.equal(Error(budget.Denied(quota.DepthLimit(0, 1))))
-  let assert Ok(state) = budget.new(quota.Limits(1, 1, 1))
+  let assert Ok(state) =
+    budget.new(
+      quota.limits(work: 1) |> quota.with_children(1) |> quota.with_depth(1),
+    )
   budget.reserve(state, budget.Child("child", 2))
   |> should.equal(Error(budget.Denied(quota.DepthLimit(1, 2))))
   let assert Ok(next) = budget.reserve(state, budget.Child("child", 1))
@@ -57,16 +64,19 @@ pub fn zero_bounds_and_depth_refusals_never_spend_capacity_test() {
 pub fn invalid_limits_or_claims_cannot_be_reserved_test() {
   list.each(
     [
-      quota.Limits(-1, 1, 1),
-      quota.Limits(1, -1, 1),
-      quota.Limits(1, 1, -1),
-      quota.Limits(1, 1, 64),
+      quota.limits(work: -1) |> quota.with_children(1) |> quota.with_depth(1),
+      quota.limits(work: 1) |> quota.with_children(-1) |> quota.with_depth(1),
+      quota.limits(work: 1) |> quota.with_children(1) |> quota.with_depth(-1),
+      quota.limits(work: 1) |> quota.with_children(1) |> quota.with_depth(64),
     ],
     fn(limits) {
       budget.new(limits) |> should.equal(Error(budget.InvalidLimits))
     },
   )
-  let assert Ok(state) = budget.new(quota.Limits(10, 10, 63))
+  let assert Ok(state) =
+    budget.new(
+      quota.limits(work: 10) |> quota.with_children(10) |> quota.with_depth(63),
+    )
   list.each(
     [
       budget.GraphAttempt("../root", 1, 1),
@@ -88,12 +98,15 @@ pub fn invalid_limits_or_claims_cannot_be_reserved_test() {
 
 pub fn record_roundtrips_all_claim_kinds_without_trusting_counters_test() {
   let assert Ok(state) =
-    budget.restore(quota.Limits(3, 1, 3), [
-      budget.GraphAttempt("root", 1, 1),
-      budget.ModelAttempt("root", 1, 1, 2),
-      budget.ToolAction("root", 1, "a\u{0}\"b"),
-      budget.Child("child", 3),
-    ])
+    budget.restore(
+      quota.limits(work: 3) |> quota.with_children(1) |> quota.with_depth(3),
+      [
+        budget.GraphAttempt("root", 1, 1),
+        budget.ModelAttempt("root", 1, 1, 2),
+        budget.ToolAction("root", 1, "a\u{0}\"b"),
+        budget.Child("child", 3),
+      ],
+    )
   let saved = record.Record("root", state)
   let encoded = record.encode(saved)
   record.decode(encoded) |> should.equal(Ok(saved))
@@ -117,7 +130,8 @@ pub fn record_roundtrips_all_claim_kinds_without_trusting_counters_test() {
 }
 
 pub fn restore_refuses_duplicate_or_conflicting_saved_claims_test() {
-  let limits = quota.Limits(3, 3, 3)
+  let limits =
+    quota.limits(work: 3) |> quota.with_children(3) |> quota.with_depth(3)
   let work = budget.GraphAttempt("root", 1, 1)
   budget.restore(limits, [work, work])
   |> should.equal(Error(budget.ConflictingClaim))
@@ -128,7 +142,8 @@ pub fn restore_refuses_duplicate_or_conflicting_saved_claims_test() {
 pub fn lost_acknowledgements_do_not_spend_twice_or_change_limits_test() {
   let backend = flaky.new()
   let runs = flaky.store(backend)
-  let limits = quota.Limits(1, 0, 0)
+  let limits =
+    quota.limits(work: 1) |> quota.with_children(0) |> quota.with_depth(0)
   let claim = budget.GraphAttempt("root", 1, 1)
   flaky.arm(backend, [flaky.FailAfter, flaky.FailAfter])
   let assert Ok(_) = ledger.ensure(runs, "root", limits)
@@ -139,16 +154,26 @@ pub fn lost_acknowledgements_do_not_spend_twice_or_change_limits_test() {
   ledger.reserve(runs, "root", limits, claim) |> should.equal(Ok(state))
   ledger.ensure(runs, "root", limits) |> should.equal(Ok(state))
   ledger.read(runs, "root") |> should.equal(Ok(#(2, state)))
-  ledger.ensure(runs, "root", quota.Limits(2, 0, 0))
+  ledger.ensure(
+    runs,
+    "root",
+    quota.limits(work: 2) |> quota.with_children(0) |> quota.with_depth(0),
+  )
   |> should.equal(Error(ledger.ChangedLimits))
-  ledger.reserve(runs, "root", quota.Limits(2, 0, 0), claim)
+  ledger.reserve(
+    runs,
+    "root",
+    quota.limits(work: 2) |> quota.with_children(0) |> quota.with_depth(0),
+    claim,
+  )
   |> should.equal(Error(ledger.ChangedLimits))
 }
 
 pub fn a_late_grant_is_adopted_when_its_reservation_is_retried_test() {
   let backend = flaky.new()
   let runs = flaky.store(backend)
-  let limits = quota.Limits(2, 0, 0)
+  let limits =
+    quota.limits(work: 2) |> quota.with_children(0) |> quota.with_depth(0)
   let claim = budget.GraphAttempt("root", 1, 1)
   let assert Ok(_) = ledger.ensure(runs, "root", limits)
   flaky.arm(backend, [flaky.FailLate])
@@ -162,7 +187,8 @@ pub fn a_late_grant_is_adopted_when_its_reservation_is_retried_test() {
 pub fn failed_writes_and_missing_ledgers_never_grant_capacity_test() {
   let backend = flaky.new()
   let runs = flaky.store(backend)
-  let limits = quota.Limits(2, 0, 0)
+  let limits =
+    quota.limits(work: 2) |> quota.with_children(0) |> quota.with_depth(0)
   let claim = budget.GraphAttempt("root", 1, 1)
   ledger.reserve(runs, "root", limits, claim)
   |> should.equal(Error(ledger.Storage(backend.NotFound)))
@@ -180,7 +206,8 @@ pub fn competing_stores_cannot_both_reserve_the_last_slot_test() {
   let backend = flaky.new()
   let first = flaky.store(backend)
   let second = flaky.store(backend)
-  let limits = quota.Limits(1, 0, 0)
+  let limits =
+    quota.limits(work: 1) |> quota.with_children(0) |> quota.with_depth(0)
   let assert Ok(_) = ledger.ensure(first, "root", limits)
   let held = flaky.hold(backend, fn(id) { id == record.id("root") })
   let reply = process.new_subject()
@@ -205,7 +232,8 @@ pub fn competing_creators_adopt_the_same_immutable_ledger_test() {
   let backend = flaky.new()
   let first = flaky.store(backend)
   let second = flaky.store(backend)
-  let limits = quota.Limits(2, 1, 1)
+  let limits =
+    quota.limits(work: 2) |> quota.with_children(1) |> quota.with_depth(1)
   let held = flaky.hold(backend, fn(id) { id == record.id("root") })
   let reply = process.new_subject()
   process.spawn(fn() {
@@ -223,7 +251,8 @@ pub fn competing_creators_adopt_the_same_immutable_ledger_test() {
 
 pub fn reopening_the_directory_recovers_usage_and_duplicate_grants_test() {
   let dir = restart.temp_dir()
-  let limits = quota.Limits(2, 1, 1)
+  let limits =
+    quota.limits(work: 2) |> quota.with_children(1) |> quota.with_depth(1)
   let claim = budget.ToolAction("root", 1, "call")
   let #(owner, #(runs, state)) =
     restart.owned(fn() {
@@ -254,7 +283,8 @@ pub fn reopening_the_directory_recovers_usage_and_duplicate_grants_test() {
 
 pub fn unreadable_ledgers_are_never_replaced_with_fresh_capacity_test() {
   let runs = support.store()
-  let limits = quota.Limits(2, 0, 0)
+  let limits =
+    quota.limits(work: 2) |> quota.with_children(0) |> quota.with_depth(0)
   let assert Ok(_) =
     store_core.insert(runs, record.id("root"), "{}", store_core.Keep)
   let assert Error(ledger.Unreadable(_)) = ledger.ensure(runs, "root", limits)

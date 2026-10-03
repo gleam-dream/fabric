@@ -18,7 +18,7 @@ import gleeunit/should
 import sinal/correlation
 
 fn limits() {
-  quota.Limits(8, 2, 2)
+  quota.limits(work: 8) |> quota.with_children(2) |> quota.with_depth(2)
 }
 
 fn agent_root() {
@@ -134,7 +134,11 @@ pub fn children_cannot_declare_replacement_family_limits_test() {
 
 pub fn invalid_root_limits_are_refused_by_both_codecs_test() {
   list.each(
-    [quota.Limits(-1, 2, 2), quota.Limits(2, -1, 2), quota.Limits(2, 2, 64)],
+    [
+      quota.limits(work: -1) |> quota.with_children(2) |> quota.with_depth(2),
+      quota.limits(work: 2) |> quota.with_children(-1) |> quota.with_depth(2),
+      quota.limits(work: 2) |> quota.with_children(2) |> quota.with_depth(64),
+    ],
     fn(limits) {
       let state =
         agent.State(
@@ -264,7 +268,10 @@ pub fn retention_links_the_ledger_to_either_root_with_matching_limits_test() {
   })
   ledger.settled |> should.be_true
   ledger.children |> should.equal([])
-  let assert Ok(other) = budget.new(quota.Limits(9, 2, 2))
+  let assert Ok(other) =
+    budget.new(
+      quota.limits(work: 9) |> quota.with_children(2) |> quota.with_depth(2),
+    )
   let assert Ok(changed) =
     retention.inspect(budget_record.encode(budget_record.Record("root", other)))
   let assert Some(changed_parent) = changed.parent

@@ -13,6 +13,7 @@ import fabric
 import fabric/agent.{type Agent}
 import fabric/model
 import fabric/policy
+import fabric/reviewer
 import fabric/run.{Requirement}
 import fabric/support
 import fabric/support/apps
@@ -25,7 +26,7 @@ import fabric/testing
 import fabric/tool
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{None}
 import gleam/string
 import gleam/time/duration
 import gleeunit/should
@@ -127,8 +128,13 @@ fn approve(
   run: fabric.Run(String),
   pending: run.PendingApproval,
   who: String,
-) -> Result(run.Status, fabric.CommandError) {
-  fabric.approve(run, pending.reference, reviewer: Some(who), context: who)
+) -> Result(run.Status, fabric.Error) {
+  fabric.approve(
+    run,
+    pending.reference,
+    reviewer: reviewer.new(who),
+    context: who,
+  )
 }
 
 // --- approved tools --------------------------------------------------------------
@@ -199,9 +205,7 @@ pub fn an_approved_tool_not_started_before_a_restart_is_asked_for_again_test() {
   let probe = probe.new()
   let agent =
     paying_agent_spec(probe, [scripted.slow("s", "s"), transfer_call()])
-    |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), max_concurrency: 1),
-    )
+    |> agent.with_max_concurrency(1)
     |> support.agent
   let #(owner, #(old, run)) =
     restart.owned(fn() {

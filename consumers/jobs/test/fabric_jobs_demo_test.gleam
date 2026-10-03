@@ -32,7 +32,9 @@ pub fn a_restarted_sweeper_observes_the_real_job_without_manual_polling_test() {
           runtime,
           id("scheduled-real-job"),
           demo.Submitting(client.Request("scheduled result", 1000)),
-          budget.Limits(2, 1, 1),
+          budget.limits(work: 2)
+            |> budget.with_children(1)
+            |> budget.with_depth(1),
         )
       #(runs, handle)
     })

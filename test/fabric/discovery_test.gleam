@@ -134,7 +134,10 @@ pub fn free_states_without_an_idle_child_are_not_scheduled_test() {
       discovery.inspect(encoded) |> should.equal(Ok(None))
     },
   )
-  let assert Ok(saved) = budget.new(quota.Limits(1, 1, 1))
+  let assert Ok(saved) =
+    budget.new(
+      quota.limits(work: 1) |> quota.with_children(1) |> quota.with_depth(1),
+    )
   discovery.inspect(budget_record.encode(budget_record.Record("root", saved)))
   |> should.equal(Ok(None))
 }
@@ -151,10 +154,10 @@ pub fn unknown_corrupt_and_misfiled_records_have_no_usable_discovery_index_test(
     ["invalid", string.replace(encoded, "\"version\":14", "\"version\":1199")],
     fn(encoded) {
       discovery.inspect(encoded) |> should.be_error
-      discovery.encode("root", encoded) |> should.equal("{\"version\":10}")
+      discovery.encode("root", encoded) |> should.equal("{\"version\":11}")
     },
   )
-  discovery.encode("wrong", encoded) |> should.equal("{\"version\":10}")
+  discovery.encode("wrong", encoded) |> should.equal("{\"version\":11}")
 }
 
 pub fn completed_and_settled_child_attachments_stop_dependency_discovery_test() {

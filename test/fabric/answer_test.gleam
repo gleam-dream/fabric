@@ -5,8 +5,9 @@ import fabric/internal/controller.{
 }
 import fabric/internal/invocation
 import fabric/internal/registry
-import fabric/model.{ToolCall, ToolRequest, ToolResultMessage, Usage}
+import fabric/model.{ToolRequest, ToolResultMessage, Usage}
 import fabric/policy.{type Action}
+import fabric/reviewer
 import fabric/run.{ActionId, Requirement}
 import fabric/support
 import fabric/support/apps
@@ -45,6 +46,8 @@ fn env(desk: Desk) -> controller.Env(Desk) {
     policy: desk_policy,
     context: desk,
     system: None,
+    approval_expiry: None,
+    clock: fn() { 0 },
   )
 }
 
@@ -58,11 +61,19 @@ fn step(
 }
 
 fn transfer() -> model.ToolCall {
-  ToolCall("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":10}", None, None)
+  model.tool_call(
+    id: "t",
+    name: "transfer_funds",
+    arguments_json: "{\"to\":\"bob\",\"amount\":10}",
+  )
 }
 
 fn weather() -> model.ToolCall {
-  ToolCall("w", "lookup_weather", "{\"city\":\"Paris\"}", None, None)
+  model.tool_call(
+    id: "w",
+    name: "lookup_weather",
+    arguments_json: "{\"city\":\"Paris\"}",
+  )
 }
 
 /// A run whose first batch asked for a transfer (awaiting approval) and a
@@ -141,7 +152,11 @@ pub fn an_approval_queues_the_action_and_records_the_reviewer_test() {
     controller.step(
       env(desk()),
       state,
-      controller.Answer(pending.reference, run.Approve, Some("alice")),
+      controller.Answer(
+        pending.reference,
+        run.Approve,
+        Some(reviewer.new("alice")),
+      ),
     )
   effects |> should.equal([Dispatch([#(ActionId(1, "t"), transfer())])])
   transfer_record(state)
@@ -149,8 +164,16 @@ pub fn an_approval_queues_the_action_and_records_the_reviewer_test() {
     ActionId(1, "t"),
     transfer(),
     run.Queued,
-    [run.Approval(Requirement("transfer", 1), 1, run.Approve, Some("alice"))],
+    [
+      run.Approval(
+        Requirement("transfer", 1),
+        1,
+        run.Approve,
+        Some(reviewer.new("alice")),
+      ),
+    ],
     None,
+    0,
   ))
   controller.needs_runner(state) |> should.be_true
 }
@@ -330,7 +353,11 @@ fn batch(calls: List(model.ToolCall)) -> State {
 }
 
 fn lookup(id: String) -> model.ToolCall {
-  ToolCall(id, "lookup_weather", "{\"city\":\"Paris\"}", None, None)
+  model.tool_call(
+    id: id,
+    name: "lookup_weather",
+    arguments_json: "{\"city\":\"Paris\"}",
+  )
 }
 
 pub fn recovery_marks_running_tools_uncertain_and_redispatches_queued_ones_test() {

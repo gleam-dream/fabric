@@ -52,7 +52,7 @@ type Fixture {
 }
 
 fn limits() {
-  quota.Limits(4, 0, 0)
+  quota.limits(work: 4) |> quota.with_children(0) |> quota.with_depth(0)
 }
 
 fn declared(runs, kind) {

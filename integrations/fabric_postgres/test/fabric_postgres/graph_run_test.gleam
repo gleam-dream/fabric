@@ -12,6 +12,7 @@ import fabric/graph/operation
 import fabric/graph/signal
 import fabric/internal/store as store_core
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric/store/backend
@@ -316,7 +317,9 @@ pub fn owned_job_cancellation_survives_postgres_restart_and_sweeps_before_prunin
           }),
           id,
           "accepted",
-          budget.Limits(1, 1, 1),
+          budget.limits(work: 1)
+            |> budget.with_children(1)
+            |> budget.with_depth(1),
         )
       let assert Ok(waiting) =
         graph.await(handle, within: duration.milliseconds(5000))
@@ -412,7 +415,9 @@ pub fn a_postgres_sweeper_retains_the_next_poll_across_store_loss_test() {
           build(runs),
           id,
           "receipt",
-          budget.Limits(1, 1, 1),
+          budget.limits(work: 1)
+            |> budget.with_children(1)
+            |> budget.with_depth(1),
         )
       let assert Ok(waiting) =
         graph.await(handle, within: duration.milliseconds(5000))
@@ -769,7 +774,14 @@ pub fn a_managed_agent_keeps_its_approval_and_identity_after_postgres_restart_te
       let assert Ok(Nil) = store.start(runs)
       let #(parent, _) = managed_agent(runs, gate)
       let assert Ok(handle) =
-        graph.start_with_budget(parent, id, 41, budget.Limits(4, 1, 1))
+        graph.start_with_budget(
+          parent,
+          id,
+          41,
+          budget.limits(work: 4)
+            |> budget.with_children(1)
+            |> budget.with_depth(1),
+        )
       let assert Ok(waiting) =
         graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.Child(reference, child.AgentInput([approval], [])) =
@@ -787,7 +799,8 @@ pub fn a_managed_agent_keeps_its_approval_and_identity_after_postgres_restart_te
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(agent) = agent_node.child(handle, reference.activation, agent)
   fabric.id(agent) |> should.equal(reference.child)
-  let assert Ok(_) = fabric.approve(agent, approval.reference, None, Nil)
+  let assert Ok(_) =
+    fabric.approve(agent, approval.reference, reviewer.new("reviewer"), Nil)
   let arrival = agents.arrival(gate)
   arrival.amount |> should.equal(120)
   agents.release(arrival)
@@ -817,7 +830,14 @@ pub fn a_restarted_managed_agent_cannot_reset_its_family_work_budget_test() {
       let #(parent, _) = managed_agent(runs, gate)
       // The graph activation and initial model attempt consume both units.
       let assert Ok(handle) =
-        graph.start_with_budget(parent, id, 41, budget.Limits(2, 1, 1))
+        graph.start_with_budget(
+          parent,
+          id,
+          41,
+          budget.limits(work: 2)
+            |> budget.with_children(1)
+            |> budget.with_depth(1),
+        )
       let assert Ok(waiting) =
         graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.Child(reference, child.AgentInput([approval], [])) =
@@ -834,7 +854,8 @@ pub fn a_restarted_managed_agent_cannot_reset_its_family_work_budget_test() {
   let handle = graph.attach(parent, id)
   graph.recover(handle) |> should.be_ok
   let assert Ok(worker) = agent_node.child(handle, reference.activation, worker)
-  fabric.approve(worker, approval.reference, None, Nil) |> should.be_ok
+  fabric.approve(worker, approval.reference, reviewer.new("reviewer"), Nil)
+  |> should.be_ok
   fabric.await(worker, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.BudgetExhausted(run.FamilyLimit(budget.WorkLimit(2))))),
@@ -863,7 +884,14 @@ pub fn a_registered_graph_recovers_its_agent_after_postgres_store_loss_test() {
       let assert Ok(Nil) = store.start(runs)
       let #(runtime, worker) = managed_agent(runs, gate)
       let assert Ok(handle) =
-        graph.start_with_budget(runtime, id, 41, budget.Limits(4, 1, 1))
+        graph.start_with_budget(
+          runtime,
+          id,
+          41,
+          budget.limits(work: 4)
+            |> budget.with_children(1)
+            |> budget.with_depth(1),
+        )
       let assert Ok(waiting) =
         graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.Child(reference, child.AgentInput([approval], [])) =
@@ -872,7 +900,8 @@ pub fn a_registered_graph_recovers_its_agent_after_postgres_store_loss_test() {
         agent_node.child(handle, reference.activation, worker)
       #(handle, worker, approval)
     })
-  fabric.approve(worker, approval.reference, None, Nil) |> should.be_ok
+  fabric.approve(worker, approval.reference, reviewer.new("reviewer"), Nil)
+  |> should.be_ok
   let _started = agents.arrival(gate)
   agents.kill(owner)
   let assert Ok(runs) =
@@ -933,7 +962,8 @@ pub fn canceled_agent_evidence_settles_after_postgres_restart_test() {
   let assert graph.Child(reference, child.AgentInput([approval], [])) =
     waiting.status
   let assert Ok(worker) = agent_node.child(handle, reference.activation, worker)
-  let assert Ok(_) = fabric.approve(worker, approval.reference, None, Nil)
+  let assert Ok(_) =
+    fabric.approve(worker, approval.reference, reviewer.new("reviewer"), Nil)
   let _started = agents.arrival(gate)
   let assert Ok(_) = graph.cancel(handle)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))

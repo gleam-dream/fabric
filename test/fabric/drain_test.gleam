@@ -9,6 +9,7 @@ import fabric/agent.{type Agent}
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
+import fabric/reviewer
 import fabric/run.{Requirement}
 import fabric/store
 import fabric/support
@@ -149,9 +150,7 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
       [scripted.gated_tool(probe)],
       reviewed,
     )
-    |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), max_concurrency: 1),
-    )
+    |> agent.with_max_concurrency(1)
     |> support.agent
   let app = restart.application(runs)
   let assert Ok(run) =
@@ -166,10 +165,20 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
   let assert Ok(run.Suspended([first, second], [])) =
     fabric.await(run, within: duration.milliseconds(5000))
   let assert Ok(_) =
-    fabric.approve(run, first.reference, reviewer: Some("alice"), context: Nil)
+    fabric.approve(
+      run,
+      first.reference,
+      reviewer: reviewer.new("alice"),
+      context: Nil,
+    )
   let running = probe.arrival(probe)
   let assert Ok(_) =
-    fabric.approve(run, second.reference, reviewer: Some("alice"), context: Nil)
+    fabric.approve(
+      run,
+      second.reference,
+      reviewer: reviewer.new("alice"),
+      context: Nil,
+    )
   states(run) |> should.equal([run.Running, run.Queued])
   restart.begin_stop(app)
   restart.draining(runs)
@@ -182,10 +191,20 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
     fabric.await(run, within: duration.milliseconds(0))
   renewed.reference.id |> should.equal(second.reference.id)
   { renewed.reference.revision > second.reference.revision } |> should.be_true
-  fabric.approve(run, second.reference, reviewer: Some("alice"), context: Nil)
+  fabric.approve(
+    run,
+    second.reference,
+    reviewer: reviewer.new("alice"),
+    context: Nil,
+  )
   |> should.equal(Error(fabric.StaleReference))
   let assert Ok(_) =
-    fabric.approve(run, renewed.reference, reviewer: Some("bob"), context: Nil)
+    fabric.approve(
+      run,
+      renewed.reference,
+      reviewer: reviewer.new("bob"),
+      context: Nil,
+    )
   probe.release(probe.arrival(probe))
   fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\" | \"b\""))))
@@ -295,7 +314,7 @@ pub fn a_suspended_run_is_untouched_by_a_stop_test() {
     fabric.approve(
       run,
       pending.reference,
-      reviewer: Some("alice"),
+      reviewer: reviewer.new("alice"),
       context: Nil,
     )
   probe.release(probe.arrival(probe))
@@ -454,12 +473,7 @@ fn delegating(
     [scripted.gated_tool(probe)],
     policy,
   )
-  |> agent.with_limits(
-    agent.Limits(
-      ..agent.default_limits(),
-      policy_timeout: duration.milliseconds(60_000),
-    ),
-  )
+  |> agent.with_policy_timeout(duration.milliseconds(60_000))
   |> agent.with_sub_agent(
     research(),
     to: researcher,
@@ -521,7 +535,12 @@ pub fn a_delegation_approved_ahead_of_the_stop_does_not_hold_up_the_drain_test()
   process.spawn(fn() {
     process.send(
       approved,
-      fabric.approve(run, pending.reference, reviewer: None, context: Nil),
+      fabric.approve(
+        run,
+        pending.reference,
+        reviewer: reviewer.new("reviewer"),
+        context: Nil,
+      ),
     )
   })
   queued(runner, 1)
@@ -603,18 +622,13 @@ pub fn a_retry_backoff_is_not_waited_for_and_its_turn_is_given_back_test() {
     model.new(fn(_request) {
       probe.record(calls, "call")
       case probe.count(calls, "call") {
-        1 -> Error(model.ModelError("overloaded", retryable: True))
+        1 -> Error(model.error(model.Overloaded, "overloaded"))
         _ -> Ok(model.FinalAnswer("done", None))
       }
     })
   let agent =
     agent.new("agent", flaky_model, [], policy.always_allow())
-    |> agent.with_limits(
-      agent.Limits(
-        ..agent.default_limits(),
-        model_retry_delay: duration.milliseconds(60_000),
-      ),
-    )
+    |> agent.with_model_retry_delay(duration.milliseconds(60_000))
     |> support.agent
   let app = restart.application(runs)
   let assert Ok(run) =
@@ -676,9 +690,7 @@ pub fn a_shutdown_queued_behind_a_report_is_taken_first_test() {
       [scripted.gated_tool(probe)],
       policy.always_allow(),
     )
-    |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), max_concurrency: 1),
-    )
+    |> agent.with_max_concurrency(1)
     |> support.agent
   let app = restart.application(runs)
   let assert Ok(run) =

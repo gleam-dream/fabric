@@ -8,6 +8,7 @@ import fabric/agent
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
+import fabric/reviewer
 import fabric/run.{Requirement}
 import fabric/store
 import fabric/support
@@ -223,7 +224,12 @@ pub fn a_run_is_observed_after_each_commit_test() {
     fabric.await(run, within: duration.milliseconds(5000))
   let paused = until(events, "approval_requested")
   let assert Ok(_) =
-    fabric.approve(run, pending.reference, reviewer: None, context: Nil)
+    fabric.approve(
+      run,
+      pending.reference,
+      reviewer: reviewer.new("reviewer"),
+      context: Nil,
+    )
   let rest = until(events, "run_finished")
   release(attachments)
 
@@ -253,7 +259,7 @@ pub fn unreported_usage_is_observed_as_unknown_not_zero_test() {
     model.new(fn(request: model.Request) {
       probe.record(calls, "call")
       case probe.count(calls, "call"), scripted.results(request.messages) {
-        1, _ -> Error(model.ModelError("overloaded", retryable: True))
+        1, _ -> Error(model.error(model.Overloaded, "overloaded"))
         _, [] ->
           Ok(model.ToolRequest(model.AssistantTurn("", [weather], None), None))
         _, _ -> Ok(model.FinalAnswer("done", Some(model.Usage(20, 5))))
@@ -266,12 +272,7 @@ pub fn unreported_usage_is_observed_as_unknown_not_zero_test() {
       [apps.weather_tool()],
       policy.always_allow(),
     )
-    |> agent.with_limits(
-      agent.Limits(
-        ..agent.default_limits(),
-        model_retry_delay: duration.milliseconds(0),
-      ),
-    )
+    |> agent.with_model_retry_delay(duration.milliseconds(0))
     |> support.agent
   let assert Ok(run) =
     fabric.start(
@@ -746,12 +747,7 @@ pub fn a_command_to_a_runner_held_by_a_handler_is_refused_test() {
   let #(entered, attachment) = blocking_model_turn()
   let agent =
     weather_agent_spec()
-    |> agent.with_limits(
-      agent.Limits(
-        ..agent.default_limits(),
-        command_timeout: duration.milliseconds(20),
-      ),
-    )
+    |> agent.with_command_timeout(duration.milliseconds(20))
     |> support.agent
   let assert Ok(run) =
     fabric.start(

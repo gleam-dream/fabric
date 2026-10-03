@@ -1,17 +1,22 @@
-//// Storage-owned discovery of idle dependencies, job reads and wait deadlines.
+//// Storage-owned discovery of idle dependencies, job reads and wait deadlines,
+//// and of agent approval requests that expire (`agent.with_approval_expiry`).
 //// This projection is a
 //// scheduling hint, never permission to execute. Recovery must revalidate the
 //// stored attachment and deployed definition through the registered root.
 
 import fabric/graph/job
 import fabric/graph/operation
+import fabric/internal/clock
+import fabric/internal/controller as agent
 import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/fork as scope
 import fabric/internal/graph/record
+import fabric/internal/record as agent_record
 import fabric/internal/run_id
 import fabric/run
 import fabric/store/retention
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -19,7 +24,7 @@ import gleam/result
 
 /// Bump when a record format or state changes discovery eligibility or keys.
 /// Backends must refresh older projections before using them for scheduling.
-pub const version = 10
+pub const version = 11
 
 pub type Trigger {
   Changed(dependencies: List(run.RunId), deadline: Option(Int))
@@ -43,8 +48,13 @@ pub fn inspect(encoded: String) -> Result(Option(Wait), Nil) {
 fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
   case record.decode(encoded) {
     Error(_) ->
-      retention.inspect(encoded)
-      |> result.map(fn(metadata) { #(metadata.run, None) })
+      case agent_record.decode(encoded) {
+        Ok(state) ->
+          Ok(#(run_id.from_string(state.run), approval_expiry(state)))
+        Error(_) ->
+          retention.inspect(encoded)
+          |> result.map(fn(metadata) { #(metadata.run, None) })
+      }
     Ok(state) -> {
       let wait = case state.phase {
         graph.WaitingFork(a, mode) ->
@@ -181,6 +191,43 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
       }
       Ok(#(run_id.from_string(state.run), wait))
     }
+  }
+}
+
+/// An idle agent run with approval requests, the earliest of which expires
+/// at `due`: the sweeper recovers it then, which rejects it. A run with work
+/// in flight is left to its runner until it is idle.
+fn approval_expiry(state: agent.State) -> Option(Wait) {
+  case state.phase, agent.needs_runner(state) {
+    agent.Acting(turn, actions), False -> {
+      let deadlines =
+        list.filter_map(actions, fn(action) {
+          case action.state {
+            run.AwaitingApproval(revision:, expires: Some(at), ..) ->
+              Ok(#(revision, clock.to_milliseconds(at)))
+            _ -> Error(Nil)
+          }
+        })
+      case list.sort(deadlines, fn(a, b) { int.compare(a.1, b.1) }) {
+        [#(revision, due), ..] ->
+          Some(Wait(
+            run_id.from_string(state.run),
+            json.array(
+              [
+                json.string("approval_expiry"),
+                json.int(turn),
+                json.int(revision),
+                json.int(due),
+              ],
+              fn(value) { value },
+            )
+              |> json.to_string,
+            At(due),
+          ))
+        [] -> None
+      }
+    }
+    _, _ -> None
   }
 }
 
