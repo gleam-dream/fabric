@@ -267,20 +267,25 @@ pub fn stop(store: Store) -> Result(Nil, StoreError) {
     Error(Nil) -> Ok(Nil)
     Ok(pid) -> {
       let monitor = process.monitor(pid)
-      let outcome = case call(store, ReadStopper) {
-        Ok(Some(stop)) -> {
+      let stopped = fn(within) {
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(_) { Ok(Nil) })
+        |> process.selector_receive(within)
+        |> result.unwrap(Error(Unavailable("the store did not stop in time")))
+      }
+      // A store that is stopping already (its starter exited) may be gone
+      // before it answers; its name then names no process, which a send
+      // to it does not survive.
+      let outcome = case bounded.call(5000, fn() { call(store, ReadStopper) }) {
+        Ok(Ok(Some(stop))) -> {
           process.send(stop, Nil)
-          process.new_selector()
-          |> process.select_specific_monitor(monitor, fn(_) { Ok(Nil) })
-          |> process.selector_receive(store.drain + 10_000)
-          |> result.unwrap(Error(Unavailable("the store did not stop in time")))
+          stopped(store.drain + 10_000)
         }
-        Ok(None) ->
+        Ok(Ok(None)) ->
           Error(Unavailable(
             "the store runs under a supervisor: stop the supervisor",
           ))
-        // It stopped meanwhile.
-        Error(_) -> Ok(Nil)
+        Ok(Error(_)) | Error(_) -> stopped(store.drain + 10_000)
       }
       process.demonitor_process(monitor)
       outcome
