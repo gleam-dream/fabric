@@ -73,7 +73,7 @@ pub fn runtime(
   routing.runtime(
     run.DefinitionId("arithmetic-classifier-graph", 1),
     runs,
-    fn() { config },
+    fn(_) { config },
     reviewer,
     fn(receipt) { Ok(receipt.answer.1.0.selected) },
   )
@@ -95,7 +95,12 @@ pub fn main() -> Nil {
   let assert Ok(Nil) = store.start(runs)
   let assert Ok(id) = run.parse_id("classifier-decision")
   let assert Ok(handle) =
-    graph.start(runtime(runs, settings, model), id, "2 + 2 = 4")
+    graph.start(
+      runtime(runs, settings, model),
+      id,
+      "2 + 2 = 4",
+      correlation: None,
+    )
   let assert Ok(done) =
     graph.await(handle, within: duration.milliseconds(30_000))
   let assert graph.Completed("approved") = done.status

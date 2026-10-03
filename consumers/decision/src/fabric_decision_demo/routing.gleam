@@ -6,6 +6,7 @@ import fabric/graph/operation
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/tool
 import gleam/time/duration
 import json/blueprint/codec
 
@@ -29,7 +30,7 @@ pub fn decision_codec() -> codec.Codec(Decision) {
 pub fn runtime(
   identity: run.DefinitionId,
   runs: store.Store,
-  context: fn() -> context,
+  context: fn(run.RunId) -> context,
   reviewer: operation.Operation(context, String, receipt),
   interpret: fn(receipt) -> Result(Decision, String),
 ) -> graph.Runtime(context, String, String) {
@@ -48,25 +49,25 @@ pub fn runtime(
       [node_id("publish"), node_id("revise")],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      identity,
-      node_id("review"),
-      [
-        review,
-        finish("publish", "approved"),
-        finish("revise", "needs revision"),
-      ],
-      codec.string(),
-      codec.string(),
-      2,
-    ))
-  let assert Ok(runtime) =
-    graph.new(spec, runs, context, fn(_, _) { Ok(policy.Allow) })
-    |> graph.with_timeouts(
-      callbacks: duration.milliseconds(5000),
-      operations: duration.milliseconds(30_000),
-      commands: duration.milliseconds(1000),
+    definition.build(
+      definition.new(
+        identity,
+        entry: node_id("review"),
+        nodes: [
+          review,
+          finish("publish", "approved"),
+          finish("revise", "needs revision"),
+        ],
+        state: codec.string(),
+        answer: codec.string(),
+      )
+      |> definition.with_max_activations(2),
     )
+  let runtime =
+    graph.new(spec, runs, context, fn(_, _) { Ok(policy.Allow) })
+    |> graph.with_callback_timeout(duration.milliseconds(5000))
+    |> graph.with_operation_timeout(run.After(duration.milliseconds(30_000)))
+    |> graph.with_command_timeout(duration.milliseconds(1000))
   runtime
 }
 
@@ -80,9 +81,7 @@ fn finish(
       codec.string(),
       codec.string(),
       fn(_, _, _) { Ok(answer) },
-      fn(_error: Nil) {
-        operation.DefiniteFailure("pure terminal operation cannot fail")
-      },
+      fn(_error: Nil) { tool.Explain("pure terminal operation cannot fail") },
     )
   definition.node(
     node_id(name),
@@ -94,6 +93,6 @@ fn finish(
 }
 
 fn node_id(name: String) -> definition.NodeId {
-  let assert Ok(id) = definition.node_id(name)
+  let id = definition.node_id(name)
   id
 }

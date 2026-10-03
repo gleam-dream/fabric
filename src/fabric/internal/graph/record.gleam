@@ -11,6 +11,7 @@ import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as g
 import fabric/internal/graph/fork as scope
 import fabric/internal/graph/fork_record
+import fabric/internal/record as agent_record
 import fabric/internal/run_id
 import fabric/run
 import gleam/dynamic/decode.{type Decoder}
@@ -19,10 +20,11 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import sinal/correlation
 
 pub const format = "fabric.graph"
 
-pub const version = 14
+pub const version = 15
 
 pub type EncodeError {
   InvalidState(detail: String)
@@ -90,6 +92,7 @@ pub fn encode(state: g.State) -> Result(String, EncodeError) {
         "family_budget",
         json.nullable(state.family_budget, budget_config.encode_declaration),
       ),
+      ..lineage_json(state)
     ])
     |> json.to_string,
   )
@@ -97,6 +100,24 @@ pub fn encode(state: g.State) -> Result(String, EncodeError) {
 
 @external(erlang, "fabric_ffi", "random_id")
 fn write_token() -> String
+
+/// The run's correlation and root, each only when it is not the default a
+/// reader derives from the run id: a root run with its derived
+/// correlation stores neither.
+fn lineage_json(state: g.State) -> List(#(String, Json)) {
+  list.flatten([
+    case state.correlation == correlation.from_key(state.run) {
+      True -> []
+      False -> [
+        #("correlation", json.string(correlation.to_string(state.correlation))),
+      ]
+    },
+    case state.root == state.run {
+      True -> []
+      False -> [#("root", json.string(state.root))]
+    },
+  ])
+}
 
 fn tag(name: String, fields: List(#(String, Json))) -> Json {
   json.object([#("tag", json.string(name)), ..fields])
@@ -163,6 +184,12 @@ fn activation_json(activation: g.Activation) -> Json {
     #("attempt", json.int(activation.attempt)),
     #("prepared", prepared_json(activation.prepared)),
     #("deadline", json.nullable(activation.deadline, json.int)),
+    ..case activation.approvals {
+      [] -> []
+      approvals -> [
+        #("approvals", json.array(approvals, agent_record.approval)),
+      ]
+    }
   ])
 }
 
@@ -178,6 +205,10 @@ fn approval_json(approval: g.Approval) -> Json {
         #("version", json.int(approval.requirement.version)),
       ]),
     ),
+    ..case approval.expires {
+      None -> []
+      Some(at) -> [#("expires_at", json.int(at))]
+    }
   ])
 }
 
@@ -204,6 +235,7 @@ fn problem_json(problem: g.Problem) -> Json {
 fn fault_json(fault: g.Fault) -> Json {
   case fault {
     g.DeadlineExpired(due) -> tag("deadline_expired", [#("due", json.int(due))])
+    g.ApprovalExpired(due) -> tag("approval_expired", [#("due", json.int(due))])
     g.FamilyBudget(reason) ->
       tag("family_budget", [#("denial", budget_config.encode_denial(reason))])
     g.Denied(reason) -> tag("denied", [#("reason", json.string(reason))])
@@ -514,7 +546,12 @@ fn activation_decoder() -> Decoder(g.Activation) {
     None,
     decode.optional(decode.int),
   )
-  decode.success(g.Activation(id, attempt, prepared, deadline))
+  use approvals <- decode.optional_field(
+    "approvals",
+    [],
+    decode.list(agent_record.approval_decoder()),
+  )
+  decode.success(g.Activation(id, attempt, prepared, deadline, approvals))
 }
 
 fn approval_decoder() -> Decoder(g.Approval) {
@@ -526,7 +563,12 @@ fn approval_decoder() -> Decoder(g.Approval) {
     use version <- decode.field("version", decode.int)
     decode.success(run.Requirement(name, version))
   })
-  decode.success(g.Approval(activation, attempt, revision, requirement))
+  use expires <- decode.optional_field(
+    "expires_at",
+    None,
+    decode.optional(decode.int),
+  )
+  decode.success(g.Approval(activation, attempt, revision, requirement, expires))
 }
 
 fn route_decoder() -> Decoder(g.Route) {
@@ -568,6 +610,11 @@ fn fault_decoder() -> Decoder(g.Fault) {
       Ok({
         use due <- decode.field("due", decode.int)
         decode.success(g.DeadlineExpired(due))
+      })
+    "approval_expired" ->
+      Ok({
+        use due <- decode.field("due", decode.int)
+        decode.success(g.ApprovalExpired(due))
       })
     "denied" ->
       Ok(
@@ -814,19 +861,36 @@ fn state_decoder(found: Int) -> Decoder(g.State) {
       )
   })
   use family_budget <- decode.then(budget_config.field(found >= 6))
+  // Records before version 15 hold neither: their correlation derives from
+  // the run id, and a child's root is its parent (the root of a family one
+  // level deep), as for agent records.
+  use correlation <- decode.optional_field(
+    "correlation",
+    correlation.from_key(run),
+    agent_record.correlation_decoder(),
+  )
+  let default_root = case parent {
+    Some(run.GraphParent(id, _))
+    | Some(run.GraphBranch(id, _, _))
+    | Some(run.AgentParent(id, _)) -> run.id_to_string(id)
+    None -> run
+  }
+  use root <- decode.optional_field("root", default_root, decode.string)
   decode.success(g.State(
-    run,
-    definition,
-    incarnation,
-    allocated,
-    approvals,
-    value,
-    receipts,
-    phase,
-    initial,
-    parent,
-    family_budget,
-    forks,
+    run:,
+    definition:,
+    incarnation:,
+    allocated:,
+    approvals_issued: approvals,
+    value:,
+    receipts:,
+    phase:,
+    initial:,
+    parent:,
+    family_budget:,
+    forks:,
+    correlation:,
+    root:,
   ))
 }
 

@@ -427,7 +427,7 @@ pub fn front_desk_policy(
   case action.target {
     policy.StartAgent(..) ->
       Ok(policy.RequireApproval(run.Requirement("committee", 1)))
-    policy.InvokeTool -> desk_policy(member, action)
+    _ -> desk_policy(member, action)
   }
 }
 

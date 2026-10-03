@@ -13,7 +13,7 @@ import fabric_jobs_demo/client
 import fabric_jobs_demo/support
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/time/duration
 import gleeunit/should
@@ -50,14 +50,14 @@ fn settle(runs, build, id) {
       [sweeper.graph(run.DefinitionId("artifact-submit-and-wait", 1), build)],
       every: duration.milliseconds(20),
     )
-  let done = await_expired(graph.attach(build(runs), id), 200)
+  let done = await_expired(open_graph(build(runs), id), 200)
   process.unlink(started)
   process.kill(started)
   done
 }
 
 fn await_expired(handle, remaining) {
-  let assert Ok(snapshot) = graph.read(handle)
+  let assert Ok(snapshot) = graph.snapshot(handle)
   case snapshot.status, remaining {
     graph.Expired(..), _ -> snapshot
     _, n if n > 0 -> {
@@ -72,11 +72,16 @@ pub fn a_restarted_sweeper_expires_and_stops_a_real_owned_job_test() {
   let storage = conformance.leased_memory()
   let #(owner, runs) = support.owned(fn() { leased(storage.backend) })
   let assert Ok(handle) =
-    graph.start_with_budget(
-      demo.deadline_runtime(runs, submit, stop, support.url(), 60_000),
+    graph.start(
+      graph.with_family_budget(
+        demo.deadline_runtime(runs, submit, stop, support.url(), 60_000),
+        budget.limits(work: 2)
+          |> budget.with_children(1)
+          |> budget.with_depth(1),
+      ),
       id("deadline-real-job"),
       demo.Submitting(client.Request("never published after expiry", 5000)),
-      budget.limits(work: 2) |> budget.with_children(1) |> budget.with_depth(1),
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
@@ -119,6 +124,7 @@ pub fn a_lost_deadline_stop_acknowledgment_is_observed_without_repeating_the_req
       demo.deadline_runtime(runs, submit, request, support.url(), 60_000),
       id("deadline-lost-stop"),
       demo.Submitting(client.Request("expired lost acknowledgment", 5000)),
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
@@ -139,7 +145,7 @@ pub fn a_lost_deadline_stop_acknowledgment_is_observed_without_repeating_the_req
       60_000,
     )
   }
-  let handle = graph.attach(build(runs), id("deadline-lost-stop"))
+  let handle = open_graph(build(runs), id("deadline-lost-stop"))
   let assert Ok(recovered) = graph.recover(handle)
   let assert graph.CancellingJob(
     _,
@@ -149,4 +155,12 @@ pub fn a_lost_deadline_stop_acknowledgment_is_observed_without_repeating_the_req
   saved_due |> should.equal(due)
   settle(runs, build, id("deadline-lost-stop")).status
   |> should.equal(graph.Expired(due, graph.JobStopped(reference)))
+}
+
+fn open_graph(
+  runtime: graph.Runtime(context, state, answer),
+  id: run.RunId,
+) -> graph.Handle(context, state, answer) {
+  let assert Ok(handle) = graph.open(runtime, id)
+  handle
 }

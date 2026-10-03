@@ -17,6 +17,7 @@ import fabric/support
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
+import fabric/tool
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
@@ -25,7 +26,7 @@ import gleeunit/should
 import json/blueprint/codec
 
 fn node_id() -> definition.NodeId {
-  let assert Ok(id) = definition.node_id("work")
+  let id = definition.node_id("work")
   id
 }
 
@@ -52,15 +53,17 @@ fn member(
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("fork-leaf", 1),
-      node_id(),
-      [node],
-      codec.int(),
-      codec.int(),
-      1,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("fork-leaf", 1),
+        entry: node_id(),
+        nodes: [node],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 fn parent(runs: store.Store) {
@@ -76,21 +79,22 @@ fn parent_with(
     Result(definition.Command(List(Int), List(Int)), String),
 ) {
   let values = codec.list(codec.int())
-  let assert Ok(op) =
-    graph.map(run.DefinitionId("expiring-map", 1), child, 3, 2)
-  let assert Ok(op) = operation.with_deadline(op, duration.milliseconds(60_000))
+  let op = graph.map(run.DefinitionId("expiring-map", 1), child, 3, 2)
+  let op = operation.with_deadline(op, run.After(duration.milliseconds(60_000)))
   let node =
     definition.node(node_id(), op, fn(values) { Ok(values) }, accept, [])
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("fork-deadline", 1),
-      node_id(),
-      [node],
-      values,
-      values,
-      1,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("fork-deadline", 1),
+        entry: node_id(),
+        nodes: [node],
+        state: values,
+        answer: values,
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 fn action(runs, perform) {
@@ -116,7 +120,12 @@ pub fn a_failed_join_cannot_reconcile_past_its_original_deadline_test() {
       Error("join needs correction")
     })
   let assert Ok(root) =
-    graph.start(runtime, support.id("blocked-fork-join"), [1])
+    graph.start(
+      runtime,
+      support.id("blocked-fork-join"),
+      [1],
+      correlation: None,
+    )
   let assert Ok(blocked) =
     graph.await(root, within: duration.milliseconds(5000))
   let assert graph.Blocked(reference, graph.InvalidResult(output, _)) =
@@ -154,7 +163,12 @@ pub fn a_failed_join_reconciles_before_deadline_without_repeating_members_test()
       },
     )
   let assert Ok(root) =
-    graph.start(runtime, support.id("corrected-fork-join"), [1, 2])
+    graph.start(
+      runtime,
+      support.id("corrected-fork-join"),
+      [1, 2],
+      correlation: None,
+    )
   let assert Ok(blocked) =
     graph.await(root, within: duration.milliseconds(5000))
   let assert graph.Blocked(reference, graph.InvalidResult(output, _)) =
@@ -177,7 +191,12 @@ pub fn a_join_callback_crossing_the_deadline_keeps_results_without_routing_test(
       Ok(definition.Finish(state, [999]))
     })
   let assert Ok(root) =
-    graph.start(runtime, support.id("late-fork-join"), [1, 2])
+    graph.start(
+      runtime,
+      support.id("late-fork-join"),
+      [1, 2],
+      correlation: None,
+    )
   let assert Ok(done) = graph.await(root, within: duration.milliseconds(5000))
   let assert Some(due) = done.deadline
   done.status |> should.equal(graph.Expired(due, graph.ForkSettled(1)))
@@ -197,12 +216,17 @@ pub fn expired_uncertain_fork_retains_cleanup_and_reconciles_without_replay_test
   let child =
     action(runs, fn(_) {
       probe.record(calls, "effect")
-      Error(operation.UncertainEffect("effect outcome unknown"))
+      Error(tool.Uncertain("effect outcome unknown"))
     })
   let runtime =
     parent_with(runs, child, fn(_, _) { panic as "expired join cannot route" })
   let assert Ok(root) =
-    graph.start(runtime, support.id("uncertain-fork-deadline"), [1, 2, 3])
+    graph.start(
+      runtime,
+      support.id("uncertain-fork-deadline"),
+      [1, 2, 3],
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(root, within: duration.milliseconds(5000))
   let assert Some(due) = waiting.deadline
@@ -228,7 +252,7 @@ pub fn expired_uncertain_fork_retains_cleanup_and_reconciles_without_replay_test
       case item.0.status {
         fork.Admitted(fork.Uncertain(_)) -> {
           let assert Ok(branch) = graph.branch(root, 1, item.1, child)
-          let assert Ok(stopped) = graph.read(branch)
+          let assert Ok(stopped) = graph.snapshot(branch)
           let assert graph.Cancelled(graph.Unresolved(reference, _)) =
             stopped.status
           graph.reconcile(branch, reference, "42") |> should.be_ok
@@ -262,7 +286,8 @@ pub fn overdue_fork_recovers_the_same_children_and_withdraws_pending_members_tes
   let #(owner, #(runs, root)) =
     restart.owned(fn() {
       let runs = nodes.node(memory.backend, "before", 300_000)
-      let assert Ok(root) = graph.start(parent(runs), id, [1, 2, 3])
+      let assert Ok(root) =
+        graph.start(parent(runs), id, [1, 2, 3], correlation: None)
       #(runs, root)
     })
   let assert Ok(waiting) =
@@ -278,8 +303,8 @@ pub fn overdue_fork_recovers_the_same_children_and_withdraws_pending_members_tes
   restart.crash(owner, runs)
   memory.advance(60_001)
   let runs = nodes.node(memory.backend, "after", 300_000)
-  let root = graph.attach(parent(runs), id)
-  let assert Ok(before_recovery) = graph.read(root)
+  let root = support.open_graph(parent(runs), id)
+  let assert Ok(before_recovery) = graph.snapshot(root)
   before_recovery.deadline |> should.equal(Some(due))
   let assert graph.Fork(_, _) = before_recovery.status
   graph.recover(root) |> should.be_ok
@@ -296,7 +321,7 @@ pub fn overdue_fork_recovers_the_same_children_and_withdraws_pending_members_tes
   ])
   graph.branch(root, 1, 3, leaf(runs)) |> should.be_error
   list.each(branches, fn(id) {
-    let assert Ok(stopped) = graph.read(graph.attach(leaf(runs), id))
+    let assert Ok(stopped) = graph.snapshot(support.open_graph(leaf(runs), id))
     stopped.status |> should.equal(graph.Cancelled(graph.BeforeStart))
   })
   let assert Ok(row) = store_core.get(runs, run.id_to_string(id))

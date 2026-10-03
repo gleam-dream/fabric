@@ -168,7 +168,7 @@ pub fn graph_activity_waits_and_unresolved_cancellation_are_distinct_test() {
       approvals_issued: 1,
       phase: graph.AwaitingApproval(
         a,
-        graph.Approval(a.id, a.attempt, 1, run.Requirement("review", 1)),
+        graph.Approval(a.id, a.attempt, 1, run.Requirement("review", 1), None),
       ),
     ),
   )

@@ -2,6 +2,7 @@ import fabric/graph/operation
 import fabric/internal/graph/controller as graph
 import fabric/policy
 import fabric/run
+import fabric/support
 import gleam/list
 import gleam/option.{None}
 import gleeunit/should
@@ -38,7 +39,11 @@ fn admitted(state: graph.State) -> graph.State {
   let assert #(state, [graph.Dispatch(_)]) =
     advance(
       state,
-      graph.Inspected(graph.reference(state, activation), Ok(policy.Allow)),
+      graph.Inspected(
+        graph.reference(state, activation),
+        Ok(policy.Allow),
+        None,
+      ),
     )
   state
 }
@@ -170,6 +175,7 @@ pub fn approval_requires_a_current_reference_and_fresh_requirement_test() {
       graph.Inspected(
         graph.reference(state, activation),
         Ok(policy.RequireApproval(requirement)),
+        None,
       ),
     )
   let assert graph.AwaitingApproval(_, reference) = waiting.phase
@@ -177,17 +183,41 @@ pub fn approval_requires_a_current_reference_and_fresh_requirement_test() {
   let assert #(changed, []) =
     advance(
       waiting,
-      graph.Approved(reference, Ok(policy.RequireApproval(updated))),
+      graph.Approved(
+        reference,
+        Ok(policy.RequireApproval(updated)),
+        support.reviewer("reviewer"),
+        None,
+      ),
     )
   let assert graph.AwaitingApproval(_, next) = changed.phase
   next.revision |> should.equal(reference.revision + 1)
-  graph.step(changed, graph.Approved(reference, Ok(policy.Allow)))
+  graph.step(
+    changed,
+    graph.Approved(
+      reference,
+      Ok(policy.Allow),
+      support.reviewer("reviewer"),
+      None,
+    ),
+  )
   |> should.equal(Error(graph.StaleApproval))
   let assert Ok(#(restored, [])) = graph.recover(changed)
   let assert #(queued, [graph.Dispatch(_)]) =
-    advance(restored, graph.Approved(next, Ok(policy.RequireApproval(updated))))
+    advance(
+      restored,
+      graph.Approved(
+        next,
+        Ok(policy.RequireApproval(updated)),
+        support.reviewer("reviewer"),
+        None,
+      ),
+    )
   let assert graph.Queued(_) = queued.phase
-  graph.step(queued, graph.Approved(next, Ok(policy.Allow)))
+  graph.step(
+    queued,
+    graph.Approved(next, Ok(policy.Allow), support.reviewer("reviewer"), None),
+  )
   |> should.equal(Error(graph.WrongPhase))
 }
 
@@ -200,6 +230,7 @@ pub fn policy_failure_and_denial_release_no_body_test() {
       graph.Inspected(
         graph.reference(state, activation),
         Ok(policy.Deny("blocked")),
+        None,
       ),
     )
   denied.phase
@@ -212,6 +243,7 @@ pub fn policy_failure_and_denial_release_no_body_test() {
       graph.Inspected(
         graph.reference(state, activation),
         Error("policy offline"),
+        None,
       ),
     )
   failed.phase

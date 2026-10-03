@@ -14,11 +14,13 @@ import fabric/internal/graph/attachment
 import fabric/internal/graph/fork as scope
 import fabric/internal/run_id
 import fabric/policy
+import fabric/reviewer.{type Reviewer}
 import fabric/run
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import sinal/correlation.{type Correlation}
 
 pub type Prepared {
   Prepared(
@@ -31,20 +33,32 @@ pub type Prepared {
   )
 }
 
+/// `approvals` are the answered approval requests of this attempt, oldest
+/// first: who approved or rejected it, or that it expired.
 pub type Activation {
-  Activation(id: Int, attempt: Int, prepared: Prepared, deadline: Option(Int))
+  Activation(
+    id: Int,
+    attempt: Int,
+    prepared: Prepared,
+    deadline: Option(Int),
+    approvals: List(run.Approval),
+  )
 }
 
 pub type Reference {
   Reference(incarnation: Int, activation: Int, attempt: Int)
 }
 
+/// A waiting approval request. `expires` is its deadline in UTC Unix
+/// milliseconds by the store's clock; `None` never expires (also every
+/// request stored before deadlines existed).
 pub type Approval {
   Approval(
     activation: Int,
     attempt: Int,
     revision: Int,
     requirement: run.Requirement,
+    expires: Option(Int),
   )
 }
 
@@ -82,6 +96,8 @@ pub type Fault {
   OperationFailed(reason: String)
   FamilyBudget(quota.Denial)
   DeadlineExpired(due: Int)
+  /// The approval request expired unanswered at `due`.
+  ApprovalExpired(due: Int)
 }
 
 pub type Outcome {
@@ -143,11 +159,18 @@ pub type State {
     parent: Option(run.Parent),
     family_budget: Option(budget.Declaration),
     forks: List(fork.Snapshot),
+    /// Carried in every event and operation invocation of the run, and
+    /// inherited by its child runs.
+    correlation: Correlation,
+    /// The id of the family's root run: the run itself for a root.
+    root: String,
   )
 }
 
+/// `expires` is the deadline an approval request issued by the event gets
+/// (the runner computes it from the store's clock); `None` never expires.
 pub type Event {
-  Inspected(Reference, Result(policy.Decision, String))
+  Inspected(Reference, Result(policy.Decision, String), expires: Option(Int))
   BudgetRefused(Reference, quota.Denial)
   BodyStarted(Reference)
   Returned(Reference, output: String, decision: Decision)
@@ -155,8 +178,15 @@ pub type Event {
   CancelledResult(Reference, output: String)
   FailedBody(Reference, Fault)
   Unresolved(Reference, Problem)
-  Approved(Approval, Result(policy.Decision, String))
-  Rejected(Approval, reason: String)
+  Approved(
+    Approval,
+    Result(policy.Decision, String),
+    reviewer: Reviewer,
+    expires: Option(Int),
+  )
+  Rejected(Approval, reason: String, reviewer: Reviewer)
+  /// The approval request's deadline passed at `now` (store clock).
+  ExpireApproval(Approval, now: Int)
   Reconciled(activation: Int, attempt: Int, output: String, decision: Decision)
   JobCompleted(Reference, output: String, decision: Decision)
   JobFailed(Reference, reason: String)
@@ -207,11 +237,31 @@ pub type Rejection {
   AlreadyEnded
 }
 
+/// A root run's first state, with the correlation derived from its id.
 pub fn start(
   run: String,
   definition: Definition,
   value: String,
   entry: Prepared,
+) -> Result(#(State, List(Effect)), Rejection) {
+  start_correlated(
+    run,
+    definition,
+    value,
+    entry,
+    correlation.from_key(run),
+    run,
+  )
+}
+
+/// `start` with the run's correlation and its family's root.
+pub fn start_correlated(
+  run: String,
+  definition: Definition,
+  value: String,
+  entry: Prepared,
+  correlation: Correlation,
+  root: String,
 ) -> Result(#(State, List(Effect)), Rejection) {
   use _ <- result.try(check_definition(definition))
   use _ <- result.try(check_prepared(entry))
@@ -219,22 +269,24 @@ pub fn start(
     Ok(_) -> Ok(Nil)
     Error(Nil) -> Error(InvalidDefinition("invalid run identity"))
   })
-  let activation = Activation(1, 1, entry, None)
+  let activation = Activation(1, 1, entry, None, [])
   Ok(
     #(
       State(
-        run,
-        definition,
-        1,
-        1,
-        0,
-        value,
-        [],
-        Ready(activation),
-        value,
-        None,
-        None,
-        [],
+        run:,
+        definition:,
+        incarnation: 1,
+        allocated: 1,
+        approvals_issued: 0,
+        value:,
+        receipts: [],
+        phase: Ready(activation),
+        initial: value,
+        parent: None,
+        family_budget: None,
+        forks: [],
+        correlation:,
+        root:,
       ),
       [
         Inspect(activation),
@@ -543,9 +595,9 @@ pub fn step(
       use _ <- result.try(matches(state, activation, ref))
       Ok(cancelled_result(state, activation, output))
     }
-    Inspected(ref, decision), Ready(activation) -> {
+    Inspected(ref, decision, expires), Ready(activation) -> {
       use _ <- result.try(matches(state, activation, ref))
-      inspect(state, activation, decision)
+      inspect(state, activation, decision, expires)
     }
     BudgetRefused(ref, reason), Ready(activation)
     | BudgetRefused(ref, reason), AwaitingApproval(activation, _)
@@ -581,19 +633,35 @@ pub fn step(
       use _ <- result.try(matches(state, activation, ref))
       Ok(ended(state, Cancelled(activation, UnresolvedCancellation(problem))))
     }
-    Approved(answer, decision), AwaitingApproval(activation, current) -> {
+    Approved(answer, decision, reviewer, expires),
+      AwaitingApproval(activation, current)
+    -> {
       use _ <- result.try(approval_matches(answer, current))
+      let activation =
+        answered(activation, current, run.Approve, Some(reviewer))
       case decision {
         Ok(policy.Allow) -> Ok(queue(state, activation))
         Ok(policy.RequireApproval(requirement))
           if requirement == current.requirement
         -> Ok(queue(state, activation))
-        decision -> inspect(state, activation, decision)
+        decision -> inspect(state, activation, decision, expires)
       }
     }
-    Rejected(answer, reason), AwaitingApproval(activation, current) -> {
+    Rejected(answer, reason, reviewer), AwaitingApproval(activation, current) -> {
       use _ <- result.try(approval_matches(answer, current))
+      let activation =
+        answered(activation, current, run.Reject(reason), Some(reviewer))
       Ok(ended(state, Failed(activation, Denied(reason))))
+    }
+    ExpireApproval(answer, now), AwaitingApproval(activation, current) -> {
+      use _ <- result.try(approval_matches(answer, current))
+      case current.expires {
+        Some(due) if now >= due -> {
+          let activation = answered(activation, current, run.Expired, None)
+          Ok(ended(state, Failed(activation, ApprovalExpired(due))))
+        }
+        _ -> Error(WrongPhase)
+      }
     }
     Reconciled(id, attempt, output, decision), Blocked(activation, _) -> {
       use _ <- result.try(matches_activation(activation, id, attempt))
@@ -688,10 +756,26 @@ pub fn step(
   }
 }
 
+/// `activation` with the answer to `approval` recorded.
+fn answered(
+  activation: Activation,
+  approval: Approval,
+  answer: run.Answer,
+  reviewer: Option(Reviewer),
+) -> Activation {
+  Activation(
+    ..activation,
+    approvals: list.append(activation.approvals, [
+      run.Approval(approval.requirement, approval.revision, answer, reviewer),
+    ]),
+  )
+}
+
 fn inspect(
   state: State,
   activation: Activation,
   decision: Result(policy.Decision, String),
+  expires: Option(Int),
 ) -> Result(#(State, List(Effect)), Rejection) {
   case decision {
     Error(reason) -> Ok(ended(state, Failed(activation, PolicyFailed(reason))))
@@ -708,7 +792,13 @@ fn inspect(
         False -> {
           let revision = state.approvals_issued + 1
           let approval =
-            Approval(activation.id, activation.attempt, revision, requirement)
+            Approval(
+              activation.id,
+              activation.attempt,
+              revision,
+              requirement,
+              expires,
+            )
           Ok(
             #(
               State(
@@ -914,7 +1004,7 @@ fn complete(
       case state.allocated >= state.definition.max_activations {
         True -> Ok(ended(state, Exhausted(next)))
         False -> {
-          let next = Activation(state.allocated + 1, 1, next, None)
+          let next = Activation(state.allocated + 1, 1, next, None, [])
           Ok(
             #(State(..state, allocated: next.id, phase: Ready(next)), [
               Inspect(next),
@@ -976,7 +1066,12 @@ pub fn recover(state: State) -> Result(#(State, List(Effect)), Rejection) {
     Running(activation) ->
       case activation.prepared.recovery {
         ReplayInterrupted(max) if activation.attempt < max -> {
-          let next = Activation(..activation, attempt: activation.attempt + 1)
+          let next =
+            Activation(
+              ..activation,
+              attempt: activation.attempt + 1,
+              approvals: [],
+            )
           Ok(#(State(..recovered, phase: Ready(next)), [Inspect(next)]))
         }
         RequireReconciliation | ReplayInterrupted(_) ->
@@ -1098,7 +1193,8 @@ fn approval_matches(
   answer: Approval,
   current: Approval,
 ) -> Result(Nil, Rejection) {
-  case answer == current {
+  // The deadline is the stored one; a reference names the request alone.
+  case Approval(..answer, expires: current.expires) == current {
     True -> Ok(Nil)
     False -> Error(StaleApproval)
   }

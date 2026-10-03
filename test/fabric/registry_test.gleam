@@ -205,7 +205,7 @@ pub fn a_policy_reads_the_typed_input_of_its_tool_test() {
   let action = fn(tool, arguments) {
     policy.Action(
       support.id("run-1"),
-      run.ActionId(1, "t"),
+      policy.ToolCall(run.ActionId(1, "t")),
       tool,
       arguments,
       policy.InvokeTool,

@@ -31,7 +31,7 @@ fn waiting_family() {
   let assert Ok(Nil) = store.start(runs)
   let #(parent, _) = graph_run_test.managed_pair(runs)
   let assert Ok(id) = run.parse_id("migration-parent")
-  let assert Ok(handle) = graph.start(parent, id, 41)
+  let assert Ok(handle) = graph.start(parent, id, 41, correlation: None)
   let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
   let assert graph.Child(reference, child.Approval(_)) = waiting.status
   let row = await_parked(runs, run.id_to_string(id), 3000)
@@ -172,7 +172,7 @@ pub fn refreshing_a_scheduled_wait_preserves_its_last_claim_time_test() {
   let runtime =
     graph_run_test.scheduled_job(runs, 60_000, fn(_) { Ok(job.Pending) })
   let assert Ok(id) = run.parse_id("refresh-poll")
-  let assert Ok(handle) = graph.start(runtime, id, "receipt")
+  let assert Ok(handle) = graph.start(runtime, id, "receipt", correlation: None)
   let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
   let assert graph.AwaitingJob(_) = waiting.status
   let backend = fabric_postgres.backend(settings)
@@ -226,7 +226,7 @@ pub fn upgrading_schema_five_preserves_execution_and_scheduled_observation_test(
   let runtime =
     graph_run_test.scheduled_job(runs, 60_000, fn(_) { Ok(job.Pending) })
   let assert Ok(id) = run.parse_id("upgrade-poll")
-  let assert Ok(handle) = graph.start(runtime, id, "receipt")
+  let assert Ok(handle) = graph.start(runtime, id, "receipt", correlation: None)
   let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
   let assert graph.AwaitingJob(_) = waiting.status
   let row = await_parked(runs, "upgrade-poll", 3000)

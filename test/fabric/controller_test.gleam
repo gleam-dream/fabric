@@ -27,7 +27,7 @@ fn bank_policy(
   _context: Nil,
   action: Action,
 ) -> Result(policy.Decision, String) {
-  case action.tool {
+  case action.name {
     "transfer_funds" ->
       case
         string.contains(action.arguments_json, "mallory"),

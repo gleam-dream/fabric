@@ -222,7 +222,7 @@ pub fn target(registry: Registry(context), name: String) -> policy.Target {
 pub fn is_delegation(registry: Registry(context), name: String) -> Bool {
   case target(registry, name) {
     policy.StartAgent(..) -> True
-    policy.InvokeTool -> False
+    policy.InvokeTool | policy.RunOperation(..) -> False
   }
 }
 

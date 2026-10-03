@@ -12,10 +12,12 @@ import fabric_jobs_demo/client
 import fabric_jobs_demo/support
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{None}
 import gleam/time/duration
 import gleeunit
 import gleeunit/should
 import json/blueprint/codec
+import sinal/correlation
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -28,13 +30,16 @@ pub fn a_restarted_sweeper_observes_the_real_job_without_manual_polling_test() {
       let runs = leased(storage.backend, "before")
       let runtime = demo.scheduled_runtime(runs, send, support.url())
       let assert Ok(handle) =
-        graph.start_with_budget(
-          runtime,
+        graph.start(
+          graph.with_family_budget(
+            runtime,
+            budget.limits(work: 2)
+              |> budget.with_children(1)
+              |> budget.with_depth(1),
+          ),
           id("scheduled-real-job"),
           demo.Submitting(client.Request("scheduled result", 1000)),
-          budget.limits(work: 2)
-            |> budget.with_children(1)
-            |> budget.with_depth(1),
+          correlation: None,
         )
       #(runs, handle)
     })
@@ -52,7 +57,7 @@ pub fn a_restarted_sweeper_observes_the_real_job_without_manual_polling_test() {
       support.url(),
     )
   }
-  let handle = graph.attach(build(runs), id("scheduled-real-job"))
+  let handle = open_graph(build(runs), id("scheduled-real-job"))
   let assert Ok(sweeper_pid) =
     sweeper.start(
       runs,
@@ -82,7 +87,7 @@ fn leased(backend, node) {
 }
 
 fn await_scheduled(handle, left) {
-  let assert Ok(snapshot) = graph.read(handle)
+  let assert Ok(snapshot) = graph.snapshot(handle)
   case snapshot.status, left {
     graph.Completed(_), _ -> snapshot
     _, n if n > 0 -> {
@@ -131,6 +136,7 @@ pub fn an_acceptance_receipt_does_not_claim_business_completion_test() {
       runtime(memory(), send),
       id("receipt-before-work"),
       client.Request("Fabric composes jobs", 2000),
+      correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
@@ -140,7 +146,7 @@ pub fn an_acceptance_receipt_does_not_claim_business_completion_test() {
   |> should.equal(Ok("FABRIC COMPOSES JOBS"))
   digest |> should.equal(support.sha256("FABRIC COMPOSES JOBS"))
   // The receipt remains the graph answer after the service completes its work.
-  graph.read(handle) |> should.equal(Ok(done))
+  graph.snapshot(handle) |> should.equal(Ok(done))
 }
 
 pub fn lost_acceptance_acknowledgement_replays_the_same_logical_submission_test() {
@@ -159,14 +165,15 @@ pub fn lost_acceptance_acknowledgement_replays_the_same_logical_submission_test(
       runtime(runs, submit),
       id("lost-acceptance"),
       client.Request("survives Fabric", 1000),
+      correlation: None,
     )
   let assert Ok(receipt) = process.receive(accepted, 5000)
-  let assert Ok(before) = graph.read(handle)
+  let assert Ok(before) = graph.snapshot(handle)
   before.receipts |> should.equal([])
   client.read(support.url(), receipt) |> should.equal(Ok(client.Queued))
   support.crash(owner, runs)
   let runs = support.directory(directory)
-  let handle = graph.attach(runtime(runs, send), id("lost-acceptance"))
+  let handle = open_graph(runtime(runs, send), id("lost-acceptance"))
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(receipt))
@@ -189,6 +196,7 @@ pub fn a_saved_receipt_survives_restart_without_another_submission_test() {
           runtime(runs, send),
           id("saved-receipt"),
           client.Request("saved", 0),
+          correlation: None,
         )
       #(runs, handle)
     })
@@ -198,7 +206,7 @@ pub fn a_saved_receipt_survives_restart_without_another_submission_test() {
   let runs = support.directory(directory)
   let restored =
     runtime(runs, fn(_, _) { panic as "saved acceptance must not submit again" })
-  let handle = graph.attach(restored, id("saved-receipt"))
+  let handle = open_graph(restored, id("saved-receipt"))
   let assert Ok(recovered) = graph.recover(handle)
   recovered.status |> should.equal(graph.Completed(receipt))
   recovered.receipts |> should.equal(done.receipts)
@@ -222,6 +230,7 @@ pub fn an_unrepeatable_submission_stays_uncertain_until_receipt_reconciliation_t
       runtime,
       id("uncertain-submission"),
       client.Request("uncertain", 0),
+      correlation: None,
     )
   let assert Ok(receipt) = process.receive(accepted, 5000)
   support.crash(owner, runs)
@@ -231,7 +240,7 @@ pub fn an_unrepeatable_submission_stays_uncertain_until_receipt_reconciliation_t
       fn(_, _) { panic as "unsafe submission must not repeat" },
       operation.RequireReconciliation,
     )
-  let handle = graph.attach(runtime, id("uncertain-submission"))
+  let handle = open_graph(runtime, id("uncertain-submission"))
   let assert Ok(blocked) = graph.recover(handle)
   let assert graph.Blocked(reference, graph.EffectUncertain(_)) = blocked.status
   let assert Ok(encoded) = codec.encode_json(client.receipt_codec(), receipt)
@@ -241,7 +250,13 @@ pub fn an_unrepeatable_submission_stays_uncertain_until_receipt_reconciliation_t
 }
 
 pub fn concurrent_submissions_share_one_receipt_and_reject_different_input_test() {
-  let invocation = operation.Invocation(id("concurrent-submission"), 1, 1)
+  let invocation =
+    operation.Invocation(
+      id("concurrent-submission"),
+      1,
+      1,
+      correlation.from_key("concurrent-submission"),
+    )
   let request = client.Request("one artifact", 0)
   let assert Ok(before) = client.count(support.url())
   let replies = process.new_subject()
@@ -291,6 +306,7 @@ pub fn a_retained_job_attachment_survives_restart_without_resubmitting_test() {
           demo.waiting_runtime(runs, send, support.url()),
           id("attached-job"),
           demo.Submitting(client.Request("attached output", 1000)),
+          correlation: None,
         )
       #(runs, handle)
     })
@@ -307,7 +323,7 @@ pub fn a_retained_job_attachment_survives_restart_without_resubmitting_test() {
       fn(_, _) { panic as "attachment must reuse accepted receipt" },
       support.url(),
     )
-  let handle = graph.attach(restored, id("attached-job"))
+  let handle = open_graph(restored, id("attached-job"))
   let assert Ok(recovered) = graph.recover(handle)
   recovered.status |> should.equal(waiting.status)
   let done = poll_attachment(handle, reference, 150)
@@ -324,13 +340,14 @@ pub fn canceling_a_read_only_attachment_leaves_the_real_remote_job_running_test(
       demo.waiting_runtime(memory(), send, support.url()),
       id("detached-job"),
       demo.Submitting(client.Request("still external", 1000)),
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert demo.Accepted(receipt) = waiting.value
-  graph.cancel(handle) |> should.equal(Ok(Nil))
-  let assert Ok(cancelled) = graph.read(handle)
+  let assert Ok(_) = graph.cancel(handle)
+  let assert Ok(cancelled) = graph.snapshot(handle)
   cancelled.status
   |> should.equal(graph.Cancelled(graph.JobDetached(reference)))
   list.length(cancelled.receipts) |> should.equal(1)
@@ -338,5 +355,13 @@ pub fn canceling_a_read_only_attachment_leaves_the_real_remote_job_running_test(
   await_job(receipt, 150)
   |> should.equal(client.Complete(support.sha256("STILL EXTERNAL")))
   client.artifact(support.url(), receipt) |> should.equal(Ok("STILL EXTERNAL"))
-  graph.read(handle) |> should.equal(Ok(cancelled))
+  graph.snapshot(handle) |> should.equal(Ok(cancelled))
+}
+
+fn open_graph(
+  runtime: graph.Runtime(context, state, answer),
+  id: run.RunId,
+) -> graph.Handle(context, state, answer) {
+  let assert Ok(handle) = graph.open(runtime, id)
+  handle
 }

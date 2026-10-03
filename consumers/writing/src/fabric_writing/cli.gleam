@@ -4,6 +4,7 @@
 import fabric/graph
 import fabric/graph/llm
 import fabric/graph/operation
+import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric_typesafe
@@ -109,7 +110,7 @@ fn measure(
   let runtime = evaluation.runtime(runs, reviewer)
   let assert Ok(id) = run.parse_id("review")
   let started = now()
-  let assert Ok(handle) = graph.start(runtime, id, draft)
+  let assert Ok(handle) = graph.start(runtime, id, draft, correlation: None)
   let assert Ok(done) =
     graph.await(handle, within: duration.milliseconds(31_000))
   let elapsed = now() - started
@@ -201,7 +202,7 @@ fn workflow(
         )
       handle
     }
-    _ -> graph.attach(runtime, id)
+    _ -> open_graph(runtime, id)
   }
   let assert Ok(before) =
     graph.await(handle, within: duration.milliseconds(120_000))
@@ -216,11 +217,23 @@ fn workflow(
   }
   case mode, before.status {
     "approve", graph.AwaitingApproval(approval) -> {
-      let assert Ok(_) = graph.approve(handle, approval)
+      let assert Ok(_) =
+        graph.approve(
+          handle,
+          approval,
+          reviewer: as_reviewer("reviewer"),
+          context: Nil,
+        )
       Nil
     }
     "reject", graph.AwaitingApproval(approval) -> {
-      let assert Ok(_) = graph.reject(handle, approval, "operator rejected")
+      let assert Ok(_) =
+        graph.reject(
+          handle,
+          approval,
+          reason: "operator rejected",
+          reviewer: as_reviewer("reviewer"),
+        )
       Nil
     }
     "approve", _ | "reject", _ -> panic as "run has no current approval request"
@@ -263,4 +276,17 @@ fn workflow(
   ])
   |> json.to_string
   |> io.println
+}
+
+fn open_graph(
+  runtime: graph.Runtime(context, state, answer),
+  id: run.RunId,
+) -> graph.Handle(context, state, answer) {
+  let assert Ok(handle) = graph.open(runtime, id)
+  handle
+}
+
+fn as_reviewer(subject: String) -> reviewer.Reviewer {
+  let assert Ok(reviewer) = reviewer.new(subject)
+  reviewer
 }

@@ -6,6 +6,24 @@
 //// the graph or operation version when changing its meaning or codecs. The
 //// structural manifest detects topology and declared contract changes, not
 //// arbitrary changes to callback implementations.
+////
+//// ```gleam
+//// let review = definition.node_id("review")
+//// let assert Ok(graph) =
+////   definition.new(
+////     run.DefinitionId("publishing", 1),
+////     entry: review,
+////     nodes: [definition.node(review, check, select:, accept:, destinations: [])],
+////     state: draft_codec,
+////     answer: codec.string(),
+////   )
+////   |> definition.with_max_activations(20)
+////   |> definition.build
+//// ```
+////
+//// `build` checks the graph and the settings of every operation, and
+//// reports every problem at once. A graph runs at most 100 activations by
+//// default.
 
 import fabric/graph/fork
 import fabric/graph/job
@@ -19,12 +37,20 @@ import fabric/internal/graph/record
 import fabric/run
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/duration
 import json/blueprint/codec.{type Codec}
+
+/// How long a wait waits by default: 7 days, in milliseconds.
+const default_wait = 604_800_000
+
+/// The longest timer the runtime can set, in milliseconds.
+const longest_timer = 4_294_967_295
 
 pub opaque type NodeId {
   NodeId(String)
@@ -41,7 +67,11 @@ pub opaque type Node(context, state, answer) {
     operation: run.DefinitionId,
     kind: operation.Kind,
     recovery: operation.Recovery,
+    /// The deadline in milliseconds an admitted wait gets: the default, the
+    /// one set, or `None` for an activity or an unbounded wait.
     deadline: Option(Int),
+    /// The operation's settings that `build` refuses.
+    problems: List(operation.ConfigurationError),
     destinations: List(NodeId),
     prepare: fn(state) -> Result(String, Error),
     invoke: fn(context, Invocation, String) -> Result(String, Error),
@@ -58,7 +88,8 @@ pub opaque type Node(context, state, answer) {
   )
 }
 
-pub type Spec(context, state, answer) {
+/// A graph's description, checked by `build`. Build one with `new`.
+pub opaque type Spec(context, state, answer) {
   Spec(
     identity: run.DefinitionId,
     entry: NodeId,
@@ -84,13 +115,21 @@ type Graph(context, state, answer) {
   )
 }
 
+/// Why `build` refused a graph. This union may grow: match the variants you
+/// handle and keep a catch-all, or use `describe_build_error`.
 pub type BuildError {
-  InvalidNodeId
+  /// A node id is empty or only whitespace.
+  InvalidNodeId(name: String)
+  /// The graph's or an operation's name is empty or its version is not
+  /// positive.
   InvalidIdentity(run.DefinitionId)
+  /// `with_max_activations` below 1.
   InvalidActivationLimit(Int)
   DuplicateNode(NodeId)
   MissingEntry(NodeId)
   UnknownDestination(source: NodeId, destination: NodeId)
+  /// A setting of the operation of the node `node`.
+  InvalidOperation(node: NodeId, problem: operation.ConfigurationError)
 }
 
 pub type Error {
@@ -109,11 +148,11 @@ pub type Error {
   InvalidRecord(String)
 }
 
-pub fn node_id(name: String) -> Result(NodeId, BuildError) {
-  case string.trim(name) {
-    "" -> Error(InvalidNodeId)
-    _ -> Ok(NodeId(name))
-  }
+/// The node named `name`. `build` refuses an empty or blank one
+/// (`InvalidNodeId`); an acceptance callback that routes to a name no node
+/// has is refused (`DestinationNotAllowed`).
+pub fn node_id(name: String) -> NodeId {
+  NodeId(name)
 }
 
 pub fn node_name(id: NodeId) -> String {
@@ -163,12 +202,20 @@ pub fn node(
       )
     })
   }
+  let kind = operation.kind(op)
+  let recovery = operation.recovery(op)
+  let #(deadline, deadline_problems) = deadline_of(kind, contract.deadline(op))
   Node(
     id:,
     operation: operation.identity(op),
-    kind: operation.kind(op),
-    recovery: operation.recovery(op),
-    deadline: contract.deadline(op),
+    kind:,
+    recovery:,
+    deadline:,
+    problems: list.flatten([
+      recovery_problems(kind, recovery),
+      deadline_problems,
+      polling_problems(kind),
+    ]),
     destinations:,
     prepare: fn(state) {
       use value <- result.try(
@@ -199,60 +246,210 @@ pub fn node(
   )
 }
 
-pub fn build(
-  spec: Spec(context, state, answer),
-) -> Result(Definition(context, state, answer), BuildError) {
-  use _ <- result.try(check_identity(spec.identity))
-  use _ <- result.try(case spec.max_activations >= 1 {
-    True -> Ok(Nil)
-    False -> Error(InvalidActivationLimit(spec.max_activations))
-  })
-  use nodes <- result.try(index_nodes(spec.nodes, dict.new()))
-  use _ <- result.try(case dict.has_key(nodes, spec.entry) {
-    True -> Ok(Nil)
-    False -> Error(MissingEntry(spec.entry))
-  })
-  use _ <- result.try(
-    list.try_each(spec.nodes, fn(node) {
-      list.try_each(node.destinations, fn(destination) {
-        case dict.has_key(nodes, destination) {
-          True -> Ok(Nil)
-          False -> Error(UnknownDestination(node.id, destination))
-        }
-      })
-    }),
-  )
-  Ok(
-    compile(Graph(
-      spec.entry,
-      spec.state,
-      spec.answer,
-      nodes,
-      control.Definition(spec.identity, manifest(spec), spec.max_activations),
-    )),
-  )
-}
-
-fn check_identity(identity: run.DefinitionId) -> Result(Nil, BuildError) {
-  case string.trim(identity.name) != "" && identity.version >= 1 {
-    True -> Ok(Nil)
-    False -> Error(InvalidIdentity(identity))
+/// The deadline an admitted wait of `kind` gets, and the problems of what
+/// was asked: 7 days by default, none for an activity.
+fn deadline_of(
+  kind: operation.Kind,
+  asked: contract.Deadline,
+) -> #(Option(Int), List(operation.ConfigurationError)) {
+  case kind, asked {
+    operation.Activity, contract.DefaultDeadline -> #(None, [])
+    operation.Activity, contract.SetDeadline(_) -> #(None, [
+      operation.DeadlineRequiresWait,
+    ])
+    _, contract.DefaultDeadline -> #(Some(default_wait), [])
+    _, contract.SetDeadline(run.Infinity) -> #(None, [])
+    _, contract.SetDeadline(run.After(within)) -> {
+      let ms = duration.to_milliseconds(within)
+      case ms > 0 && ms <= longest_timer {
+        True -> #(Some(ms), [])
+        False -> #(None, [operation.InvalidDeadline(within)])
+      }
+    }
   }
 }
 
-fn index_nodes(
-  nodes: List(Node(context, state, answer)),
-  index: Dict(NodeId, Node(context, state, answer)),
-) -> Result(Dict(NodeId, Node(context, state, answer)), BuildError) {
-  case nodes {
-    [] -> Ok(index)
-    [node, ..rest] -> {
-      use _ <- result.try(check_identity(node.operation))
+fn recovery_problems(
+  kind: operation.Kind,
+  recovery: operation.Recovery,
+) -> List(operation.ConfigurationError) {
+  case kind, recovery {
+    _, operation.RequireReconciliation -> []
+    operation.Activity, operation.ReplayInterrupted(max) if max >= 1 -> []
+    operation.Activity, operation.ReplayInterrupted(max) -> [
+      operation.InvalidAttemptBound(max),
+    ]
+    _, operation.ReplayInterrupted(_) -> [operation.ReplayRequiresActivity]
+  }
+}
+
+fn polling_problems(
+  kind: operation.Kind,
+) -> List(operation.ConfigurationError) {
+  case kind {
+    operation.Job(job.Every(ms))
+      | operation.OwnedJob(job.Every(ms))
+      if ms <= 0 || ms > longest_timer
+    -> [operation.InvalidPollInterval(duration.milliseconds(ms))]
+    _ -> []
+  }
+}
+
+/// A graph named by `identity`, starting at `entry`, over `nodes`, whose
+/// state and answer `state` and `answer` encode, with at most 100
+/// activations per run. A stored run records the identity and continues
+/// only under the same name, version and structure.
+pub fn new(
+  identity: run.DefinitionId,
+  entry entry: NodeId,
+  nodes nodes: List(Node(context, state, answer)),
+  state state: Codec(state),
+  answer answer: Codec(answer),
+) -> Spec(context, state, answer) {
+  Spec(identity:, entry:, nodes:, state:, answer:, max_activations: 100)
+}
+
+/// At most `limit` activations per run, retries and node revisits included
+/// (at least 1). A run that would start one more ends `graph.Exhausted`.
+/// The limit is part of the graph's stored structure.
+pub fn with_max_activations(
+  spec: Spec(context, state, answer),
+  limit: Int,
+) -> Spec(context, state, answer) {
+  Spec(..spec, max_activations: limit)
+}
+
+/// Checks `spec`, and the settings of every node's operation, and reports
+/// every problem at once.
+pub fn build(
+  spec: Spec(context, state, answer),
+) -> Result(Definition(context, state, answer), List(BuildError)) {
+  let nodes =
+    list.fold(spec.nodes, dict.new(), fn(index, node) {
       case dict.has_key(index, node.id) {
-        True -> Error(DuplicateNode(node.id))
-        False -> index_nodes(rest, dict.insert(index, node.id, node))
+        True -> index
+        False -> dict.insert(index, node.id, node)
       }
-    }
+    })
+  let problems =
+    list.flatten([
+      check_identity(spec.identity),
+      case spec.max_activations >= 1 {
+        True -> []
+        False -> [InvalidActivationLimit(spec.max_activations)]
+      },
+      check_node_id(spec.entry),
+      case dict.has_key(nodes, spec.entry) {
+        True -> []
+        False -> [MissingEntry(spec.entry)]
+      },
+      duplicates(spec.nodes, []),
+      list.flat_map(spec.nodes, fn(node) {
+        list.flatten([
+          check_node_id(node.id),
+          check_identity(node.operation),
+          list.map(node.problems, InvalidOperation(node.id, _)),
+          list.filter_map(node.destinations, fn(destination) {
+            case dict.has_key(nodes, destination) {
+              True -> Error(Nil)
+              False -> Ok(UnknownDestination(node.id, destination))
+            }
+          }),
+        ])
+      }),
+    ])
+    |> list.unique
+  case problems {
+    [_, ..] -> Error(problems)
+    [] ->
+      Ok(
+        compile(Graph(
+          spec.entry,
+          spec.state,
+          spec.answer,
+          nodes,
+          control.Definition(
+            spec.identity,
+            manifest(spec),
+            spec.max_activations,
+          ),
+        )),
+      )
+  }
+}
+
+/// One line naming the problem.
+pub fn describe_build_error(error: BuildError) -> String {
+  case error {
+    InvalidNodeId(name) -> "the node id " <> string.inspect(name) <> " is blank"
+    InvalidIdentity(identity) ->
+      "the identity "
+      <> identity.name
+      <> " version "
+      <> int.to_string(identity.version)
+      <> " needs a name and a positive version"
+    InvalidActivationLimit(limit) ->
+      "definition.with_max_activations is "
+      <> int.to_string(limit)
+      <> ", below 1"
+    DuplicateNode(id) -> "two nodes are named " <> node_name(id)
+    MissingEntry(id) -> "the entry node " <> node_name(id) <> " does not exist"
+    UnknownDestination(source, destination) ->
+      "the node "
+      <> node_name(source)
+      <> " routes to "
+      <> node_name(destination)
+      <> ", which does not exist"
+    InvalidOperation(id, problem) ->
+      "the operation of the node "
+      <> node_name(id)
+      <> ": "
+      <> case problem {
+        operation.InvalidAttemptBound(max) ->
+          "operation.with_replay is "
+          <> int.to_string(max)
+          <> " attempts, below 1"
+        operation.ReplayRequiresActivity ->
+          "operation.with_replay applies to activities only"
+        operation.InvalidDeadline(within) ->
+          "operation.with_deadline is "
+          <> int.to_string(duration.to_milliseconds(within))
+          <> " ms, outside 1..4294967295"
+        operation.DeadlineRequiresWait ->
+          "operation.with_deadline applies to waits only; an activity is bounded by graph.with_operation_timeout"
+        operation.InvalidPollInterval(every) ->
+          "job.with_poll_interval is "
+          <> int.to_string(duration.to_milliseconds(every))
+          <> " ms, outside 1..4294967295"
+      }
+  }
+}
+
+fn check_identity(identity: run.DefinitionId) -> List(BuildError) {
+  case string.trim(identity.name) != "" && identity.version >= 1 {
+    True -> []
+    False -> [InvalidIdentity(identity)]
+  }
+}
+
+fn check_node_id(id: NodeId) -> List(BuildError) {
+  case string.trim(node_name(id)) {
+    "" -> [InvalidNodeId(node_name(id))]
+    _ -> []
+  }
+}
+
+fn duplicates(
+  nodes: List(Node(context, state, answer)),
+  seen: List(NodeId),
+) -> List(BuildError) {
+  case nodes {
+    [] -> []
+    [node, ..rest] ->
+      case list.contains(seen, node.id) {
+        True -> [DuplicateNode(node.id), ..duplicates(rest, seen)]
+        False -> duplicates(rest, [node.id, ..seen])
+      }
   }
 }
 
@@ -277,10 +474,12 @@ fn manifest(spec: Spec(context, state, answer)) -> String {
           ]
           _ -> []
         }
+        // The default deadline, like no deadline, writes nothing: a
+        // definition from before waits had a default keeps its manifest.
         let schedule =
           list.append(schedule, case node.deadline {
-            None -> []
-            Some(ms) -> [#("deadline_after", json.int(ms))]
+            Some(ms) if ms != default_wait -> [#("deadline_after", json.int(ms))]
+            _ -> []
           })
         json.object(list.append(
           [
@@ -405,7 +604,7 @@ fn check_prepared(
       prepared.operation == node.operation
       && prepared.recovery == node.recovery
       && prepared.kind == node.kind
-      && prepared.deadline == node.deadline
+      && same_deadline(prepared.deadline, node.deadline)
     {
       True -> Ok(Nil)
       False -> Error(OperationChanged(id))
@@ -413,6 +612,13 @@ fn check_prepared(
   )
   use _ <- result.try(node.check_input(prepared.input))
   Ok(node)
+}
+
+/// Whether a stored activation's deadline fits the node's. A wait stored
+/// without one (written before waits had a default) still fits a node that
+/// waits the default: it keeps no deadline.
+fn same_deadline(stored: Option(Int), node: Option(Int)) -> Bool {
+  stored == node || stored == None && node == Some(default_wait)
 }
 
 /// Only the fenced runner calls this, after persisting the admitted start.

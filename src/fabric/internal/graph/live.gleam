@@ -20,13 +20,13 @@ pub type Admission {
 
 pub type Work {
   Work(
-    admit: fn(String, g.Activation) -> Result(Admission, String),
+    admit: fn(g.State, g.Activation) -> Result(Admission, String),
     accept: fn(g.State, g.Activation, String) ->
       Result(g.Decision, definition.Error),
     check_output: fn(g.Activation, String) -> Result(Nil, definition.Error),
-    observe_job: fn(g.Activation) ->
+    observe_job: fn(g.State, g.Activation) ->
       Result(job.Progress(String), definition.Error),
-    cancel_job: fn(String, g.Activation) -> Body,
+    cancel_job: fn(g.State, g.Activation) -> Body,
     validate: fn(g.State) -> Result(Nil, definition.Error),
     child: fn(g.Activation) -> Result(child_driver.Driver, definition.Error),
     fork: fn(g.Activation) -> Result(fork_driver.Driver, definition.Error),

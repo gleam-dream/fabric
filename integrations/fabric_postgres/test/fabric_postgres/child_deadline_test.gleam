@@ -10,36 +10,39 @@ import fabric/run
 import fabric/store
 import fabric/store/backend
 import fabric/sweeper
+import fabric/tool
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
 import gleam/erlang/process
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import pog
 
 fn runtime(runs, identity, op) {
-  let assert Ok(id) = definition.node_id("work")
+  let id = definition.node_id("work")
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId(identity, 1),
-      id,
-      [
-        definition.node(
-          id,
-          op,
-          fn(n) { Ok(n) },
-          fn(_, n) { Ok(definition.Finish(n, n)) },
-          [],
-        ),
-      ],
-      codec.int(),
-      codec.int(),
-      1,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId(identity, 1),
+        entry: id,
+        nodes: [
+          definition.node(
+            id,
+            op,
+            fn(n) { Ok(n) },
+            fn(_, n) { Ok(definition.Finish(n, n)) },
+            [],
+          ),
+        ],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 fn leaf(runs) {
@@ -50,18 +53,16 @@ fn leaf(runs) {
       run.DefinitionId("uncertain-effect", 1),
       codec.int(),
       codec.int(),
-      fn(_, _, _) {
-        Error(operation.UncertainEffect("effect requires reconciliation"))
-      },
+      fn(_, _, _) { Error(tool.Uncertain("effect requires reconciliation")) },
       fn(error) { error },
     ),
   )
 }
 
 fn parent(runs) {
-  let assert Ok(op) =
+  let op =
     graph.as_subgraph(leaf(runs))
-    |> operation.with_deadline(duration.milliseconds(5000))
+    |> operation.with_deadline(run.After(duration.milliseconds(5000)))
   runtime(runs, "pg-child-deadline", op)
 }
 
@@ -95,7 +96,7 @@ fn idle(backend: backend.LeasedBackend, remaining: Int) {
 }
 
 fn wait_for(handle, settled, remaining) {
-  let assert Ok(snapshot) = graph.read(handle)
+  let assert Ok(snapshot) = graph.snapshot(handle)
   case snapshot.status, settled, remaining {
     graph.Expired(_, graph.ChildUnresolved(..)), False, _ -> snapshot
     graph.Expired(_, graph.ChildSettled(_)), True, _ -> snapshot
@@ -117,19 +118,22 @@ pub fn unchanged_children_expire_after_restart_and_remain_retained_until_reconci
     agents.owned(fn() {
       let runs = start_store(settings)
       let assert Ok(handle) =
-        graph.start_with_budget(
-          parent(runs),
+        graph.start(
+          graph.with_family_budget(
+            parent(runs),
+            budget.limits(work: 2)
+              |> budget.with_children(1)
+              |> budget.with_depth(1),
+          ),
           id,
           41,
-          budget.limits(work: 2)
-            |> budget.with_children(1)
-            |> budget.with_depth(1),
+          correlation: None,
         )
       let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
       let assert graph.Child(child_ref, child.Uncertain(_)) = waiting.status
       let assert Ok(child_handle) =
         graph.child(handle, child_ref.activation, leaf(runs))
-      let assert Ok(blocked) = graph.read(child_handle)
+      let assert Ok(blocked) = graph.snapshot(child_handle)
       let assert graph.Blocked(reference, _) = blocked.status
       // Observe the initial dependency before its unchanged deadline becomes due.
       let _ = sweep(runs)
@@ -150,7 +154,7 @@ pub fn unchanged_children_expire_after_restart_and_remain_retained_until_reconci
     |> pog.execute(connection)
   let runs = start_store(settings)
   let started = sweep(runs)
-  let handle = graph.attach(parent(runs), id)
+  let handle = open_graph(parent(runs), id)
   let expired = wait_for(handle, False, 3000)
   let assert graph.Expired(saved_due, graph.ChildUnresolved(saved_child, _)) =
     expired.status
@@ -182,4 +186,12 @@ pub fn unchanged_children_expire_after_restart_and_remain_retained_until_reconci
     limit: 10,
   )
   |> should.equal(Ok(3))
+}
+
+fn open_graph(
+  runtime: graph.Runtime(context, state, answer),
+  id: run.RunId,
+) -> graph.Handle(context, state, answer) {
+  let assert Ok(handle) = graph.open(runtime, id)
+  handle
 }

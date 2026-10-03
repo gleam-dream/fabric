@@ -14,7 +14,7 @@ pub fn runtime(
   runs: store.Store,
   reviewer: provider.Reviewer(receipt),
 ) -> graph.Runtime(Nil, domain.Draft, domain.Decision) {
-  let assert Ok(id) = definition.node_id("review")
+  let id = definition.node_id("review")
   let review =
     definition.node(
       id,
@@ -27,20 +27,20 @@ pub fn runtime(
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("writing-decision-evaluation", 1),
-      id,
-      [review],
-      domain.draft_codec(),
-      domain.decision_codec(),
-      1,
-    ))
-  let assert Ok(runtime) =
-    graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
-    |> graph.with_timeouts(
-      callbacks: duration.milliseconds(5000),
-      operations: duration.milliseconds(30_000),
-      commands: duration.milliseconds(1000),
+    definition.build(
+      definition.new(
+        run.DefinitionId("writing-decision-evaluation", 1),
+        entry: id,
+        nodes: [review],
+        state: domain.draft_codec(),
+        answer: domain.decision_codec(),
+      )
+      |> definition.with_max_activations(1),
     )
+  let runtime =
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.with_callback_timeout(duration.milliseconds(5000))
+    |> graph.with_operation_timeout(run.After(duration.milliseconds(30_000)))
+    |> graph.with_command_timeout(duration.milliseconds(1000))
   runtime
 }

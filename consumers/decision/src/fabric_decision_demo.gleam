@@ -46,17 +46,23 @@ pub fn runtime(
   model: String,
 ) -> graph.Runtime(Nil, String, String) {
   let reviewer =
-    llm.new(
+    llm.decision(
       run.DefinitionId("arithmetic-review", 1),
-      codec.string(),
-      decision_codec(),
-      "review",
-      fn(_, input) { #(client, settings, review_request(model, input)) },
+      input: codec.string(),
+      output: decision_codec(),
+      name: "review",
+      call: fn(_, input) {
+        llm.call(
+          client: client,
+          config: settings,
+          request: review_request(model, input),
+        )
+      },
     )
   routing.runtime(
     run.DefinitionId("arithmetic-review-graph", 1),
     runs,
-    fn() { Nil },
+    fn(_) { Nil },
     reviewer,
     fn(receipt) {
       case receipt.outcome {
@@ -92,7 +98,12 @@ pub fn main() -> Nil {
   let assert Ok(Nil) = store.start(runs)
   let assert Ok(id) = run.parse_id("real-decision")
   let assert Ok(handle) =
-    graph.start(runtime(runs, client, settings, model), id, "2 + 2 = 4")
+    graph.start(
+      runtime(runs, client, settings, model),
+      id,
+      "2 + 2 = 4",
+      correlation: None,
+    )
   let assert Ok(done) =
     graph.await(handle, within: duration.milliseconds(30_000))
   http_gun.stop(client)

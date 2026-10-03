@@ -11,14 +11,18 @@ import fabric/graph/signal
 import fabric/internal/graph/attachment
 import fabric/internal/store as store_core
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/store
+import fabric/store/conformance
 import fabric/store/discovery
 import fabric/support
+import fabric/support/nodes
 import fabric/support/restart
+import fabric/tool
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
@@ -41,7 +45,7 @@ fn holding(runs: store.Store, id: String, name: String) -> store.Store {
 }
 
 fn node(name: String) -> definition.NodeId {
-  let assert Ok(id) = definition.node_id(name)
+  let id = definition.node_id(name)
   id
 }
 
@@ -52,7 +56,7 @@ fn activity(runs: store.Store, gate) -> graph.Runtime(Nil, Int, Int) {
       codec.int(),
       codec.int(),
       fn(_, _, n) { Ok(n * 2) },
-      fn(_: Nil) { operation.DefiniteFailure("unreachable") },
+      fn(_: Nil) { tool.Explain("unreachable") },
     )
   let n =
     definition.node(
@@ -63,15 +67,17 @@ fn activity(runs: store.Store, gate) -> graph.Runtime(Nil, Int, Int) {
       [],
     )
   let assert Ok(d) =
-    definition.build(definition.Spec(
-      run.DefinitionId("fixture-approval", 1),
-      node("review"),
-      [n],
-      codec.int(),
-      codec.int(),
-      3,
-    ))
-  graph.new(d, runs, fn() { Nil }, gate)
+    definition.build(
+      definition.new(
+        run.DefinitionId("fixture-approval", 1),
+        entry: node("review"),
+        nodes: [n],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(3),
+    )
+  graph.new(d, runs, fn(_) { Nil }, gate)
 }
 
 fn ready() -> signal.Signal(Bool) {
@@ -88,56 +94,83 @@ fn signal_runtime(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
       [],
     )
   let assert Ok(d) =
-    definition.build(definition.Spec(
-      run.DefinitionId("fixture-signal", 1),
-      node("wait"),
-      [n],
-      codec.int(),
-      codec.int(),
-      3,
-    ))
-  graph.new(d, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("fixture-signal", 1),
+        entry: node("wait"),
+        nodes: [n],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(3),
+    )
+  graph.new(d, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 fn allow(_: Nil, _) {
   Ok(policy.Allow)
 }
 
+/// A leased store over a backend whose clock the test moves.
+fn clocked() -> #(store.Store, fn(Int) -> Nil) {
+  let memory = conformance.leased_memory()
+  #(nodes.node(memory.backend, "fixtures", nodes.long), memory.advance)
+}
+
+const days_8 = 691_200_000
+
 pub fn a_stored_approval_without_a_deadline_is_answered_and_never_expires_test() {
-  let runs =
-    holding(support.store(), "graph-approval", "graph-awaiting-approval.json")
+  let #(runs, advance) = clocked()
+  let runs = holding(runs, "graph-approval", "graph-awaiting-approval.json")
   discovery.inspect(fixture("graph-awaiting-approval.json"))
   |> should.equal(Ok(None))
+  // Longer than the 7-day default: a request stored without a deadline
+  // keeps none.
+  advance(days_8)
   let runtime =
     activity(runs, fn(_, _) {
       Ok(policy.RequireApproval(run.Requirement("publish", 1)))
     })
-  let handle = graph.attach(runtime, support.id("graph-approval"))
+  let handle = support.open_graph(runtime, support.id("graph-approval"))
   let assert Ok(recovered) = graph.recover(handle)
   let assert graph.AwaitingApproval(reference) = recovered.status
   recovered.deadline |> should.equal(None)
   reference.requirement |> should.equal(run.Requirement("publish", 1))
-  let assert Ok(_) = graph.approve(handle, reference)
+  let assert Ok(_) =
+    graph.approve(
+      handle,
+      reference,
+      reviewer: support.reviewer("reviewer"),
+      context: Nil,
+    )
   let assert Ok(done) = graph.await(handle, within: duration.seconds(5))
   done.status |> should.equal(graph.Completed(42))
+  // The answer is stored with its reviewer in the new format.
+  let assert [receipt] = done.receipts
+  let assert [run.Approval(answer: run.Approve, reviewer: Some(who), ..)] =
+    receipt.approvals
+  reviewer.subject(who) |> should.equal("reviewer")
 }
 
 pub fn a_stored_completed_run_reads_test() {
   let runs = holding(support.store(), "graph-completed", "graph-completed.json")
   let handle =
-    graph.attach(activity(runs, allow), support.id("graph-completed"))
-  let assert Ok(snapshot) = graph.read(handle)
+    support.open_graph(activity(runs, allow), support.id("graph-completed"))
+  let assert Ok(snapshot) = graph.snapshot(handle)
   snapshot.status |> should.equal(graph.Completed(10))
   let assert [receipt] = snapshot.receipts
   receipt.output_json |> should.equal("10")
 }
 
 pub fn a_stored_signal_wait_without_a_deadline_recovers_and_keeps_none_test() {
-  let runs =
-    holding(support.store(), "graph-signal", "graph-waiting-signal.json")
+  let #(runs, advance) = clocked()
+  let runs = holding(runs, "graph-signal", "graph-waiting-signal.json")
   discovery.inspect(fixture("graph-waiting-signal.json"))
   |> should.equal(Ok(None))
-  let handle = graph.attach(signal_runtime(runs), support.id("graph-signal"))
+  // Waits now default to 7 days; one stored without a deadline keeps none.
+  advance(days_8)
+  let handle =
+    support.open_graph(signal_runtime(runs), support.id("graph-signal"))
   let assert Ok(recovered) = graph.recover(handle)
   let assert graph.AwaitingSignal(reference) = recovered.status
   recovered.deadline |> should.equal(None)
@@ -163,17 +196,19 @@ pub fn a_stored_child_wait_recovers_and_its_child_finishes_test() {
       [],
     )
   let assert Ok(d) =
-    definition.build(definition.Spec(
-      run.DefinitionId("fixture-parent", 1),
-      node("delegate"),
-      [n],
-      codec.int(),
-      codec.int(),
-      3,
-    ))
+    definition.build(
+      definition.new(
+        run.DefinitionId("fixture-parent", 1),
+        entry: node("delegate"),
+        nodes: [n],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(3),
+    )
   let parent =
-    graph.attach(
-      graph.new(d, runs, fn() { Nil }, allow),
+    support.open_graph(
+      graph.new(d, runs, fn(_) { Nil }, allow),
       support.id("graph-parent"),
     )
   let assert Ok(_) = graph.recover(parent)
@@ -181,7 +216,7 @@ pub fn a_stored_child_wait_recovers_and_its_child_finishes_test() {
   let assert graph.Child(_, _) = waiting.status
   waiting.deadline |> should.equal(None)
   let assert Ok(handle) = graph.child(parent, 1, child)
-  let assert Ok(child_snapshot) = graph.read(handle)
+  let assert Ok(child_snapshot) = graph.snapshot(handle)
   let assert graph.AwaitingSignal(reference) = child_snapshot.status
   child_snapshot.deadline |> should.equal(None)
   let assert Ok(_) = graph.deliver(handle, reference, ready(), True)
@@ -221,17 +256,19 @@ pub fn a_stored_job_wait_without_a_deadline_is_polled_to_completion_test() {
       [],
     )
   let assert Ok(d) =
-    definition.build(definition.Spec(
-      run.DefinitionId("fixture-job", 1),
-      node("poll"),
-      [n],
-      codec.int(),
-      codec.int(),
-      3,
-    ))
+    definition.build(
+      definition.new(
+        run.DefinitionId("fixture-job", 1),
+        entry: node("poll"),
+        nodes: [n],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(3),
+    )
   let handle =
-    graph.attach(
-      graph.new(d, runs, fn() { Nil }, allow),
+    support.open_graph(
+      graph.new(d, runs, fn(_) { Nil }, allow),
       support.id("graph-job"),
     )
   let assert Ok(waiting) = graph.recover(handle)
@@ -249,7 +286,7 @@ pub fn a_stored_uncertain_effect_is_reconciled_test() {
       codec.int(),
       codec.int(),
       fn(_, _, _) { Error(Nil) },
-      fn(_: Nil) { operation.UncertainEffect("gateway timeout") },
+      fn(_: Nil) { tool.Uncertain("gateway timeout") },
     )
   let n =
     definition.node(
@@ -260,20 +297,22 @@ pub fn a_stored_uncertain_effect_is_reconciled_test() {
       [],
     )
   let assert Ok(d) =
-    definition.build(definition.Spec(
-      run.DefinitionId("fixture-uncertain", 1),
-      node("charge"),
-      [n],
-      codec.int(),
-      codec.int(),
-      3,
-    ))
+    definition.build(
+      definition.new(
+        run.DefinitionId("fixture-uncertain", 1),
+        entry: node("charge"),
+        nodes: [n],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(3),
+    )
   let handle =
-    graph.attach(
-      graph.new(d, runs, fn() { Nil }, allow),
+    support.open_graph(
+      graph.new(d, runs, fn(_) { Nil }, allow),
       support.id("graph-blocked"),
     )
-  let assert Ok(blocked) = graph.read(handle)
+  let assert Ok(blocked) = graph.snapshot(handle)
   let assert graph.Blocked(reference, graph.EffectUncertain("gateway timeout")) =
     blocked.status
   let assert Ok(done) = graph.reconcile(handle, reference, "18")

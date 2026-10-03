@@ -10,30 +10,33 @@ import fabric/run
 import fabric/store
 import fabric/store/backend
 import fabric/sweeper
+import fabric/tool
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import pog
 
 fn wrap(runs, name, op, values, accept) {
-  let assert Ok(id) = definition.node_id("work")
+  let id = definition.node_id("work")
   let node = definition.node(id, op, fn(value) { Ok(value) }, accept, [])
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId(name, 1),
-      id,
-      [node],
-      values,
-      values,
-      1,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId(name, 1),
+        entry: id,
+        nodes: [node],
+        state: values,
+        answer: values,
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 fn leaf(runs, arrivals) {
@@ -48,9 +51,7 @@ fn leaf(runs, arrivals) {
         let release = process.new_subject()
         process.send(arrivals, release)
         process.receive_forever(release)
-        Error(operation.UncertainEffect(
-          "external result requires reconciliation",
-        ))
+        Error(tool.Uncertain("external result requires reconciliation"))
       },
       fn(error) { error },
     ),
@@ -60,7 +61,7 @@ fn leaf(runs, arrivals) {
 }
 
 fn inner(runs, arrivals) {
-  let assert Ok(op) =
+  let op =
     graph.map(run.DefinitionId("inner-map", 1), leaf(runs, arrivals), 1, 1)
   wrap(runs, "pg-inner-fork", op, codec.list(codec.int()), fn(state, output) {
     case output {
@@ -71,9 +72,9 @@ fn inner(runs, arrivals) {
 }
 
 fn parent(runs, arrivals) {
-  let assert Ok(op) =
+  let op =
     graph.map(run.DefinitionId("outer-map", 1), inner(runs, arrivals), 3, 2)
-  let assert Ok(op) = operation.with_deadline(op, duration.milliseconds(5000))
+  let op = operation.with_deadline(op, run.After(duration.milliseconds(5000)))
   wrap(
     runs,
     "pg-fork-deadline",
@@ -125,7 +126,7 @@ fn idle(
 }
 
 fn wait_for(root, settled, left) {
-  let assert Ok(snapshot) = graph.read(root)
+  let assert Ok(snapshot) = graph.snapshot(root)
   case snapshot.status, settled, left {
     graph.Expired(_, graph.ForkSettled(_)), True, _ -> snapshot
     graph.Fork(saved, Some(operation.DeadlineReached(_))), False, _ -> {
@@ -159,13 +160,16 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
     agents.owned(fn() {
       let runs = start_store(settings)
       let assert Ok(root) =
-        graph.start_with_budget(
-          parent(runs, arrivals),
+        graph.start(
+          graph.with_family_budget(
+            parent(runs, arrivals),
+            budget.limits(work: 5)
+              |> budget.with_children(4)
+              |> budget.with_depth(2),
+          ),
           id,
           [[1], [2], [3]],
-          budget.limits(work: 5)
-            |> budget.with_children(4)
-            |> budget.with_depth(2),
+          correlation: None,
         )
       #(runs, root)
     })
@@ -211,7 +215,7 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
       let _ = sweep(runs, arrivals)
       runs
     })
-  let root = graph.attach(parent(cleanup_runs, arrivals), id)
+  let root = open_graph(parent(cleanup_runs, arrivals), id)
   let stopping = wait_for(root, False, 3000)
   let assert graph.Fork(saved, Some(operation.DeadlineReached(saved_due))) =
     stopping.status
@@ -236,13 +240,13 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
   // Reconcile through another store after all original cleanup watches are gone.
   let runs = start_store(settings)
   list.each(members, fn(member) {
-    let leaf = graph.attach(leaf(runs, arrivals), member.1)
-    let assert Ok(stopped) = graph.read(leaf)
+    let leaf = open_graph(leaf(runs, arrivals), member.1)
+    let assert Ok(stopped) = graph.snapshot(leaf)
     let assert graph.Cancelled(graph.Unresolved(reference, _)) = stopped.status
     graph.reconcile(leaf, reference, "42") |> should.be_ok
   })
   let started = sweep(runs, arrivals)
-  let root = graph.attach(parent(runs, arrivals), id)
+  let root = open_graph(parent(runs, arrivals), id)
   let done = wait_for(root, True, 3000)
   done.status |> should.equal(graph.Expired(due, graph.ForkSettled(1)))
   done.receipts |> should.equal([])
@@ -257,4 +261,12 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
     limit: 10,
   )
   |> should.equal(Ok(6))
+}
+
+fn open_graph(
+  runtime: graph.Runtime(context, state, answer),
+  id: run.RunId,
+) -> graph.Handle(context, state, answer) {
+  let assert Ok(handle) = graph.open(runtime, id)
+  handle
 }

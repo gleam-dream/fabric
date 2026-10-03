@@ -508,7 +508,7 @@ pub fn a_delegation_approved_ahead_of_the_stop_does_not_hold_up_the_drain_test()
     )
   let assert Ok(delegation) = testing.call(research(), "r", "weather")
   let policy = fn(_context, action: policy.Action) {
-    case action.tool {
+    case action.name {
       "research" -> Ok(policy.RequireApproval(Requirement("review", 1)))
       _ -> Ok(policy.Allow)
     }
@@ -577,7 +577,7 @@ pub fn a_delegation_decided_during_the_stop_does_not_hold_up_the_drain_test() {
     )
   let assert Ok(delegation) = testing.call(research(), "r", "weather")
   let policy = fn(_context, action: policy.Action) {
-    case action.tool {
+    case action.name {
       "research" -> probe.gate(gate, "policy")
       _ -> Nil
     }

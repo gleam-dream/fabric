@@ -77,13 +77,13 @@ fn gate(
   label: String,
 ) -> fn(String, policy.Action) -> Result(policy.Decision, String) {
   fn(who: String, action: policy.Action) {
-    probe.record(probe, label <> " " <> action.tool <> " as " <> who)
-    case action.tool, action.target {
+    probe.record(probe, label <> " " <> action.name <> " as " <> who)
+    case action.name, action.target {
       "transfer_funds", _ ->
         Ok(policy.RequireApproval(Requirement("transfer", 1)))
       _, policy.StartAgent(..) ->
         Ok(policy.RequireApproval(Requirement("delegate", 1)))
-      _, policy.InvokeTool -> Ok(policy.Allow)
+      _, _ -> Ok(policy.Allow)
     }
   }
 }

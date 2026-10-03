@@ -3,6 +3,7 @@
 
 import fabric/graph/operation
 import fabric/run
+import fabric/tool
 import fabric_writing/domain
 import gleam/int
 import gleam/result
@@ -32,9 +33,9 @@ pub fn loader() -> operation.Operation(Nil, domain.Brief, domain.Draft) {
             Ok(domain.Draft(domain.Text(source, brief.instructions, ""), 0))
         }
       },
-      operation.DefiniteFailure,
+      tool.Explain,
     )
-  let assert Ok(op) = operation.with_replay(op, 2)
+  let op = operation.with_replay(op, 2)
   op
 }
 
@@ -53,8 +54,8 @@ pub fn publisher(
           <> int.to_string(invocation.activation)
         publish(directory, key, string.trim(draft.text.body) <> "\n")
       },
-      operation.UncertainEffect,
+      tool.Uncertain,
     )
-  let assert Ok(op) = operation.with_replay(op, 2)
+  let op = operation.with_replay(op, 2)
   op
 }

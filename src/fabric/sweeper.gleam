@@ -1,8 +1,10 @@
 //// Automatic recovery for a leased store: a sweeper that scans for runs
 //// whose lease expired (their node died), for idle graph waits that are
-//// due, and for agent approval requests whose deadline passed
-//// (`agent.with_approval_expiry`), and recovers each through its registered
-//// root; recovery rejects an expired request, so the model sees it.
+//// due, and for approval requests whose deadline passed
+//// (`agent.with_approval_expiry`, `graph.with_approval_expiry`), and
+//// recovers each through its registered root. Recovery rejects an expired
+//// agent request, so the model sees it, and fails a graph run whose
+//// request expired (`graph.ExpiredApproval`).
 ////
 //// Register every root agent and root graph whose runs the sweeper may
 //// meet, then put `supervised` under the application's supervisor in place

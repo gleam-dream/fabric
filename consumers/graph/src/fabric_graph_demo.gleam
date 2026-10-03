@@ -11,6 +11,7 @@ import fabric/model
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/tool
 import gleam/erlang/process
 import gleam/int
 import gleam/io
@@ -20,8 +21,8 @@ import gleam/string
 import gleam/time/duration
 import json/blueprint/codec
 
-fn infallible(_error: Nil) -> operation.Failure {
-  operation.DefiniteFailure("cannot fail")
+fn infallible(_error: Nil) -> tool.Failure {
+  tool.Explain("cannot fail")
 }
 
 pub fn execute(limit: Int) -> graph.Snapshot(Int, Int) {
@@ -49,14 +50,14 @@ pub fn execute_batch(
   let runs = store.in_memory(process.new_name("batch-review-demo"))
   let assert Ok(Nil) = store.start(runs)
   let child = review_runtime(runs, 6, scripted_reviewer())
-  let assert Ok(review) =
+  let review =
     graph.map(
       run.DefinitionId("batch-review", 1),
       child,
       max_members: 16,
       concurrency: 3,
     )
-  let assert Ok(batch) = definition.node_id("batch")
+  let batch = definition.node_id("batch")
   let node =
     definition.node(
       batch,
@@ -78,18 +79,20 @@ pub fn execute_batch(
     )
   let values = codec.list(codec.int())
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("review-batch", 1),
-      batch,
-      [node],
-      values,
-      values,
-      1,
-    ))
+    definition.build(
+      definition.new(
+        run.DefinitionId("review-batch", 1),
+        entry: batch,
+        nodes: [node],
+        state: values,
+        answer: values,
+      )
+      |> definition.with_max_activations(1),
+    )
   let runtime =
-    graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
   let assert Ok(id) = run.parse_id("batch-demo")
-  let assert Ok(handle) = graph.start(runtime, id, initial)
+  let assert Ok(handle) = graph.start(runtime, id, initial, correlation: None)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done
 }
@@ -127,23 +130,20 @@ pub fn execute_agent(limit: Int) -> graph.Snapshot(Int, Int) {
     agent.new("reviewer", model, [], policy.always_allow()) |> agent.build
   let assert Ok(reviewer) =
     agent_node.new(
-      agent_node.Definition(
-        run.DefinitionId("agent-reviewer", 1),
-        agent,
-        codec.int(),
-        codec.bool(),
-        int.to_string,
-        fn(answer) {
-          case answer {
-            "approve" -> Ok(True)
-            "revise" -> Ok(False)
-            _ -> Error("expected approve or revise")
-          }
-        },
-      ),
-      runs,
-      fn() { Nil },
+      run.DefinitionId("agent-reviewer", 1),
+      agent,
+      input: codec.int(),
+      output: codec.bool(),
+      prompt: int.to_string,
+      answer: fn(answer) {
+        case answer {
+          "approve" -> Ok(True)
+          "revise" -> Ok(False)
+          _ -> Error("expected approve or revise")
+        }
+      },
     )
+    |> agent_node.runtime(runs, context: fn(_) { Nil })
   let handle = start_on(runs, limit, agent_node.as_operation(reviewer))
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done
@@ -165,7 +165,7 @@ fn start_on(
 ) -> graph.Handle(Nil, Int, Int) {
   let runtime = review_runtime(runs, limit, reviewer)
   let assert Ok(id) = run.parse_id("demo")
-  let assert Ok(handle) = graph.start(runtime, id, 0)
+  let assert Ok(handle) = graph.start(runtime, id, 0, correlation: None)
   handle
 }
 
@@ -174,8 +174,8 @@ fn review_runtime(
   limit: Int,
   reviewer: operation.Operation(Nil, Int, Bool),
 ) -> graph.Runtime(Nil, Int, Int) {
-  let assert Ok(generate) = definition.node_id("generate")
-  let assert Ok(review) = definition.node_id("review")
+  let generate = definition.node_id("generate")
+  let review = definition.node_id("review")
   let generator =
     operation.new(
       run.DefinitionId("scripted-generator", 1),
@@ -206,15 +206,17 @@ fn review_runtime(
       [generate],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("generation-review", 1),
-      generate,
-      [generate_node, review_node],
-      codec.int(),
-      codec.int(),
-      limit,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("generation-review", 1),
+        entry: generate,
+        nodes: [generate_node, review_node],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(limit),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 pub fn main() -> Nil {

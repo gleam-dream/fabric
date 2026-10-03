@@ -50,9 +50,10 @@ fn ordinary(worker) {
 fn candidate(worker) {
   let assert Ok(handle) =
     graph.start(
-      recipe.runtime(support.store(), worker, fn() { Nil }),
+      recipe.runtime(support.store(), worker, fn(_) { Nil }),
       support.id("recipe"),
       recipe.initial(worker, Nil, "go"),
+      correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(raw) = done.status
@@ -206,9 +207,10 @@ pub fn an_agent_approval_cannot_be_replaced_by_approval_of_the_batch_test() {
     fabric.await(ordinary, within: duration.milliseconds(5000))
   let assert Ok(candidate) =
     graph.start(
-      recipe.runtime(support.store(), worker, fn() { False }),
+      recipe.runtime(support.store(), worker, fn(_) { False }),
       support.id("approval-probe"),
       recipe.initial(worker, False, "go"),
+      correlation: None,
     )
   let assert Ok(done) =
     graph.await(candidate, within: duration.milliseconds(5000))
@@ -283,9 +285,10 @@ pub fn a_batch_receipt_loses_the_individual_success_that_the_agent_retains_test(
       let runs = support.directory(graph_dir)
       let assert Ok(_) =
         graph.start(
-          recipe.runtime(runs, worker, fn() { Nil }),
+          recipe.runtime(runs, worker, fn(_) { Nil }),
           support.id("batch-loss"),
           recipe.initial(worker, Nil, "go"),
+          correlation: None,
         )
       runs
     })
@@ -294,8 +297,8 @@ pub fn a_batch_receipt_loses_the_individual_success_that_the_agent_retains_test(
   restart.crash(owner, runs)
   let runs = support.directory(graph_dir)
   let handle =
-    graph.attach(
-      recipe.runtime(runs, worker, fn() { Nil }),
+    support.open_graph(
+      recipe.runtime(runs, worker, fn(_) { Nil }),
       support.id("batch-loss"),
     )
   graph.recover(handle) |> should.be_ok
@@ -321,9 +324,10 @@ pub fn canceling_a_batch_exposes_only_scope_uncertainty_test() {
   let worker = interrupted_worker(calls)
   let assert Ok(handle) =
     graph.start(
-      recipe.runtime(support.store(), worker, fn() { Nil }),
+      recipe.runtime(support.store(), worker, fn(_) { Nil }),
       support.id("cancel-batch"),
       recipe.initial(worker, Nil, "go"),
+      correlation: None,
     )
   probe.release(probe.arrival(calls))
   probe.arrival(calls).name |> should.equal("second")

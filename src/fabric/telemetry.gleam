@@ -97,6 +97,28 @@
 //// | `drain_unavailable` | `[fabric, drain, unavailable]` | shutdown
 //// accounting could not be read; no successful empty summary is inferred |
 ////
+//// A graph run (`fabric/graph`) emits its own events, after the commit they
+//// describe, by the process that made it (its runner, or the caller of
+//// `graph.start`, `approve`, `reject`, `deliver`, `reconcile`, `poll_job`,
+//// `recover` or `cancel`). Events of one commit are emitted in this order:
+////
+//// | Event | Name | When |
+//// | --- | --- | --- |
+//// | `graph_started` | `[fabric, graph, start]` | the run's first record is
+//// stored (a child run names its parent) |
+//// | `graph_approval_requested` | `[fabric, graph, approval, request]` | an
+//// activation started waiting for an approval, with its deadline |
+//// | `graph_approval_answered` | `[fabric, graph, approval, answer]` | an
+//// answer, or an expiry, was committed |
+//// | `activation_started` | `[fabric, graph, activation, start]` | an
+//// activation's operation was admitted: an activity's body is queued, or
+//// the run starts waiting for a signal, a job, a child or a fork |
+//// | `activation_settled` | `[fabric, graph, activation, stop]` | an
+//// activation's result was committed, with where it led |
+//// | `graph_cancelled` | `[fabric, graph, cancel]` | a cancellation was
+//// committed |
+//// | `graph_finished` | `[fabric, graph, stop]` | the run ended |
+////
 //// A late settlement (`tool.bind_settling`) of a stopped action is
 //// observed as that action's `tool_settled`; one that resolves an
 //// uncertain effect emits nothing, like a reconciliation. A settlement the
@@ -113,9 +135,10 @@
 //// for a sub-agent run, so a sub-agent's events join its root's. A
 //// sub-agent run's events carry its root's correlation too. The same
 //// correlation reaches the model's requests and the tools' calls, so their
-//// own events join the run's. A graph run's `lease_lost` derives its
-//// correlation from its run id and names the graph run as its root; graph
-//// events are planned for wave 5.
+//// own events join the run's. A graph run's events, its `lease_lost`
+//// included, carry the correlation given to `graph.start` (or derived from
+//// its id) and its family's root; a graph's child runs, managed agents
+//// included, inherit both.
 ////
 //// Metadata carries identifiers and closed kinds only, never arguments,
 //// tool results, or model text, with one exception: `settlement_refused`
@@ -126,6 +149,7 @@
 //// identify an action only within its `run`.
 
 import fabric/model.{type Usage, Usage}
+import fabric/policy
 import gleam/option.{type Option, None, Some}
 import sinal.{type Event}
 import sinal/correlation.{type Correlation}
@@ -955,4 +979,342 @@ pub fn drain() -> Event(Drain, String) {
 /// Shutdown accounting could not be read. No zero-run success is inferred.
 pub fn drain_unavailable() -> Event(Nil, String) {
   event(["drain", "unavailable"], fields.empty(), fields.string("store"))
+}
+
+// --- graph runs -----------------------------------------------------------------
+
+/// An activation of a graph run, in event metadata: its run, activation and
+/// attempt, node, and operation name and version.
+pub type GraphActivation {
+  GraphActivation(
+    run: String,
+    activation: Int,
+    attempt: Int,
+    node: String,
+    operation: String,
+    operation_version: Int,
+  )
+}
+
+pub type GraphRunStarted {
+  GraphRunStarted(
+    run: String,
+    graph: String,
+    graph_version: Int,
+    parent: Option(String),
+    root: String,
+    correlation: Correlation,
+  )
+}
+
+/// An activation's operation was admitted: an activity's body is queued,
+/// or the run starts its wait. `deadline_after` is the wait's bound in
+/// milliseconds from admission (`None`: an activity, or a wait without a
+/// deadline).
+pub type ActivationStarted {
+  ActivationStarted(
+    activation: GraphActivation,
+    kind: policy.OperationKind,
+    deadline_after: Option(Int),
+    root: String,
+    correlation: Correlation,
+  )
+}
+
+/// Where an activation's committed result led.
+pub type Route {
+  /// To the next node.
+  NextNode
+  /// To the run's answer.
+  Answer
+  /// Nowhere: the run was stopping when the result arrived.
+  Kept
+}
+
+pub type ActivationSettled {
+  ActivationSettled(
+    activation: GraphActivation,
+    route: Route,
+    root: String,
+    correlation: Correlation,
+  )
+}
+
+/// `expires` is the request's deadline in UTC Unix milliseconds by the
+/// store's clock; `None` never expires.
+pub type GraphApprovalRequested {
+  GraphApprovalRequested(
+    activation: GraphActivation,
+    requirement: String,
+    requirement_version: Int,
+    revision: Int,
+    expires: Option(Int),
+    root: String,
+    correlation: Correlation,
+  )
+}
+
+pub type GraphApprovalAnswered {
+  GraphApprovalAnswered(
+    activation: GraphActivation,
+    revision: Int,
+    answer: Answered,
+    root: String,
+    correlation: Correlation,
+  )
+}
+
+pub type GraphRunCancelled {
+  GraphRunCancelled(run: String, root: String, correlation: Correlation)
+}
+
+/// How a graph run ended (`graph.Status`).
+pub type GraphOutcome {
+  GraphCompleted
+  GraphFailed
+  GraphExhausted
+  GraphCancelled
+  GraphExpired
+}
+
+pub type GraphRunFinished {
+  GraphRunFinished(
+    run: String,
+    outcome: GraphOutcome,
+    root: String,
+    correlation: Correlation,
+  )
+}
+
+pub fn graph_started() -> Event(Nil, GraphRunStarted) {
+  event(["graph", "start"], fields.empty(), {
+    use run <- fields.include(fields.string("run"), get: fn(m) { m.run })
+    use graph <- fields.include(fields.string("graph"), get: fn(m) { m.graph })
+    use graph_version <- fields.include(fields.int("graph_version"), get: fn(m) {
+      m.graph_version
+    })
+    use parent <- fields.include(
+      fields.optional(fields.string("parent")),
+      get: fn(m) { m.parent },
+    )
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(GraphRunStarted(
+      run:,
+      graph:,
+      graph_version:,
+      parent:,
+      root:,
+      correlation:,
+    ))
+  })
+}
+
+pub fn activation_started() -> Event(Nil, ActivationStarted) {
+  event(["graph", "activation", "start"], fields.empty(), {
+    use activation <- fields.include(activation_fields(), get: fn(m) {
+      m.activation
+    })
+    use kind <- fields.include(
+      fields.enum(
+        "kind",
+        [
+          policy.Activity,
+          policy.Signal,
+          policy.Job,
+          policy.OwnedJob,
+          policy.Subgraph,
+          policy.Agent,
+          policy.Fork,
+        ],
+        operation_kind_name,
+      ),
+      get: fn(m) { m.kind },
+    )
+    use deadline_after <- fields.include(
+      fields.optional(fields.int("deadline_after")),
+      get: fn(m) { m.deadline_after },
+    )
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(ActivationStarted(
+      activation:,
+      kind:,
+      deadline_after:,
+      root:,
+      correlation:,
+    ))
+  })
+}
+
+pub fn activation_settled() -> Event(Nil, ActivationSettled) {
+  event(["graph", "activation", "stop"], fields.empty(), {
+    use activation <- fields.include(activation_fields(), get: fn(m) {
+      m.activation
+    })
+    use route <- fields.include(
+      fields.enum("route", [NextNode, Answer, Kept], route_name),
+      get: fn(m) { m.route },
+    )
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(ActivationSettled(activation:, route:, root:, correlation:))
+  })
+}
+
+pub fn graph_approval_requested() -> Event(Nil, GraphApprovalRequested) {
+  event(["graph", "approval", "request"], fields.empty(), {
+    use activation <- fields.include(activation_fields(), get: fn(m) {
+      m.activation
+    })
+    use requirement <- fields.include(fields.string("requirement"), get: fn(m) {
+      m.requirement
+    })
+    use requirement_version <- fields.include(
+      fields.int("requirement_version"),
+      get: fn(m) { m.requirement_version },
+    )
+    use revision <- fields.include(fields.int("revision"), get: fn(m) {
+      m.revision
+    })
+    use expires <- fields.include(
+      fields.optional(fields.int("expires")),
+      get: fn(m) { m.expires },
+    )
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(GraphApprovalRequested(
+      activation:,
+      requirement:,
+      requirement_version:,
+      revision:,
+      expires:,
+      root:,
+      correlation:,
+    ))
+  })
+}
+
+pub fn graph_approval_answered() -> Event(Nil, GraphApprovalAnswered) {
+  event(["graph", "approval", "answer"], fields.empty(), {
+    use activation <- fields.include(activation_fields(), get: fn(m) {
+      m.activation
+    })
+    use revision <- fields.include(fields.int("revision"), get: fn(m) {
+      m.revision
+    })
+    use answer <- fields.include(
+      fields.enum("answer", [Approved, Rejected, Expired], answered_name),
+      get: fn(m) { m.answer },
+    )
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(GraphApprovalAnswered(
+      activation:,
+      revision:,
+      answer:,
+      root:,
+      correlation:,
+    ))
+  })
+}
+
+pub fn graph_cancelled() -> Event(Nil, GraphRunCancelled) {
+  event(["graph", "cancel"], fields.empty(), {
+    use run <- fields.include(fields.string("run"), get: fn(m) { m.run })
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(GraphRunCancelled(run:, root:, correlation:))
+  })
+}
+
+pub fn graph_finished() -> Event(Nil, GraphRunFinished) {
+  event(["graph", "stop"], fields.empty(), {
+    use run <- fields.include(fields.string("run"), get: fn(m) { m.run })
+    use outcome <- fields.include(
+      fields.enum(
+        "outcome",
+        [
+          GraphCompleted,
+          GraphFailed,
+          GraphExhausted,
+          GraphCancelled,
+          GraphExpired,
+        ],
+        graph_outcome_name,
+      ),
+      get: fn(m) { m.outcome },
+    )
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(GraphRunFinished(run:, outcome:, root:, correlation:))
+  })
+}
+
+fn activation_fields() -> Fields(GraphActivation) {
+  use run <- fields.include(fields.string("run"), get: fn(a) { a.run })
+  use activation <- fields.include(fields.int("activation"), get: fn(a) {
+    a.activation
+  })
+  use attempt <- fields.include(fields.int("attempt"), get: fn(a) { a.attempt })
+  use node <- fields.include(fields.string("node"), get: fn(a) { a.node })
+  use operation <- fields.include(fields.string("operation"), get: fn(a) {
+    a.operation
+  })
+  use operation_version <- fields.include(
+    fields.int("operation_version"),
+    get: fn(a) { a.operation_version },
+  )
+  fields.success(GraphActivation(
+    run:,
+    activation:,
+    attempt:,
+    node:,
+    operation:,
+    operation_version:,
+  ))
+}
+
+fn operation_kind_name(kind: policy.OperationKind) -> String {
+  case kind {
+    policy.Activity -> "activity"
+    policy.Signal -> "signal"
+    policy.Job -> "job"
+    policy.OwnedJob -> "owned_job"
+    policy.Subgraph -> "subgraph"
+    policy.Agent -> "agent"
+    policy.Fork -> "fork"
+  }
+}
+
+fn route_name(route: Route) -> String {
+  case route {
+    NextNode -> "next"
+    Answer -> "answer"
+    Kept -> "kept"
+  }
+}
+
+fn graph_outcome_name(outcome: GraphOutcome) -> String {
+  case outcome {
+    GraphCompleted -> "completed"
+    GraphFailed -> "failed"
+    GraphExhausted -> "exhausted"
+    GraphCancelled -> "cancelled"
+    GraphExpired -> "expired"
+  }
 }

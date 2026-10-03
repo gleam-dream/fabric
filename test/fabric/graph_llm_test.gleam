@@ -44,16 +44,16 @@ fn decision(
   client: http_gun.Client,
   settings: llm_wire.Config,
 ) -> operation.Operation(Nil, String, llm.Receipt(Bool)) {
-  llm.new(
+  llm.decision(
     run.DefinitionId("structured-review", 1),
-    codec.string(),
-    decision_codec(),
-    "review",
-    fn(_, text) {
-      #(
-        client,
-        settings,
-        llm_wire.request("review-model", [llm_wire.user(text)]),
+    input: codec.string(),
+    output: decision_codec(),
+    name: "review",
+    call: fn(_, text) {
+      llm.call(
+        client: client,
+        config: settings,
+        request: llm_wire.request("review-model", [llm_wire.user(text)]),
       )
     },
   )
@@ -74,9 +74,9 @@ fn messages(body: String) -> List(#(String, String)) {
 fn runtime_with(
   runs: store.Store,
   op: operation.Operation(Nil, String, llm.Receipt(Bool)),
-  policy: graph.Policy(Nil),
+  policy: policy.Policy(Nil),
 ) -> graph.Runtime(Nil, String, llm.Receipt(Bool)) {
-  let assert Ok(id) = definition.node_id("review")
+  let id = definition.node_id("review")
   let node =
     definition.node(
       id,
@@ -86,15 +86,17 @@ fn runtime_with(
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("decision-graph", 1),
-      id,
-      [node],
-      codec.string(),
-      llm.receipt_codec(decision_codec()),
-      1,
-    ))
-  graph.new(spec, runs, fn() { Nil }, policy)
+    definition.build(
+      definition.new(
+        run.DefinitionId("decision-graph", 1),
+        entry: id,
+        nodes: [node],
+        state: codec.string(),
+        answer: llm.receipt_codec(decision_codec()),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, policy)
 }
 
 pub fn a_structured_decision_retains_native_answer_raw_output_and_usage_test() {
@@ -104,7 +106,12 @@ pub fn a_structured_decision_retains_native_answer_raw_output_and_usage_test() {
     fake_provider.start([testing.text(raw) |> testing.with_usage(usage)])
   let runtime = runtime(support.store(), fake)
   let assert Ok(handle) =
-    graph.start(runtime, support.id("decision"), "review this")
+    graph.start(
+      runtime,
+      support.id("decision"),
+      "review this",
+      correlation: None,
+    )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status
   |> should.equal(
@@ -132,7 +139,12 @@ pub fn saved_structured_receipt_is_reused_after_store_process_loss_test() {
     restart.owned(fn() {
       let runs = support.directory(dir)
       let assert Ok(handle) =
-        graph.start(runtime(runs, fake), support.id("saved-decision"), "draft")
+        graph.start(
+          runtime(runs, fake),
+          support.id("saved-decision"),
+          "draft",
+          correlation: None,
+        )
       #(runs, handle)
     })
   let assert Ok(before) =
@@ -140,7 +152,7 @@ pub fn saved_structured_receipt_is_reused_after_store_process_loss_test() {
   let assert graph.Completed(_) = before.status
   restart.crash(owner, runs)
   let restored =
-    graph.attach(
+    support.open_graph(
       runtime(support.directory(dir), fake),
       support.id("saved-decision"),
     )
@@ -159,18 +171,29 @@ pub fn policy_approval_precedes_the_provider_request_test() {
       support.store(),
       decision(fake.client, fake_provider.scripted(fake)),
       fn(_, action) {
-        action.operation
+        support.operation(action)
         |> should.equal(run.DefinitionId("structured-review", 1))
         Ok(policy.RequireApproval(run.Requirement("external-model", 1)))
       },
     )
   let assert Ok(handle) =
-    graph.start(runtime, support.id("approval-decision"), "draft")
+    graph.start(
+      runtime,
+      support.id("approval-decision"),
+      "draft",
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
   fake_provider.bodies(fake) |> should.equal([])
-  graph.approve(handle, approval) |> should.be_ok
+  graph.approve(
+    handle,
+    approval,
+    reviewer: support.reviewer("reviewer"),
+    context: Nil,
+  )
+  |> should.be_ok
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(_) = done.status
   list.length(fake_provider.bodies(fake)) |> should.equal(1)
@@ -198,6 +221,7 @@ pub fn refusal_and_output_limit_are_distinct_from_a_valid_answer_test() {
         runtime(support.store(), fake),
         support.id("non-answer"),
         "draft",
+        correlation: None,
       )
     let assert Ok(done) =
       graph.await(handle, within: duration.milliseconds(5000))
@@ -226,6 +250,7 @@ pub fn invalid_output_interrupted_transport_and_http_failures_never_route_or_ret
         runtime(support.store(), fake),
         support.id("invalid-decision"),
         "draft",
+        correlation: None,
       )
     let assert Ok(blocked) =
       graph.await(handle, within: duration.milliseconds(5000))
@@ -245,23 +270,28 @@ pub fn tool_catalog_is_rejected_before_network_io_test() {
   let tool =
     tool.new("lookup", "lookup", codecs.one_field("query", codec.string()))
   let op =
-    llm.new(
+    llm.decision(
       run.DefinitionId("structured-review", 1),
-      codec.string(),
-      decision_codec(),
-      "review",
-      fn(_, text) {
-        #(
-          fake.client,
-          fake_provider.scripted(fake),
-          llm_wire.request("review-model", [llm_wire.user(text)])
+      input: codec.string(),
+      output: decision_codec(),
+      name: "review",
+      call: fn(_, text) {
+        llm.call(
+          client: fake.client,
+          config: fake_provider.scripted(fake),
+          request: llm_wire.request("review-model", [llm_wire.user(text)])
             |> llm_wire.with_tools([tool]),
         )
       },
     )
   let runtime = runtime_with(support.store(), op, fn(_, _) { Ok(policy.Allow) })
   let assert Ok(handle) =
-    graph.start(runtime, support.id("tools-decision"), "draft")
+    graph.start(
+      runtime,
+      support.id("tools-decision"),
+      "draft",
+      correlation: None,
+    )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Failed(graph.OperationFailed(detail)) = done.status
   string.contains(detail, "cannot declare tools") |> should.be_true
@@ -286,7 +316,12 @@ pub fn preparation_and_proven_unsent_failures_are_definite_test() {
         Ok(policy.Allow)
       })
     let assert Ok(handle) =
-      graph.start(runtime, support.id("unsent-decision"), "draft")
+      graph.start(
+        runtime,
+        support.id("unsent-decision"),
+        "draft",
+        correlation: None,
+      )
     let assert Ok(done) =
       graph.await(handle, within: duration.milliseconds(5000))
     let assert graph.Failed(graph.OperationFailed(_)) = done.status
@@ -412,7 +447,12 @@ pub fn openai_projection_uses_the_output_schema_and_preserves_actual_sse_usage_t
       fn(_, _) { Ok(policy.Allow) },
     )
   let assert Ok(handle) =
-    graph.start(runtime, support.id("openai-decision"), "draft")
+    graph.start(
+      runtime,
+      support.id("openai-decision"),
+      "draft",
+      correlation: None,
+    )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status
   |> should.equal(

@@ -1,7 +1,9 @@
 import fabric/graph
 import fabric/graph/operation
+import fabric/reviewer
 import fabric/run
 import fabric/store
+import fabric/tool
 import fabric_writing
 import fabric_writing/domain
 import fabric_writing/file
@@ -55,20 +57,27 @@ pub fn approval_survives_restart_without_repeating_generation_or_review_test() {
   stop_store(owner, runs)
   let owner = start_store(runs)
   let handle =
-    graph.attach(
+    open_graph(
       fabric_writing.runtime(runs, generator, reviewer, publisher),
       graph.id(handle),
     )
-  let assert Ok(after) = graph.read(handle)
+  let assert Ok(after) = graph.snapshot(handle)
   after.value |> should.equal(before.value)
   after.receipts |> should.equal(before.receipts)
   after.status |> should.equal(before.status)
-  let assert Ok(_) = graph.approve(handle, first)
+  let assert Ok(_) =
+    graph.approve(
+      handle,
+      first,
+      reviewer: as_reviewer("reviewer"),
+      context: Nil,
+    )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(domain.Published(artifact)) = done.status
   file.read(artifact.path)
   |> should.equal(Ok("The library opens on 12 May, with free admission.\n"))
-  graph.approve(handle, first) |> should.be_error
+  graph.approve(handle, first, reviewer: as_reviewer("reviewer"), context: Nil)
+  |> should.be_error
   stop_store(owner, runs)
   http_gun.stop(client)
   remove_dir(directory)
@@ -256,8 +265,14 @@ pub fn rejection_and_rejected_human_approval_never_publish_test() {
   let assert Ok(waiting) =
     graph.await(f.handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
-  let assert Ok(_) = graph.reject(f.handle, approval, "do not publish")
-  let assert Ok(rejected) = graph.read(f.handle)
+  let assert Ok(_) =
+    graph.reject(
+      f.handle,
+      approval,
+      reason: "do not publish",
+      reviewer: as_reviewer("reviewer"),
+    )
+  let assert Ok(rejected) = graph.snapshot(f.handle)
   let assert graph.Failed(_) = rejected.status
   file.read(f.directory <> "/published/article-4.md") |> should.be_error
   close(f)
@@ -296,7 +311,13 @@ pub fn a_corrected_draft_is_reviewed_before_approval_test() {
   let assert Ok(waiting) =
     graph.await(f.handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
-  let assert Ok(_) = graph.approve(f.handle, approval)
+  let assert Ok(_) =
+    graph.approve(
+      f.handle,
+      approval,
+      reviewer: as_reviewer("reviewer"),
+      context: Nil,
+    )
   let assert Ok(done) =
     graph.await(f.handle, within: duration.milliseconds(5000))
   let assert graph.Completed(domain.Published(artifact)) = done.status
@@ -362,16 +383,22 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
           }
           Ok(receipt)
         },
-        fn(_error: Nil) { operation.UncertainEffect("lost result") },
+        fn(_error: Nil) { tool.Uncertain("lost result") },
       )
-    let assert Ok(op) = operation.with_replay(op, 2)
+    let op = operation.with_replay(op, 2)
     op
   }
   let f = fixture([draft("approved draft"), review(domain.Approve)], publisher)
   let assert Ok(waiting) =
     graph.await(f.handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
-  let assert Ok(_) = graph.approve(f.handle, approval)
+  let assert Ok(_) =
+    graph.approve(
+      f.handle,
+      approval,
+      reviewer: as_reviewer("reviewer"),
+      context: Nil,
+    )
   let assert Ok(receipt) = process.receive(saved, 1000)
   stop_store(f.owner, f.runs)
   let owner = start_store(f.runs)
@@ -380,12 +407,37 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
     graph.await(f.handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(renewed) = recovered.status
   should.be_true(renewed != approval)
-  graph.approve(f.handle, approval) |> should.be_error
-  let assert Ok(_) = graph.approve(f.handle, renewed)
+  graph.approve(
+    f.handle,
+    approval,
+    reviewer: as_reviewer("reviewer"),
+    context: Nil,
+  )
+  |> should.be_error
+  let assert Ok(_) =
+    graph.approve(
+      f.handle,
+      renewed,
+      reviewer: as_reviewer("reviewer"),
+      context: Nil,
+    )
   let assert Ok(done) =
     graph.await(f.handle, within: duration.milliseconds(5000))
   let assert graph.Completed(domain.Published(after)) = done.status
   after |> should.equal(receipt)
   file.read(after.path) |> should.equal(Ok("approved draft\n"))
   close(Fixture(..f, owner:))
+}
+
+fn open_graph(
+  runtime: graph.Runtime(context, state, answer),
+  id: run.RunId,
+) -> graph.Handle(context, state, answer) {
+  let assert Ok(handle) = graph.open(runtime, id)
+  handle
+}
+
+fn as_reviewer(subject: String) -> reviewer.Reviewer {
+  let assert Ok(reviewer) = reviewer.new(subject)
+  reviewer
 }

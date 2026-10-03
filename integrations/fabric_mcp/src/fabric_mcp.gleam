@@ -2,6 +2,7 @@
 
 import fabric/graph/operation
 import fabric/run
+import fabric/tool as fabric_tool
 import fabric_mcp/client
 import fabric_mcp/internal/frame
 import gleam/list
@@ -246,13 +247,13 @@ pub fn bind(
         use arguments <- result.try(
           codec.encode(input, value)
           |> result.map_error(fn(_) {
-            operation.DefiniteFailure("MCP input cannot be encoded")
+            fabric_tool.Explain("MCP input cannot be encoded")
           }),
         )
         use _ <- result.try(
           contract.validate(tool.input, arguments)
           |> result.map_error(fn(_) {
-            operation.DefiniteFailure("MCP input violates its retained schema")
+            fabric_tool.Explain("MCP input violates its retained schema")
           }),
         )
         let connection = connection(context)
@@ -261,15 +262,15 @@ pub fn bind(
             client.server(connection) == tool.server,
             "MCP server identity changed",
           )
-          |> result.map_error(operation.DefiniteFailure),
+          |> result.map_error(fabric_tool.Explain),
         )
         use current <- result.try(
           discover(connection, tool.name)
-          |> result.map_error(operation.DefiniteFailure),
+          |> result.map_error(fabric_tool.Explain),
         )
         use Nil <- result.try(
           require(same_tool(tool, current), "MCP tool schema changed")
-          |> result.map_error(operation.DefiniteFailure),
+          |> result.map_error(fabric_tool.Explain),
         )
         use response <- result.try(
           client.request(connection, "tools/call", [
@@ -281,13 +282,13 @@ pub fn bind(
         use result <- result.try(
           tool_result(tool, response.result)
           |> result.map_error(fn(reason) {
-            operation.UncertainEffect(reason <> ": " <> response.raw_json)
+            fabric_tool.Uncertain(reason <> ": " <> response.raw_json)
           }),
         )
         use native <- result.try(
           convert(result)
           |> result.map_error(fn(reason) {
-            operation.UncertainEffect(
+            fabric_tool.Uncertain(
               "MCP result conversion failed: "
               <> reason
               <> ": "
@@ -302,11 +303,11 @@ pub fn bind(
   )
 }
 
-fn call_failure(error: client.Error) -> operation.Failure {
+fn call_failure(error: client.Error) -> fabric_tool.Failure {
   case error {
-    client.BeforeSend(reason) -> operation.DefiniteFailure(reason)
+    client.BeforeSend(reason) -> fabric_tool.Explain(reason)
     client.AfterSend(_) | client.InvalidResponse(_) | client.RemoteError(..) ->
-      operation.UncertainEffect(string.inspect(error))
+      fabric_tool.Uncertain(string.inspect(error))
   }
 }
 

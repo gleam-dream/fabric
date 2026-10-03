@@ -4,6 +4,9 @@
 
 import fabric/graph/operation
 import fabric/run
+import fabric/tool
+import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -27,31 +30,54 @@ pub type Receipt(output) {
   Receipt(model: String, outcome: Outcome(output), usage: Option(message.Usage))
 }
 
-/// Version `identity` when the provider, prompt or output meaning changes.
-/// The pure request builder runs only after policy admission. It returns the
-/// caller's started HTTP Gun client, the llm_wire configuration and a plain
-/// request; Fabric adds the structured output. Credentials and the client
-/// belong in fresh context, never in the persisted input or receipt; Fabric
-/// neither starts nor stops the client.
+/// What one decision sends: the application's started HTTP Gun client,
+/// the llm_wire configuration and a plain request. Build one with `call`.
+pub opaque type Call {
+  Call(
+    client: http_gun.Client,
+    config: llm_wire.Config,
+    request: llm_wire.Request(String),
+  )
+}
+
+/// A decision's call: `request` sent through `client` with `config`.
+/// Fabric adds the structured output and the run's correlation
+/// (`http_gun.with_correlation`); it neither starts nor stops the client.
+pub fn call(
+  client client: http_gun.Client,
+  config config: llm_wire.Config,
+  request request: llm_wire.Request(String),
+) -> Call {
+  Call(client:, config:, request:)
+}
+
+/// One structured decision as the graph activity `identity`: `call` builds
+/// the request for each admitted input, and the provider's answer, decoded
+/// with `output`, becomes the receipt. `name` names the structured output
+/// for the provider. Version `identity` when the provider, prompt or output
+/// meaning changes. `call` runs only after policy admission. Credentials and
+/// the client belong in fresh context, never in the persisted input or
+/// receipt.
 ///
 /// Requests must have no tools. Preparation and proven unsent failures are
-/// definite; potentially sent failures require reconciliation. No implicit
-/// retry is made, even when llm_wire reports a transient error.
-pub fn new(
+/// definite (`tool.Explain`); potentially sent failures require
+/// reconciliation (`tool.Uncertain`). No implicit retry is made, even when
+/// llm_wire reports a transient error.
+pub fn decision(
   identity: run.DefinitionId,
-  input: codec.Codec(input),
-  output: codec.Codec(output),
-  output_name: String,
-  request: fn(context, input) ->
-    #(http_gun.Client, llm_wire.Config, llm_wire.Request(String)),
+  input input: codec.Codec(input),
+  output output: codec.Codec(output),
+  name name: String,
+  call call: fn(context, input) -> Call,
 ) -> operation.Operation(context, input, Receipt(output)) {
   operation.new(
     identity,
     input,
     receipt_codec(output),
-    fn(context, _, input) {
-      let #(client, config, request) = request(context, input)
-      perform(client, config, request, output_name, output)
+    fn(context, invocation: operation.Invocation, input) {
+      let Call(client, config, request) = call(context, input)
+      let client = http_gun.with_correlation(client, invocation.correlation)
+      perform(client, config, request, name, output)
     },
     fn(failure) { failure },
   )
@@ -63,18 +89,18 @@ fn perform(
   request: llm_wire.Request(String),
   output_name: String,
   output: codec.Codec(output),
-) -> Result(Receipt(output), operation.Failure) {
+) -> Result(Receipt(output), tool.Failure) {
   use Nil <- result.try(case llm_wire.tools(request) {
     [] -> Ok(Nil)
     [_, ..] ->
-      Error(operation.DefiniteFailure(
+      Error(tool.Explain(
         "structured decision requests cannot declare tools; use a managed agent",
       ))
   })
   use prepared <- result.try(
     llm_wire.prepare(config, llm_wire.with_output(request, output_name, output))
     |> result.map_error(fn(error) {
-      operation.DefiniteFailure(error.describe_prepare_error(error))
+      tool.Explain(error.describe_prepare_error(error))
     }),
   )
   use response <- result.try(
@@ -91,18 +117,32 @@ fn perform(
       Ok(Receipt(model, OutputLimited(partial_text), usage))
     llm_wire.OutputLimited(partial_calls: [_, ..], ..)
     | llm_wire.NeedsTools(..) ->
-      Error(operation.UncertainEffect(
+      Error(tool.Uncertain(
         "structured decision returned unexpected tools: "
-        <> string.inspect(response),
+        <> describe_response(response),
       ))
   }
 }
 
-fn failure(failure: llm_wire.Failure) -> operation.Failure {
+fn failure(failure: llm_wire.Failure) -> tool.Failure {
   let detail = llm_wire.describe_failure(failure)
   case failure.sent {
-    llm_wire.NotSent -> operation.DefiniteFailure(detail)
-    llm_wire.MaybeSent | llm_wire.Completed -> operation.UncertainEffect(detail)
+    llm_wire.NotSent -> tool.Explain(detail)
+    llm_wire.MaybeSent | llm_wire.Completed -> tool.Uncertain(detail)
+  }
+}
+
+/// What an unexpected reply asked for, without its arguments.
+fn describe_response(response: llm_wire.Outcome(output)) -> String {
+  case response {
+    llm_wire.NeedsTools(turn:, ..) ->
+      int.to_string(list.length(turn.calls)) <> " tool calls"
+    llm_wire.OutputLimited(partial_calls:, ..) ->
+      "an output-limited reply with "
+      <> int.to_string(list.length(partial_calls))
+      <> " partial tool calls"
+    llm_wire.Answer(..) -> "an answer"
+    llm_wire.Refused(..) -> "a refusal"
   }
 }
 

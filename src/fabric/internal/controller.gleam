@@ -1342,7 +1342,7 @@ fn gate(
           Ok(Refused(run.LimitReached(run.ChildLimit(limits.max_children))))
         False -> decide_policy(env, state.run, id, call, target)
       }
-    Ok(Nil), policy.InvokeTool ->
+    Ok(Nil), policy.InvokeTool | Ok(Nil), policy.RunOperation(..) ->
       decide_policy(env, state.run, id, call, target)
   }
 }
@@ -1358,7 +1358,7 @@ fn decide_policy(
     env.context,
     policy.Action(
       run_id.from_string(run_id),
-      id,
+      policy.ToolCall(id),
       call.name,
       call.arguments_json,
       target,

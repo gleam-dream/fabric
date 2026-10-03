@@ -39,7 +39,7 @@ fn runtime_with(runs, owned, polling, read, request, accept) {
   let observer = case polling {
     job.Manual -> observer
     job.Every(every) -> {
-      let assert Ok(observer) =
+      let observer =
         job.with_poll_interval(observer, duration.milliseconds(every))
       observer
     }
@@ -53,18 +53,22 @@ fn runtime_with(runs, owned, polling, read, request, accept) {
       )
     False -> operation.await_job(observer)
   }
-  let assert Ok(op) = operation.with_deadline(op, duration.milliseconds(60_000))
-  let assert Ok(node) = definition.node_id("job")
+  let op = operation.with_deadline(op, run.After(duration.milliseconds(60_000)))
+  let node = definition.node_id("job")
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("job-deadline", 1),
-      node,
-      [definition.node(node, op, fn(receipt) { Ok(receipt) }, accept, [])],
-      codec.string(),
-      codec.int(),
-      1,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("job-deadline", 1),
+        entry: node,
+        nodes: [
+          definition.node(node, op, fn(receipt) { Ok(receipt) }, accept, []),
+        ],
+        state: codec.string(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 pub fn ownership_can_be_cancelled_even_when_arming_cannot_read_the_clock_test() {
@@ -87,11 +91,11 @@ pub fn ownership_can_be_cancelled_even_when_arming_cannot_read_the_clock_test() 
       fn(_, _) { panic as "cancelled wait cannot route" },
     )
   let assert Ok(handle) =
-    graph.start(spec, support.id("unarmed-owner"), "receipt")
+    graph.start(spec, support.id("unarmed-owner"), "receipt", correlation: None)
   let assert Ok(unattended) =
     graph.await(handle, within: duration.milliseconds(5000))
   unattended.status |> should.equal(graph.Unattended)
-  graph.cancel(handle) |> should.equal(Ok(Nil))
+  let assert Ok(_) = graph.cancel(handle)
   let assert Ok(pending) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.CancellingJob(
@@ -120,7 +124,12 @@ pub fn a_terminal_result_observed_after_the_deadline_is_retained_without_routing
       fn(_, _) { panic as "late result cannot route" },
     )
   let assert Ok(handle) =
-    graph.start(spec, support.id("late-job-result"), "receipt")
+    graph.start(
+      spec,
+      support.id("late-job-result"),
+      "receipt",
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
@@ -163,7 +172,12 @@ pub fn a_failed_read_cannot_extend_a_deadline_and_cleanup_ignores_clock_failure_
       fn(_, _) { panic },
     )
   let assert Ok(handle) =
-    graph.start(spec, support.id("failed-job-read"), "receipt")
+    graph.start(
+      spec,
+      support.id("failed-job-read"),
+      "receipt",
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
@@ -224,7 +238,12 @@ pub fn the_deadline_preempts_polling_but_does_not_spin_cleanup_observations_test
     )
   }
   let assert Ok(handle) =
-    graph.start(build(runs), support.id("scheduled-deadline"), "receipt")
+    graph.start(
+      build(runs),
+      support.id("scheduled-deadline"),
+      "receipt",
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
@@ -249,7 +268,7 @@ pub fn the_deadline_preempts_polling_but_does_not_spin_cleanup_observations_test
   memory.advance(120_001)
   probe.record(calls, "finish")
   scan(runs, build).claimed |> should.equal(1)
-  let assert Ok(done) = graph.read(handle)
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Expired(due, graph.JobStopped(reference)))
   probe.count(calls, "stop") |> should.equal(1)
 }
@@ -266,7 +285,12 @@ pub fn read_only_expiration_detaches_without_observation_or_a_stop_request_test(
       fn(_, _) { panic as "no route" },
     )
   let assert Ok(handle) =
-    graph.start(spec, support.id("readonly-deadline"), "receipt")
+    graph.start(
+      spec,
+      support.id("readonly-deadline"),
+      "receipt",
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
@@ -297,11 +321,16 @@ pub fn owned_expiration_keeps_its_cause_and_cleanup_across_restart_test() {
     )
   }
   let assert Ok(handle) =
-    graph.start_with_budget(
-      build(runs, fn(_) { Ok(job.Pending) }),
+    graph.start(
+      graph.with_family_budget(
+        build(runs, fn(_) { Ok(job.Pending) }),
+        budget.limits(work: 1)
+          |> budget.with_children(1)
+          |> budget.with_depth(1),
+      ),
       support.id("owned-deadline"),
       "receipt",
-      budget.limits(work: 1) |> budget.with_children(1) |> budget.with_depth(1),
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
@@ -317,7 +346,7 @@ pub fn owned_expiration_keeps_its_cause_and_cleanup_across_restart_test() {
     job.RequestAccepted,
     operation.DeadlineReached(due),
   ))
-  graph.cancel(handle) |> should.equal(Ok(Nil))
+  let assert Ok(_) = graph.cancel(handle)
   let assert Ok(row) = store_core.get(runs, "owned-deadline")
   let assert Ok(metadata) = retention.inspect(row.record)
   metadata.settled |> should.equal(False)
@@ -325,7 +354,7 @@ pub fn owned_expiration_keeps_its_cause_and_cleanup_across_restart_test() {
   restart.crash(owner, runs)
   let restored = nodes.node(memory.backend, "owned", nodes.long)
   let handle =
-    graph.attach(
+    support.open_graph(
       build(restored, fn(_) { Ok(job.Completed(42)) }),
       support.id("owned-deadline"),
     )

@@ -129,7 +129,7 @@ pub fn graph_retention_tracks_reserved_children_receipts_and_canceled_uncertaint
     let assert graph.Ready(activation) = ready.phase
     let ref = graph.reference(ready, activation)
     let child_id = attachment.reserved_id(ready.run, activation.id)
-    let joined = next(ready, graph.Inspected(ref, Ok(policy.Allow)))
+    let joined = next(ready, graph.Inspected(ref, Ok(policy.Allow), None))
     let assert [link] = describe(joined).children
     link.run |> should.equal(support.id(child_id))
     let leaf =

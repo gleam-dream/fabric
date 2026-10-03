@@ -1,12 +1,18 @@
 //// Shorthands that keep the tests about behaviour rather than set-up.
 
 import fabric/agent.{type Agent, type Spec}
+import fabric/graph
+import fabric/graph/definition
+import fabric/graph/job
+import fabric/graph/operation
+import fabric/policy
 import fabric/reviewer.{type Reviewer}
-import fabric/run.{type RunId}
+import fabric/run.{type ActionId, type DefinitionId, type RunId}
 import fabric/store.{type Store}
 import fabric/store/conformance
 import gleam/erlang/process
 import gleam/int
+import gleam/list
 import gleam/time/duration
 
 /// The run id `text`, which must have the shape Fabric issues.
@@ -19,6 +25,80 @@ pub fn id(text: String) -> RunId {
 pub fn reviewer(subject: String) -> Reviewer {
   let assert Ok(reviewer) = reviewer.new(subject)
   reviewer
+}
+
+/// The graph run `id` opened under `runtime`, which must fit it.
+pub fn open_graph(
+  runtime: graph.Runtime(context, state, answer),
+  id: RunId,
+) -> graph.Handle(context, state, answer) {
+  let assert Ok(handle) = graph.open(runtime, id)
+  handle
+}
+
+/// The id of an agent action the policy sees.
+pub fn action_id(action: policy.Action) -> ActionId {
+  let assert policy.ToolCall(id) = action.step
+  id
+}
+
+/// The node of a graph action the policy sees.
+pub fn node(action: policy.Action) -> String {
+  let assert policy.RunOperation(node:, ..) = action.target
+  node
+}
+
+/// The operation of a graph action the policy sees.
+pub fn operation(action: policy.Action) -> DefinitionId {
+  let assert policy.RunOperation(operation:, ..) = action.target
+  operation
+}
+
+/// The operation kind of a graph action the policy sees.
+pub fn kind(action: policy.Action) -> policy.OperationKind {
+  let assert policy.RunOperation(kind:, ..) = action.target
+  kind
+}
+
+/// What `definition.build` refuses about `op`'s settings.
+pub fn operation_problems(
+  op: operation.Operation(context, input, output),
+) -> List(operation.ConfigurationError) {
+  let id = definition.node_id("probe")
+  let node =
+    definition.node(
+      id,
+      op,
+      fn(state) { Ok(state) },
+      fn(state, _) { Ok(definition.Finish(state, state)) },
+      [],
+    )
+  let codec = operation.input_codec(op)
+  case
+    definition.build(definition.new(
+      run.DefinitionId("probe", 1),
+      entry: id,
+      nodes: [node],
+      state: codec,
+      answer: codec,
+    ))
+  {
+    Ok(_) -> []
+    Error(problems) ->
+      list.filter_map(problems, fn(problem) {
+        case problem {
+          definition.InvalidOperation(_, problem) -> Ok(problem)
+          _ -> Error(Nil)
+        }
+      })
+  }
+}
+
+/// What `definition.build` refuses about a job wait on `observer`.
+pub fn observer_problems(
+  observer: job.Observer(context, receipt, output),
+) -> List(operation.ConfigurationError) {
+  operation_problems(operation.await_job(observer))
 }
 
 /// The text of a run id, for backend-level instruments that key by it.

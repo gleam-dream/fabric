@@ -373,7 +373,7 @@ fn transfers_need_approval(
   _context: Nil,
   action: policy.Action,
 ) -> Result(policy.Decision, String) {
-  case action.tool {
+  case action.name {
     "transfer_funds" ->
       Ok(policy.RequireApproval(run.Requirement("transfer", 1)))
     _ -> Ok(policy.Allow)

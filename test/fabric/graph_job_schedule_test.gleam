@@ -16,6 +16,7 @@ import fabric/support/restart
 import fabric/sweeper
 import fabric/telemetry as o
 import gleam/erlang/process
+import gleam/option.{None}
 import gleam/result
 import gleam/time/duration
 import gleeunit/should
@@ -30,9 +31,8 @@ fn runtime(runs, every, read) {
       codec.int(),
       fn(_, receipt) { read(receipt) },
     )
-  let assert Ok(observer) =
-    job.with_poll_interval(observer, duration.milliseconds(every))
-  let assert Ok(id) = definition.node_id("result")
+  let observer = job.with_poll_interval(observer, duration.milliseconds(every))
+  let id = definition.node_id("result")
   let node =
     definition.node(
       id,
@@ -42,15 +42,17 @@ fn runtime(runs, every, read) {
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("scheduled-flow", 1),
-      id,
-      [node],
-      codec.string(),
-      codec.int(),
-      1,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("scheduled-flow", 1),
+        entry: id,
+        nodes: [node],
+        state: codec.string(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 fn scan(runs, build) {
@@ -86,11 +88,16 @@ pub fn scheduled_observation_reuses_one_work_grant_and_waits_for_backend_time_te
   }
   let id = support.id("scheduled-job")
   let assert Ok(handle) =
-    graph.start_with_budget(
-      build(runs),
+    graph.start(
+      graph.with_family_budget(
+        build(runs),
+        budget.limits(work: 1)
+          |> budget.with_children(1)
+          |> budget.with_depth(1),
+      ),
       id,
       "job-receipt",
-      budget.limits(work: 1) |> budget.with_children(1) |> budget.with_depth(1),
+      correlation: None,
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
@@ -102,7 +109,7 @@ pub fn scheduled_observation_reuses_one_work_grant_and_waits_for_backend_time_te
   probe.entries(calls) |> should.equal(["observe"])
   memory.advance(60_000)
   scan(runs, build).recovered |> should.equal(1)
-  let assert Ok(done) = graph.read(handle)
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(42))
   scan(runs, build).claimed |> should.equal(0)
   probe.entries(calls) |> should.equal(["observe", "observe"])
@@ -116,26 +123,35 @@ pub fn polling_intervals_are_bounded_and_part_of_definition_compatibility_test()
       codec.int(),
       fn(_, _) { Ok(job.Completed(42)) },
     )
-  job.with_poll_interval(observer, duration.milliseconds(0)) |> should.be_error
-  job.with_poll_interval(observer, duration.milliseconds(-1)) |> should.be_error
+  job.with_poll_interval(observer, duration.milliseconds(0))
+  |> support.observer_problems
+  |> should.not_equal([])
+  job.with_poll_interval(observer, duration.milliseconds(-1))
+  |> support.observer_problems
+  |> should.not_equal([])
   job.with_poll_interval(observer, duration.milliseconds(4_294_967_296))
-  |> should.be_error
+  |> support.observer_problems
+  |> should.not_equal([])
   job.with_poll_interval(observer, duration.milliseconds(4_294_967_295))
-  |> should.be_ok
+  |> support.observer_problems
+  |> should.equal([])
   let runs = support.store()
   let id = support.id("changed-poll")
   let assert Ok(handle) =
-    graph.start(runtime(runs, 1000, fn(_) { Ok(job.Pending) }), id, "receipt")
+    graph.start(
+      runtime(runs, 1000, fn(_) { Ok(job.Pending) }),
+      id,
+      "receipt",
+      correlation: None,
+    )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let changed =
-    graph.attach(
-      runtime(runs, 2000, fn(_) { panic as "changed contract must not observe" }),
-      id,
-    )
-  graph.poll_job(changed, reference) |> should.be_error
-  graph.recover(changed) |> should.be_error
+    runtime(runs, 2000, fn(_) { panic as "changed contract must not observe" })
+  let assert Error(graph.IncompatibleDefinition(_)) = graph.open(changed, id)
+  let assert Ok(unchanged) = graph.snapshot(handle)
+  unchanged.status |> should.equal(graph.AwaitingJob(reference))
 }
 
 pub fn a_failed_observer_keeps_a_retry_claim_until_expiry_and_recovers_after_store_loss_test() {
@@ -148,6 +164,7 @@ pub fn a_failed_observer_keeps_a_retry_claim_until_expiry_and_recovers_after_sto
           runtime(runs, 1000, fn(_) { Error("service unavailable") }),
           support.id("retry-job"),
           "receipt",
+          correlation: None,
         )
       #(runs, handle)
     })
@@ -165,8 +182,8 @@ pub fn a_failed_observer_keeps_a_retry_claim_until_expiry_and_recovers_after_sto
   scan(restored, build).claimed |> should.equal(0)
   memory.advance(nodes.long)
   scan(restored, build).recovered |> should.equal(1)
-  let handle = graph.attach(build(restored), reference.run)
-  let assert Ok(done) = graph.read(handle)
+  let handle = support.open_graph(build(restored), reference.run)
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(42))
 }
 
@@ -184,7 +201,7 @@ pub fn discovery_of_a_parent_does_not_poll_an_unclaimed_job_early_test() {
     })
   }
   let build = fn(runs) {
-    let assert Ok(id) = definition.node_id("child")
+    let id = definition.node_id("child")
     let op = graph.as_subgraph(build_child(runs))
     let node =
       definition.node(
@@ -195,18 +212,21 @@ pub fn discovery_of_a_parent_does_not_poll_an_unclaimed_job_early_test() {
         [],
       )
     let assert Ok(spec) =
-      definition.build(definition.Spec(
-        run.DefinitionId("scheduled-flow", 1),
-        id,
-        [node],
-        codec.string(),
-        codec.int(),
-        1,
-      ))
-    graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+      definition.build(
+        definition.new(
+          run.DefinitionId("scheduled-flow", 1),
+          entry: id,
+          nodes: [node],
+          state: codec.string(),
+          answer: codec.int(),
+        )
+        |> definition.with_max_activations(1),
+      )
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
   }
   let id = support.id("nested-job-root")
-  let assert Ok(handle) = graph.start(build(runs), id, "receipt")
+  let assert Ok(handle) =
+    graph.start(build(runs), id, "receipt", correlation: None)
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
   let _ = scan(runs, build)
   probe.entries(calls) |> should.equal(["observe"])
@@ -234,9 +254,9 @@ pub fn each_new_visit_is_eligible_without_waiting_for_the_previous_interval_test
         codec.int(),
         fn(_, n) { Ok(job.Completed(n + 1)) },
       )
-    let assert Ok(observer) =
+    let observer =
       job.with_poll_interval(observer, duration.milliseconds(60_000))
-    let assert Ok(id) = definition.node_id("observe")
+    let id = definition.node_id("observe")
     let node =
       definition.node(
         id,
@@ -251,17 +271,20 @@ pub fn each_new_visit_is_eligible_without_waiting_for_the_previous_interval_test
         [id],
       )
     let assert Ok(spec) =
-      definition.build(definition.Spec(
-        run.DefinitionId("scheduled-flow", 1),
-        id,
-        [node],
-        codec.int(),
-        codec.int(),
-        2,
-      ))
-    graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+      definition.build(
+        definition.new(
+          run.DefinitionId("scheduled-flow", 1),
+          entry: id,
+          nodes: [node],
+          state: codec.int(),
+          answer: codec.int(),
+        )
+        |> definition.with_max_activations(2),
+      )
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
   }
-  let assert Ok(handle) = graph.start(build(runs), support.id("poll-cycle"), 0)
+  let assert Ok(handle) =
+    graph.start(build(runs), support.id("poll-cycle"), 0, correlation: None)
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
   scan(runs, build) |> should.equal(o.Sweep(1, 1, 0, 0))
   let assert Ok(waiting) =
@@ -269,7 +292,7 @@ pub fn each_new_visit_is_eligible_without_waiting_for_the_previous_interval_test
   let assert graph.AwaitingJob(reference) = waiting.status
   reference.activation |> should.equal(2)
   scan(runs, build).claimed |> should.equal(1)
-  let assert Ok(done) = graph.read(handle)
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(2))
 }
 
@@ -310,7 +333,8 @@ pub fn discovery_rechecks_a_claim_released_after_its_initial_read_test() {
       Ok(job.Completed(42))
     })
   }
-  let assert Ok(handle) = graph.start(build(runs), id, "receipt")
+  let assert Ok(handle) =
+    graph.start(build(runs), id, "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(_) = waiting.status
@@ -324,7 +348,7 @@ pub fn discovery_rechecks_a_claim_released_after_its_initial_read_test() {
   scan(runs, build).claimed |> should.equal(0)
   memory.advance(60_000)
   scan(runs, build).recovered |> should.equal(1)
-  let assert Ok(done) = graph.read(handle)
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(42))
   probe.entries(calls) |> should.equal(["observe"])
 }
@@ -340,7 +364,8 @@ pub fn losing_a_scan_releases_its_local_observation_without_releasing_the_claim_
     })
   }
   let id = support.id("lost-job-scan")
-  let assert Ok(handle) = graph.start(build(runs), id, "receipt")
+  let assert Ok(handle) =
+    graph.start(build(runs), id, "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(_) = waiting.status
@@ -360,6 +385,6 @@ pub fn losing_a_scan_releases_its_local_observation_without_releasing_the_claim_
   scan(runs, finish).claimed |> should.equal(0)
   memory.advance(nodes.long)
   scan(runs, finish).recovered |> should.equal(1)
-  let assert Ok(done) = graph.read(handle)
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(42))
 }

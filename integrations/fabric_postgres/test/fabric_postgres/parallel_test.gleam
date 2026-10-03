@@ -14,6 +14,7 @@ import fabric_postgres/agents
 import fabric_postgres/support
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{None}
 import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
@@ -23,7 +24,7 @@ fn response() -> signal.Signal(Int) {
 }
 
 fn leaf(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
-  let assert Ok(id) = definition.node_id("wait")
+  let id = definition.node_id("wait")
   let node =
     definition.node(
       id,
@@ -33,26 +34,28 @@ fn leaf(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
       [],
     )
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("pg-branch", 1),
-      id,
-      [node],
-      codec.int(),
-      codec.int(),
-      1,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("pg-branch", 1),
+        entry: id,
+        nodes: [node],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 fn mapped(runs: store.Store) -> graph.Runtime(Nil, List(Int), List(Int)) {
-  let assert Ok(op) =
+  let op =
     graph.map(
       run.DefinitionId("pg-map", 1),
       leaf(runs),
       max_members: 3,
       concurrency: 3,
     )
-  let assert Ok(id) = definition.node_id("map")
+  let id = definition.node_id("map")
   let node =
     definition.node(
       id,
@@ -68,15 +71,17 @@ fn mapped(runs: store.Store) -> graph.Runtime(Nil, List(Int), List(Int)) {
     )
   let values = codec.list(codec.int())
   let assert Ok(spec) =
-    definition.build(definition.Spec(
-      run.DefinitionId("pg-parallel", 1),
-      id,
-      [node],
-      values,
-      values,
-      1,
-    ))
-  graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
+    definition.build(
+      definition.new(
+        run.DefinitionId("pg-parallel", 1),
+        entry: id,
+        nodes: [node],
+        state: values,
+        answer: values,
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
 fn start_store(settings: fabric_postgres.Settings) -> store.Store {
@@ -109,7 +114,7 @@ fn await_done(
   handle: graph.Handle(Nil, List(Int), List(Int)),
   left: Int,
 ) -> graph.Snapshot(List(Int), List(Int)) {
-  let assert Ok(snapshot) = graph.read(handle)
+  let assert Ok(snapshot) = graph.snapshot(handle)
   case snapshot.status, left {
     graph.Completed(_), _ -> snapshot
     _, n if n > 0 -> {
@@ -127,7 +132,8 @@ pub fn all_branch_revisions_are_claimed_once_and_swept_after_store_loss_test() {
   let #(owner, _) =
     agents.owned(fn() {
       let runs = start_store(settings)
-      let assert Ok(handle) = graph.start(mapped(runs), id, [1, 2, 3])
+      let assert Ok(handle) =
+        graph.start(mapped(runs), id, [1, 2, 3], correlation: None)
       let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
       let assert graph.Fork(_, _) = waiting.status
       Nil
@@ -139,11 +145,11 @@ pub fn all_branch_revisions_are_claimed_once_and_swept_after_store_loss_test() {
   release(backend, "pg-parallel")
   backend.claim_ready("unchanged", 60_000, 10) |> should.equal(Ok([]))
   let runs = start_store(settings)
-  let root = graph.attach(mapped(runs), id)
+  let root = open_graph(mapped(runs), id)
   // Changing the last branch must wake the parent even while the first is idle.
   list.each([3, 2], fn(member) {
     let assert Ok(handle) = graph.branch(root, 1, member, leaf(runs))
-    let assert Ok(waiting) = graph.read(handle)
+    let assert Ok(waiting) = graph.snapshot(handle)
     let assert graph.AwaitingSignal(reference) = waiting.status
     let assert Ok(_) = graph.deliver(handle, reference, response(), member * 10)
     let replies = process.new_subject()
@@ -160,7 +166,7 @@ pub fn all_branch_revisions_are_claimed_once_and_swept_after_store_loss_test() {
   })
   // The last signal is picked up by registered recovery, with no local watches.
   let assert Ok(first) = graph.branch(root, 1, 1, leaf(runs))
-  let assert Ok(waiting) = graph.read(first)
+  let assert Ok(waiting) = graph.snapshot(first)
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Ok(_) = graph.deliver(first, reference, response(), 10)
   let assert Ok(sweeper_pid) =
@@ -180,4 +186,12 @@ pub fn all_branch_revisions_are_claimed_once_and_swept_after_store_loss_test() {
     limit: 10,
   )
   |> should.equal(Ok(4))
+}
+
+fn open_graph(
+  runtime: graph.Runtime(context, state, answer),
+  id: run.RunId,
+) -> graph.Handle(context, state, answer) {
+  let assert Ok(handle) = graph.open(runtime, id)
+  handle
 }

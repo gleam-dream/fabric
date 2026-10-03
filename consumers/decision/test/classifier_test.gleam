@@ -6,6 +6,7 @@ import fabric_typesafe
 import fabric_typesafe/client
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{None}
 import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
@@ -33,6 +34,7 @@ pub fn non_generative_decisions_use_the_same_business_routes_test() {
         demo.runtime(runs, settings, "fixture"),
         id,
         "fixture:" <> example.0,
+        correlation: None,
       )
     let assert Ok(done) =
       graph.await(handle, within: duration.milliseconds(5000))

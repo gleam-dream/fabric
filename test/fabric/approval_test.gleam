@@ -35,7 +35,7 @@ fn desk_policy(
   desk: Desk,
   action: policy.Action,
 ) -> Result(policy.Decision, String) {
-  case action.tool, desk {
+  case action.name, desk {
     "transfer_funds", Desk(frozen: True, ..) ->
       Ok(policy.Deny("account frozen"))
     "transfer_funds", Desk(requirement_version: version, ..) ->
@@ -179,8 +179,8 @@ pub fn a_rejection_never_runs_the_policy_test() {
   let probe = probe.new()
   let calls = process.new_subject()
   let once = fn(desk, action: policy.Action) {
-    process.send(calls, action.id)
-    case action.id {
+    process.send(calls, support.action_id(action))
+    case support.action_id(action) {
       ActionId(1, "t") -> desk_policy(desk, action)
       _ -> Error("the policy runs only for the admission")
     }
@@ -482,7 +482,7 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
       }),
       [apps.transfer_tool()],
       fn(_, action: policy.Action) {
-        case action.tool {
+        case action.name {
           "transfer_funds" ->
             Ok(policy.RequireApproval(Requirement("transfer", 1)))
           _ -> Ok(policy.Allow)

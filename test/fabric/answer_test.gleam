@@ -27,7 +27,7 @@ fn desk() -> Desk {
 }
 
 fn desk_policy(desk: Desk, action: Action) -> Result(policy.Decision, String) {
-  case action.tool, desk {
+  case action.name, desk {
     "transfer_funds", Desk(outage: True, ..) -> Error("policy service down")
     "transfer_funds", Desk(frozen: True, ..) ->
       Ok(policy.Deny("account frozen"))

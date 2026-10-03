@@ -38,12 +38,18 @@ pub fn generator(
   settings: llm_wire.Config,
   model: String,
 ) -> operation.Operation(Nil, domain.Draft, llm.Receipt(String)) {
-  llm.new(
+  llm.decision(
     run.DefinitionId("source-writer", 1),
-    domain.draft_codec(),
-    domain.body_codec(),
-    "draft",
-    fn(_, draft) { #(client, settings, generation_request(model, draft)) },
+    input: domain.draft_codec(),
+    output: domain.body_codec(),
+    name: "draft",
+    call: fn(_, draft) {
+      llm.call(
+        client: client,
+        config: settings,
+        request: generation_request(model, draft),
+      )
+    },
   )
 }
 
@@ -68,12 +74,18 @@ pub fn llm_reviewer(
   model: String,
 ) -> Reviewer(llm.Receipt(domain.Decision)) {
   let op =
-    llm.new(
+    llm.decision(
       run.DefinitionId("writing-review-llm", 1),
-      domain.draft_codec(),
-      domain.decision_codec(),
-      "review",
-      fn(_, draft) { #(client, settings, review_request(model, draft)) },
+      input: domain.draft_codec(),
+      output: domain.decision_codec(),
+      name: "review",
+      call: fn(_, draft) {
+        llm.call(
+          client: client,
+          config: settings,
+          request: review_request(model, draft),
+        )
+      },
     )
   Reviewer(op, answer)
 }
