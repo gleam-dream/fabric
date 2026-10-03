@@ -15,6 +15,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{Some}
 import gleam/result
+import gleam/time/duration
 import gleeunit/should
 
 fn id(name) {
@@ -27,7 +28,7 @@ fn leased(backend) {
     store.leased(
       process.new_name("deadline-job"),
       node: "deadline",
-      lease: 1000,
+      lease: duration.milliseconds(1000),
       backend:,
     )
   let assert Ok(Nil) = store.start(runs)
@@ -47,7 +48,7 @@ fn settle(runs, build, id) {
     fabric.sweeper(
       runs,
       [graph.recovery(run.Identity("artifact-submit-and-wait", 1), build)],
-      every: 20,
+      every: duration.milliseconds(20),
     )
   let assert Ok(started) = spec.start()
   let done = await_expired(graph.attach(build(runs), id), 200)
@@ -78,7 +79,8 @@ pub fn a_restarted_sweeper_expires_and_stops_a_real_owned_job_test() {
       demo.Submitting(client.Request("never published after expiry", 5000)),
       budget.Limits(2, 1, 1),
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   let assert demo.Accepted(receipt) = waiting.value
@@ -119,7 +121,8 @@ pub fn a_lost_deadline_stop_acknowledgment_is_observed_without_repeating_the_req
       id("deadline-lost-stop"),
       demo.Submitting(client.Request("expired lost acknowledgment", 5000)),
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   storage.advance(60_001)

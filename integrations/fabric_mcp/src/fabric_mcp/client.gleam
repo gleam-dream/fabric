@@ -5,6 +5,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/duration.{type Duration}
 import json/blueprint/codec
 import json/blueprint/value.{type Value}
 
@@ -22,14 +23,15 @@ pub type Options {
     command: String,
     arguments: List(String),
     environment: fn() -> List(#(String, String)),
-    timeout: Int,
+    /// Each request's deadline (default 10 s), from 1 ms to 2^32 - 1 ms.
+    timeout: Duration,
     max_bytes: Int,
     max_notifications: Int,
   )
 }
 
 pub fn options(command: String, arguments: List(String)) -> Options {
-  Options(command, arguments, fn() { [] }, 10_000, 1_048_576, 64)
+  Options(command, arguments, fn() { [] }, duration.seconds(10), 1_048_576, 64)
 }
 
 type Connection
@@ -62,8 +64,7 @@ pub fn start(server: String, options: Options) -> Result(Client, String) {
     case
       string.trim(server) != ""
       && string.trim(options.command) != ""
-      && options.timeout > 0
-      && options.timeout <= 4_294_967_295
+      && valid_timeout(options.timeout)
       && options.max_bytes >= 1024
       && options.max_bytes <= 10_485_760
       && options.max_notifications >= 0
@@ -81,6 +82,11 @@ pub fn start(server: String, options: Options) -> Result(Client, String) {
     options.max_notifications,
   ))
   Client(server, connection, options)
+}
+
+fn valid_timeout(timeout: Duration) -> Bool {
+  let ms = duration.to_milliseconds(timeout)
+  ms > 0 && ms <= 4_294_967_295
 }
 
 pub fn server(client: Client) -> String {
@@ -107,9 +113,9 @@ pub fn request_with_timeout(
   client: Client,
   method: String,
   parameters: List(#(String, Value)),
-  timeout: Int,
+  timeout: Duration,
 ) -> Result(Response, Error) {
-  use Nil <- result.try(case timeout > 0 && timeout <= 4_294_967_295 {
+  use Nil <- result.try(case valid_timeout(timeout) {
     True -> Ok(Nil)
     False -> Error(BeforeSend("invalid MCP request timeout"))
   })
@@ -165,7 +171,7 @@ pub fn request_with_timeout(
       BeforeSend("request is not valid bounded JSON")
     }),
   )
-  send(client.connection, method, raw, timeout)
+  send(client.connection, method, raw, duration.to_milliseconds(timeout))
 }
 
 /// Called by the native port owner before another request can be dispatched.

@@ -23,6 +23,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import sinal
@@ -207,9 +208,18 @@ pub fn a_run_is_observed_after_each_commit_test() {
       transfers_need_approval,
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "pay")
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "pay",
+      correlation: None,
+    )
   let id = support.text(fabric.id(run))
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let paused = until(events, "approval_requested")
   let assert Ok(_) =
     fabric.approve(run, pending.reference, reviewer: None, context: Nil)
@@ -256,11 +266,22 @@ pub fn unreported_usage_is_observed_as_unknown_not_zero_test() {
       policy.always_allow(),
     )
     |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), model_retry_delay: 0),
+      agent.Limits(
+        ..agent.default_limits(),
+        model_retry_delay: duration.milliseconds(0),
+      ),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
-  fabric.await(run, 5000)
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "weather",
+      correlation: None,
+    )
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
   let lines =
     until(events, "run_finished") |> about(support.text(fabric.id(run)))
@@ -307,8 +328,16 @@ pub fn a_failing_handler_does_not_affect_the_run_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
-  fabric.await(run, 5000)
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "weather",
+      correlation: None,
+    )
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
   )
@@ -369,7 +398,15 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
   let #(owner, #(old, run)) =
     restart.owned(fn() {
       let store = support.directory(dir)
-      let assert Ok(run) = fabric.start(store, parent, Nil, "go")
+      let assert Ok(run) =
+        fabric.start(
+          store,
+          parent,
+          id: run.new_id(),
+          context: Nil,
+          prompt: "go",
+          correlation: None,
+        )
       #(store, run)
     })
   let _ = probe.arrival(probe)
@@ -428,7 +465,15 @@ pub fn a_drained_run_is_observed_handed_off_test() {
     )
     |> support.agent
   let app = restart.application(runs)
-  let assert Ok(run) = fabric.start(runs, agent, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   restart.begin_stop(app)
   restart.draining(runs)
@@ -521,9 +566,16 @@ pub fn a_routed_handler_runs_in_the_forwarder_and_does_not_stall_the_run_test() 
   let #(entered, attachment) = blocking_model_turn()
 
   let assert Ok(run) =
-    fabric.start(support.store(), weather_agent(), Nil, "weather")
+    fabric.start(
+      support.store(),
+      weather_agent(),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "weather",
+      correlation: None,
+    )
   let #(first, gate) = entered_by(entered, support.text(fabric.id(run)))
-  let finished = fabric.await(run, 5000)
+  let finished = fabric.await(run, within: duration.milliseconds(5000))
   process.send(gate, Nil)
   let #(second, gate) = entered_by(entered, support.text(fabric.id(run)))
   process.send(gate, Nil)
@@ -545,16 +597,24 @@ pub fn a_routed_handler_runs_in_the_forwarder_and_does_not_stall_the_run_test() 
 pub fn an_unrouted_handler_runs_in_the_runner_test() {
   let #(entered, attachment) = blocking_model_turn()
   let memory = support.store()
-  let assert Ok(run) = fabric.start(memory, weather_agent(), Nil, "weather")
+  let assert Ok(run) =
+    fabric.start(
+      memory,
+      weather_agent(),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "weather",
+      correlation: None,
+    )
   let #(handler, gate) = entered_by(entered, support.text(fabric.id(run)))
   let assert Ok(store.Entry(live: Some(store.Live(_, mailbox)), ..)) =
     store.get(memory, support.text(fabric.id(run)))
   let runner = process.subject_owner(mailbox)
-  let waiting = fabric.await(run, 0)
+  let waiting = fabric.await(run, within: duration.milliseconds(0))
   process.send(gate, Nil)
   let #(_, gate) = entered_by(entered, support.text(fabric.id(run)))
   process.send(gate, Nil)
-  let finished = fabric.await(run, 5000)
+  let finished = fabric.await(run, within: duration.milliseconds(5000))
   let _ = sinal.detach(attachment)
 
   runner |> should.equal(Ok(handler))
@@ -587,9 +647,17 @@ pub fn a_handler_commanding_its_own_run_is_refused_test() {
         ),
       )
     })
-  let assert Ok(run) = fabric.start(memory, weather_agent(), Nil, "weather")
+  let assert Ok(run) =
+    fabric.start(
+      memory,
+      weather_agent(),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "weather",
+      correlation: None,
+    )
   let assert Ok(refused) = process.receive(results, 5000)
-  let finished = fabric.await(run, 5000)
+  let finished = fabric.await(run, within: duration.milliseconds(5000))
   let _ = sinal.detach(attachment)
 
   refused |> should.equal(Error(fabric.RunnerBusy))
@@ -612,9 +680,17 @@ pub fn a_handler_cancelling_its_own_run_commits_the_cancellation_test() {
         fabric.cancel_stored(memory, support.id(m.action.run)),
       )
     })
-  let assert Ok(run) = fabric.start(memory, weather_agent(), Nil, "weather")
+  let assert Ok(run) =
+    fabric.start(
+      memory,
+      weather_agent(),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "weather",
+      correlation: None,
+    )
   let assert Ok(cancelled) = process.receive(results, 5000)
-  let finished = fabric.await(run, 5000)
+  let finished = fabric.await(run, within: duration.milliseconds(5000))
   let _ = sinal.detach(attachment)
 
   cancelled |> should.equal(Ok(run.Finished(run.Cancelled)))
@@ -641,12 +717,20 @@ pub fn a_command_returns_before_its_handlers_run_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(probe)
   let cancelled = fabric.cancel(run)
   let assert Ok(#(cancelled_run, gate)) = process.receive(entered, 5000)
   process.send(gate, Nil)
-  let finished = fabric.await(run, 5000)
+  let finished = fabric.await(run, within: duration.milliseconds(5000))
   let _ = sinal.detach(attachment)
 
   cancelled |> should.equal(Ok(run.Working))
@@ -662,10 +746,21 @@ pub fn a_command_to_a_runner_held_by_a_handler_is_refused_test() {
   let agent =
     weather_agent_spec()
     |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), command_timeout: 20),
+      agent.Limits(
+        ..agent.default_limits(),
+        command_timeout: duration.milliseconds(20),
+      ),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "weather",
+      correlation: None,
+    )
   let #(_, gate) = entered_by(entered, support.text(fabric.id(run)))
   let refused =
     fabric.reconcile(
@@ -676,7 +771,7 @@ pub fn a_command_to_a_runner_held_by_a_handler_is_refused_test() {
   process.send(gate, Nil)
   let #(_, gate) = entered_by(entered, support.text(fabric.id(run)))
   process.send(gate, Nil)
-  let finished = fabric.await(run, 5000)
+  let finished = fabric.await(run, within: duration.milliseconds(5000))
   let _ = sinal.detach(attachment)
 
   refused |> should.equal(Error(fabric.RunnerBusy))

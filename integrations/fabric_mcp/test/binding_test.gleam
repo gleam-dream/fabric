@@ -9,6 +9,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{Some}
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import json/blueprint/value as json
@@ -107,7 +108,7 @@ pub fn a_real_mcp_operation_returns_a_native_result_and_retained_receipt_test() 
       id,
       Increment("apple", 3),
     )
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
   receipt.server |> should.equal("warehouse")
   receipt.tool |> should.equal("counter/add")
@@ -131,11 +132,12 @@ pub fn policy_holds_the_real_effect_until_approval_test() {
     })
   let assert Ok(handle) =
     graph.start(definition, id("approval"), Increment("approved", 5))
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
   read(connection, "approved") |> should.equal(0)
   graph.approve(handle, approval) |> should.be_ok
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
   receipt.value |> should.equal(5)
   read(connection, "approved") |> should.equal(5)
@@ -162,7 +164,8 @@ pub fn changed_contracts_and_server_identity_refuse_before_the_tool_effect_test(
           id("drift"),
           Increment("refused", 3),
         )
-      let assert Ok(done) = graph.await(handle, 5000)
+      let assert Ok(done) =
+        graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.Failed(graph.OperationFailed(_)) = done.status
       done.receipts |> should.equal([])
       read(connection, "refused") |> should.equal(0)
@@ -178,7 +181,7 @@ pub fn changed_contracts_and_server_identity_refuse_before_the_tool_effect_test(
       id("wrong-server"),
       Increment("refused", 3),
     )
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Failed(graph.OperationFailed(_)) = done.status
   read(connection, "refused") |> should.equal(0)
   client.stop(other)
@@ -201,7 +204,8 @@ pub fn optional_output_schema_description_updates_and_paged_catalogs_work_test()
           id("compatible"),
           Increment("count", 2),
         )
-      let assert Ok(done) = graph.await(handle, 5000)
+      let assert Ok(done) =
+        graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.Completed(receipt) = done.status
       receipt.value |> should.equal(2)
       Nil
@@ -230,7 +234,7 @@ pub fn optional_output_schema_description_updates_and_paged_catalogs_work_test()
       id("text"),
       Increment("text", 6),
     )
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
   receipt.value |> should.equal(6)
 }
@@ -255,7 +259,8 @@ pub fn post_call_errors_remain_uncertain_without_routes_or_retries_test() {
           id("uncertain"),
           Increment("committed", 1),
         )
-      let assert Ok(blocked) = graph.await(handle, 5000)
+      let assert Ok(blocked) =
+        graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.Blocked(_, graph.EffectUncertain(_)) = blocked.status
       blocked.receipts |> should.equal([])
       graph.recover(handle) |> should.be_ok
@@ -284,7 +289,8 @@ pub fn a_saved_receipt_recovers_without_a_live_connection_after_store_loss_test(
       process.receive_forever(process.new_subject())
     })
   let #(runs, handle) = process.receive_forever(ready)
-  let assert Ok(before) = graph.await(handle, 5000)
+  let assert Ok(before) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(_) = before.status
   let assert Ok(store_pid) = store.pid(runs)
   let monitor = process.monitor(store_pid)
@@ -320,7 +326,8 @@ pub fn graph_cancellation_stops_waiting_but_retains_the_unresolved_effect_test()
     )
   await_count(observer, "cancelled", 1, 100)
   graph.cancel(handle) |> should.be_ok
-  let assert Ok(cancelled) = graph.await(handle, 5000)
+  let assert Ok(cancelled) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Cancelled(graph.Unresolved(_, _)) = cancelled.status
   cancelled.receipts |> should.equal([])
   await_count(observer, "cancelled/cancelled", 1, 100)
@@ -339,7 +346,8 @@ pub fn output_conversion_failure_preserves_the_actual_effect_test() {
       id("conversion"),
       Increment("once", 1),
     )
-  let assert Ok(blocked) = graph.await(handle, 5000)
+  let assert Ok(blocked) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Blocked(_, graph.EffectUncertain(_)) = blocked.status
   blocked.receipts |> should.equal([])
   read(connection, "once") |> should.equal(1)
@@ -375,7 +383,7 @@ pub fn protocol_content_is_preserved_for_the_application_converter_test() {
       id("content"),
       Increment("content", 1),
     )
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
   let assert Ok(raw) =
     codec.encode(fabric_mcp.receipt_codec(tool, codec.int(), convert), receipt)
@@ -426,7 +434,7 @@ pub fn incompatible_native_input_and_corrupt_receipts_are_rejected_test() {
       id("receipt"),
       Increment("counter", 2),
     )
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
   let receipt_codec = fabric_mcp.receipt_codec(tool, codec.int(), value)
   codec.encode(receipt_codec, fabric_mcp.Receipt(..receipt, value: 3))

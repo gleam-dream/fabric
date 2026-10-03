@@ -10,6 +10,7 @@ import fabric/run
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/duration.{type Duration}
 import json/blueprint/codec.{type Codec}
 
 pub type Recovery {
@@ -79,7 +80,8 @@ pub opaque type Operation(context, input, output) {
 pub type ConfigurationError {
   InvalidAttemptBound(Int)
   ReplayRequiresActivity
-  InvalidDeadline(Int)
+  /// Under 1 ms or over 2^32 - 1 ms.
+  InvalidDeadline(Duration)
   DeadlineRequiresWait
 }
 
@@ -232,21 +234,27 @@ pub fn identity(operation: Operation(context, input, output)) -> run.Identity {
   operation.identity
 }
 
-/// Bound an admitted signal, job, managed child or fork in milliseconds. The backend clock
-/// starts the duration after policy approval; the due time survives restart.
-/// Owned jobs, children and forks retain cleanup progress after expiration.
+/// Bound an admitted signal, job, managed child or fork by `within`, from
+/// 1 ms to 2^32 - 1 ms. The backend clock starts the duration after policy
+/// approval; the due time survives restart. Owned jobs, children and forks
+/// retain cleanup progress after expiration.
+///
+/// A wait without a deadline is unbounded. The deadline is part of the
+/// operation's persisted contract, so a stored run continues only under the
+/// deadline it was admitted with.
 pub fn with_deadline(
   operation: Operation(context, input, output),
-  within: Int,
+  within: Duration,
 ) -> Result(Operation(context, input, output), ConfigurationError) {
-  case kind(operation), within > 0 && within <= 4_294_967_295 {
+  let ms = duration.to_milliseconds(within)
+  case kind(operation), ms > 0 && ms <= 4_294_967_295 {
     Signal, True
     | Job(_), True
     | OwnedJob(_), True
     | Subgraph, True
     | Agent, True
     | Fork(..), True
-    -> Ok(Operation(..operation, deadline: Some(within)))
+    -> Ok(Operation(..operation, deadline: Some(ms)))
     Signal, False
     | Job(_), False
     | OwnedJob(_), False

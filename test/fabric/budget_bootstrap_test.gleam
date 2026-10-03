@@ -28,8 +28,10 @@ import fabric/support/scripted
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
+import sinal/correlation
 
 type Kind {
   Agent
@@ -86,7 +88,8 @@ fn fixture(runs, kind, initialized, calls) {
         )
         |> support.agent
       let setup = runner.setup(runs, agent.admitted(worker), Nil, None)
-      let #(state, _) = runner.root_state(setup, "root", "go")
+      let #(state, _) =
+        runner.root_state(setup, "root", "go", correlation.from_key("root"))
       let state = controller.State(..state, family_budget: declaration)
       let assert Ok(encoded) = store.encode(runs, state)
       let assert Ok(_) =
@@ -99,15 +102,22 @@ fn fixture(runs, kind, initialized, calls) {
           |> result.replace_error(Nil)
         },
         fn() {
-          fabric.await(handle, 2000) == Ok(run.Finished(run.Completed("done")))
+          fabric.await(handle, within: duration.milliseconds(2000))
+          == Ok(run.Finished(run.Completed("done")))
         },
-        fn() { fabric.await(handle, 2000) == Ok(run.Unattended) },
+        fn() {
+          fabric.await(handle, within: duration.milliseconds(2000))
+          == Ok(run.Unattended)
+        },
         fn() {
           fabric.cancel(handle)
           |> result.replace(Nil)
           |> result.replace_error(Nil)
         },
-        fn() { fabric.await(handle, 2000) == Ok(run.Finished(run.Cancelled)) },
+        fn() {
+          fabric.await(handle, within: duration.milliseconds(2000))
+          == Ok(run.Finished(run.Cancelled))
+        },
       )
     }
     Graph -> {
@@ -157,13 +167,13 @@ fn fixture(runs, kind, initialized, calls) {
           |> result.replace_error(Nil)
         },
         fn() {
-          case graph.await(handle, 2000) {
+          case graph.await(handle, within: duration.milliseconds(2000)) {
             Ok(snapshot) -> snapshot.status == graph.Completed(1)
             Error(_) -> False
           }
         },
         fn() {
-          case graph.await(handle, 2000) {
+          case graph.await(handle, within: duration.milliseconds(2000)) {
             Ok(snapshot) -> snapshot.status == graph.Unattended
             Error(_) -> False
           }
@@ -174,7 +184,7 @@ fn fixture(runs, kind, initialized, calls) {
           |> result.replace_error(Nil)
         },
         fn() {
-          case graph.await(handle, 2000) {
+          case graph.await(handle, within: duration.milliseconds(2000)) {
             Ok(graph.Snapshot(status: graph.Cancelled(_), ..)) -> True
             _ -> False
           }

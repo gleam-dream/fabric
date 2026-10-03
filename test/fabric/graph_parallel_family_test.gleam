@@ -12,6 +12,7 @@ import fabric/store
 import fabric/support
 import fabric/support/restart
 import gleam/list
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
@@ -116,7 +117,8 @@ fn repeated(runs: store.Store) {
 
 fn waiting_branch(parent, activation, ordinal, runs) {
   let assert Ok(branch) = graph.branch(parent, activation, ordinal, leaf(runs))
-  let assert Ok(waiting) = graph.await(branch, 5000)
+  let assert Ok(waiting) =
+    graph.await(branch, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
   #(branch, reference)
 }
@@ -137,12 +139,13 @@ pub fn repeated_forks_keep_prior_results_separate_and_reuse_budget_after_restart
         )
       #(runs, root)
     })
-  let assert Ok(_) = graph.await(root, 5000)
+  let assert Ok(_) = graph.await(root, within: duration.milliseconds(5000))
   let old = list.map([1, 2], waiting_branch(root, 1, _, runs))
   list.each(old, fn(branch) {
     graph.deliver(branch.0, branch.1, response(), 10) |> should.be_ok
   })
-  let assert Ok(waiting) = graph.await(root, 5000)
+  let assert Ok(waiting) =
+    graph.await(root, within: duration.milliseconds(5000))
   let assert graph.Fork(current, _) = waiting.status
   current.occurrence.activation |> should.equal(2)
   let current = list.map([1, 2], waiting_branch(root, 2, _, runs))
@@ -155,7 +158,8 @@ pub fn repeated_forks_keep_prior_results_separate_and_reuse_budget_after_restart
   let runs = support.directory(directory)
   let root = graph.attach(repeated(runs), id)
   graph.recover(root) |> should.be_ok
-  let assert Ok(restored) = graph.await(root, 5000)
+  let assert Ok(restored) =
+    graph.await(root, within: duration.milliseconds(5000))
   restored.forks |> should.equal(waiting.forks)
   list.each(list.zip(old, current), fn(branches) {
     let old = branches.0
@@ -168,7 +172,7 @@ pub fn repeated_forks_keep_prior_results_separate_and_reuse_budget_after_restart
     still_waiting.status |> should.equal(graph.AwaitingSignal(current.1))
     graph.deliver(next, current.1, response(), 20) |> should.be_ok
   })
-  let assert Ok(done) = graph.await(root, 5000)
+  let assert Ok(done) = graph.await(root, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(Ok([20, 20])))
   list.map(done.receipts, fn(receipt) { receipt.activation })
   |> should.equal([1, 2])
@@ -190,7 +194,7 @@ pub fn sibling_maps_keep_private_joins_with_one_shared_family_budget_test() {
       [[7, 7], [7, 7]],
       budget.Limits(work: 7, children: 6, depth: 2),
     )
-  let assert Ok(_) = graph.await(root, 5000)
+  let assert Ok(_) = graph.await(root, within: duration.milliseconds(5000))
   let assert Ok(left) = graph.branch(root, 1, 1, inner(runs))
   let assert Ok(right) = graph.branch(root, 1, 2, inner(runs))
   let left_branches = list.map([1, 2], waiting_branch(left, 1, _, runs))
@@ -204,9 +208,10 @@ pub fn sibling_maps_keep_private_joins_with_one_shared_family_budget_test() {
   list.each(right_branches, fn(branch) {
     graph.deliver(branch.0, branch.1, response(), 20) |> should.be_ok
   })
-  let assert Ok(done) = graph.await(right, 5000)
+  let assert Ok(done) = graph.await(right, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(Ok([20, 20])))
-  let assert Ok(waiting) = graph.await(left, 5000)
+  let assert Ok(waiting) =
+    graph.await(left, within: duration.milliseconds(5000))
   let assert graph.Fork(_, _) = waiting.status
   waiting.receipts |> should.equal([])
   list.each(list.zip(left_branches, right_branches), fn(branches) {
@@ -215,7 +220,7 @@ pub fn sibling_maps_keep_private_joins_with_one_shared_family_budget_test() {
     graph.deliver(left.0, right.1, response(), 99) |> should.be_error
     graph.deliver(left.0, left.1, response(), 10) |> should.be_ok
   })
-  let assert Ok(done) = graph.await(root, 5000)
+  let assert Ok(done) = graph.await(root, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(Ok([Ok([10, 10]), Ok([20, 20])])))
 }
 
@@ -229,7 +234,7 @@ pub fn child_budget_closes_admission_and_keeps_refused_members_distinct_test() {
       [1, 2, 3, 4],
       budget.Limits(work: 10, children: 2, depth: 1),
     )
-  let assert Ok(done) = graph.await(root, 5000)
+  let assert Ok(done) = graph.await(root, within: duration.milliseconds(5000))
   let assert graph.Completed(Error(failure)) = done.status
   failure.member |> should.equal(3)
   let assert [saved] = done.forks
@@ -257,7 +262,7 @@ pub fn nested_forks_cannot_reset_the_family_depth_limit_test() {
       [[7, 7], [7, 7]],
       budget.Limits(work: 10, children: 6, depth: 1),
     )
-  let assert Ok(done) = graph.await(root, 5000)
+  let assert Ok(done) = graph.await(root, within: duration.milliseconds(5000))
   let assert graph.Completed(Ok([Error(left), Error(right)])) = done.status
   left.member |> should.equal(1)
   right.member |> should.equal(1)
@@ -283,7 +288,7 @@ pub fn fork_members_share_the_parents_work_limit_test() {
       [1, 2, 3],
       budget.Limits(work: 1, children: 3, depth: 1),
     )
-  let assert Ok(done) = graph.await(root, 5000)
+  let assert Ok(done) = graph.await(root, within: duration.milliseconds(5000))
   let assert graph.Completed(Error(failure)) = done.status
   let assert Ok(denied) = graph.branch(root, 1, failure.member, leaf(runs))
   let assert Ok(stopped) = graph.read(denied)

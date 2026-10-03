@@ -8,6 +8,7 @@ import fabric/store
 import fabric_writing/domain
 import fabric_writing/provider
 import gleam/result
+import gleam/time/duration
 
 pub fn runtime(
   runs: store.Store,
@@ -36,6 +37,10 @@ pub fn runtime(
     ))
   let assert Ok(runtime) =
     graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
-    |> graph.with_timeouts(5000, 30_000, 1000)
+    |> graph.with_timeouts(
+      callbacks: duration.milliseconds(5000),
+      operations: duration.milliseconds(30_000),
+      commands: duration.milliseconds(1000),
+    )
   runtime
 }

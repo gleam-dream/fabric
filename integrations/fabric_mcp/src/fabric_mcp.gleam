@@ -74,7 +74,7 @@ pub fn tool_codec() -> codec.Codec(Tool) {
 /// operation reads it.
 fn placeholder_tool() -> Tool {
   // An empty object schema is always a valid contract.
-  let assert Ok(empty) = contract.from_schema(codec.ObjectSchema([]))
+  let assert Ok(empty) = contract.from_codec(codec.success(Nil))
   Tool("", "", empty, None, value.Object([]), None)
 }
 

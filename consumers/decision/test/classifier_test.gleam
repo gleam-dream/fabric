@@ -6,6 +6,7 @@ import fabric_typesafe
 import fabric_typesafe/client
 import gleam/erlang/process
 import gleam/list
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
@@ -33,7 +34,8 @@ pub fn non_generative_decisions_use_the_same_business_routes_test() {
         id,
         "fixture:" <> example.0,
       )
-    let assert Ok(done) = graph.await(handle, 5000)
+    let assert Ok(done) =
+      graph.await(handle, within: duration.milliseconds(5000))
     done.status |> should.equal(graph.Completed(example.1))
     let assert [review, terminal] = done.receipts
     terminal.node |> should.equal(example.2)

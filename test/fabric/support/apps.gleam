@@ -87,6 +87,7 @@ pub fn transfer_definition() -> tool.Definition(Transfer, Receipt) {
 /// `Paris` is sunny; any other city is unknown (a typed failure).
 pub fn lookup_weather(
   _context: ctx,
+  _call: tool.Call,
   city: City,
 ) -> Result(Forecast, WeatherError) {
   case city.name {
@@ -107,6 +108,7 @@ pub fn weather_tool() -> tool.Tool(ctx) {
 /// an uncertain effect.
 pub fn transfer(
   _context: ctx,
+  _call: tool.Call,
   transfer: Transfer,
 ) -> Result(Receipt, TransferError) {
   case transfer.amount {

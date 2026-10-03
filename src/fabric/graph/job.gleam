@@ -3,6 +3,7 @@
 
 import fabric/run
 import gleam/result
+import gleam/time/duration.{type Duration}
 import json/blueprint/codec.{type Codec}
 
 pub type Progress(output) {
@@ -28,7 +29,8 @@ pub type Polling {
 }
 
 pub type ConfigurationError {
-  InvalidPollInterval(Int)
+  /// Under 1 ms or over 2^32 - 1 ms.
+  InvalidPollInterval(Duration)
 }
 
 pub type Reference {
@@ -65,14 +67,16 @@ pub fn observe(
 /// Opt into automatic observation by a registered sweeper on a leased store.
 /// The first observation is immediately eligible; later ready claims wait at
 /// least this interval according to the backend's clock. Manual polling remains
-/// available. Changing this interval changes the persisted operation contract.
+/// available. Changing this interval changes the persisted operation contract,
+/// which keeps it in whole milliseconds (`Every`).
 pub fn with_poll_interval(
   observer: Observer(context, receipt, output),
-  milliseconds: Int,
+  every: Duration,
 ) -> Result(Observer(context, receipt, output), ConfigurationError) {
-  case valid_polling(Every(milliseconds)) {
-    True -> Ok(Observer(..observer, polling: Every(milliseconds)))
-    False -> Error(InvalidPollInterval(milliseconds))
+  let polling = Every(duration.to_milliseconds(every))
+  case valid_polling(polling) {
+    True -> Ok(Observer(..observer, polling:))
+    False -> Error(InvalidPollInterval(every))
   }
 }
 

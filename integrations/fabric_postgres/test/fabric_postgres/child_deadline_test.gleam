@@ -14,6 +14,7 @@ import fabric_postgres/agents
 import fabric_postgres/support
 import gleam/erlang/process
 import gleam/option.{Some}
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import pog
@@ -58,7 +59,8 @@ fn leaf(runs) {
 
 fn parent(runs) {
   let assert Ok(op) =
-    graph.as_subgraph(leaf(runs)) |> operation.with_deadline(2000)
+    graph.as_subgraph(leaf(runs))
+    |> operation.with_deadline(duration.milliseconds(2000))
   runtime(runs, "pg-child-deadline", op)
 }
 
@@ -74,7 +76,7 @@ fn sweep(runs) {
     fabric.sweeper(
       runs,
       [graph.recovery(run.Identity("pg-child-deadline", 1), parent)],
-      every: 20,
+      every: duration.milliseconds(20),
     )
   let assert Ok(started) = spec.start()
   started
@@ -116,7 +118,8 @@ pub fn unchanged_children_expire_after_restart_and_remain_retained_until_reconci
       let runs = start_store(settings)
       let assert Ok(handle) =
         graph.start_with_budget(parent(runs), id, 41, budget.Limits(2, 1, 1))
-      let assert Ok(waiting) = graph.await(handle, 5000)
+      let assert Ok(waiting) =
+        graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.Child(child_ref, child.Uncertain(_)) = waiting.status
       let assert Ok(child_handle) =
         graph.child(handle, child_ref.activation, leaf(runs))
@@ -146,7 +149,11 @@ pub fn unchanged_children_expire_after_restart_and_remain_retained_until_reconci
     expired.status
   saved_due |> should.equal(due)
   saved_child |> should.equal(child_ref)
-  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
   |> should.equal(Ok(0))
   // Once the settlement dependency is observed, an expired timestamp cannot spin.
   process.sleep(100)
@@ -162,6 +169,10 @@ pub fn unchanged_children_expire_after_restart_and_remain_retained_until_reconci
   process.unlink(started.pid)
   agents.kill(started.pid)
   idle(backend, 300)
-  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
   |> should.equal(Ok(3))
 }

@@ -67,9 +67,12 @@ pub fn runtime(
           ))
           let request =
             model.Request(
-              env.system,
-              state.transcript,
-              registry.declarations(env.registry),
+              run: run.issued(state.run),
+              turn:,
+              correlation: state.correlation,
+              system: env.system,
+              messages: state.transcript,
+              tools: registry.declarations(env.registry),
             )
           use reply <- result.try(
             model.call(config.model, request)
@@ -118,6 +121,11 @@ pub fn runtime(
                     registry.invoke(
                       env.registry,
                       context,
+                      tool.Call(
+                        run: run.issued(state.run),
+                        action: action.id,
+                        correlation: state.correlation,
+                      ),
                       action.call.name,
                       action.call.arguments_json,
                       fn(_, _) { Error(tool.NotAwaited) },

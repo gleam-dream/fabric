@@ -8,13 +8,16 @@
 ////
 //// A task calls `fence` before running a body; the body runs only if the
 //// runner committed the action as running. Crashes inside the body are
-//// contained and reported separately from returned values. Each job carries
+//// contained and reported separately from returned values. A job's
+//// timeout counts from the moment its body starts: a body still running
+//// then is killed and reported `TimedOut`, never as a result. Each job carries
 //// its own body, bound to its invocation's context, so one executor can run
 //// jobs of the same run with different contexts.
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
 
 pub type Report(identity, outcome) {
@@ -24,6 +27,9 @@ pub type Report(identity, outcome) {
   Crashed(identity, reason: String)
   /// A task died without reporting.
   Lost(identity, reason: String)
+  /// A body ran past its timeout (`after` milliseconds) and was killed.
+  /// Like a crash, its effect is unknown.
+  TimedOut(identity, after: Int)
   /// Every task is dead after a stop; nothing more will be reported.
   Stopped
 }
@@ -37,9 +43,10 @@ pub type Hooks(identity, outcome) {
   )
 }
 
-/// An invocation and its body, bound to the context it runs with.
+/// An invocation and its body, bound to the context it runs with, and the
+/// milliseconds its body may run (`None`: unbounded).
 pub type Job(identity, outcome) {
-  Job(id: identity, body: fn() -> outcome)
+  Job(id: identity, body: fn() -> outcome, timeout: Option(Int))
 }
 
 pub opaque type Executor(identity, outcome) {
@@ -49,6 +56,10 @@ pub opaque type Executor(identity, outcome) {
 type Message(identity, outcome) {
   Submit(List(Job(identity, outcome)))
   Stop
+  /// A task passed its fence: its body starts now.
+  Began(Pid)
+  /// A task's timeout passed.
+  Expired(Pid)
   Done(identity, Result(outcome, String))
   Exited(Pid, process.ExitReason)
 }
@@ -60,6 +71,8 @@ type Loop(identity, outcome) {
     self: Subject(Message(identity, outcome)),
     queue: List(Job(identity, outcome)),
     running: Dict(Pid, identity),
+    /// The timeout of each running task that has one.
+    timeouts: Dict(Pid, Int),
     reported: List(identity),
   )
 }
@@ -73,7 +86,7 @@ pub fn start(hooks: Hooks(identity, outcome)) -> Executor(identity, outcome) {
       process.trap_exits(True)
       let self = process.new_subject()
       process.send(ready, self)
-      serve(Loop(hooks, parent, self, [], dict.new(), []))
+      serve(Loop(hooks, parent, self, [], dict.new(), dict.new(), []))
     })
   Executor(pid, process.receive_forever(ready))
 }
@@ -107,16 +120,49 @@ fn serve(state: Loop(identity, outcome)) -> Nil {
   case process.selector_receive_forever(selector(state.self)) {
     Submit(actions) ->
       serve(Loop(..state, queue: list.append(state.queue, actions)))
-    Done(id, outcome) -> {
-      report(state.hooks, id, outcome)
-      serve(Loop(..state, reported: [id, ..state.reported]))
+    // A body that timed out was already reported.
+    Done(id, outcome) ->
+      case list.contains(state.reported, id) {
+        True -> serve(state)
+        False -> {
+          report(state.hooks, id, outcome)
+          serve(Loop(..state, reported: [id, ..state.reported]))
+        }
+      }
+    Began(pid) -> {
+      case dict.get(state.timeouts, pid) {
+        Ok(ms) -> {
+          process.send_after(state.self, ms, Expired(pid))
+          Nil
+        }
+        Error(Nil) -> Nil
+      }
+      serve(state)
     }
+    Expired(pid) -> serve(expire(state, pid))
     Exited(pid, _) if pid == state.parent -> kill_all(state)
     Exited(pid, reason) -> serve(task_exited(state, pid, reason))
     Stop -> {
       kill_all(state)
       drain(Loop(..state, queue: []))
     }
+  }
+}
+
+/// Kills a task whose body is still running at its timeout and reports
+/// it; one that already reported or exited is left alone.
+fn expire(state: Loop(identity, outcome), pid: Pid) -> Loop(identity, outcome) {
+  case dict.get(state.running, pid), dict.get(state.timeouts, pid) {
+    Ok(id), Ok(ms) ->
+      case list.contains(state.reported, id) {
+        True -> state
+        False -> {
+          process.kill(pid)
+          state.hooks.report(TimedOut(id, ms))
+          Loop(..state, reported: [id, ..state.reported])
+        }
+      }
+    _, _ -> state
   }
 }
 
@@ -135,6 +181,7 @@ fn task_exited(
       Loop(
         ..state,
         running: dict.delete(state.running, pid),
+        timeouts: dict.delete(state.timeouts, pid),
         reported: list.filter(state.reported, fn(r) { r != id }),
       )
     }
@@ -152,32 +199,48 @@ fn drain(state: Loop(identity, outcome)) -> Nil {
     True -> state.hooks.report(Stopped)
     False ->
       case process.selector_receive_forever(selector(state.self)) {
-        Done(id, outcome) -> {
-          report(state.hooks, id, outcome)
-          drain(Loop(..state, reported: [id, ..state.reported]))
-        }
+        Done(id, outcome) ->
+          case list.contains(state.reported, id) {
+            True -> drain(state)
+            False -> {
+              report(state.hooks, id, outcome)
+              drain(Loop(..state, reported: [id, ..state.reported]))
+            }
+          }
         Exited(pid, _) if pid == state.parent -> Nil
         Exited(pid, _) ->
           drain(Loop(..state, running: dict.delete(state.running, pid)))
-        Submit(_) | Stop -> drain(state)
+        Submit(_) | Stop | Began(_) | Expired(_) -> drain(state)
       }
   }
 }
 
 fn fill(state: Loop(identity, outcome)) -> Loop(identity, outcome) {
   case state.queue, dict.size(state.running) < state.hooks.max_in_flight {
-    [Job(id, body), ..rest], True -> {
+    [Job(id, body, timeout), ..rest], True -> {
       let hooks = state.hooks
       let self = state.self
       let pid =
         process.spawn(fn() {
           case hooks.fence(id) {
             False -> Nil
-            True -> process.send(self, Done(id, rescue(body)))
+            True -> {
+              process.send(self, Began(process.self()))
+              process.send(self, Done(id, rescue(body)))
+            }
           }
         })
+      let timeouts = case timeout {
+        Some(ms) -> dict.insert(state.timeouts, pid, ms)
+        None -> state.timeouts
+      }
       fill(
-        Loop(..state, queue: rest, running: dict.insert(state.running, pid, id)),
+        Loop(
+          ..state,
+          queue: rest,
+          running: dict.insert(state.running, pid, id),
+          timeouts:,
+        ),
       )
     }
     _, _ -> state

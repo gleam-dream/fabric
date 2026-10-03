@@ -18,6 +18,7 @@ import fabric/tool
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
@@ -32,8 +33,16 @@ fn observed(snapshot: run.Snapshot) {
 }
 
 fn ordinary(worker) {
-  let assert Ok(handle) = fabric.start(support.store(), worker, Nil, "go")
-  let assert Ok(_) = fabric.await(handle, 5000)
+  let assert Ok(handle) =
+    fabric.start(
+      support.store(),
+      worker,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(_) = fabric.await(handle, within: duration.milliseconds(5000))
   let assert Ok(snapshot) = fabric.snapshot(handle)
   snapshot
 }
@@ -45,7 +54,7 @@ fn candidate(worker) {
       support.id("recipe"),
       recipe.initial(worker, Nil, "go"),
     )
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(raw) = done.status
   let assert Ok(state) = record.decode(raw)
   #(controller.snapshot(state), done)
@@ -161,7 +170,7 @@ pub fn an_agent_approval_cannot_be_replaced_by_approval_of_the_batch_test() {
   let payment =
     tool.define("pay", "Pay", codec.string(), codec.string())
     |> tool.bind(
-      fn(_context, input) -> Result(String, Nil) {
+      fn(_context, _call, input) -> Result(String, Nil) {
         probe.record(calls, "paid")
         Ok(input)
       },
@@ -180,22 +189,33 @@ pub fn an_agent_approval_cannot_be_replaced_by_approval_of_the_batch_test() {
       },
     )
     |> support.agent
-  let assert Ok(ordinary) = fabric.start(support.store(), worker, False, "go")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(ordinary, 5000)
+  let assert Ok(ordinary) =
+    fabric.start(
+      support.store(),
+      worker,
+      id: run.new_id(),
+      context: False,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(ordinary, within: duration.milliseconds(5000))
   let assert Ok(candidate) =
     graph.start(
       recipe.runtime(support.store(), worker, fn() { False }),
       support.id("approval-probe"),
       recipe.initial(worker, False, "go"),
     )
-  let assert Ok(done) = graph.await(candidate, 5000)
+  let assert Ok(done) =
+    graph.await(candidate, within: duration.milliseconds(5000))
   let assert graph.Failed(graph.OperationFailed(reason)) = done.status
   string.contains(reason, "per-action approval") |> should.be_true
   let assert Ok(inner) = record.decode(done.value)
   let assert run.Suspended([_], []) = controller.status(inner)
   // The existing agent API can recheck the action with fresh caller context.
   fabric.approve(ordinary, pending.reference, None, True) |> should.be_ok
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(ordinary, 5000)
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(ordinary, within: duration.milliseconds(5000))
   probe.entries(calls) |> should.equal([])
 }
 
@@ -219,7 +239,15 @@ pub fn a_batch_receipt_loses_the_individual_success_that_the_agent_retains_test(
   let #(owner, #(runs, handle)) =
     restart.owned(fn() {
       let runs = support.directory(ordinary_dir)
-      let assert Ok(handle) = fabric.start(runs, worker, Nil, "go")
+      let assert Ok(handle) =
+        fabric.start(
+          runs,
+          worker,
+          id: run.new_id(),
+          context: Nil,
+          prompt: "go",
+          correlation: None,
+        )
       #(runs, handle)
     })
   probe.release(probe.arrival(ordinary_calls))
@@ -232,7 +260,8 @@ pub fn a_batch_receipt_loses_the_individual_success_that_the_agent_retains_test(
       Nil,
       fabric.id(handle),
     )
-  let assert Ok(run.Suspended([], [_])) = fabric.await(recovered, 5000)
+  let assert Ok(run.Suspended([], [_])) =
+    fabric.await(recovered, within: duration.milliseconds(5000))
   let assert Ok(saved) = fabric.snapshot(recovered)
   let assert [first, second] = saved.actions
   first.state |> should.equal(run.Succeeded("\"first\""))
@@ -262,7 +291,8 @@ pub fn a_batch_receipt_loses_the_individual_success_that_the_agent_retains_test(
       support.id("batch-loss"),
     )
   graph.recover(handle) |> should.be_ok
-  let assert Ok(saved) = graph.await(handle, 5000)
+  let assert Ok(saved) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Blocked(_, graph.EffectUncertain(_)) = saved.status
   let assert Ok(inner) = record.decode(saved.value)
   let assert controller.Acting(_, [first, second]) = inner.phase
@@ -290,7 +320,7 @@ pub fn canceling_a_batch_exposes_only_scope_uncertainty_test() {
   probe.release(probe.arrival(calls))
   probe.arrival(calls).name |> should.equal("second")
   graph.cancel(handle) |> should.be_ok
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Cancelled(graph.Unresolved(_, _)) = done.status
   let assert Ok(inner) = record.decode(done.value)
   let assert controller.Acting(_, [first, second]) = inner.phase

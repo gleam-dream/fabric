@@ -13,6 +13,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
@@ -167,10 +168,11 @@ pub fn map_limits_concurrency_and_joins_in_input_order_test() {
   let assert Ok(#(3, release_third)) = process.receive(started, 2000)
   process.send(release_third, Nil)
   let assert Ok(third) = graph.branch(handle, 1, 3, child)
-  let assert Ok(third_done) = graph.await(third, 5000)
+  let assert Ok(third_done) =
+    graph.await(third, within: duration.milliseconds(5000))
   third_done.status |> should.equal(graph.Completed(30))
   process.send(release_first, Nil)
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed([10, 20, 30]))
   let assert [scope] = done.forks
   scope.concurrency |> should.equal(2)
@@ -192,12 +194,13 @@ pub fn map_validates_bounds_and_handles_empty_and_oversized_input_test() {
   |> should.be_error
   let runtime = mapped(runs, child, 2, 1)
   let assert Ok(empty) = graph.start(runtime, support.id("map-empty"), [])
-  let assert Ok(done) = graph.await(empty, 5000)
+  let assert Ok(done) = graph.await(empty, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed([]))
   graph.branch(empty, 1, 1, child) |> should.be_error
   let assert Ok(oversized) =
     graph.start(runtime, support.id("map-oversized"), [1, 2, 3])
-  let assert Ok(failed) = graph.await(oversized, 5000)
+  let assert Ok(failed) =
+    graph.await(oversized, within: duration.milliseconds(5000))
   let assert graph.Failed(_) = failed.status
   failed.forks |> should.equal([])
   graph.branch(oversized, 1, 1, child) |> should.be_error
@@ -211,7 +214,7 @@ pub fn map_equal_inputs_remain_independently_owned_children_test() {
     member(runs, "mapped-integer", codec.int(), codec.int(), fn(n) { Ok(n + 1) })
   let assert Ok(handle) =
     graph.start(mapped(runs, child, 2, 2), support.id("map-equal"), [41, 41])
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed([42, 42]))
   let assert Ok(first) = graph.branch(handle, 1, 1, child)
   let assert Ok(second) = graph.branch(handle, 1, 2, child)
@@ -246,7 +249,8 @@ pub fn map_restart_keeps_completed_waiting_and_pending_members_distinct_test() {
         graph.start(mapped(runs, child, 3, 1), id, [1, 2, 3])
       #(runs, handle, child)
     })
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Fork(scope, _) = waiting.status
   let assert [
     fork.Member(_, fork.Admitted(fork.Succeeded("11"))),
@@ -262,13 +266,14 @@ pub fn map_restart_keeps_completed_waiting_and_pending_members_distinct_test() {
   let child = map_approval_member(runs)
   let handle = graph.attach(mapped(runs, child, 3, 1), id)
   let assert Ok(_) = graph.recover(handle)
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Fork(restored, _) = waiting.status
   restored.members |> should.equal(scope.members)
   graph.branch(handle, 1, 3, child) |> should.be_error
   let assert Ok(second) = graph.branch(handle, 1, 2, child)
   let assert Ok(_) = graph.approve(second, approval)
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed([11, 12, 13]))
   let assert Ok(first) = graph.branch(handle, 1, 1, child)
   let assert Ok(first_done) = graph.read(first)
@@ -290,7 +295,7 @@ pub fn map_failure_keeps_completed_results_and_does_not_start_pending_members_te
     })
   let assert Ok(handle) =
     graph.start(mapped(runs, child, 3, 1), support.id("map-failure"), [1, 2, 3])
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed([-2]))
   let assert [scope] = done.forks
   let assert [
@@ -323,7 +328,8 @@ pub fn cancel_after_join_failure_keeps_both_completed_members_test() {
     })
   let assert Ok(id) = run.parse_id("pair-join-failure")
   let assert Ok(handle) = graph.start(runtime, id, #(41, "two"))
-  let assert Ok(blocked) = graph.await(handle, 5000)
+  let assert Ok(blocked) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Blocked(reference, graph.InvalidResult(_, _)) =
     blocked.status
   blocked.receipts |> should.equal([])
@@ -332,7 +338,7 @@ pub fn cancel_after_join_failure_keeps_both_completed_members_test() {
   graph.reconcile(handle, reference, forged) |> should.be_error
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(_) = graph.cancel(handle)
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Cancelled(graph.ForkSettled(1)))
   done.receipts |> should.equal([])
   let assert Ok(left_handle) = graph.branch(handle, 1, 1, left)
@@ -375,10 +381,11 @@ pub fn typed_pair_runs_real_children_concurrently_and_retains_ordered_answers_te
     list.find(gates, fn(entry) { entry.0 == "left" })
   process.send(right_gate, Nil)
   let assert Ok(right_handle) = graph.branch(handle, 1, 2, right)
-  let assert Ok(right_done) = graph.await(right_handle, 5000)
+  let assert Ok(right_done) =
+    graph.await(right_handle, within: duration.milliseconds(5000))
   right_done.status |> should.equal(graph.Completed("TWO"))
   process.send(left_gate, Nil)
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(#(42, "TWO")))
   let assert Ok(left_handle) = graph.branch(handle, 1, 1, left)
   { graph.id(left_handle) == graph.id(right_handle) } |> should.be_false
@@ -406,10 +413,11 @@ pub fn a_definite_member_failure_can_route_to_a_typed_fallback_test() {
     graph.start(paired(runs, left, right), run_id, #(41, "two"))
   let assert Ok(release) = process.receive(started, 2000)
   let assert Ok(left_handle) = graph.branch(handle, 1, 1, left)
-  let assert Ok(left_done) = graph.await(left_handle, 5000)
+  let assert Ok(left_done) =
+    graph.await(left_handle, within: duration.milliseconds(5000))
   left_done.status |> should.equal(graph.Completed(42))
   process.send(release, Nil)
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(#(-2, "fallback")))
   let assert Ok(right_handle) = graph.branch(handle, 1, 2, right)
   let assert Ok(right_done) = graph.read(right_handle)
@@ -442,14 +450,16 @@ pub fn parent_cancel_during_uncertain_sibling_cleanup_suppresses_fallback_test()
   let assert Ok(#(_, release)) =
     list.find([first, second], fn(entry) { entry.0 == "right" })
   process.send(release, Nil)
-  let assert Ok(uncertain) = graph.await(handle, 5000)
+  let assert Ok(uncertain) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Fork(scope, _) = uncertain.status
   let assert Some(fork.MemberFailed(failed)) = scope.stop
   failed.member |> should.equal(2)
   let assert [fork.Member(_, fork.Admitted(fork.Uncertain(_))), _] =
     scope.members
   let assert Ok(_) = graph.cancel(handle)
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Fork(_, Some(operation.CancellationRequested)) =
     waiting.status
   let assert Ok(left_handle) = graph.branch(handle, 1, 1, left)
@@ -457,7 +467,7 @@ pub fn parent_cancel_during_uncertain_sibling_cleanup_suppresses_fallback_test()
   let assert graph.Cancelled(graph.Unresolved(reference, _)) =
     left_cancelled.status
   let assert Ok(_) = graph.reconcile(left_handle, reference, "42")
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Cancelled(graph.ForkSettled(1)))
   done.value |> should.equal(#(41, "two"))
   done.receipts |> should.equal([])
@@ -491,7 +501,8 @@ pub fn partial_pair_survives_store_loss_and_joins_the_same_children_test() {
         graph.start(paired(runs, left, right), id, #(41, "two"))
       #(runs, handle, left, right)
     })
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Fork(saved, _) = waiting.status
   let assert [
     fork.Member(_, fork.Admitted(fork.Succeeded(_))),
@@ -513,7 +524,7 @@ pub fn partial_pair_survives_store_loss_and_joins_the_same_children_test() {
   graph.id(left_handle) |> should.equal(left_id)
   graph.id(right_handle) |> should.equal(right_id)
   let assert Ok(_) = graph.approve(right_handle, approval)
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(#(42, "TWO")))
   let assert Ok(left_done) = graph.read(left_handle)
   list.length(left_done.receipts) |> should.equal(1)
@@ -530,7 +541,7 @@ pub fn typed_pair_rejects_changed_members_and_saved_outputs_test() {
   let assert Ok(id) = run.parse_id("pair-corruption")
   let assert Ok(handle) =
     graph.start(paired(runs, left, right), id, #(41, "two"))
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(#(42, "two")))
   let assert Ok(entry) = store.get(runs, run.id_to_string(id))
   let assert Ok(saved) = record.decode(entry.record)

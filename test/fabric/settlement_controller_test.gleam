@@ -12,14 +12,15 @@ import fabric/support/apps.{Forecast}
 import fabric/tool
 import gleam/list
 import gleam/option.{None}
+import gleam/time/duration
 import gleeunit/should
 
 fn settling(name: String) -> tool.Tool(Nil) {
   tool.define(name, "weather", apps.city_codec(), apps.forecast_codec())
   |> tool.bind_settling(
-    fn(_, _, _) { Ok(Forecast("sunny")) },
+    fn(_, _call, _, _) { Ok(Forecast("sunny")) },
     fn(_: Nil) { tool.Explain("failed") },
-    within: 50,
+    within: duration.milliseconds(50),
   )
 }
 

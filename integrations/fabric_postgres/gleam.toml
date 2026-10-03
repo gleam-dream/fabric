@@ -12,6 +12,7 @@ description = "A PostgreSQL leased store for Fabric runs."
 gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
+gleam_time = ">= 1.11.0 and < 2.0.0"
 fabric = { path = "../.." }
 # Pinned tight, not the usual `>= x.y.0 and < (x+1).0.0`: an application that
 # uses both fabric_postgres and grind shares one pog/pgo pool, and grind pins

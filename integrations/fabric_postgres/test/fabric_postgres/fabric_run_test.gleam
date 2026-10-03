@@ -11,7 +11,8 @@ import fabric_postgres/support
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
-import gleam/option.{Some}
+import gleam/option.{None, Some}
+import gleam/time/duration
 import gleeunit/should
 
 /// A run starts, suspends for an approval, and the store stops; a new
@@ -27,8 +28,17 @@ pub fn a_suspended_run_is_approved_after_a_store_restart_and_finishes_test() {
     agents.owned(fn() {
       let assert Ok(runs) = fabric_postgres.store(name, settings)
       let assert Ok(Nil) = store.start(runs)
-      let assert Ok(started) = fabric.start(runs, agent, Nil, "work")
-      let assert Ok(run.Suspended([_], [])) = fabric.await(started, 5000)
+      let assert Ok(started) =
+        fabric.start(
+          runs,
+          agent,
+          id: run.new_id(),
+          context: Nil,
+          prompt: "work",
+          correlation: None,
+        )
+      let assert Ok(run.Suspended([_], [])) =
+        fabric.await(started, within: duration.milliseconds(5000))
       fabric.id(started)
     })
   // The store and everything it started stop.
@@ -36,7 +46,8 @@ pub fn a_suspended_run_is_approved_after_a_store_restart_and_finishes_test() {
   let assert Ok(runs) = fabric_postgres.store(name, settings)
   let assert Ok(Nil) = store.start(runs)
   let assert Ok(opened) = fabric.open(runs, agent, Nil, id)
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(opened, 0)
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(opened, within: duration.milliseconds(0))
   pending.tool |> should.equal("work")
   let assert Ok(run.Working) =
     fabric.approve(
@@ -48,7 +59,7 @@ pub fn a_suspended_run_is_approved_after_a_store_restart_and_finishes_test() {
   let arrival = agents.arrival(gate)
   arrival.amount |> should.equal(500)
   agents.release(arrival)
-  fabric.await(opened, 5000)
+  fabric.await(opened, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done: {\"done\":500}"))))
   agents.another(gate, 100) |> should.be_false
 }
@@ -89,14 +100,22 @@ fn lost_replies(version: Int) {
     store.leased(
       process.new_name("fabric_postgres_lossy"),
       node: "a",
-      lease: 30_000,
+      lease: duration.milliseconds(30_000),
       backend: lossy,
     )
   let assert Ok(runs) = store.with_record_version(runs, version)
   let assert Ok(Nil) = store.start(runs)
-  let assert Ok(started) = fabric.start(runs, agents.agent(gate, 5), Nil, "go")
+  let assert Ok(started) =
+    fabric.start(
+      runs,
+      agents.agent(gate, 5),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   agents.release(agents.arrival(gate))
-  fabric.await(started, 5000)
+  fabric.await(started, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done: {\"done\":5}"))))
   agents.another(gate, 100) |> should.be_false
   stored_version(backend, fabric.id(started)) |> should.equal(version)
@@ -123,8 +142,17 @@ pub fn the_postgres_adapter_supports_the_write_version_window_test() {
     fabric_postgres.store(process.new_name("old-writes"), settings)
   let assert Ok(old_writes) = store.with_record_version(old_writes, 2)
   let assert Ok(Nil) = store.start(old_writes)
-  let assert Ok(started) = fabric.start(old_writes, agent, Nil, "go")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(started, 5000)
+  let assert Ok(started) =
+    fabric.start(
+      old_writes,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(started, within: duration.milliseconds(5000))
   stored_version(backend, fabric.id(started)) |> should.equal(2)
 
   let assert Ok(new_writes) =
@@ -141,7 +169,7 @@ pub fn the_postgres_adapter_supports_the_write_version_window_test() {
       context: Nil,
     )
   agents.release(agents.arrival(gate))
-  fabric.await(opened, 5000)
+  fabric.await(opened, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done: {\"done\":500}"))))
   stored_version(backend, fabric.id(started)) |> should.equal(4)
   agents.another(gate, 100) |> should.be_false

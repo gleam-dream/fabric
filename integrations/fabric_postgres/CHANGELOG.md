@@ -6,6 +6,11 @@ package uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Changed
+
+- **Breaking:** `with_lease` takes a `Duration` (default 30 s) and `prune`'s
+  `ended_for` is a `Duration`; `PruneAgeNegative` carries it.
+
 ### Added
 
 - A leased PostgreSQL backend for Fabric runs (`fabric_postgres.store`,

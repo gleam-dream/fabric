@@ -53,7 +53,7 @@ pub fn gated_tool(probe: Probe) -> tool.Tool(ctx) {
     codec.string(),
   )
   |> tool.bind(
-    fn(_context, x: String) -> Result(String, Nil) {
+    fn(_context, _call, x: String) -> Result(String, Nil) {
       probe.record(probe, "start:" <> x)
       probe.gate(probe, x)
       probe.record(probe, "end:" <> x)
@@ -76,7 +76,7 @@ pub fn crashing_tool(probe: Probe) -> tool.Tool(ctx) {
     codec.string(),
   )
   |> tool.bind(
-    fn(_context, x: String) -> Result(String, Nil) {
+    fn(_context, _call, x: String) -> Result(String, Nil) {
       probe.record(probe, "crash:" <> x)
       panic as "the tool body crashed after its effect"
     },

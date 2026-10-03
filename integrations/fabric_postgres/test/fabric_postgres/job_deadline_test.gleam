@@ -14,6 +14,7 @@ import fabric_postgres/agents
 import fabric_postgres/support
 import gleam/erlang/process
 import gleam/option.{Some}
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import pog
@@ -26,10 +27,10 @@ fn runtime(runs, read, request) {
       codec.int(),
       fn(_, _) { read() },
     )
-    |> job.with_poll_interval(2000)
+    |> job.with_poll_interval(duration.milliseconds(2000))
   let assert Ok(op) =
     operation.own_job(observer, fn(_, _, _) { request() }, fn(error) { error })
-    |> operation.with_deadline(1000)
+    |> operation.with_deadline(duration.milliseconds(1000))
   let assert Ok(node) = definition.node_id("job")
   let assert Ok(spec) =
     definition.build(definition.Spec(
@@ -63,7 +64,7 @@ fn sweep(runs, build) {
     fabric.sweeper(
       runs,
       [graph.recovery(run.Identity("pg-job-deadline", 1), build)],
-      every: 20,
+      every: duration.milliseconds(20),
     )
   let assert Ok(started) = spec.start()
   started
@@ -117,7 +118,8 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
           "receipt",
           budget.Limits(1, 1, 1),
         )
-      let assert Ok(waiting) = graph.await(handle, 5000)
+      let assert Ok(waiting) =
+        graph.await(handle, within: duration.milliseconds(5000))
       let _ = sweep(runs, build)
       waiting
     })
@@ -155,7 +157,11 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
     job.RequestAccepted,
     operation.DeadlineReached(due),
   ))
-  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
   |> should.equal(Ok(0))
   backend.claim_ready("too-soon", 60_000, 10) |> should.equal(Ok([]))
   agents.kill(owner)
@@ -172,6 +178,10 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
   process.unlink(started.pid)
   agents.kill(started.pid)
   released(backend, 300)
-  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
   |> should.equal(Ok(2))
 }

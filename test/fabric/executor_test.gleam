@@ -4,6 +4,7 @@ import fabric/internal/executor
 import fabric/support/probe
 import fabric/support/restart
 import gleam/erlang/process
+import gleam/option.{None}
 import gleam/string
 import gleeunit/should
 
@@ -26,7 +27,7 @@ pub fn graph_identity_and_typed_result_use_the_shared_executor_test() {
       ),
     )
   let visit = Visit("review", 3)
-  executor.submit(executor, [executor.Job(visit, fn() { Score(4) })])
+  executor.submit(executor, [executor.Job(visit, fn() { Score(4) }, None)])
   process.receive(reports, 1000)
   |> should.equal(Ok(executor.Reported(visit, Score(4))))
   executor.stop(executor)
@@ -50,7 +51,7 @@ pub fn refused_fence_never_performs_its_effect_test() {
     )
   let visit = Visit("publish", 4)
   executor.submit(executor, [
-    executor.Job(visit, fn() { probe.record(ledger, "published") }),
+    executor.Job(visit, fn() { probe.record(ledger, "published") }, None),
   ])
   process.receive(inspected, 1000) |> should.equal(Ok(visit))
   executor.stop(executor)
@@ -71,8 +72,8 @@ pub fn crash_stays_distinct_from_a_returned_result_test() {
   let crashing = Visit("request", 7)
   let succeeding = Visit("review", 8)
   executor.submit(executor, [
-    executor.Job(crashing, fn() { panic as "body failed" }),
-    executor.Job(succeeding, fn() { Score(2) }),
+    executor.Job(crashing, fn() { panic as "body failed" }, None),
+    executor.Job(succeeding, fn() { Score(2) }, None),
   ])
   let assert Ok(executor.Crashed(found, evidence)) =
     process.receive(reports, 1000)
@@ -96,13 +97,19 @@ pub fn stop_settles_running_tasks_without_starting_queued_work_test() {
       ),
     )
   executor.submit(executor, [
-    executor.Job(Visit("request", 1), fn() {
-      probe.record(ledger, "started")
-      probe.gate(ledger, "held")
-    }),
-    executor.Job(Visit("request", 2), fn() {
-      probe.record(ledger, "must not start")
-    }),
+    executor.Job(
+      Visit("request", 1),
+      fn() {
+        probe.record(ledger, "started")
+        probe.gate(ledger, "held")
+      },
+      None,
+    ),
+    executor.Job(
+      Visit("request", 2),
+      fn() { probe.record(ledger, "must not start") },
+      None,
+    ),
   ])
   let _ = probe.arrival(ledger)
   executor.stop(executor)
@@ -123,11 +130,15 @@ pub fn losing_the_owner_kills_the_body_test() {
           ),
         )
       executor.submit(executor, [
-        executor.Job(Visit("held", 1), fn() {
-          let hold: process.Subject(Nil) = process.new_subject()
-          process.send(worker, process.self())
-          process.receive_forever(hold)
-        }),
+        executor.Job(
+          Visit("held", 1),
+          fn() {
+            let hold: process.Subject(Nil) = process.new_subject()
+            process.send(worker, process.self())
+            process.receive_forever(hold)
+          },
+          None,
+        ),
       ])
     })
   let assert Ok(body) = process.receive(worker, 1000)

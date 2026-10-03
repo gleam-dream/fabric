@@ -9,12 +9,13 @@
 import fabric/internal/registry.{type Registry}
 import fabric/model.{type Model}
 import fabric/policy.{type Policy}
-import fabric/run.{type Identity, Identity}
+import fabric/run.{type Identity, type Timeout, After, Identity, Infinity}
 import fabric/tool.{type Tool}
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/time/duration.{type Duration}
 
 /// An agent's description, checked by `build`.
 pub opaque type Spec(context) {
@@ -36,11 +37,16 @@ pub opaque type Agent(context) {
 }
 
 /// The bounds of every run of an agent. Start from `default_limits()` and
-/// override what differs:
+/// override what differs, by label:
 ///
 /// ```gleam
-/// agent.Limits(..agent.default_limits(), max_turns: 4)
+/// agent.Limits(..agent.default_limits(), max_turns: 4,
+///   tool_timeout: run.After(duration.minutes(5)))
 /// ```
+///
+/// Every wait is bounded by default. A timeout that may be unbounded is a
+/// `run.Timeout`; `run.Infinity` must be asked for. Fabric may add fields:
+/// update from `default_limits()` rather than listing every field.
 pub type Limits {
   Limits(
     /// Model attempts per run, counting the first request and every retry.
@@ -57,29 +63,48 @@ pub type Limits {
     /// children may not delegate in turn). A child is bounded by its own
     /// setting and by what its parent has left.
     max_depth: Int,
-    /// Milliseconds one policy decision may take. A policy that gives no
+    /// How long one policy decision may take. A policy that gives no
     /// decision in time has failed: the run stops closed. The policy runs in
-    /// its own process. At most 2^32 - 1, the longest timer the runtime can
-    /// set.
-    policy_timeout: Int,
-    /// Milliseconds before the first retry of a retryable model failure. The
+    /// its own process. At most 2^32 - 1 ms, the longest timer the runtime
+    /// can set.
+    policy_timeout: Duration,
+    /// The wait before the first retry of a retryable model failure. The
     /// delay doubles with each consecutive retryable failure, up to 64 times
     /// this value, and every attempt still counts against the turn limit. A
-    /// cancelled run does not wait for it. At most (2^32 - 1) / 64, so the
+    /// cancelled run does not wait for it. At most (2^32 - 1) / 64 ms, so the
     /// longest delay still fits a timer.
-    model_retry_delay: Int,
-    /// Milliseconds a command (`approve`, `reject`, `cancel`, `reconcile`)
+    model_retry_delay: Duration,
+    /// How long a command (`approve`, `reject`, `cancel`, `reconcile`)
     /// waits for the run's live runner to take it. A runner busy for longer
     /// (for example held by a synchronous observation handler) refuses the
     /// command with `fabric.RunnerBusy`, and never applies it later. At most
-    /// 2^32 - 1.
-    command_timeout: Int,
+    /// 2^32 - 1 ms.
+    command_timeout: Duration,
+    /// How long one model call may take, from the moment it is issued (a
+    /// retry's delay is not counted). A call still running then is stopped
+    /// and counts as a retryable `ModelError`, which spends a turn like any
+    /// other retry. The default matches llm_wire's whole-call deadline, so
+    /// `fabric/llm` is never cut short by it. At most 2^32 - 1 ms.
+    model_timeout: Timeout,
+    /// How long one tool body may run once it has started. A body still
+    /// running then is stopped and its action becomes an uncertain effect
+    /// (it may have acted), which the run waits to have reconciled; a tool
+    /// bound with `tool.bind_settling` may still settle it. `tool.with_timeout`
+    /// overrides it for one tool. Sub-agent runs are bounded by their own
+    /// limits instead. At most 2^32 - 1 ms.
+    tool_timeout: Timeout,
+    /// The largest tool result, in bytes of its encoded content, that a run
+    /// keeps: a result is stored and sent to the model on every later turn.
+    /// A larger result stops the run with `run.OutputEncodingFailed`, naming
+    /// this limit; the tool's effect has happened.
+    max_result_bytes: Int,
   )
 }
 
 /// 8 turns, 4 concurrent tools, no token budget, 4 children one level deep,
-/// and 5000 ms for a policy decision and for a command; a first model retry
-/// after 200 ms.
+/// 5 s for a policy decision and for a command, a first model retry after
+/// 200 ms, 600 s for a model call, 60 s for a tool body, and tool results
+/// of at most 1 MiB.
 pub fn default_limits() -> Limits {
   Limits(
     max_turns: 8,
@@ -87,9 +112,12 @@ pub fn default_limits() -> Limits {
     token_budget: None,
     max_children: 4,
     max_depth: 1,
-    policy_timeout: 5000,
-    model_retry_delay: 200,
-    command_timeout: 5000,
+    policy_timeout: duration.seconds(5),
+    model_retry_delay: duration.milliseconds(200),
+    command_timeout: duration.seconds(5),
+    model_timeout: After(duration.seconds(600)),
+    tool_timeout: After(duration.seconds(60)),
+    max_result_bytes: 1_048_576,
   )
 }
 
@@ -99,27 +127,43 @@ pub type ConfigError {
   InvalidToolName(String)
   /// The tool's input codec has no JSON Schema to declare to the model.
   ToolSchemaUnavailable(String)
-  /// A tool bound with `tool.bind_settling` waits no positive time for its
+  /// A tool bound with `tool.bind_settling` waits less than 1 ms for its
   /// settlement.
-  SettlementBoundNotPositive(name: String, within: Int)
+  SettlementBoundNotPositive(name: String, within: Duration)
   /// A tool bound with `tool.bind_settling` waits longer than the longest
   /// timer the runtime can set (2^32 - 1 ms): its bound would never pass.
-  SettlementBoundTooLarge(name: String, within: Int)
+  SettlementBoundTooLarge(name: String, within: Duration)
+  /// A tool's own timeout (`tool.with_timeout`) is shorter than 1 ms or
+  /// longer than the longest timer the runtime can set (2^32 - 1 ms).
+  InvalidToolTimeout(name: String, timeout: Duration)
   MaxTurnsNotPositive(Int)
   MaxConcurrencyNotPositive(Int)
   TokenBudgetNotPositive(Int)
-  PolicyTimeoutNotPositive(Int)
+  /// Shorter than 1 ms.
+  PolicyTimeoutNotPositive(Duration)
   /// The policy timeout is longer than the longest timer the runtime can
   /// set (`limit`, 2^32 - 1 ms).
-  PolicyTimeoutTooLarge(value: Int, limit: Int)
-  ModelRetryDelayNegative(Int)
+  PolicyTimeoutTooLarge(value: Duration, limit: Duration)
+  ModelRetryDelayNegative(Duration)
   /// The first model retry delay, doubled up to 64 times, would exceed the
   /// longest timer the runtime can set: `limit` is (2^32 - 1) / 64 ms.
-  ModelRetryDelayTooLarge(value: Int, limit: Int)
-  CommandTimeoutNotPositive(Int)
+  ModelRetryDelayTooLarge(value: Duration, limit: Duration)
+  /// Shorter than 1 ms.
+  CommandTimeoutNotPositive(Duration)
   /// The command timeout is longer than the longest timer the runtime can
   /// set (`limit`, 2^32 - 1 ms).
-  CommandTimeoutTooLarge(value: Int, limit: Int)
+  CommandTimeoutTooLarge(value: Duration, limit: Duration)
+  /// Shorter than 1 ms.
+  ModelTimeoutNotPositive(Duration)
+  /// Longer than the longest timer the runtime can set (`limit`, 2^32 - 1
+  /// ms); `run.Infinity` leaves a model call unbounded.
+  ModelTimeoutTooLarge(value: Duration, limit: Duration)
+  /// Shorter than 1 ms.
+  ToolTimeoutNotPositive(Duration)
+  /// Longer than the longest timer the runtime can set (`limit`, 2^32 - 1
+  /// ms); `run.Infinity` leaves tool bodies unbounded.
+  ToolTimeoutTooLarge(value: Duration, limit: Duration)
+  MaxResultBytesNotPositive(Int)
   /// The name is empty or the version is not positive.
   InvalidIdentity(name: String, version: Int)
   MaxChildrenNegative(Int)
@@ -232,9 +276,14 @@ pub type Admitted(context) {
     max_turns: Int,
     max_concurrency: Int,
     token_budget: Option(Int),
+    /// Milliseconds, like every bound below.
     policy_timeout: Int,
     model_retry_delay: Int,
     command_timeout: Int,
+    /// `None`: unbounded.
+    model_timeout: Option(Int),
+    tool_timeout: Option(Int),
+    max_result_bytes: Int,
     /// The admitted sub-agent of each delegation, by delegation name.
     children: Dict(String, Admitted(context)),
     max_children: Int,
@@ -261,7 +310,11 @@ fn admit(spec: Spec(context)) -> Result(Admitted(context), List(ConfigError)) {
     policy_timeout:,
     model_retry_delay:,
     command_timeout:,
+    model_timeout:,
+    tool_timeout:,
+    max_result_bytes:,
   ) = spec.limits
+  let longest = duration.milliseconds(longest_timer)
   let problems =
     [
       positive(max_turns, MaxTurnsNotPositive),
@@ -270,19 +323,43 @@ fn admit(spec: Spec(context)) -> Result(Admitted(context), List(ConfigError)) {
         Some(tokens) -> positive(tokens, TokenBudgetNotPositive)
         None -> Ok(Nil)
       },
-      positive(policy_timeout, PolicyTimeoutNotPositive),
-      at_most(policy_timeout, longest_timer, PolicyTimeoutTooLarge),
-      positive(command_timeout, CommandTimeoutNotPositive),
-      at_most(command_timeout, longest_timer, CommandTimeoutTooLarge),
-      case model_retry_delay >= 0 {
+      timer(policy_timeout, PolicyTimeoutNotPositive, PolicyTimeoutTooLarge(
+        _,
+        longest,
+      )),
+      timer(command_timeout, CommandTimeoutNotPositive, CommandTimeoutTooLarge(
+        _,
+        longest,
+      )),
+      case duration.to_milliseconds(model_retry_delay) >= 0 {
         True -> Ok(Nil)
         False -> Error(ModelRetryDelayNegative(model_retry_delay))
       },
-      at_most(
-        model_retry_delay,
-        longest_timer / retry_delay_factor,
-        ModelRetryDelayTooLarge,
-      ),
+      case
+        duration.to_milliseconds(model_retry_delay)
+        > longest_timer / retry_delay_factor
+      {
+        True ->
+          Error(ModelRetryDelayTooLarge(
+            model_retry_delay,
+            duration.milliseconds(longest_timer / retry_delay_factor),
+          ))
+        False -> Ok(Nil)
+      },
+      case model_timeout {
+        After(within) ->
+          timer(within, ModelTimeoutNotPositive, ModelTimeoutTooLarge(
+            _,
+            longest,
+          ))
+        Infinity -> Ok(Nil)
+      },
+      case tool_timeout {
+        After(within) ->
+          timer(within, ToolTimeoutNotPositive, ToolTimeoutTooLarge(_, longest))
+        Infinity -> Ok(Nil)
+      },
+      positive(max_result_bytes, MaxResultBytesNotPositive),
       case spec.identity {
         Identity(name, version) if name == "" || version < 1 ->
           Error(InvalidIdentity(name, version))
@@ -316,9 +393,12 @@ fn admit(spec: Spec(context)) -> Result(Admitted(context), List(ConfigError)) {
         max_turns:,
         max_concurrency:,
         token_budget:,
-        policy_timeout:,
-        model_retry_delay:,
-        command_timeout:,
+        policy_timeout: duration.to_milliseconds(policy_timeout),
+        model_retry_delay: duration.to_milliseconds(model_retry_delay),
+        command_timeout: duration.to_milliseconds(command_timeout),
+        model_timeout: milliseconds(model_timeout),
+        tool_timeout: milliseconds(tool_timeout),
+        max_result_bytes:,
         children: spec.children
           |> list.map(fn(entry) { #(entry.0, { entry.1 }.admitted) })
           |> dict.from_list,
@@ -340,14 +420,25 @@ fn positive(
   }
 }
 
-fn at_most(
-  value: Int,
-  limit: Int,
-  error: fn(Int, Int) -> ConfigError,
+/// A wait the runtime sets a timer for: at least 1 ms and at most the
+/// longest timer.
+fn timer(
+  value: Duration,
+  not_positive: fn(Duration) -> ConfigError,
+  too_large: fn(Duration) -> ConfigError,
 ) -> Result(Nil, ConfigError) {
-  case value > limit {
-    True -> Error(error(value, limit))
-    False -> Ok(Nil)
+  let ms = duration.to_milliseconds(value)
+  case ms < 1, ms > longest_timer {
+    True, _ -> Error(not_positive(value))
+    _, True -> Error(too_large(value))
+    False, False -> Ok(Nil)
+  }
+}
+
+fn milliseconds(timeout: Timeout) -> Option(Int) {
+  case timeout {
+    After(within) -> Some(duration.to_milliseconds(within))
+    Infinity -> None
   }
 }
 
@@ -370,5 +461,6 @@ fn tool_error(error: registry.RegistryError) -> ConfigError {
       SettlementBoundNotPositive(name, within)
     registry.SettlementBoundTooLarge(name, within) ->
       SettlementBoundTooLarge(name, within)
+    registry.InvalidTimeout(name, timeout) -> InvalidToolTimeout(name, timeout)
   }
 }

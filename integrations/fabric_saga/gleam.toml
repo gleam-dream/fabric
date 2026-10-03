@@ -12,9 +12,9 @@ gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 fabric = { path = "../.." }
 saga = { path = "../../../saga" }
+gleam_time = ">= 1.11.0 and < 2.0.0"
 
 [dev-dependencies]
-gleam_time = ">= 1.11.0 and < 2.0.0"
 gleeunit = ">= 1.0.0 and < 2.0.0"
 json_blueprint = { path = "../../../json_blueprint" }
 sinal = { path = "../../../sinal" }

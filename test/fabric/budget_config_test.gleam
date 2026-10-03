@@ -15,6 +15,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
+import sinal/correlation
 
 fn limits() {
   quota.Limits(8, 2, 2)
@@ -35,6 +36,7 @@ fn agent_root() {
     0,
     agent.Ended(run.Cancelled),
     Some(budget.Declaration(limits(), False)),
+    correlation.from_key("root"),
   )
 }
 

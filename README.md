@@ -74,10 +74,11 @@ import fabric/run
 import fabric/store
 import fabric/tool
 import gleam/erlang/process
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/otp/static_supervisor
 import gleam/result
+import gleam/time/duration
 import json/blueprint/codec
 
 /// The live context of a run: who acts. It is never stored.
@@ -115,13 +116,16 @@ pub fn transfer_definition() -> tool.Definition(Transfer, Receipt) {
 
 /// Binding a typed handler says what each of its errors means: a definite
 /// failure the model sees, or an effect that may have happened, which is
-/// never retried and waits for a person to reconcile it.
+/// never retried and waits for a person to reconcile it. The handler also
+/// gets the `tool.Call` it answers: its run, its action and the run's
+/// correlation, for the requests it makes. A body runs for at most the
+/// agent's `tool_timeout` (60 s by default).
 pub fn transfer_tool(
   pay: fn(Transfer) -> Result(Receipt, TransferError),
 ) -> tool.Tool(Context) {
   tool.bind(
     transfer_definition(),
-    fn(_context, transfer) { pay(transfer) },
+    fn(_context, _call, transfer) { pay(transfer) },
     fn(error) {
       case error {
         InsufficientFunds -> tool.Explain("insufficient funds")
@@ -177,22 +181,34 @@ pub fn desk(
 pub fn supervise(path: String) -> Result(store.Store, actor.StartError) {
   let assert Ok(runs) =
     store.directory(process.new_name("runs"), path)
-    |> store.with_drain(10_000)
+    |> store.with_drain(duration.seconds(10))
   static_supervisor.new(static_supervisor.OneForOne)
   |> static_supervisor.add(store.supervised(runs))
   |> static_supervisor.start
   |> result.replace(runs)
 }
 
-/// A request starts a run and keeps its id (in a link, a job, a table).
+/// A request starts a run under an id it chooses and keeps (in a link, a
+/// job, a table). A job derives the id from its own (`run.parse_id`), so a
+/// retried start finds the run (`fabric.AlreadyStarted`) instead of paying
+/// twice. The run's correlation is in every event, model request and tool
+/// call of the run; `None` derives it from the id.
 pub fn start_payment(
   runs: store.Store,
   desk: Agent(Context),
   context: Context,
   prompt: String,
 ) -> Result(String, fabric.StartError) {
-  use handle <- result.map(fabric.start(runs, desk, context, prompt))
-  run.id_to_string(fabric.id(handle))
+  let id = run.new_id()
+  use _handle <- result.map(fabric.start(
+    runs,
+    desk,
+    id:,
+    context:,
+    prompt:,
+    correlation: None,
+  ))
+  run.id_to_string(id)
 }
 
 pub type Verdict {
@@ -222,7 +238,8 @@ pub fn review(
     fabric.open(runs, desk, context, id) |> result.map_error(fabric.Unreadable),
   )
   use status <- result.try(
-    fabric.await(handle, 5000) |> result.map_error(fabric.Unreadable),
+    fabric.await(handle, within: duration.seconds(5))
+    |> result.map_error(fabric.Unreadable),
   )
   let reviewer = Some(context.user)
   case status, verdict {
@@ -300,7 +317,7 @@ pub fn front_desk(
 
 /// A tool whose effect outlives its task settles its result late: its
 /// handler gets a `tool.Settlement`, and a stopped run waits up to
-/// `within` milliseconds for `tool.settle(settlement, result, summary:)`.
+/// `within` for `tool.settle(settlement, result, summary:)`.
 /// The summary is observed if the settlement is refused, so it must not
 /// carry secrets.
 pub fn settling_transfer(
@@ -308,12 +325,56 @@ pub fn settling_transfer(
 ) -> tool.Tool(Context) {
   tool.bind_settling(
     transfer_definition(),
-    fn(_context, transfer, settlement) { pay(transfer, settlement) },
+    fn(_context, _call, transfer, settlement) { pay(transfer, settlement) },
     fn(_error) { tool.Uncertain("the transfer did not report") },
-    within: 5000,
+    within: duration.seconds(5),
   )
 }
 ```
+
+### Defaults
+
+Every step and every wait is bounded unless the caller asks for
+`run.Infinity`. A run's own length is then bounded by its turns, its model
+and tool timeouts, and the answers it waits for.
+
+| Bound                                       | Default                         | Change it with                                            | When it is reached                                          |
+| ------------------------------------------- | ------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------- |
+| Model attempts per run                      | 8                               | `agent.Limits.max_turns`                                  | the run ends `BudgetExhausted(TurnLimit(8))`                |
+| One model call                              | 600 s                           | `agent.Limits.model_timeout`                              | the call stops; a retryable `ModelError` that spends a turn |
+| One tool body                               | 60 s                            | `agent.Limits.tool_timeout`, `tool.with_timeout`          | the body stops; the action is an uncertain effect           |
+| Tool result size                            | 1 MiB                           | `agent.Limits.max_result_bytes`                           | the run fails with `OutputEncodingFailed`, naming the limit |
+| Concurrent tool bodies                      | 4                               | `agent.Limits.max_concurrency`                            | later tools queue                                           |
+| One policy decision                         | 5 s                             | `agent.Limits.policy_timeout`                             | the run stops closed (`PolicyFailed`)                       |
+| A command waiting for a busy runner         | 5 s                             | `agent.Limits.command_timeout`                            | `RunnerBusy`                                                |
+| First model retry delay                     | 200 ms, doubling up to 64 times | `agent.Limits.model_retry_delay`                          |                                                             |
+| Sub-agents per run, depth                   | 4, 1                            | `agent.Limits.max_children`, `max_depth`                  | the delegation is refused and the model sees why            |
+| Token budget                                | none (opt in)                   | `agent.Limits.token_budget`                               | `BudgetExhausted(TokenLimit(..))`                           |
+| Drain window on shutdown                    | 25 s                            | `store.with_drain`                                        | the runner is killed; running tools become uncertain        |
+| Graph callbacks, operation bodies, commands | 1 s, 60 s, 1 s                  | `graph.with_timeouts(callbacks:, operations:, commands:)` | `CallbackFailed`, an uncertain operation, `Busy`            |
+
+Every timeout is a `gleam/time/duration.Duration`. Two waits stay
+unbounded by default, deferred with the durability decisions: an agent
+approval waits for its answer, and a graph signal, job, child or fork waits
+until `operation.with_deadline` bounds it.
+
+### Correlation
+
+A run has one `sinal/correlation.Correlation`, chosen where the run starts
+(`fabric.start(.., correlation: Some(c))`) or derived from its id. It is
+stored with the run and carried in every `fabric/observation` event of the
+run and its sub-agents, in every `model.Request` (with the run id and the
+turn), and in every tool's `tool.Call`. `fabric/llm` puts it on each
+turn's HTTP Gun client view, so one agent serves every run, and
+`fabric_saga` starts each Saga run with it.
+
+### Waiting for a run or a cancellation
+
+`fabric.await(handle, within:)` blocks. A handler that must also react to
+its caller, such as Relay's `tool.cancelled` signal, waits for both in one
+receive with `fabric.await_with(handle, within:, or: selector)`: it returns
+`Reached(status)`, or `Interrupted(message)` when the selector fires first,
+and leaves the run as it is, so the handler decides whether to `cancel` it.
 
 Stores: `store.in_memory` keeps records in its process (tests and
 scripts). `store.directory` keeps them in files, for development, tests and
@@ -326,7 +387,7 @@ families, or provide an application backend through `store.new` or
 `store.leased`.
 
 Several nodes that share one database coordinate through per-run leases:
-`store.leased(name, node: "app-1", lease: 30_000, backend:)` over a
+`store.leased(name, node: "app-1", lease: duration.seconds(30), backend:)` over a
 `store.LeasedBackend` (its contract is in the `fabric/store` docs, and
 `fabric/testing.leased_backend_checks` checks one; `testing.leased_memory()`
 is one in memory, for tests). Every commit that keeps work in flight
@@ -348,7 +409,7 @@ deadlines use this time domain; clock corrections can advance or delay expiry.
 Automatic recovery: register agent roots with
 `fabric.recovery(agent, context_for_run)` and graph roots with `graph.recovery`
 (described below), then add
-`fabric.sweeper(runs, recoveries, every: 1000)` after the store in a
+`fabric.sweeper(runs, recoveries, every: duration.seconds(1))` after the store in a
 rest-for-one supervisor. It scans expired leases and changed idle dependencies
 at boot and periodically,
 rebuilds context from the root run id, and recovers each eligible family
@@ -378,7 +439,7 @@ Existing values and runners keep their setting; this does not migrate rows.
 See the [rollout procedure](integrations/fabric_postgres/README.md#record-versions)
 for compatibility and rollback limits.
 
-Use `fabric.start_with_budget(store, agent, context, prompt, limits)` or
+Use `fabric.start_with_budget(store, agent, id:, context:, prompt:, correlation:, limits:)` or
 `graph.start_with_budget(runtime, id, initial, limits)` to bound the whole family.
 For example, `budget.Limits(work: 40, children: 6, depth: 3)` allows up to 40
 work admissions and six children, at most three levels below the root.
@@ -405,7 +466,7 @@ determines when a polling interval is due. Failed observations retry after lease
 expiry. Polls reuse the admitted wait's work grant.
 Signal waits without a deadline require explicit delivery.
 
-For a bounded signal wait, apply `operation.with_deadline(wait, 60_000)` before
+For a bounded signal wait, apply `operation.with_deadline(wait, duration.minutes(1))` before
 binding it to a node. Approval admits the wait; the runner then saves its due
 time from the backend clock. `snapshot.deadline` exposes that UTC timestamp.
 Late delivery or recovery commits `Failed(DeadlineExpired(due))` without accepting
@@ -449,9 +510,11 @@ together only after settlement. See the [migration and refresh procedure](integr
 
 A Saga workflow is one typed tool too, from the separate package
 `integrations/fabric_saga`: `fabric_saga.tool(definition, workflow,
-execution.config(), explain:, rollback_within:)`. A cancelled call waits up
-to `rollback_within` ms for Saga's rollback: every completed step undone is
-a definite failure, anything left in place an uncertain effect.
+execution.config(), input:, explain:, rollback_within:)`. `input` builds the
+workflow's input from the run's context, the `tool.Call` and the tool's
+input, and each Saga run carries the Fabric run's correlation. A cancelled
+call waits up to `rollback_within` for Saga's rollback: every completed step
+undone is a definite failure, anything left in place an uncertain effect.
 `consumers/app` uses it.
 
 Observations: attach Sinal handlers to the events of `fabric/observation`.

@@ -10,6 +10,7 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 
 fn contract(open: fn() -> Store) -> Nil {
@@ -284,10 +285,16 @@ pub fn a_hung_backend_call_blocks_only_its_run_until_its_deadline_test() {
 pub fn a_drain_window_must_be_positive_and_fit_a_timer_test() {
   let runs = store.in_memory(process.new_name("drained"))
   let longest = 4_294_967_295
-  store.with_drain(runs, 0) |> should.equal(Error(store.DrainNotPositive(0)))
-  store.with_drain(runs, longest + 1)
+  store.with_drain(runs, duration.milliseconds(0))
+  |> should.equal(Error(store.DrainNotPositive(duration.milliseconds(0))))
+  store.with_drain(runs, duration.milliseconds(longest + 1))
   |> should.equal(
-    Error(store.DrainTooLarge(value: longest + 1, limit: longest)),
+    Error(store.DrainTooLarge(
+      value: duration.milliseconds(longest + 1),
+      limit: duration.milliseconds(longest),
+    )),
   )
-  store.with_drain(runs, longest) |> result.is_ok |> should.be_true
+  store.with_drain(runs, duration.milliseconds(longest))
+  |> result.is_ok
+  |> should.be_true
 }

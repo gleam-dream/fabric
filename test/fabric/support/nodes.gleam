@@ -6,6 +6,7 @@ import fabric/store.{type LeasedBackend, type Store}
 import fabric/support
 import gleam/erlang/process
 import gleam/string
+import gleam/time/duration
 
 /// A lease long enough that no renewal falls within a test: the backend's
 /// clock is moved past it instead.
@@ -15,7 +16,12 @@ pub const long = 60_000
 /// caller.
 pub fn node(backend: LeasedBackend, node: String, lease: Int) -> Store {
   let assert Ok(leased) =
-    store.leased(process.new_name("fabric-test-node"), node:, lease:, backend:)
+    store.leased(
+      process.new_name("fabric-test-node"),
+      node:,
+      lease: duration.milliseconds(lease),
+      backend:,
+    )
   support.started(leased)
 }
 

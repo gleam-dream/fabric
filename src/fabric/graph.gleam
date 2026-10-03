@@ -34,6 +34,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/duration.{type Duration}
 import json/blueprint/codec
 
 pub type Action {
@@ -202,7 +203,9 @@ pub type Error {
   CallbackFailed(String)
   SignalEncodingFailed(codec.EncodeError)
   CommandRefused(String)
-  InvalidTimeout(Int)
+  /// A timeout under 1 ms (zero is accepted by `await`) or over the longest
+  /// timer the runtime can set (2^32 - 1 ms).
+  InvalidTimeout(Duration)
   Busy
   Contended
   OwnerUnknown
@@ -286,22 +289,43 @@ pub fn new(
   Runtime(definition, store, work, runner.Options(1000, 60_000, 1000))
 }
 
+/// Sets the runtime's three bounds (defaults: 1 s, 60 s and 1 s):
+///
+/// - `callbacks`: one call of the definition's pure callbacks (context,
+///   selection, acceptance, validation);
+/// - `operations`: one admitted operation body; a body still running then
+///   is stopped and its effect is uncertain, unless the operation replays;
+/// - `commands`: how long a command waits for the run's live runner.
+///
+/// Each is from 1 ms to 2^32 - 1 ms, or the call returns `InvalidTimeout`
+/// with the value refused.
+///
+/// ```gleam
+/// graph.new(definition, runs, context, policy)
+/// |> graph.with_timeouts(
+///   callbacks: duration.seconds(1),
+///   operations: duration.minutes(5),
+///   commands: duration.seconds(1),
+/// )
+/// ```
 pub fn with_timeouts(
   runtime: Runtime(context, state, answer),
-  callbacks: Int,
-  operation: Int,
-  commands: Int,
+  callbacks callbacks: Duration,
+  operations operations: Duration,
+  commands commands: Duration,
 ) -> Result(Runtime(context, state, answer), Error) {
-  use _ <- result.try(
-    list.try_each([callbacks, operation, commands], fn(value) {
-      case value > 0 && value <= 4_294_967_295 {
-        True -> Ok(Nil)
+  use values <- result.try(
+    list.try_map([callbacks, operations, commands], fn(value) {
+      let ms = duration.to_milliseconds(value)
+      case ms > 0 && ms <= 4_294_967_295 {
+        True -> Ok(ms)
         False -> Error(InvalidTimeout(value))
       }
     }),
   )
+  let assert [callbacks, operations, commands] = values
   Ok(
-    Runtime(..runtime, options: runner.Options(callbacks, operation, commands)),
+    Runtime(..runtime, options: runner.Options(callbacks, operations, commands)),
   )
 }
 
@@ -906,16 +930,15 @@ pub fn read(
   view
 }
 
-/// Waits for completion, approval, reconciliation or unattended work. At the
-/// deadline a still-working snapshot is returned. It never recovers a run.
+/// Waits up to `within` for completion, approval, reconciliation or
+/// unattended work. At the deadline a still-working snapshot is returned; a
+/// `within` of zero (or less) reads the snapshot now. It never recovers a
+/// run.
 pub fn await(
   handle: Handle(context, state, answer),
-  within: Int,
+  within within: Duration,
 ) -> Result(Snapshot(state, answer), Error) {
-  use _ <- result.try(case within >= 0 && within <= 4_294_967_295 {
-    True -> Ok(Nil)
-    False -> Error(InvalidTimeout(within))
-  })
+  let within = int.max(0, duration.to_milliseconds(within))
   let watcher = process.new_subject()
   let id = run.id_to_string(handle.id)
   use _ <- result.try(

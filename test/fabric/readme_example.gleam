@@ -6,10 +6,11 @@ import fabric/run
 import fabric/store
 import fabric/tool
 import gleam/erlang/process
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/otp/static_supervisor
 import gleam/result
+import gleam/time/duration
 import json/blueprint/codec
 
 /// The live context of a run: who acts. It is never stored.
@@ -47,13 +48,16 @@ pub fn transfer_definition() -> tool.Definition(Transfer, Receipt) {
 
 /// Binding a typed handler says what each of its errors means: a definite
 /// failure the model sees, or an effect that may have happened, which is
-/// never retried and waits for a person to reconcile it.
+/// never retried and waits for a person to reconcile it. The handler also
+/// gets the `tool.Call` it answers: its run, its action and the run's
+/// correlation, for the requests it makes. A body runs for at most the
+/// agent's `tool_timeout` (60 s by default).
 pub fn transfer_tool(
   pay: fn(Transfer) -> Result(Receipt, TransferError),
 ) -> tool.Tool(Context) {
   tool.bind(
     transfer_definition(),
-    fn(_context, transfer) { pay(transfer) },
+    fn(_context, _call, transfer) { pay(transfer) },
     fn(error) {
       case error {
         InsufficientFunds -> tool.Explain("insufficient funds")
@@ -109,22 +113,34 @@ pub fn desk(
 pub fn supervise(path: String) -> Result(store.Store, actor.StartError) {
   let assert Ok(runs) =
     store.directory(process.new_name("runs"), path)
-    |> store.with_drain(10_000)
+    |> store.with_drain(duration.seconds(10))
   static_supervisor.new(static_supervisor.OneForOne)
   |> static_supervisor.add(store.supervised(runs))
   |> static_supervisor.start
   |> result.replace(runs)
 }
 
-/// A request starts a run and keeps its id (in a link, a job, a table).
+/// A request starts a run under an id it chooses and keeps (in a link, a
+/// job, a table). A job derives the id from its own (`run.parse_id`), so a
+/// retried start finds the run (`fabric.AlreadyStarted`) instead of paying
+/// twice. The run's correlation is in every event, model request and tool
+/// call of the run; `None` derives it from the id.
 pub fn start_payment(
   runs: store.Store,
   desk: Agent(Context),
   context: Context,
   prompt: String,
 ) -> Result(String, fabric.StartError) {
-  use handle <- result.map(fabric.start(runs, desk, context, prompt))
-  run.id_to_string(fabric.id(handle))
+  let id = run.new_id()
+  use _handle <- result.map(fabric.start(
+    runs,
+    desk,
+    id:,
+    context:,
+    prompt:,
+    correlation: None,
+  ))
+  run.id_to_string(id)
 }
 
 pub type Verdict {
@@ -154,7 +170,8 @@ pub fn review(
     fabric.open(runs, desk, context, id) |> result.map_error(fabric.Unreadable),
   )
   use status <- result.try(
-    fabric.await(handle, 5000) |> result.map_error(fabric.Unreadable),
+    fabric.await(handle, within: duration.seconds(5))
+    |> result.map_error(fabric.Unreadable),
   )
   let reviewer = Some(context.user)
   case status, verdict {
@@ -232,7 +249,7 @@ pub fn front_desk(
 
 /// A tool whose effect outlives its task settles its result late: its
 /// handler gets a `tool.Settlement`, and a stopped run waits up to
-/// `within` milliseconds for `tool.settle(settlement, result, summary:)`.
+/// `within` for `tool.settle(settlement, result, summary:)`.
 /// The summary is observed if the settlement is refused, so it must not
 /// carry secrets.
 pub fn settling_transfer(
@@ -240,8 +257,8 @@ pub fn settling_transfer(
 ) -> tool.Tool(Context) {
   tool.bind_settling(
     transfer_definition(),
-    fn(_context, transfer, settlement) { pay(transfer, settlement) },
+    fn(_context, _call, transfer, settlement) { pay(transfer, settlement) },
     fn(_error) { tool.Uncertain("the transfer did not report") },
-    within: 5000,
+    within: duration.seconds(5),
   )
 }

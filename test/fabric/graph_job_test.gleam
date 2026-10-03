@@ -16,6 +16,7 @@ import fabric/support/restart
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None}
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
@@ -68,7 +69,8 @@ pub fn a_job_wait_survives_restart_and_commits_completion_once_test() {
         )
       #(runs, handle)
     })
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Ok(entry) = store.get(runs, "job-restart")
   entry.live |> should.equal(None)
@@ -109,7 +111,8 @@ pub fn job_observation_requires_admission_and_a_current_reference_test() {
     )
   let id = support.id("job-approval")
   let assert Ok(handle) = graph.start(runtime, id, "receipt")
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
   let guess = job.Reference(id, 1, 1, run.Identity("external-job", 1))
   graph.poll_job(handle, guess) |> should.be_error
@@ -142,7 +145,8 @@ pub fn observation_errors_and_invalid_outputs_leave_the_wait_unconsumed_test() {
       id,
       "receipt",
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   graph.poll_job(handle, reference) |> should.be_error
   graph.read(handle) |> should.equal(Ok(waiting))
@@ -178,10 +182,15 @@ pub fn an_observer_timeout_preserves_the_wait_and_reuses_its_work_grant_test() {
       process.sleep_forever()
       Ok(job.Pending)
     })
-    |> graph.with_timeouts(50, 1000, 1000)
+    |> graph.with_timeouts(
+      callbacks: duration.milliseconds(50),
+      operations: duration.milliseconds(1000),
+      commands: duration.milliseconds(1000),
+    )
   let assert Ok(handle) =
     graph.start_with_budget(slow, id, "receipt", budget.Limits(1, 1, 1))
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   graph.poll_job(handle, reference) |> should.be_error
   let assert Ok(observer) = process.receive(started, 1000)
@@ -206,7 +215,8 @@ pub fn definite_remote_failure_does_not_run_the_success_route_test() {
     )
   let assert Ok(handle) =
     graph.start(runtime, support.id("failed-job"), "receipt")
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Ok(done) = graph.poll_job(handle, reference)
   done.status
@@ -228,7 +238,8 @@ pub fn cancellation_wins_over_an_inflight_observation_without_remote_cancellatio
     )
   let assert Ok(handle) =
     graph.start(runtime, support.id("cancel-job"), "receipt")
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let reply = process.new_subject()
   process.spawn(fn() { process.send(reply, graph.poll_job(handle, reference)) })
@@ -255,7 +266,8 @@ pub fn competing_observations_commit_only_one_result_test() {
       support.id("competing-job"),
       "receipt",
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let replies = process.new_subject()
   list.each([1, 2], fn(_) {
@@ -282,7 +294,8 @@ pub fn failed_and_lost_completion_commits_preserve_the_receipt_test() {
       support.id("job-commit"),
       "receipt",
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   flaky.arm(backend, [flaky.FailBefore])
   graph.poll_job(handle, reference) |> should.be_error
@@ -318,14 +331,15 @@ pub fn managed_parents_park_while_their_child_observes_a_job_test() {
     graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
   let assert Ok(handle) =
     graph.start(parent, support.id("nested-job"), "receipt")
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(child_ref, child.Job(_)) = waiting.status
   let assert Ok(child) =
     graph.child(handle, child_ref.activation, child_runtime)
   let assert Ok(waiting_child) = graph.read(child)
   let assert graph.AwaitingJob(reference) = waiting_child.status
   let assert Ok(_) = graph.poll_job(child, reference)
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(42))
 }
 

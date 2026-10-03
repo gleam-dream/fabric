@@ -51,7 +51,7 @@ fn scripted_slow() -> tool.Tool(Nil) {
     codecs.one_field("x", codec.string()),
     codec.string(),
   )
-  |> tool.bind(fn(_, x) { Ok(x) }, fn(_: Nil) { tool.Explain("no") })
+  |> tool.bind(fn(_, _call, x) { Ok(x) }, fn(_: Nil) { tool.Explain("no") })
 }
 
 fn ask_call(id: String) -> model.ToolCall {

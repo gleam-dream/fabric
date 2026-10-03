@@ -6,8 +6,10 @@
 //// complete, deterministic model, and `fabric/llm` adapts an llm_wire
 //// provider to the same port.
 
+import fabric/internal/run_id.{type RunId}
 import gleam/option.{type Option}
 import json/blueprint/codec
+import sinal/correlation.{type Correlation}
 
 /// A tool call as the provider issued it. `id` is unique only within one
 /// model turn. `provider_id` and `provider_state` carry provider replay
@@ -49,8 +51,18 @@ pub type ToolSpec {
   ToolSpec(name: String, description: String, schema: codec.Schema)
 }
 
+/// One model call. Read it by label: Fabric may add fields.
+///
+/// `run` and `turn` name the call: `turn` is the run's model attempt,
+/// counting every retry, the same number `fabric/observation` reports.
+/// `correlation` is the run's (see `fabric.start`): a model that makes
+/// requests of its own tags them with it, as `fabric/llm` does, so one agent
+/// serves every run and each call joins its run's events.
 pub type Request {
   Request(
+    run: RunId,
+    turn: Int,
+    correlation: Correlation,
     system: Option(String),
     messages: List(Message),
     tools: List(ToolSpec),

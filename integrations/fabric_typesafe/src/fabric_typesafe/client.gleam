@@ -5,19 +5,33 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/duration.{type Duration}
 import gleam/uri
 
 pub type Bounds {
   Bounds(
-    timeout: Int,
+    /// The whole request's deadline, from 1 ms to 1 hour.
+    timeout: Duration,
     request_bytes: Int,
     response_bytes: Int,
     header_bytes: Int,
   )
 }
 
+/// 20 s, 1 MiB each way and 16 KiB of headers.
 pub fn bounds() -> Bounds {
-  Bounds(20_000, 1_048_576, 1_048_576, 16_384)
+  Bounds(duration.seconds(20), 1_048_576, 1_048_576, 16_384)
+}
+
+/// The bounds as the transport reads them, with the timeout in
+/// milliseconds.
+type Wire {
+  WireBounds(
+    timeout: Int,
+    request_bytes: Int,
+    response_bytes: Int,
+    header_bytes: Int,
+  )
 }
 
 type Endpoint {
@@ -63,8 +77,8 @@ pub fn new(key: String) -> Result(Config, String) {
 pub fn with_bounds(config: Config, bounds: Bounds) -> Result(Config, String) {
   use Nil <- result.map(
     case
-      bounds.timeout > 0
-      && bounds.timeout <= 3_600_000
+      duration.to_milliseconds(bounds.timeout) > 0
+      && duration.to_milliseconds(bounds.timeout) <= 3_600_000
       && bounds.request_bytes > 0
       && bounds.request_bytes <= 10_485_760
       && bounds.response_bytes > 0
@@ -149,7 +163,12 @@ pub fn post(config: Config, body: String) -> Result(Response, Error) {
     config.endpoint.tls,
     config.key(),
     body,
-    config.bounds,
+    WireBounds(
+      duration.to_milliseconds(config.bounds.timeout),
+      config.bounds.request_bytes,
+      config.bounds.response_bytes,
+      config.bounds.header_bytes,
+    ),
   )
 }
 
@@ -161,5 +180,5 @@ fn send(
   tls: Bool,
   key: String,
   body: String,
-  bounds: Bounds,
+  bounds: Wire,
 ) -> Result(Response, Error)

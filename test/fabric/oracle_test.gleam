@@ -28,6 +28,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
@@ -213,7 +214,7 @@ fn lookup(probe: Probe) -> tool.Tool(Nil) {
     codec.string(),
   )
   |> tool.bind(
-    fn(_, city: String) {
+    fn(_, _call, city: String) {
       probe.record(probe, "tool:lookup:" <> city)
       case city {
         "Paris" -> Ok("sunny in Paris")
@@ -232,7 +233,7 @@ fn pay(probe: Probe) -> tool.Tool(Nil) {
     codec.string(),
   )
   |> tool.bind(
-    fn(_, to: String) -> Result(String, Nil) {
+    fn(_, _call, to: String) -> Result(String, Nil) {
       probe.record(probe, "tool:pay:" <> to)
       Ok("paid " <> to)
     },
@@ -248,7 +249,7 @@ fn step(probe: Probe) -> tool.Tool(Nil) {
     codec.string(),
   )
   |> tool.bind(
-    fn(_, n: Int) -> Result(String, Nil) {
+    fn(_, _call, n: Int) -> Result(String, Nil) {
       probe.record(probe, "tool:step:" <> int.to_string(n))
       Ok("stepped " <> int.to_string(n))
     },
@@ -268,8 +269,16 @@ fn run_scenario(
       agent.Limits(..agent.default_limits(), max_turns: max_turns),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "go")
-  let assert Ok(status) = fabric.await(run, 5000)
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(status) = fabric.await(run, within: duration.milliseconds(5000))
   #(run, status)
 }
 
@@ -423,7 +432,8 @@ fn hitl_agent(probe: Probe) -> agent.Agent(Nil) {
 
 /// Runs until the pause and observes it as a HITL fixture does.
 fn paused(run: fabric.Run(Nil), probe: Probe) -> #(Pause, run.PendingApproval) {
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let observed = observe(run, probe)
   // BeamWeaver's paused snapshot has no tool messages yet; neither has
   // Fabric's transcript (the pending call is not answered).
@@ -434,11 +444,19 @@ fn paused(run: fabric.Run(Nil), probe: Probe) -> #(Pause, run.PendingApproval) {
 pub fn an_approved_call_matches_beamweaver_test() {
   let probe = probe.new()
   let assert Ok(run) =
-    fabric.start(support.store(), hitl_agent(probe), Nil, "go")
+    fabric.start(
+      support.store(),
+      hitl_agent(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("hitl_approve"))
   let assert Ok(_) = fabric.approve(run, pending.reference, None, Nil)
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(run, within: duration.milliseconds(5000))
   observe(run, probe) |> should.equal(fixture("hitl_approve"))
 }
 
@@ -450,7 +468,14 @@ pub fn an_approved_call_matches_beamweaver_test() {
 pub fn a_rejected_call_matches_beamweaver_test() {
   let probe = probe.new()
   let assert Ok(run) =
-    fabric.start(support.store(), hitl_agent(probe), Nil, "go")
+    fabric.start(
+      support.store(),
+      hitl_agent(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("hitl_reject"))
   let assert Ok(_) =
@@ -460,7 +485,8 @@ pub fn a_rejected_call_matches_beamweaver_test() {
       reason: "payment declined by reviewer",
       reviewer: None,
     )
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let without_final = fn(observed: Observed) {
     Observed(
       ..observed,
@@ -486,7 +512,15 @@ pub fn an_approval_after_a_restart_matches_beamweaver_test() {
   let #(owner, #(old, run)) =
     restart.owned(fn() {
       let store = support.directory(dir)
-      let assert Ok(run) = fabric.start(store, hitl_agent(probe), Nil, "go")
+      let assert Ok(run) =
+        fabric.start(
+          store,
+          hitl_agent(probe),
+          id: run.new_id(),
+          context: Nil,
+          prompt: "go",
+          correlation: None,
+        )
       #(store, run)
     })
   let #(pause, _) = paused(run, probe)
@@ -498,7 +532,8 @@ pub fn an_approval_after_a_restart_matches_beamweaver_test() {
     fabric.recover(store, hitl_agent(probe), Nil, fabric.id(run))
   let assert Ok([pending]) = fabric.pending(run)
   let assert Ok(_) = fabric.approve(run, pending.reference, None, Nil)
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(run, within: duration.milliseconds(5000))
   observe(run, probe) |> should.equal(fixture("hitl_cold_restart"))
   restart.remove_dir(dir)
 }
@@ -597,11 +632,19 @@ fn delegation_agent(probe: Probe) -> agent.Agent(Nil) {
 pub fn an_approved_sub_agent_start_matches_beamweaver_test() {
   let probe = probe.new()
   let assert Ok(run) =
-    fabric.start(support.store(), delegation_agent(probe), Nil, "go")
+    fabric.start(
+      support.store(),
+      delegation_agent(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("subagent_gate_approve"))
   let assert Ok(_) = fabric.approve(run, pending.reference, None, Nil)
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(run, within: duration.milliseconds(5000))
   observe(run, probe) |> should.equal(fixture("subagent_gate_approve"))
 }
 
@@ -611,7 +654,14 @@ pub fn an_approved_sub_agent_start_matches_beamweaver_test() {
 pub fn a_rejected_sub_agent_start_matches_beamweaver_test() {
   let probe = probe.new()
   let assert Ok(run) =
-    fabric.start(support.store(), delegation_agent(probe), Nil, "go")
+    fabric.start(
+      support.store(),
+      delegation_agent(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("subagent_gate_reject"))
   let assert Ok(_) =
@@ -621,7 +671,8 @@ pub fn a_rejected_sub_agent_start_matches_beamweaver_test() {
       reason: "no sub-agent today",
       reviewer: None,
     )
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let without_final = fn(observed: Observed) {
     Observed(
       ..observed,
@@ -655,7 +706,7 @@ fn recipe_scenario(probe, rules, tools, max_turns) {
       support.id("oracle-recipe"),
       recipe.initial(worker, Nil, "go"),
     )
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(raw) = done.status
   let assert Ok(state) = record.decode(raw)
   controller.snapshot(state)

@@ -126,6 +126,7 @@ import gleam/otp/static_supervisor
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
+import gleam/time/duration.{type Duration}
 
 pub type StoreError {
   NotFound
@@ -242,18 +243,20 @@ pub type LeaseConfigError {
   /// A node id is 1 to 128 letters, digits, and `.`, `_`, `-`, `@` or
   /// `:`, and not `nonode@nohost`, which names no machine.
   InvalidNodeId(String)
-  /// Shorter than the shortest lease a store renews (`minimum` ms).
-  LeaseTooShort(value: Int, minimum: Int)
-  /// Longer than the longest timer the runtime can set (`limit` ms).
-  LeaseTooLong(value: Int, limit: Int)
+  /// Shorter than the shortest lease a store renews (`minimum`, 100 ms).
+  LeaseTooShort(value: Duration, minimum: Duration)
+  /// Longer than the longest timer the runtime can set (`limit`, 2^32 - 1
+  /// ms).
+  LeaseTooLong(value: Duration, limit: Duration)
 }
 
 /// Why a drain window was refused (`with_drain`).
 pub type DrainError {
-  DrainNotPositive(Int)
+  /// Shorter than 1 ms.
+  DrainNotPositive(Duration)
   /// Longer than the longest timer the runtime can set (`limit`, 2^32 - 1
   /// ms).
-  DrainTooLarge(value: Int, limit: Int)
+  DrainTooLarge(value: Duration, limit: Duration)
 }
 
 /// Versions this runtime can write without discarding state.
@@ -445,10 +448,10 @@ pub fn directory(name: Name(Message), path: String) -> Store {
 /// sharing a node id can mistake each other's store for an earlier self.
 ///
 /// A run's lease is claimed in the commit that hands its work to a runner
-/// of this store and held, for `lease` milliseconds from the backend's
+/// of this store and held, for `lease` by the backend's
 /// clock, while the runner lives: every commit that keeps work in flight,
 /// including a tool's start, requires this store to hold it. The process
-/// renews its runners' leases every `lease / 3` ms in one batch. A runner
+/// renews its runners' leases every third of `lease` in one batch. A runner
 /// whose lease the renewal no longer returns (another node took the run
 /// over, or cancelled it) is killed with its model call and tool bodies,
 /// and so is one whose lease could have expired since the last renewal
@@ -473,13 +476,15 @@ pub fn directory(name: Name(Message), path: String) -> Store {
 pub fn leased(
   name: Name(Message),
   node node: String,
-  lease milliseconds: Int,
+  lease lease: Duration,
   backend backend: LeasedBackend,
 ) -> Result(Store, LeaseConfigError) {
   use Nil <- result.try(check_node(node))
-  case milliseconds {
-    ms if ms < shortest_lease -> Error(LeaseTooShort(ms, shortest_lease))
-    ms if ms > longest_timer -> Error(LeaseTooLong(ms, longest_timer))
+  case duration.to_milliseconds(lease) {
+    ms if ms < shortest_lease ->
+      Error(LeaseTooShort(lease, duration.milliseconds(shortest_lease)))
+    ms if ms > longest_timer ->
+      Error(LeaseTooLong(lease, duration.milliseconds(longest_timer)))
     ms ->
       Ok(Store(
         name,
@@ -521,17 +526,15 @@ const default_drain = 25_000
 const longest_timer = 4_294_967_295
 
 /// Sets how long each runner may take to finish its work when the store's
-/// subtree shuts down (default 25 000 ms): see `supervised`. Up to 2^32 - 1
-/// ms. Give the application's own shutdown timeout for the store's
+/// subtree shuts down (default 25 s): see `supervised`. From 1 ms up to
+/// 2^32 - 1 ms. Give the application's own shutdown timeout for the store's
 /// subtree room for it, plus bounded admission/accounting/observation work
 /// (up to four seconds) and process cleanup.
-pub fn with_drain(
-  store: Store,
-  milliseconds: Int,
-) -> Result(Store, DrainError) {
-  case milliseconds {
-    ms if ms <= 0 -> Error(DrainNotPositive(ms))
-    ms if ms > longest_timer -> Error(DrainTooLarge(ms, longest_timer))
+pub fn with_drain(store: Store, drain: Duration) -> Result(Store, DrainError) {
+  case duration.to_milliseconds(drain) {
+    ms if ms <= 0 -> Error(DrainNotPositive(drain))
+    ms if ms > longest_timer ->
+      Error(DrainTooLarge(drain, duration.milliseconds(longest_timer)))
     ms -> Ok(Store(..store, drain: ms))
   }
 }

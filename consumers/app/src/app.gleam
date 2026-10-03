@@ -26,6 +26,7 @@ import gleam/otp/actor
 import gleam/otp/static_supervisor
 import gleam/result
 import gleam/string
+import gleam/time/duration
 import json/blueprint/codec.{type Codec}
 import saga
 import saga/execution
@@ -143,7 +144,11 @@ fn confirmation_codec() -> Codec(Confirmation) {
 
 // --- tools --------------------------------------------------------------------
 
-fn find_book(_member: Member, title: String) -> Result(Book, BookError) {
+fn find_book(
+  _member: Member,
+  _call: tool.Call,
+  title: String,
+) -> Result(Book, BookError) {
   case title {
     "Dune" -> Ok(Book("978-0441013593", "Dune"))
     other -> Error(NotInCatalog(other))
@@ -152,6 +157,7 @@ fn find_book(_member: Member, title: String) -> Result(Book, BookError) {
 
 fn reserve_book(
   member: Member,
+  _call: tool.Call,
   reservation: Reservation,
 ) -> Result(Confirmation, ReserveError) {
   case reservation.isbn {
@@ -160,7 +166,11 @@ fn reserve_book(
   }
 }
 
-fn scan_inventory(member: Member, shelf: String) -> Result(Int, Nil) {
+fn scan_inventory(
+  member: Member,
+  _call: tool.Call,
+  shelf: String,
+) -> Result(Int, Nil) {
   case member.scan_gate {
     Some(arrivals) -> {
       let release = process.new_subject()
@@ -384,7 +394,7 @@ pub fn purchaser() -> Agent(Member) {
   let order =
     order_definition()
     |> tool.bind(
-      fn(_member, purchase: Purchase) -> Result(String, Nil) {
+      fn(_member, _call, purchase: Purchase) -> Result(String, Nil) {
         Ok("PO-" <> purchase.title)
       },
       fn(_) { tool.Explain("order failed") },
@@ -471,12 +481,13 @@ pub fn loan_tool() -> tool.Tool(Member) {
     ),
     loan_workflow(),
     execution.config(),
+    input: fn(_, _, input) { input },
     explain: fn(error) {
       let NoCourier(title) = error
       "no courier carries " <> title
     },
     // A stopped loan waits this long for Saga to undo what it booked.
-    rollback_within: 10_000,
+    rollback_within: duration.seconds(10),
   )
 }
 

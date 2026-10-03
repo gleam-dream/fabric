@@ -110,7 +110,8 @@ fn measure(
   let assert Ok(id) = run.parse_id("review")
   let started = now()
   let assert Ok(handle) = graph.start(runtime, id, draft)
-  let assert Ok(done) = graph.await(handle, 31_000)
+  let assert Ok(done) =
+    graph.await(handle, within: duration.milliseconds(31_000))
   let elapsed = now() - started
   let fields = [#("elapsed_ms", json.int(elapsed))]
   let fields = case done.status, done.receipts {
@@ -202,7 +203,8 @@ fn workflow(
     }
     _ -> graph.attach(runtime, id)
   }
-  let assert Ok(before) = graph.await(handle, 120_000)
+  let assert Ok(before) =
+    graph.await(handle, within: duration.milliseconds(120_000))
   case mode {
     "approve" | "reject" -> {
       let assert Ok(expected) =
@@ -224,7 +226,8 @@ fn workflow(
     "approve", _ | "reject", _ -> panic as "run has no current approval request"
     _, _ -> Nil
   }
-  let assert Ok(done) = graph.await(handle, 120_000)
+  let assert Ok(done) =
+    graph.await(handle, within: duration.milliseconds(120_000))
   let status = case done.status {
     graph.AwaitingApproval(_) -> "awaiting_approval"
     graph.Completed(domain.Published(_)) -> "published"

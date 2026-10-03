@@ -10,6 +10,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/time/duration.{type Duration}
 import llm_wire/tool as wire_tool
 
 pub opaque type Registry(context) {
@@ -22,10 +23,13 @@ pub type RegistryError {
   InvalidName(String)
   /// The input codec has no JSON Schema to declare.
   SchemaUnavailable(String)
-  /// A tool bound with `tool.bind_settling` waits no positive time.
-  SettlementBoundNotPositive(name: String, within: Int)
+  /// A tool bound with `tool.bind_settling` waits less than 1 ms.
+  SettlementBoundNotPositive(name: String, within: Duration)
   /// A tool bound with `tool.bind_settling` waits longer than a timer can.
-  SettlementBoundTooLarge(name: String, within: Int)
+  SettlementBoundTooLarge(name: String, within: Duration)
+  /// A tool's own timeout (`tool.with_timeout`) is under 1 ms or longer
+  /// than a timer can wait.
+  InvalidTimeout(name: String, timeout: Duration)
 }
 
 /// The longest timer the runtime sets, in milliseconds (2^32 - 1).
@@ -55,15 +59,30 @@ pub fn new(
             Ok(_) -> errors
             Error(_) -> [SchemaUnavailable(name), ..errors]
           }
-          let errors = case tool.settles_within(tool) {
-            Some(within) if within <= 0 -> [
+          let errors = case
+            option.map(tool.settles_within(tool), fn(within) {
+              #(within, duration.to_milliseconds(within))
+            })
+          {
+            Some(#(within, ms)) if ms <= 0 -> [
               SettlementBoundNotPositive(name, within),
               ..errors
             ]
-            Some(within) if within > max_settlement_bound -> [
+            Some(#(within, ms)) if ms > max_settlement_bound -> [
               SettlementBoundTooLarge(name, within),
               ..errors
             ]
+            _ -> errors
+          }
+          let errors = case tool.timeout(tool) {
+            Some(run.After(within)) ->
+              case duration.to_milliseconds(within) {
+                ms if ms < 1 || ms > max_settlement_bound -> [
+                  InvalidTimeout(name, within),
+                  ..errors
+                ]
+                _ -> errors
+              }
             _ -> errors
           }
           #(Registry([name, ..order], dict.insert(by_name, name, tool)), errors)
@@ -111,25 +130,40 @@ pub fn admit(
 pub fn invoke(
   registry: Registry(context),
   context: context,
+  call: tool.Call,
   name: String,
   arguments: String,
   late: tool.Late,
 ) -> Outcome {
   case dict.get(registry.tools, name) {
     Error(Nil) -> invocation.ArgumentsRejected("tool is not registered")
-    Ok(tool) -> tool.invoke(tool, context, arguments, late)
+    Ok(tool) -> tool.invoke(tool, context, call, arguments, late)
   }
 }
 
-/// How long a stopped run waits for a settlement of `name`, for a tool
-/// bound with `tool.bind_settling`.
+/// How long a stopped run waits for a settlement of `name`, in
+/// milliseconds, for a tool bound with `tool.bind_settling`.
 pub fn settles_within(
   registry: Registry(context),
   name: String,
 ) -> Option(Int) {
   case dict.get(registry.tools, name) {
-    Ok(tool) -> tool.settles_within(tool)
+    Ok(tool) -> option.map(tool.settles_within(tool), duration.to_milliseconds)
     Error(Nil) -> None
+  }
+}
+
+/// The body timeout of `name` in milliseconds: its own (`tool.with_timeout`)
+/// or else `default`; `None` when unbounded.
+pub fn timeout(
+  registry: Registry(context),
+  name: String,
+  default: Option(Int),
+) -> Option(Int) {
+  case result.map(dict.get(registry.tools, name), tool.timeout) {
+    Ok(Some(run.After(within))) -> Some(duration.to_milliseconds(within))
+    Ok(Some(run.Infinity)) -> None
+    _ -> default
   }
 }
 

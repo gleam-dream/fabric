@@ -21,6 +21,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import json/blueprint/codec.{type Codec}
+import sinal/correlation
 
 /// Version this binding when its prompt, reply meaning or deployed agent
 /// changes. Codecs describe native values, not provider output schemas.
@@ -220,6 +221,7 @@ fn cancel(
           approvals_issued: 0,
           phase: controller.NeverStarted,
           family_budget: None,
+          correlation: correlation.from_key(id),
         )
       use encoded <- result.try(
         store.encode(runtime.store, tombstone)
@@ -273,7 +275,8 @@ fn start(
       }
     }
     Error(runner.NotFound) -> {
-      let #(initial, effects) = runner.root_state(setup, id, prompt)
+      let #(initial, effects) =
+        runner.root_state(setup, id, prompt, correlation.from_key(id))
       let initial =
         controller.State(..initial, parent: Some(child.attachment(parent)))
       use _ <- result.try(

@@ -6,6 +6,7 @@ import fabric/store.{type Store}
 import fabric/testing
 import gleam/erlang/process
 import gleam/int
+import gleam/time/duration
 
 /// The run id `text`, which must have the shape Fabric issues.
 pub fn id(text: String) -> RunId {
@@ -43,7 +44,7 @@ fn leased_store() -> Store {
     store.leased(
       process.new_name("fabric-test-store"),
       node: "fabric-test",
-      lease: 1500,
+      lease: duration.milliseconds(1500),
       backend: testing.leased_memory().backend,
     )
   leased
