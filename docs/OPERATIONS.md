@@ -98,8 +98,8 @@ Recovery time therefore includes lease expiry, scan wait, earlier work and
 backend/context latency; the configured scan interval is not a recovery SLA.
 Measure backlog before changing capacity or intervals.
 
-For a specific run, attach with `fabric.open` or `graph.attach` and inspect
-`fabric.snapshot`/`fabric.await` or `graph.read`. Read errors are evidence; retain
+For a specific run, open it with `fabric.open` or `graph.open` and inspect
+`fabric.snapshot`/`fabric.await` or `graph.snapshot`/`graph.await`. Read errors are evidence; retain
 them. If work is unattended, use `fabric.recover` or `graph.recover` with its
 compatible deployed definition. Explicit agent recovery can take an earlier
 local store incarnation's lease immediately; foreign live leases remain held.

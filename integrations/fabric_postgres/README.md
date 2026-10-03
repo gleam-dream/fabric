@@ -130,7 +130,7 @@ reconciliation retains the existing `reconciled` representation.
 
 Deploy version-7 readers before selecting writer 7. Version 7 retains optional
 family-budget declarations on roots and typed quota outcomes; children cannot
-override the root limits. Public agent and graph `start_with_budget` calls
+override the root limits. Public agent (`agent.with_family_budget`) and graph (`graph.with_family_budget`) budgets
 enforce work, child and depth reservations across restarts. Initialization
 creates/adopts the ledger and commits a root marker before any dispatch; an
 initialized root with a missing ledger refuses recovery. Retention projection
@@ -140,10 +140,10 @@ job waits, owned cancellation, signal/job/child/fork deadlines and every retaine
 fork member. Run `refresh_retention` for existing
 rows before they can be pruned by the current projection.
 
-Graph records now write version 14 and read versions 5–14. Version 7 adds a retained
+Graph records now write version 15 and read versions 5–15. Version 7 adds a retained
 read-only job wait. Explicit `graph.poll_job` records its checked outcome;
 canceling the wait detaches observation without canceling remote work. Deploy
-version-14 graph readers before writing new records. Version 8 retains optional
+version-15 graph readers before writing new records. Version 8 retains optional
 polling intervals, including completed activation history. Missing intervals in
 older records mean manual observation. Scheduled intervals cannot be hidden in
 older record versions. PostgreSQL schema version 4 indexes scheduled polls along
@@ -157,7 +157,11 @@ Version 12 adds managed-child deadlines and retains expiration through uncertain
 child settlement. Version 13 adds retained fork scopes, ordered member results
 and reciprocal branch attachments. Version 14 adds fork deadlines, including
 preparation, join acceptance and retained cleanup. These cannot be hidden in
-older record versions. The current discovery projection is version 10 and schema version is 7.
+older record versions. Version 15 adds a run's correlation and family root,
+approval deadlines and answered approvals with their reviewers, all optional
+on read: a version-14 record reads unchanged, and a request or wait it stored
+without a deadline keeps none. The current discovery projection is version 12
+(graph approval deadlines are due waits) and schema version is 7.
 Schema migration 5 adds absolute due waits; migration 6 indexes every unfinished
 fork member. Run `refresh_discovery` to refresh existing metadata. Deadline
 contracts and due times cannot be hidden in older record versions.

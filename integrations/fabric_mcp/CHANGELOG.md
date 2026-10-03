@@ -8,6 +8,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Breaking:** the MCP binding classifies its failures with
+  `fabric/tool.Failure` (`Explain`, `Uncertain`), Fabric's one failure
+  type for agent tools and graph operations; `operation.Failure` is gone.
 - The frame admission of the stdio port moves to
   `fabric_mcp/internal/frame`; `client.Frame` and `client.admit_frame` are no
   longer public.
