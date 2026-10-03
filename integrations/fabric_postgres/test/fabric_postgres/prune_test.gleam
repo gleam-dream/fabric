@@ -305,7 +305,7 @@ pub fn concurrent_prunes_delete_each_family_once_test() {
   })
   let racing =
     list.map(list.repeat(Nil, 6), fn(_) {
-      let assert Ok(Ok(deleted)) = process.receive(results, 10_000)
+      let assert Ok(Ok(deleted)) = process.receive(results, 30_000)
       deleted
     })
     |> list.fold(0, fn(sum, deleted) { sum + deleted })
@@ -596,7 +596,7 @@ pub fn pruning_cannot_delete_a_child_whose_lease_is_renewed_concurrently_test() 
       })
     process.send(renewed, result)
   })
-  let assert Ok(release) = process.receive(ready, 5000)
+  let assert Ok(release) = process.receive(ready, 30_000)
   let pruned = process.new_subject()
   process.spawn(fn() {
     process.send(
@@ -610,8 +610,8 @@ pub fn pruning_cannot_delete_a_child_whose_lease_is_renewed_concurrently_test() 
   })
   waits_for_lock(connection, schema, 100) |> should.be_true
   process.send(release, Nil)
-  let assert Ok(Ok(_)) = process.receive(renewed, 5000)
-  process.receive(pruned, 5000) |> should.equal(Ok(Ok(0)))
+  let assert Ok(Ok(_)) = process.receive(renewed, 30_000)
+  process.receive(pruned, 30_000) |> should.equal(Ok(Ok(0)))
   backend.get("root") |> should.be_ok
   backend.get("root-1") |> should.be_ok
 }

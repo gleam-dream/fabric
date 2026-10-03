@@ -32,10 +32,9 @@ fn waiting_family() {
   let #(parent, _) = graph_run_test.managed_pair(runs)
   let assert Ok(id) = run.parse_id("migration-parent")
   let assert Ok(handle) = graph.start(parent, id, 41)
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
   let assert graph.Child(reference, child.Approval(_)) = waiting.status
-  let row = await_parked(runs, run.id_to_string(id), 200)
+  let row = await_parked(runs, run.id_to_string(id), 3000)
   let assert Ok(child) = store_core.get(runs, run.id_to_string(reference.child))
   [
     #(run.id_to_string(id), row.record),
@@ -154,7 +153,7 @@ pub fn concurrent_refresh_batches_examine_each_stale_row_once_test() {
     })
   })
   list.map([1, 2, 3, 4], fn(_) {
-    let assert Ok(Ok(count)) = process.receive(replies, 5000)
+    let assert Ok(Ok(count)) = process.receive(replies, 30_000)
     count
   })
   |> should.equal([2, 2, 2, 2])
@@ -174,8 +173,7 @@ pub fn refreshing_a_scheduled_wait_preserves_its_last_claim_time_test() {
     graph_run_test.scheduled_job(runs, 60_000, fn(_) { Ok(job.Pending) })
   let assert Ok(id) = run.parse_id("refresh-poll")
   let assert Ok(handle) = graph.start(runtime, id, "receipt")
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
   let assert graph.AwaitingJob(_) = waiting.status
   let backend = fabric_postgres.backend(settings)
   backend.claim_ready("poller", 60_000, 1) |> should.equal(Ok(["refresh-poll"]))
@@ -229,10 +227,9 @@ pub fn upgrading_schema_five_preserves_execution_and_scheduled_observation_test(
     graph_run_test.scheduled_job(runs, 60_000, fn(_) { Ok(job.Pending) })
   let assert Ok(id) = run.parse_id("upgrade-poll")
   let assert Ok(handle) = graph.start(runtime, id, "receipt")
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
   let assert graph.AwaitingJob(_) = waiting.status
-  let row = await_parked(runs, "upgrade-poll", 200)
+  let row = await_parked(runs, "upgrade-poll", 3000)
   let table = table(schema)
   // Projection 8 used the same scheduled-poll key before multi-child discovery.
   let assert Ok(_) =

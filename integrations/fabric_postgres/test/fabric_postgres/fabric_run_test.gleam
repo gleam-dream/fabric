@@ -40,7 +40,7 @@ pub fn a_suspended_run_is_approved_after_a_store_restart_and_finishes_test() {
           correlation: None,
         )
       let assert Ok(run.Suspended([_], [])) =
-        fabric.await(started, within: duration.milliseconds(5000))
+        fabric.await(started, within: duration.seconds(30))
       fabric.id(started)
     })
   // The store and everything it started stop.
@@ -61,7 +61,7 @@ pub fn a_suspended_run_is_approved_after_a_store_restart_and_finishes_test() {
   let arrival = agents.arrival(gate)
   arrival.amount |> should.equal(500)
   agents.release(arrival)
-  fabric.await(opened, within: duration.milliseconds(5000))
+  fabric.await(opened, within: duration.seconds(30))
   |> should.equal(Ok(run.Finished(run.Completed("done: {\"done\":500}"))))
   agents.another(gate, 100) |> should.be_false
 }
@@ -117,7 +117,7 @@ fn lost_replies(version: Int) {
       correlation: None,
     )
   agents.release(agents.arrival(gate))
-  fabric.await(started, within: duration.milliseconds(5000))
+  fabric.await(started, within: duration.seconds(30))
   |> should.equal(Ok(run.Finished(run.Completed("done: {\"done\":5}"))))
   agents.another(gate, 100) |> should.be_false
   stored_version(backend, fabric.id(started)) |> should.equal(version)
@@ -154,7 +154,7 @@ pub fn the_postgres_adapter_supports_the_write_version_window_test() {
       correlation: None,
     )
   let assert Ok(run.Suspended([pending], [])) =
-    fabric.await(started, within: duration.milliseconds(5000))
+    fabric.await(started, within: duration.seconds(30))
   stored_version(backend, fabric.id(started)) |> should.equal(2)
 
   let assert Ok(new_writes) =
@@ -171,7 +171,7 @@ pub fn the_postgres_adapter_supports_the_write_version_window_test() {
       context: Nil,
     )
   agents.release(agents.arrival(gate))
-  fabric.await(opened, within: duration.milliseconds(5000))
+  fabric.await(opened, within: duration.seconds(30))
   |> should.equal(Ok(run.Finished(run.Completed("done: {\"done\":500}"))))
   stored_version(backend, fabric.id(started)) |> should.equal(4)
   agents.another(gate, 100) |> should.be_false

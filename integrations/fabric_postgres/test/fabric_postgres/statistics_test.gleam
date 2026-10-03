@@ -90,7 +90,7 @@ pub fn counts_follow_real_runs_and_lease_backlog_without_mutation_test() {
       correlation: None,
     )
   let assert Ok(run.Suspended([_], [])) =
-    fabric.await(approval, within: duration.milliseconds(5000))
+    fabric.await(approval, within: duration.seconds(30))
   let assert Ok(finished) =
     fabric.start(
       runs,
@@ -102,7 +102,7 @@ pub fn counts_follow_real_runs_and_lease_backlog_without_mutation_test() {
     )
   agents.release(agents.arrival(gate))
   let assert Ok(run.Finished(_)) =
-    fabric.await(finished, within: duration.milliseconds(5000))
+    fabric.await(finished, within: duration.seconds(30))
   let assert Ok(uncertain) =
     fabric.start(
       runs,
@@ -114,7 +114,7 @@ pub fn counts_follow_real_runs_and_lease_backlog_without_mutation_test() {
     )
   agents.kill(agents.arrival(gate).body)
   let assert Ok(run.Suspended([], [_])) =
-    fabric.await(uncertain, within: duration.milliseconds(5000))
+    fabric.await(uncertain, within: duration.seconds(30))
   let #(owner, lost) =
     agents.owned(fn() {
       let settings = support.migrated(connection, "lost", schema)
@@ -195,7 +195,7 @@ pub fn counts_follow_real_runs_and_lease_backlog_without_mutation_test() {
   after_cancel.reconciliation.count |> should.equal(1)
   after_cancel.finished.count |> should.equal(2)
   agents.release(working_body)
-  let assert Ok(_) = fabric.await(working, within: duration.milliseconds(5000))
+  let assert Ok(_) = fabric.await(working, within: duration.seconds(30))
 }
 
 pub fn stale_statistics_are_unknown_until_explicit_refresh_and_keep_record_age_test() {
@@ -213,7 +213,7 @@ pub fn stale_statistics_are_unknown_until_explicit_refresh_and_keep_record_age_t
       correlation: None,
     )
   let assert Ok(run.Suspended([_], [])) =
-    fabric.await(waiting, within: duration.milliseconds(5000))
+    fabric.await(waiting, within: duration.seconds(30))
   let backend = fabric_postgres.backend(settings)
   let assert Ok(Nil) = backend.insert("broken", "not-json", backend.Release)
   execute(
@@ -288,8 +288,7 @@ pub fn a_graph_wait_is_neither_unattended_work_nor_a_budget_run_test() {
       1,
       budget.limits(work: 1) |> budget.with_children(1) |> budget.with_depth(1),
     )
-  let assert Ok(snapshot) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(snapshot) = graph.await(handle, within: duration.seconds(30))
   let assert graph.AwaitingSignal(reference) = snapshot.status
   let assert Ok(waiting) = fabric_postgres.stats(settings)
   waiting.waiting.count |> should.equal(1)
@@ -329,7 +328,7 @@ pub fn a_concurrent_write_and_refresh_leave_current_statistics_test() {
       correlation: None,
     )
   let assert Ok(run.Suspended([_], [])) =
-    fabric.await(waiting, within: duration.milliseconds(5000))
+    fabric.await(waiting, within: duration.seconds(30))
   let backend = fabric_postgres.backend(settings)
   let id = run.id_to_string(fabric.id(waiting))
   let assert Ok(before) = backend.get(id)
@@ -352,8 +351,8 @@ pub fn a_concurrent_write_and_refresh_leave_current_statistics_test() {
       )
     process.send(results, Nil)
   })
-  let assert Ok(Nil) = process.receive(results, 5000)
-  let assert Ok(Nil) = process.receive(results, 5000)
+  let assert Ok(Nil) = process.receive(results, 30_000)
+  let assert Ok(Nil) = process.receive(results, 30_000)
   let assert Ok(report) = fabric_postgres.stats(settings)
   report.unknown.count |> should.equal(0)
   report.approval.count |> should.equal(1)

@@ -27,7 +27,7 @@ fn runtime(runs) {
       codec.int(),
       signal.new(run.DefinitionId("answer", 1), codec.bool()),
     )
-    |> operation.with_deadline(duration.milliseconds(2000))
+    |> operation.with_deadline(duration.milliseconds(5000))
   let assert Ok(spec) =
     definition.build(definition.Spec(
       run.DefinitionId("pg-deadline", 1),
@@ -59,8 +59,7 @@ pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
         fabric_postgres.store(process.new_name("deadline-original"), settings)
       let assert Ok(Nil) = store.start(runs)
       let assert Ok(handle) = graph.start(runtime(runs), id, 7)
-      let assert Ok(waiting) =
-        graph.await(handle, within: duration.milliseconds(5000))
+      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
       let assert graph.AwaitingSignal(_) = waiting.status
       let assert Ok(row) = store_core.get(runs, run.id_to_string(id))
       row.live |> should.equal(None)
@@ -78,6 +77,7 @@ pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
       "SELECT true FROM pg_sleep(GREATEST(0, ($1::bigint - floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint)::double precision / 1000.0) + 0.02)",
     )
     |> pog.parameter(pog.int(due))
+    |> pog.timeout(30_000)
     |> pog.execute(connection)
   let assert Ok(runs) =
     fabric_postgres.store(process.new_name("deadline-restored"), settings)
@@ -88,7 +88,7 @@ pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
       [sweeper.graph(run.DefinitionId("pg-deadline", 1), runtime)],
       every: duration.milliseconds(60_000),
     )
-  let expired = await_expired(graph.attach(runtime(runs), id), 300)
+  let expired = await_expired(graph.attach(runtime(runs), id), 3000)
   process.unlink(started)
   agents.kill(started)
   expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))

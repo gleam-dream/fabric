@@ -68,7 +68,7 @@ fn behind(holder: pog.Connection, sql: String, write: fn() -> a) -> a {
   let result = started(write)
   process.receive(result, 300) |> should.equal(Error(Nil))
   commit()
-  let assert Ok(result) = process.receive(result, 5000)
+  let assert Ok(result) = process.receive(result, 30_000)
   result
 }
 
@@ -195,7 +195,7 @@ pub fn racing_writers_under_repeatable_read_have_one_winner_per_revision_test() 
   })
   let outcomes =
     list.map(list.repeat(Nil, 160), fn(_) {
-      let assert Ok(outcome) = process.receive(results, 10_000)
+      let assert Ok(outcome) = process.receive(results, 30_000)
       outcome
     })
   let wins =

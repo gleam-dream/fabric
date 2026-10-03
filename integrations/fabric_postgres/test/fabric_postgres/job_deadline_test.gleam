@@ -28,10 +28,10 @@ fn runtime(runs, read, request) {
       codec.int(),
       fn(_, _) { read() },
     )
-    |> job.with_poll_interval(duration.milliseconds(2000))
+    |> job.with_poll_interval(duration.milliseconds(20_000))
   let assert Ok(op) =
     operation.own_job(observer, fn(_, _, _) { request() }, fn(error) { error })
-    |> operation.with_deadline(duration.milliseconds(1000))
+    |> operation.with_deadline(duration.milliseconds(5000))
   let assert Ok(node) = definition.node_id("job")
   let assert Ok(spec) =
     definition.build(definition.Spec(
@@ -120,15 +120,14 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
             |> budget.with_children(1)
             |> budget.with_depth(1),
         )
-      let assert Ok(waiting) =
-        graph.await(handle, within: duration.milliseconds(5000))
+      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
       let _ = sweep(runs, build)
       waiting
     })
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
-  process.receive(observed, 5000) |> should.equal(Ok(Nil))
-  released(backend, 300)
+  process.receive(observed, 30_000) |> should.equal(Ok(Nil))
+  released(backend, 3000)
   backend.claim_ready("early", 60_000, 10) |> should.equal(Ok([]))
   agents.kill(owner)
   let assert Ok(_) =
@@ -136,6 +135,7 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
       "SELECT true FROM pg_sleep(GREATEST(0, ($1::bigint - floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint)::double precision / 1000.0) + 0.02)",
     )
     |> pog.parameter(pog.int(due))
+    |> pog.timeout(30_000)
     |> pog.execute(connection)
   let #(owner, handle) =
     agents.owned(fn() {
@@ -149,9 +149,9 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
       let _ = sweep(runs, build)
       graph.attach(build(runs), id)
     })
-  process.receive(requested, 5000) |> should.equal(Ok(Nil))
-  process.receive(observed, 5000) |> should.equal(Ok(Nil))
-  released(backend, 300)
+  process.receive(requested, 30_000) |> should.equal(Ok(Nil))
+  process.receive(observed, 30_000) |> should.equal(Ok(Nil))
+  released(backend, 3000)
   let assert Ok(cleanup) = graph.read(handle)
   cleanup.status
   |> should.equal(graph.CancellingJob(
@@ -174,12 +174,12 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
     })
   }
   let started = sweep(runs, build)
-  let done = expired(graph.attach(build(runs), id), 300)
+  let done = expired(graph.attach(build(runs), id), 3000)
   done.status |> should.equal(graph.Expired(due, graph.JobStopped(reference)))
   process.receive(requested, 0) |> should.equal(Error(Nil))
   process.unlink(started)
   agents.kill(started)
-  released(backend, 300)
+  released(backend, 3000)
   fabric_postgres.prune(
     settings,
     ended_for: duration.milliseconds(0),

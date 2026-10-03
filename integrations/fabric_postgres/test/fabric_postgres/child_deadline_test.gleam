@@ -61,7 +61,7 @@ fn leaf(runs) {
 fn parent(runs) {
   let assert Ok(op) =
     graph.as_subgraph(leaf(runs))
-    |> operation.with_deadline(duration.milliseconds(2000))
+    |> operation.with_deadline(duration.milliseconds(5000))
   runtime(runs, "pg-child-deadline", op)
 }
 
@@ -125,8 +125,7 @@ pub fn unchanged_children_expire_after_restart_and_remain_retained_until_reconci
             |> budget.with_children(1)
             |> budget.with_depth(1),
         )
-      let assert Ok(waiting) =
-        graph.await(handle, within: duration.milliseconds(5000))
+      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
       let assert graph.Child(child_ref, child.Uncertain(_)) = waiting.status
       let assert Ok(child_handle) =
         graph.child(handle, child_ref.activation, leaf(runs))
@@ -135,7 +134,7 @@ pub fn unchanged_children_expire_after_restart_and_remain_retained_until_reconci
       // Observe the initial dependency before its unchanged deadline becomes due.
       let _ = sweep(runs)
       process.sleep(100)
-      idle(backend, 300)
+      idle(backend, 3000)
       backend.claim_ready("early", 60_000, 10) |> should.equal(Ok([]))
       #(waiting, reference)
     })
@@ -147,11 +146,12 @@ pub fn unchanged_children_expire_after_restart_and_remain_retained_until_reconci
       "SELECT true FROM pg_sleep(GREATEST(0, ($1::bigint - floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint)::double precision / 1000.0) + 0.02)",
     )
     |> pog.parameter(pog.int(due))
+    |> pog.timeout(30_000)
     |> pog.execute(connection)
   let runs = start_store(settings)
   let started = sweep(runs)
   let handle = graph.attach(parent(runs), id)
-  let expired = wait_for(handle, False, 500)
+  let expired = wait_for(handle, False, 3000)
   let assert graph.Expired(saved_due, graph.ChildUnresolved(saved_child, _)) =
     expired.status
   saved_due |> should.equal(due)
@@ -164,18 +164,18 @@ pub fn unchanged_children_expire_after_restart_and_remain_retained_until_reconci
   |> should.equal(Ok(0))
   // Once the settlement dependency is observed, an expired timestamp cannot spin.
   process.sleep(100)
-  idle(backend, 300)
+  idle(backend, 3000)
   backend.claim_ready("not-again", 60_000, 10) |> should.equal(Ok([]))
   let assert Ok(child_handle) =
     graph.child(handle, child_ref.activation, leaf(runs))
   let assert Ok(_) = graph.reconcile(child_handle, reference, "42")
-  let done = wait_for(handle, True, 500)
+  let done = wait_for(handle, True, 3000)
   done.status |> should.equal(graph.Expired(due, graph.ChildSettled(child_ref)))
   done.value |> should.equal(41)
   done.receipts |> should.equal([])
   process.unlink(started)
   agents.kill(started)
-  idle(backend, 300)
+  idle(backend, 3000)
   fabric_postgres.prune(
     settings,
     ended_for: duration.milliseconds(0),

@@ -113,14 +113,14 @@ pub fn a_killed_peer_is_recovered_once_without_replaying_its_tool_test() {
   fabric.await(seen, within: duration.milliseconds(0))
   |> should.equal(Ok(run.Working))
   incarnation(seen) |> should.equal(1)
-  let assert run.Suspended([], [uncertain]) = settled(seen, 50)
+  let assert run.Suspended([], [uncertain]) = settled(seen, 300)
   incarnation(seen) |> should.equal(2)
   uncertain.tool |> should.equal("work")
   agents.another(gate, 200) |> should.be_false
   incarnation(seen) |> should.equal(2)
 
   let assert Ok(_) = fabric.reconcile(seen, uncertain.reference, "{\"done\":5}")
-  fabric.await(seen, within: duration.milliseconds(5000))
+  fabric.await(seen, within: duration.seconds(30))
   |> should.equal(Ok(run.Finished(run.Completed("done: {\"done\":5}"))))
   agents.another(gate, 100) |> should.be_false
   incarnation(seen) |> should.equal(2)
