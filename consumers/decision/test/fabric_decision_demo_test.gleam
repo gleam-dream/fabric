@@ -3,7 +3,9 @@ import fabric/graph/llm
 import fabric/run
 import fabric/store
 import fabric_decision_demo as demo
+import gleam/dynamic/decode
 import gleam/erlang/process
+import gleam/json
 import gleam/list
 import gleam/option.{Some}
 import gleeunit
@@ -12,9 +14,10 @@ import http_gun
 import http_gun/config as http_config
 import http_gun/testing as http_testing
 import json/blueprint/codec
-import llm_wire/session
+import llm_wire
+import llm_wire/message
+import llm_wire/openai
 import llm_wire/testing
-import llm_wire/types
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -24,23 +27,28 @@ pub fn replacing_decision_production_preserves_typed_graph_routes_test() {
   [#("approve", "approved", "publish"), #("revise", "needs revision", "revise")]
   |> list.each(fn(example) {
     let raw = "{\"decision\":\"" <> example.0 <> "\"}"
-    let usage = types.Usage(11, 6, 17)
-    let assert Ok(model) = types.model_id("scripted-review")
+    let usage = message.Usage(11, 6, 17)
+    let model = "scripted-review"
     let request = demo.review_request(model, "2 + 2 = 4")
-    request.max_tokens |> should.equal(Some(64))
+    // The scripted wire carries no token bound; a provider wire shows it.
+    let assert Ok(openai_call) =
+      llm_wire.prepare(openai.new("sk-test") |> openai.config, request)
+    json.parse(
+      llm_wire.request_json(openai_call),
+      decode.at(["max_output_tokens"], decode.int),
+    )
+    |> should.equal(Ok(64))
     // The offline client answers exactly this request once; any other
     // request fails without network access.
     let assert Ok(expected) =
-      session.prepare_structured(
+      llm_wire.prepare(
         testing.config(),
-        request,
-        "review",
-        demo.decision_codec(),
+        request |> llm_wire.with_output("review", demo.decision_codec()),
       )
     let assert Ok(client) =
       http_testing.playback(
         http_testing.script([
-          testing.structured_exchange(
+          testing.exchange(
             expected,
             testing.text(raw) |> testing.with_usage(usage),
           ),

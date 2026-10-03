@@ -20,4 +20,5 @@ llm_wire = { path = "../llm_wire" }
 sinal = { path = "../sinal" }
 
 [dev-dependencies]
+gleam_time = ">= 1.11.0 and < 2.0.0"
 gleeunit = ">= 1.0.0 and < 2.0.0"

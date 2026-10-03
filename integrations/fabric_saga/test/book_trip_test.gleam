@@ -25,6 +25,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import saga
@@ -129,7 +130,7 @@ fn book_trip(
         "Retrytown" -> saga.Retry
         _ -> {
           report(reports, "charge:retry-later")
-          saga.RetryAfter(60_000)
+          saga.RetryAfter(duration.seconds(60))
         }
       }
     })
@@ -169,7 +170,7 @@ fn trip_tool(reports: Subject(Report), rollback_within: Int) -> tool.Tool(Nil) {
     // killing it and undoing what completed.
     execution.config()
       |> execution.with_max_concurrency(1)
-      |> execution.with_settle_timeout(50),
+      |> execution.with_settle_timeout(duration.milliseconds(50)),
     explain: fn(error) {
       case error {
         NoHotel(city) -> "no hotel in " <> city

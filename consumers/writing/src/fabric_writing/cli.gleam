@@ -22,12 +22,12 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/duration
 import http_gun
 import http_gun/config as http_config
 import json/blueprint/codec
-import llm_wire/config
-import llm_wire/provider/openai
-import llm_wire/types
+import llm_wire
+import llm_wire/openai
 
 @external(erlang, "fabric_writing_ffi", "environment")
 fn environment(name: String) -> Result(String, Nil)
@@ -42,18 +42,17 @@ fn required(name: String) -> String {
   }
 }
 
-fn llm_settings() -> config.Config {
-  let assert Ok(key) = types.api_key(required("OPENAI_API_KEY"))
-  config.openai(openai.options(key))
-  |> config.with_deadlines(types.Deadlines(20_000, 10_000, 1000))
+fn llm_settings() -> llm_wire.Config {
+  openai.new(required("OPENAI_API_KEY"))
+  |> openai.config
+  |> llm_wire.with_call_timeout(llm_wire.After(duration.seconds(20)))
+  |> llm_wire.with_first_token_timeout(llm_wire.After(duration.seconds(10)))
+  |> llm_wire.with_idle_timeout(llm_wire.After(duration.seconds(10)))
 }
 
-fn model() -> types.ModelId {
-  let assert Ok(model) =
-    environment("FABRIC_DECISION_MODEL")
-    |> result.unwrap("gpt-4.1-nano-2025-04-14")
-    |> types.model_id
-  model
+fn model() -> String {
+  environment("FABRIC_DECISION_MODEL")
+  |> result.unwrap("gpt-4.1-nano-2025-04-14")
 }
 
 pub fn main() -> Nil {

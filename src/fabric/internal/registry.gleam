@@ -10,7 +10,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import llm_wire/types
+import llm_wire/tool as wire_tool
 
 pub opaque type Registry(context) {
   Registry(order: List(String), tools: Dict(String, Tool(context)))
@@ -78,7 +78,7 @@ pub fn new(
 
 /// The providers' grammar, `^[a-zA-Z0-9_-]{1,64}$`, as llm_wire admits it.
 fn valid_name(name: String) -> Bool {
-  types.tool_name(name) |> result.is_ok
+  wire_tool.check_name(name) |> result.is_ok
 }
 
 pub fn declarations(registry: Registry(context)) -> List(model.ToolSpec) {

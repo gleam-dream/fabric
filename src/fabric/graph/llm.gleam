@@ -4,16 +4,15 @@
 
 import fabric/graph/operation
 import fabric/run
-import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import http_gun
 import json/blueprint/codec
 import json/blueprint/value
-import llm_wire/config
-import llm_wire/session
-import llm_wire/types
+import llm_wire
+import llm_wire/error
+import llm_wire/message
 
 pub type Outcome(output) {
   /// Both the validated application value and the provider's original JSON.
@@ -25,14 +24,15 @@ pub type Outcome(output) {
 pub type Receipt(output) {
   /// `model` is the requested model, not a resolved provider revision.
   /// Missing usage is not zero usage.
-  Receipt(model: String, outcome: Outcome(output), usage: Option(types.Usage))
+  Receipt(model: String, outcome: Outcome(output), usage: Option(message.Usage))
 }
 
 /// Version `identity` when the provider, prompt or output meaning changes.
 /// The pure request builder runs only after policy admission. It returns the
-/// caller's started HTTP Gun client, the llm_wire settings and the request.
-/// Credentials and the client belong in fresh context, never in the persisted
-/// input or receipt; Fabric neither starts nor stops the client.
+/// caller's started HTTP Gun client, the llm_wire configuration and a plain
+/// request; Fabric adds the structured output. Credentials and the client
+/// belong in fresh context, never in the persisted input or receipt; Fabric
+/// neither starts nor stops the client.
 ///
 /// Requests must have no tools. Preparation and proven unsent failures are
 /// definite; potentially sent failures require reconciliation. No implicit
@@ -43,15 +43,15 @@ pub fn new(
   output: codec.Codec(output),
   output_name: String,
   request: fn(context, input) ->
-    #(http_gun.Client, config.Config, types.Request),
+    #(http_gun.Client, llm_wire.Config, llm_wire.Request(String)),
 ) -> operation.Operation(context, input, Receipt(output)) {
   operation.new(
     identity,
     input,
     receipt_codec(output),
     fn(context, _, input) {
-      let #(client, settings, request) = request(context, input)
-      perform(client, settings, request, output_name, output)
+      let #(client, config, request) = request(context, input)
+      perform(client, config, request, output_name, output)
     },
     fn(failure) { failure },
   )
@@ -59,12 +59,12 @@ pub fn new(
 
 fn perform(
   client: http_gun.Client,
-  settings: config.Config,
-  request: types.Request,
+  config: llm_wire.Config,
+  request: llm_wire.Request(String),
   output_name: String,
   output: codec.Codec(output),
 ) -> Result(Receipt(output), operation.Failure) {
-  use Nil <- result.try(case request.tools {
+  use Nil <- result.try(case llm_wire.tools(request) {
     [] -> Ok(Nil)
     [_, ..] ->
       Error(operation.DefiniteFailure(
@@ -72,22 +72,25 @@ fn perform(
       ))
   })
   use prepared <- result.try(
-    session.prepare_structured(settings, request, output_name, output)
-    |> result.map_error(fn(error) { operation.DefiniteFailure(describe(error)) }),
+    llm_wire.prepare(config, llm_wire.with_output(request, output_name, output))
+    |> result.map_error(fn(error) {
+      operation.DefiniteFailure(error.describe_prepare_error(error))
+    }),
   )
   use response <- result.try(
-    session.run_structured(client, prepared) |> result.map_error(failure),
+    llm_wire.run(client, prepared) |> result.map_error(failure),
   )
-  let model = types.model_id_to_string(request.model)
+  // llm_wire sends the trimmed name; the receipt records what was sent.
+  let model = string.trim(llm_wire.model(request))
   case response {
-    session.StructuredValue(value, raw, usage) ->
-      Ok(Receipt(model, Answer(value, raw), usage))
-    session.StructuredRefusal(reason, usage) ->
+    llm_wire.Answer(output:, text:, usage:) ->
+      Ok(Receipt(model, Answer(output, text), usage))
+    llm_wire.Refused(reason:, usage:) ->
       Ok(Receipt(model, Refusal(reason), usage))
-    session.StructuredOutputLimited(text, [], usage) ->
-      Ok(Receipt(model, OutputLimited(text), usage))
-    session.StructuredOutputLimited(_, [_, ..], _)
-    | session.StructuredNeedsTools(..) ->
+    llm_wire.OutputLimited(partial_text:, partial_calls: [], usage:) ->
+      Ok(Receipt(model, OutputLimited(partial_text), usage))
+    llm_wire.OutputLimited(partial_calls: [_, ..], ..)
+    | llm_wire.NeedsTools(..) ->
       Error(operation.UncertainEffect(
         "structured decision returned unexpected tools: "
         <> string.inspect(response),
@@ -95,24 +98,11 @@ fn perform(
   }
 }
 
-fn failure(failure: session.RunFailure) -> operation.Failure {
-  let detail =
-    describe(failure.error) <> " (" <> string.inspect(failure.retry) <> ")"
-  case failure.retry.classification {
-    types.NoRequestSent -> operation.DefiniteFailure(detail)
-    types.RequestMayHaveReachedProvider | types.EffectUnknown ->
-      operation.UncertainEffect(detail)
-  }
-}
-
-fn describe(error: types.WireError) -> String {
-  case error {
-    types.HttpStatusError(status, _, hint) ->
-      "HTTP status "
-      <> int.to_string(status)
-      <> "; retry hint "
-      <> string.inspect(hint)
-    other -> string.inspect(other)
+fn failure(failure: llm_wire.Failure) -> operation.Failure {
+  let detail = llm_wire.describe_failure(failure)
+  case failure.sent {
+    llm_wire.NotSent -> operation.DefiniteFailure(detail)
+    llm_wire.MaybeSent | llm_wire.Completed -> operation.UncertainEffect(detail)
   }
 }
 
@@ -241,7 +231,7 @@ fn encode_answer(
   }
 }
 
-fn usage_codec() -> codec.Codec(types.Usage) {
+fn usage_codec() -> codec.Codec(message.Usage) {
   use input_tokens <- codec.field("input_tokens", codec.int(), get: fn(usage) {
     usage.input_tokens
   })
@@ -251,7 +241,7 @@ fn usage_codec() -> codec.Codec(types.Usage) {
   use total_tokens <- codec.field("total_tokens", codec.int(), get: fn(usage) {
     usage.total_tokens
   })
-  codec.success(types.Usage(input_tokens, output_tokens, total_tokens))
+  codec.success(message.Usage(input_tokens, output_tokens, total_tokens))
 }
 
 /// The `fabric.graph.llm.v1` receipt, read only:
@@ -287,7 +277,7 @@ fn legacy_receipt_fields(
       let usage =
         option.map(usage, fn(counts) {
           let #(input, #(generated, total)) = counts
-          types.Usage(input, generated, total)
+          message.Usage(input, generated, total)
         })
       checked_receipt(Receipt(model, outcome, usage))
     },
@@ -297,16 +287,13 @@ fn legacy_receipt_fields(
 }
 
 fn check_receipt(receipt: Receipt(output)) -> Result(Nil, String) {
-  use model <- result.try(
-    types.model_id(receipt.model)
-    |> result.map_error(fn(_) { "invalid requested model" }),
-  )
-  use Nil <- result.try(case types.model_id_to_string(model) == receipt.model {
-    True -> Ok(Nil)
-    False -> Error("noncanonical requested model")
+  use Nil <- result.try(case string.trim(receipt.model) {
+    "" -> Error("invalid requested model")
+    trimmed if trimmed == receipt.model -> Ok(Nil)
+    _ -> Error("noncanonical requested model")
   })
   case receipt.usage {
-    Some(types.Usage(input, output, total))
+    Some(message.Usage(input, output, total))
       if input < 0 || output < 0 || total < 0
     -> Error("negative provider usage")
     Some(_) | None -> Ok(Nil)
