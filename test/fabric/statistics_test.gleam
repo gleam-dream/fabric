@@ -36,6 +36,7 @@ fn state(phase: agent.Phase) -> agent.State {
     phase,
     None,
     correlation.from_key("stats-agent"),
+    "stats-agent",
   )
 }
 

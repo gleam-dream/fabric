@@ -31,7 +31,7 @@ pub fn handed_off(state: State) -> Nil {
   emit(
     o.run_handed_off(),
     Nil,
-    o.RunHandedOff(state.run, state.incarnation, state.correlation),
+    o.RunHandedOff(state.run, state.incarnation, state.root, state.correlation),
   )
 }
 
@@ -52,14 +52,22 @@ pub fn taken_over(state: State, previous_owner: String) -> Nil {
       state.run,
       state.incarnation,
       previous_owner,
+      state.root,
       state.correlation,
     ),
   )
 }
 
-/// The leased store `owner` killed the runner of `run`.
-pub fn lease_lost(run: String, owner: String, reason: o.LeaseLoss) -> Nil {
-  emit(o.lease_lost(), Nil, o.LeaseLost(run, owner, reason))
+/// The leased store `owner` killed the runner of `run`, of the family
+/// `root`.
+pub fn lease_lost(
+  run: String,
+  owner: String,
+  reason: o.LeaseLoss,
+  root: String,
+  correlation: Correlation,
+) -> Nil {
+  emit(o.lease_lost(), Nil, o.LeaseLost(run, owner, reason, root, correlation))
 }
 
 /// The leased store `owner` failed to renew the leases of `runs` runners.
@@ -79,6 +87,7 @@ fn started(before: Option(State), after: State) -> Nil {
           after.agent.name,
           after.agent.version,
           option.map(after.parent, fn(parent) { run.id_to_string(parent.run) }),
+          after.root,
           after.correlation,
         ),
       )
@@ -91,7 +100,12 @@ fn recovered(before: Option(State), after: State) -> Nil {
       emit(
         o.run_recovered(),
         Nil,
-        o.RunRecovered(after.run, after.incarnation, after.correlation),
+        o.RunRecovered(
+          after.run,
+          after.incarnation,
+          after.root,
+          after.correlation,
+        ),
       )
     _ -> Nil
   }
@@ -107,7 +121,13 @@ fn model_turn(before: Option(State), after: State) -> Nil {
               emit(
                 o.model_turn(),
                 turn_usage(before, after, result),
-                o.ModelTurn(after.run, turn, result, after.correlation),
+                o.ModelTurn(
+                  after.run,
+                  turn,
+                  result,
+                  after.root,
+                  after.correlation,
+                ),
               )
             None -> Nil
           }
@@ -188,12 +208,13 @@ fn actions(before: Option(State), after: State) -> Nil {
   }
   list.each(every_action(after), fn(action) {
     let previous = dict.get(earlier, action.id) |> option.from_result
-    action_changed(after.run, after.correlation, previous, action)
+    action_changed(after.run, after.root, after.correlation, previous, action)
   })
 }
 
 fn action_changed(
   run_id: String,
+  root: String,
   correlation: Correlation,
   before: Option(ActionRecord),
   after: ActionRecord,
@@ -218,6 +239,7 @@ fn action_changed(
           run.Approve -> o.Approved
           run.Reject(_) -> o.Rejected
         },
+        root,
         correlation,
       ),
     )
@@ -234,16 +256,18 @@ fn action_changed(
           requirement.name,
           requirement.version,
           revision,
+          root,
           correlation,
         ),
       )
     _ -> Nil
   }
   case after.child {
-    None -> tool_changed(reference, correlation, old_state, after.state)
+    None -> tool_changed(reference, root, correlation, old_state, after.state)
     Some(child) ->
       child_changed(
         reference,
+        root,
         correlation,
         run.id_to_string(child),
         old_state,
@@ -254,6 +278,7 @@ fn action_changed(
 
 fn tool_changed(
   reference: o.Action,
+  root: String,
   correlation: Correlation,
   before: Option(run.ActionState),
   after: run.ActionState,
@@ -261,14 +286,18 @@ fn tool_changed(
   case before, after {
     Some(run.Running), run.Running -> Nil
     _, run.Running ->
-      emit(o.tool_dispatched(), Nil, o.ToolDispatched(reference, correlation))
+      emit(
+        o.tool_dispatched(),
+        Nil,
+        o.ToolDispatched(reference, root, correlation),
+      )
     Some(run.Running), _ ->
       case disposition(after) {
         Some(disposition) ->
           emit(
             o.tool_settled(),
             Nil,
-            o.ToolSettled(reference, disposition, correlation),
+            o.ToolSettled(reference, disposition, root, correlation),
           )
         None -> Nil
       }
@@ -277,7 +306,7 @@ fn tool_changed(
       emit(
         o.tool_settled(),
         Nil,
-        o.ToolSettled(reference, o.EffectUncertain, correlation),
+        o.ToolSettled(reference, o.EffectUncertain, root, correlation),
       )
     _, _ -> Nil
   }
@@ -285,6 +314,7 @@ fn tool_changed(
 
 fn child_changed(
   reference: o.Action,
+  root: String,
   correlation: Correlation,
   child: String,
   before: Option(run.ActionState),
@@ -299,7 +329,7 @@ fn child_changed(
       emit(
         o.child_started(),
         Nil,
-        o.ChildStarted(reference, child, correlation),
+        o.ChildStarted(reference, child, root, correlation),
       )
     run.Delegated, _ | run.Running, _ -> Nil
     _, True ->
@@ -308,7 +338,7 @@ fn child_changed(
           emit(
             o.child_settled(),
             Nil,
-            o.ChildSettled(reference, child, disposition, correlation),
+            o.ChildSettled(reference, child, disposition, root, correlation),
           )
         None -> Nil
       }
@@ -341,7 +371,7 @@ fn cancelled(before: Option(State), after: State) -> Nil {
           emit(
             o.run_cancelled(),
             Nil,
-            o.RunCancelled(after.run, after.correlation),
+            o.RunCancelled(after.run, after.root, after.correlation),
           )
         False -> Nil
       }
@@ -366,7 +396,12 @@ fn finished(before: Option(State), after: State) -> Nil {
           after.usage.output_tokens,
           after.usage.unreported_replies,
         ),
-        o.RunFinished(after.run, outcome_kind(outcome), after.correlation),
+        o.RunFinished(
+          after.run,
+          outcome_kind(outcome),
+          after.root,
+          after.correlation,
+        ),
       )
     _, _ -> Nil
   }
@@ -390,6 +425,7 @@ fn outcome_kind(outcome: run.Outcome) -> o.OutcomeKind {
 /// was committed.
 pub fn settlement_refused(
   run: String,
+  root: String,
   correlation: Correlation,
   id: ActionId,
   tool: String,
@@ -416,6 +452,7 @@ pub fn settlement_refused(
       offered,
       reason,
       summary,
+      root,
       correlation,
     ),
   )

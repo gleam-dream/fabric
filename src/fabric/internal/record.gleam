@@ -50,6 +50,11 @@
 //// also what a record without it means. A run with that derived
 //// correlation writes no key, so its bytes are as before.
 ////
+//// A sub-agent run stores its family's root run id as `"root"`, in any
+//// version; a root run writes none. A sub-agent record without the key
+//// (written before roots were stored, or by a reader that ignores it) reads
+//// its parent as its root.
+////
 //// An outcome's budget is written under its own tag (`turn_limit`,
 //// `token_limit`). The tag `budget_exhausted`, which wraps a budget, is
 //// still read; it was written only for a sub-agent limit ending a run,
@@ -312,6 +317,11 @@ fn encode_version(state: State, version: Int, phase: Phase) -> String {
       list.append(fields, [
         #("correlation", json.string(correlation.to_string(state.correlation))),
       ])
+  }
+  // A root run is its own root and stores none, keeping its bytes.
+  let fields = case state.root == state.run {
+    True -> fields
+    False -> list.append(fields, [#("root", json.string(state.root))])
   }
   json.object(fields)
   |> json.to_string
@@ -753,6 +763,13 @@ fn state_decoder(found: Int) -> Decoder(State) {
     correlation.from_key(run),
     correlation_decoder(),
   )
+  // A sub-agent record written before roots were stored names its parent:
+  // the root of a family one level deep.
+  let default_root = case parent {
+    Some(run.AgentParent(run: parent, ..)) -> run_id.to_string(parent)
+    _ -> run
+  }
+  use root <- decode.optional_field("root", default_root, decode.string)
   decode.success(State(
     run:,
     agent:,
@@ -768,6 +785,7 @@ fn state_decoder(found: Int) -> Decoder(State) {
     phase:,
     family_budget:,
     correlation:,
+    root:,
   ))
 }
 

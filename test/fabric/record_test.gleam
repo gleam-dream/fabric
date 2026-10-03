@@ -106,6 +106,7 @@ fn base() -> State {
     phase: controller.AwaitingModel(3),
     family_budget: None,
     correlation: correlation.from_key("run-01-3"),
+    root: "run-01",
   )
 }
 
@@ -285,6 +286,7 @@ pub fn a_version_1_record_is_read_as_a_root_run_without_sub_agents_test() {
       ]),
       family_budget: None,
       correlation: correlation.from_key("run-old"),
+      root: "run-old",
     )
   record.decode(version_1) |> should.equal(Ok(expected))
   // It is written back in the current version.

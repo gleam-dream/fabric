@@ -137,6 +137,7 @@ pub fn work(setup: Setup(context), context: context) -> Work {
   live.Work(
     invoke: fn(
       run_id: String,
+      root: String,
       correlation: Correlation,
       id: ActionId,
       call: model.ToolCall,
@@ -153,6 +154,7 @@ pub fn work(setup: Setup(context), context: context) -> Work {
           settle_late(
             setup,
             run_id,
+            root,
             correlation,
             id,
             call.name,
@@ -181,6 +183,7 @@ pub fn work(setup: Setup(context), context: context) -> Work {
 fn settle_late(
   setup: Setup(context),
   run: String,
+  root: String,
   correlation: Correlation,
   id: ActionId,
   name: String,
@@ -207,6 +210,7 @@ fn settle_late(
     Error(error) ->
       observe.settlement_refused(
         run,
+        root,
         correlation,
         id,
         name,
@@ -357,6 +361,7 @@ pub fn root_state(
     None,
     0,
     correlation,
+    id,
   )
 }
 
@@ -383,6 +388,7 @@ pub fn child_state(
     Some(run.AgentParent(run_id.from_string(parent.run), action)),
     depth,
     parent.correlation,
+    parent.root,
   )
 }
 
@@ -559,7 +565,16 @@ fn launch_over(
         }
         Ok(#(pid, mailbox, go)) -> {
           let claim =
-            store.Launch(pid, store.Live(state.incarnation, mailbox), seize:)
+            store.Launch(
+              pid,
+              store.Live(
+                state.incarnation,
+                mailbox,
+                state.root,
+                state.correlation,
+              ),
+              seize:,
+            )
           case write_initialized(setup.store, state, expected, encoded, claim) {
             Ok(#(revision, state)) -> {
               // The runner starts before this commit's events are emitted: a
@@ -1255,7 +1270,9 @@ fn perform(
           let state = runner.state
           executor.Job(
             id,
-            fn() { work.invoke(state.run, state.correlation, id, call) },
+            fn() {
+              work.invoke(state.run, state.root, state.correlation, id, call)
+            },
             registry.timeout(
               runner.setup.env.registry,
               call.name,
@@ -2065,8 +2082,9 @@ pub fn live_runner(
   state: State,
 ) -> Option(Subject(live.Message)) {
   case entry.live {
-    Some(store.Live(incarnation, mailbox)) if incarnation == state.incarnation ->
-      Some(mailbox)
+    Some(store.Live(incarnation:, mailbox:, ..))
+      if incarnation == state.incarnation
+    -> Some(mailbox)
     _ -> None
   }
 }

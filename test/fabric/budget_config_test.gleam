@@ -37,6 +37,7 @@ fn agent_root() {
     agent.Ended(run.Cancelled),
     Some(budget.Declaration(limits(), False)),
     correlation.from_key("root"),
+    "root",
   )
 }
 

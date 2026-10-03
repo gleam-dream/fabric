@@ -235,6 +235,7 @@ fn cancel(
           phase: controller.NeverStarted,
           family_budget: None,
           correlation: correlation.from_key(id),
+          root: id,
         )
       use encoded <- result.try(
         store_core.encode(runtime.store, tombstone)
