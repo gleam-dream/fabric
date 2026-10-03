@@ -59,7 +59,7 @@ import saga/execution
 /// configuration when a call starts the workflow: a configuration it refuses
 /// fails that call definitely, naming every violation, and runs no step.
 ///
-/// The tool's body timeout (`agent.Limits.tool_timeout`, 60 s by default)
+/// The tool's body timeout (`agent.with_tool_timeout`, 60 s by default)
 /// also stops the task: give a long workflow `tool.with_timeout`.
 pub fn tool(
   definition: tool.Definition(input, output),
