@@ -3,6 +3,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import json/blueprint/value
@@ -132,7 +133,10 @@ pub fn response_bytes_and_ignored_notifications_are_bounded_test() {
 pub fn deadline_cancels_without_repeating_the_effect_or_accepting_a_late_reply_test() {
   let dir = temp_dir()
   let assert Ok(connection) =
-    client.start("deadline", client.Options(..settings(dir), timeout: 300))
+    client.start(
+      "deadline",
+      client.Options(..settings(dir), timeout: duration.milliseconds(300)),
+    )
   let assert Error(client.AfterSend(_)) =
     client.request(connection, "test/hold", [#("name", value.String("expired"))])
   read(connection, "expired") |> should.equal(1)
@@ -202,7 +206,7 @@ pub fn an_expired_queued_request_never_reaches_the_service_test() {
           ]),
         ),
       ],
-      30,
+      duration.milliseconds(30),
     )
   read(observer, "never") |> should.equal(0)
   read(connection, "queue/cancelled") |> should.equal(1)
@@ -231,7 +235,10 @@ pub fn the_connection_closes_when_its_application_owner_exits_test() {
 pub fn invalid_configuration_and_oversized_requests_are_definite_test() {
   let dir = temp_dir()
   client.start("", settings(dir)) |> should.be_error
-  client.start("bad", client.Options(..settings(dir), timeout: 0))
+  client.start(
+    "bad",
+    client.Options(..settings(dir), timeout: duration.milliseconds(0)),
+  )
   |> should.be_error
   client.start("bad", client.options("/no/such/fabric-mcp-server", []))
   |> should.be_error

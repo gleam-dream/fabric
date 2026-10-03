@@ -11,6 +11,7 @@ import fabric/store
 import fabric_jobs_demo/client
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/time/duration
 import json/blueprint/codec
 
 pub type Submit =
@@ -178,7 +179,8 @@ fn wait_with(
   let observer = case polling {
     job.Manual -> observer
     job.Every(ms) -> {
-      let assert Ok(scheduled) = job.with_poll_interval(observer, ms)
+      let assert Ok(scheduled) =
+        job.with_poll_interval(observer, duration.milliseconds(ms))
       scheduled
     }
   }
@@ -194,7 +196,7 @@ fn wait_with(
   let op = case deadline {
     None -> op
     Some(ms) -> {
-      let assert Ok(op) = operation.with_deadline(op, ms)
+      let assert Ok(op) = operation.with_deadline(op, duration.milliseconds(ms))
       op
     }
   }

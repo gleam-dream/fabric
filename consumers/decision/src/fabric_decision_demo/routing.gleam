@@ -6,6 +6,7 @@ import fabric/graph/operation
 import fabric/policy
 import fabric/run
 import fabric/store
+import gleam/time/duration
 import json/blueprint/codec
 
 pub type Decision {
@@ -61,7 +62,11 @@ pub fn runtime(
     ))
   let assert Ok(runtime) =
     graph.new(spec, runs, context, fn(_, _) { Ok(policy.Allow) })
-    |> graph.with_timeouts(5000, 30_000, 1000)
+    |> graph.with_timeouts(
+      callbacks: duration.milliseconds(5000),
+      operations: duration.milliseconds(30_000),
+      commands: duration.milliseconds(1000),
+    )
   runtime
 }
 

@@ -26,6 +26,7 @@ import fabric/policy
 import fabric/run
 import fabric/store
 import gleam/erlang/process.{type Pid, type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -513,12 +514,17 @@ fn perform(runner: Runner, effects: List(g.Effect)) -> Result(Runner, Error) {
           None -> start_executor(runner)
         }
         executor.submit(executor, [
-          executor.Job(g.reference(runner.state, activation), fn() {
-            case bounded.call(runner.options.operation_timeout, body) {
-              Ok(result) -> live.Returned(result)
-              Error(error) -> live.Interrupted(string.inspect(error))
-            }
-          }),
+          // `bounded.call` applies the operation timeout itself.
+          executor.Job(
+            g.reference(runner.state, activation),
+            fn() {
+              case bounded.call(runner.options.operation_timeout, body) {
+                Ok(result) -> live.Returned(result)
+                Error(error) -> live.Interrupted(string.inspect(error))
+              }
+            },
+            None,
+          ),
         ])
         Ok(Runner(..runner, executor: Some(executor), body: None))
       }
@@ -637,6 +643,14 @@ fn receive(runner: Runner) -> Nil {
     live.Executed(executor.Crashed(ref, reason))
     | live.Executed(executor.Lost(ref, reason)) ->
       apply(runner, g.Unresolved(ref, g.Uncertain(reason)))
+    live.Executed(executor.TimedOut(ref, after)) ->
+      apply(
+        runner,
+        g.Unresolved(
+          ref,
+          g.Uncertain("timed out after " <> int.to_string(after) <> " ms"),
+        ),
+      )
     live.Executed(executor.Stopped) ->
       apply(Runner(..runner, executor: None), g.Stopped)
     live.Cancel(command, reply) -> {

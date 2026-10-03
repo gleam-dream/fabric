@@ -44,6 +44,12 @@
 //// Version 7 retains optional family budget limits on roots. Earlier writers
 //// refuse configured limits; children inherit from their saved root.
 ////
+//// A run whose correlation the caller chose (`fabric.start`) or inherited
+//// from its parent stores it as `"correlation"`, in any version; a reader
+//// that ignores the key derives the correlation from the run id, which is
+//// also what a record without it means. A run with that derived
+//// correlation writes no key, so its bytes are as before.
+////
 //// An outcome's budget is written under its own tag (`turn_limit`,
 //// `token_limit`). The tag `budget_exhausted`, which wraps a budget, is
 //// still read; it was written only for a sub-agent limit ending a run,
@@ -71,6 +77,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import sinal/correlation.{type Correlation}
 
 pub const format = "fabric.run"
 
@@ -295,6 +302,15 @@ fn encode_version(state: State, version: Int, phase: Phase) -> String {
         ),
       ])
     False -> fields
+  }
+  // Only a correlation the caller chose is stored: a record with the
+  // default one keeps the bytes it had before correlations existed.
+  let fields = case state.correlation == correlation.from_key(state.run) {
+    True -> fields
+    False ->
+      list.append(fields, [
+        #("correlation", json.string(correlation.to_string(state.correlation))),
+      ])
   }
   json.object(fields)
   |> json.to_string
@@ -730,6 +746,11 @@ fn state_decoder(found: Int) -> Decoder(State) {
   use approvals_issued <- decode.field("approvals_issued", decode.int)
   use phase <- decode.field("phase", phase_decoder(found))
   use family_budget <- decode.then(budget_config.field(found >= 7))
+  use correlation <- decode.optional_field(
+    "correlation",
+    correlation.from_key(run),
+    correlation_decoder(),
+  )
   decode.success(State(
     run:,
     agent:,
@@ -744,7 +765,16 @@ fn state_decoder(found: Int) -> Decoder(State) {
     approvals_issued:,
     phase:,
     family_budget:,
+    correlation:,
   ))
+}
+
+fn correlation_decoder() -> Decoder(Correlation) {
+  use text <- decode.then(decode.string)
+  case correlation.from_string(text) {
+    Ok(value) -> decode.success(value)
+    Error(_) -> decode.failure(correlation.from_key(text), "a correlation")
+  }
 }
 
 fn parent_decoder(found: Int) -> Decoder(run.Parent) {

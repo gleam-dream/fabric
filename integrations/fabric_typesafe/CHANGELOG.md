@@ -19,6 +19,7 @@ package uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Breaking:** `client.Bounds.timeout` is a `Duration` (default 20 s).
 - Builds on json_blueprint wave 2: classifier JSON is parsed with
   `value.parse` and written with `value.to_string`, which writes a decimal
   with an exponent from -7 to 20 in plain form (`12.5`, not `1.25e1`). A

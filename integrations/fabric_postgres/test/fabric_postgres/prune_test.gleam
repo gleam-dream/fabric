@@ -14,6 +14,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import pog
 
@@ -147,14 +148,17 @@ pub fn budget_ledgers_are_pruned_only_with_their_matching_root_test() {
     |> json.to_string
   let assert Ok(_) = backend.insert("root", root, store.Release)
   // The root has ended, but its named ledger is absent.
-  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(0))
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
+  |> should.equal(Ok(0))
   let changed = string.replace(ledger, "\"work\":8", "\"work\":9")
   let assert Ok(_) = backend.insert(ledger_id, changed, store.Release)
   // Both records are valid, but the reciprocal limit contract disagrees.
-  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(0))
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
+  |> should.equal(Ok(0))
   let assert Ok(_) =
     backend.compare_and_set(ledger_id, 1, ledger, store.Release)
-  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(2))
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
+  |> should.equal(Ok(2))
   backend.get("root") |> should.equal(Error(store.NotFound))
   backend.get(ledger_id) |> should.equal(Error(store.NotFound))
   // Delayed bookkeeping cannot recreate a ledger after the family was pruned.
@@ -204,10 +208,18 @@ pub fn prune_deletes_only_whole_finished_families_test() {
     |> should.equal(Ok(Nil))
   })
   // Nothing ended long enough ago.
-  fabric_postgres.prune(settings, ended_for: 60_000, limit: 10)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(60_000),
+    limit: 10,
+  )
   |> should.equal(Ok(0))
   process.sleep(50)
-  fabric_postgres.prune(settings, ended_for: 20, limit: 10)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(20),
+    limit: 10,
+  )
   |> should.equal(Ok(5))
   let present =
     list.filter(rows, fn(row) { backend.get(row.0) |> result_ok })
@@ -216,7 +228,11 @@ pub fn prune_deletes_only_whole_finished_families_test() {
   |> should.equal([
     "run-bb", "run-bb-1", "run-cc", "run-cc-1", "run-dd", "run-dd-1",
   ])
-  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
   |> should.equal(Ok(0))
 }
 
@@ -246,11 +262,13 @@ pub fn prune_deletes_at_most_limit_families_oldest_first_test() {
       )
     process.sleep(5)
   })
-  fabric_postgres.prune(settings, ended_for: 0, limit: 2) |> should.equal(Ok(4))
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 2)
+  |> should.equal(Ok(4))
   backend.get("run-a1") |> should.equal(Error(store.NotFound))
   backend.get("run-a2-1") |> should.equal(Error(store.NotFound))
   let assert Ok(_) = backend.get("run-a3")
-  fabric_postgres.prune(settings, ended_for: 0, limit: 2) |> should.equal(Ok(2))
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 2)
+  |> should.equal(Ok(2))
 }
 
 /// Concurrent prunes delete each family once.
@@ -277,7 +295,11 @@ pub fn concurrent_prunes_delete_each_family_once_test() {
     process.spawn(fn() {
       process.send(
         results,
-        fabric_postgres.prune(settings, ended_for: 0, limit: 10),
+        fabric_postgres.prune(
+          settings,
+          ended_for: duration.milliseconds(0),
+          limit: 10,
+        ),
       )
     })
   })
@@ -290,17 +312,31 @@ pub fn concurrent_prunes_delete_each_family_once_test() {
   // Whatever the racing prunes left, one more takes; each run was counted
   // once.
   let assert Ok(rest) =
-    fabric_postgres.prune(settings, ended_for: 0, limit: 100)
+    fabric_postgres.prune(
+      settings,
+      ended_for: duration.milliseconds(0),
+      limit: 100,
+    )
   { racing + rest } |> should.equal(80)
-  fabric_postgres.prune(settings, ended_for: 0, limit: 100)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 100,
+  )
   |> should.equal(Ok(0))
 }
 
 pub fn prune_checks_its_arguments_test() {
   let settings = support.migrated(support.pool(1), "a", support.schema())
-  fabric_postgres.prune(settings, ended_for: -1, limit: 1)
-  |> should.equal(Error(fabric_postgres.PruneAgeNegative(-1)))
-  fabric_postgres.prune(settings, ended_for: 0, limit: 0)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(-1),
+    limit: 1,
+  )
+  |> should.equal(
+    Error(fabric_postgres.PruneAgeNegative(duration.milliseconds(-1))),
+  )
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 0)
   |> should.equal(Error(fabric_postgres.PruneLimitNotPositive(0)))
   fabric_postgres.refresh_retention(settings, 0)
   |> should.equal(Error(fabric_postgres.RefreshLimitNotPositive(0)))
@@ -333,7 +369,11 @@ pub fn missing_unreadable_and_unexpected_children_keep_the_entire_family_test() 
         Nil
       }
     }
-    fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+    fabric_postgres.prune(
+      settings,
+      ended_for: duration.milliseconds(0),
+      limit: 10,
+    )
     |> should.equal(Ok(0))
     backend.get("custom") |> should.be_ok
   })
@@ -354,7 +394,8 @@ pub fn id_prefixes_do_not_define_families_and_a_blocked_root_does_not_starve_oth
       record("run-aa-1", "ended", None, []),
       store.Release,
     )
-  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(1))
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
+  |> should.equal(Ok(1))
   backend.get("run-aa-1") |> should.equal(Error(store.NotFound))
   backend.get("run-aa") |> should.be_ok
   let assert Ok(_) =
@@ -363,7 +404,8 @@ pub fn id_prefixes_do_not_define_families_and_a_blocked_root_does_not_starve_oth
       record("run-aa-9", "never_started", Some("run-aa"), []),
       store.Release,
     )
-  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(2))
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
+  |> should.equal(Ok(2))
   // A delayed duplicate start cannot recreate an orphan after deletion.
   let assert Error(store.Unavailable(_)) =
     backend.insert(
@@ -393,7 +435,8 @@ pub fn unresolved_agent_effects_and_recent_child_changes_prevent_pruning_test() 
       record("root-1", "ended", Some("root"), []),
       store.Release,
     )
-  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(0))
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
+  |> should.equal(Ok(0))
   let assert Ok(_) = backend.compare_and_set("root", 1, root, store.Release)
   let assert Ok(_) =
     pog.query(
@@ -402,9 +445,14 @@ pub fn unresolved_agent_effects_and_recent_child_changes_prevent_pruning_test() 
       <> "\".fabric_runs SET updated_at = clock_timestamp() - interval '1 hour' WHERE run_id = 'root'",
     )
     |> pog.execute(connection)
-  fabric_postgres.prune(settings, ended_for: 30_000, limit: 1)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(30_000),
+    limit: 1,
+  )
   |> should.equal(Ok(0))
-  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(2))
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
+  |> should.equal(Ok(2))
 }
 
 pub fn migration_refresh_preserves_bytes_and_old_writer_changes_invalidate_metadata_test() {
@@ -445,7 +493,11 @@ pub fn migration_refresh_preserves_bytes_and_old_writer_changes_invalidate_metad
     },
   )
   fabric_postgres.migrate(settings) |> should.be_ok
-  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
   |> should.equal(Ok(0))
   fabric_postgres.refresh_retention(settings, 10) |> should.equal(Ok(3))
   fabric_postgres.refresh_retention(settings, 10) |> should.equal(Ok(0))
@@ -465,13 +517,25 @@ pub fn migration_refresh_preserves_bytes_and_old_writer_changes_invalidate_metad
       pog.text(record("old-root-1", "acting", Some("old-root"), [])),
     )
     |> pog.execute(connection)
-  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
   |> should.equal(Ok(0))
   fabric_postgres.refresh_retention(settings, 10) |> should.equal(Ok(1))
-  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
   |> should.equal(Ok(0))
   backend.compare_and_set("old-root-1", 2, child, store.Release) |> should.be_ok
-  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
   |> should.equal(Ok(2))
   backend.get("unreadable") |> should.be_ok
 }
@@ -536,7 +600,11 @@ pub fn pruning_cannot_delete_a_child_whose_lease_is_renewed_concurrently_test() 
   process.spawn(fn() {
     process.send(
       pruned,
-      fabric_postgres.prune(settings, ended_for: 0, limit: 1),
+      fabric_postgres.prune(
+        settings,
+        ended_for: duration.milliseconds(0),
+        limit: 1,
+      ),
     )
   })
   waits_for_lock(connection, schema, 100) |> should.be_true
@@ -563,7 +631,8 @@ pub fn attachment_keys_with_nul_survive_the_metadata_index_test() {
   let assert Ok(_) = backend.insert("root-1", child, store.Release)
   backend.get("root") |> should.equal(Ok(store.Current(1, root, store.Free)))
   backend.get("root-1") |> should.equal(Ok(store.Current(1, child, store.Free)))
-  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(2))
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
+  |> should.equal(Ok(2))
 }
 
 @external(erlang, "erlang", "integer_to_binary")

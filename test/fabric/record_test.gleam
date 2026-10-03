@@ -74,7 +74,6 @@ fn every_action() -> List(run.ActionRecord) {
 
 fn base() -> State {
   controller.State(
-    family_budget: None,
     run: "run-01-3",
     agent: run.Identity("desk", 3),
     incarnation: 4,
@@ -105,6 +104,8 @@ fn base() -> State {
     history: every_action(),
     approvals_issued: 3,
     phase: controller.AwaitingModel(3),
+    family_budget: None,
+    correlation: correlation.from_key("run-01-3"),
   )
 }
 
@@ -257,7 +258,6 @@ pub fn a_version_1_record_is_read_as_a_root_run_without_sub_agents_test() {
   let transfer = ToolCall("t", "transfer_funds", "{}", None, None)
   let expected =
     controller.State(
-      family_budget: None,
       run: "run-old",
       agent: run.Identity("desk", 1),
       incarnation: 1,
@@ -283,6 +283,8 @@ pub fn a_version_1_record_is_read_as_a_root_run_without_sub_agents_test() {
           None,
         ),
       ]),
+      family_budget: None,
+      correlation: correlation.from_key("run-old"),
     )
   record.decode(version_1) |> should.equal(Ok(expected))
   // It is written back in the current version.
@@ -438,6 +440,7 @@ pub fn the_previous_decoder_reads_every_representable_shape_test() {
 import fabric/support/v2/controller as old_controller
 import fabric/support/v2/record as old_record
 import fabric/support/v2/run as old_run
+import sinal/correlation
 
 pub fn a_version_2_tombstone_keeps_its_old_meaning_test() {
   let tombstone =

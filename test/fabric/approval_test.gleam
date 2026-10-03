@@ -19,6 +19,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 
 /// The application's current facts, loaded when an answer arrives.
@@ -47,7 +48,7 @@ fn desk_policy(
 fn paying_tool(probe: Probe) -> tool.Tool(Desk) {
   tool.bind(
     apps.transfer_definition(),
-    fn(_desk, transfer: apps.Transfer) -> Result(apps.Receipt, Nil) {
+    fn(_desk, _call, transfer: apps.Transfer) -> Result(apps.Receipt, Nil) {
       probe.record(probe, "pay:" <> transfer.to)
       Ok(apps.Receipt("r-" <> transfer.to))
     },
@@ -71,8 +72,16 @@ fn paying_agent(probe: Probe) -> Agent(Desk) {
 
 fn suspended(probe: Probe) -> #(fabric.Run(Desk), run.PendingApproval) {
   let assert Ok(run) =
-    fabric.start(support.store(), paying_agent(probe), open_desk(), "pay")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+    fabric.start(
+      support.store(),
+      paying_agent(probe),
+      id: run.new_id(),
+      context: open_desk(),
+      prompt: "pay",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   #(run, pending)
 }
 
@@ -92,8 +101,16 @@ pub fn an_approved_tool_runs_once_after_a_restart_test() {
     restart.owned(fn() {
       let store = support.directory(dir)
       let assert Ok(run) =
-        fabric.start(store, paying_agent(probe), open_desk(), "pay")
-      let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
+        fabric.start(
+          store,
+          paying_agent(probe),
+          id: run.new_id(),
+          context: open_desk(),
+          prompt: "pay",
+          correlation: None,
+        )
+      let assert Ok(run.Suspended([_], [])) =
+        fabric.await(run, within: duration.milliseconds(5000))
       #(store, fabric.id(run))
     })
   restart.crash(owner, old)
@@ -109,7 +126,7 @@ pub fn an_approved_tool_runs_once_after_a_restart_test() {
       reviewer: Some("alice"),
       context: open_desk(),
     )
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"receipt\":\"r-bob\"}"))),
   )
@@ -139,7 +156,7 @@ pub fn a_rejected_tool_never_runs_and_the_model_sees_the_reason_test() {
       reason: "not today",
       reviewer: Some("bob"),
     )
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
       run.Finished(run.Completed(
@@ -171,8 +188,17 @@ pub fn a_rejection_never_runs_the_policy_test() {
       once,
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), agent, open_desk(), "pay")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: open_desk(),
+      prompt: "pay",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   process.receive(calls, 0) |> should.equal(Ok(ActionId(1, "t")))
 
   let assert Ok(_) =
@@ -182,7 +208,7 @@ pub fn a_rejection_never_runs_the_policy_test() {
       reason: "not today",
       reviewer: Some("bob"),
     )
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
       run.Finished(run.Completed(
@@ -217,7 +243,8 @@ pub fn refused_answers_are_distinct_and_keep_the_pause_test() {
   probe.count(probe, "pay:bob") |> should.equal(0)
 
   let assert Ok(_) = approve(run, reference)
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(run, within: duration.milliseconds(5000))
   approve(run, reference) |> should.equal(Error(fabric.AlreadyAnswered))
   probe.count(probe, "pay:bob") |> should.equal(1)
 }
@@ -247,7 +274,8 @@ pub fn concurrent_answers_have_one_winner_and_the_tool_runs_once_test() {
   |> should.equal(1)
   list.count(outcomes, fn(outcome) { outcome == Error(fabric.AlreadyAnswered) })
   |> should.equal(7)
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(run, within: duration.milliseconds(5000))
   probe.count(probe, "pay:bob") |> should.equal(1)
 }
 
@@ -263,7 +291,7 @@ pub fn the_policy_at_answer_time_wins_over_an_approval_test() {
       reviewer: Some("alice"),
       context: Desk(..open_desk(), frozen: True),
     )
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
       run.Finished(run.Completed(
@@ -289,7 +317,8 @@ pub fn a_changed_requirement_issues_a_new_request_test() {
 
   let assert Ok(_) =
     fabric.approve(run, renewed.reference, Some("carol"), stricter)
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(run, within: duration.milliseconds(5000))
   probe.count(probe, "pay:bob") |> should.equal(1)
 }
 
@@ -336,10 +365,13 @@ pub fn an_answer_racing_a_cancel_has_a_defined_outcome_test() {
         support.store(),
         agent.new("agent", model, [paying_tool(probe)], desk_policy)
           |> support.agent,
-        open_desk(),
-        "pay",
+        id: run.new_id(),
+        context: open_desk(),
+        prompt: "pay",
+        correlation: None,
       )
-    let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+    let assert Ok(run.Suspended([pending], [])) =
+      fabric.await(run, within: duration.milliseconds(5000))
     let answered = process.new_subject()
     let cancelled = process.new_subject()
     process.spawn(fn() {
@@ -348,7 +380,8 @@ pub fn an_answer_racing_a_cancel_has_a_defined_outcome_test() {
     process.spawn(fn() { process.send(cancelled, fabric.cancel(run)) })
     let assert Ok(answer) = process.receive(answered, 5000)
     let assert Ok(Ok(_)) = process.receive(cancelled, 5000)
-    fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+    fabric.await(run, within: duration.milliseconds(5000))
+    |> should.equal(Ok(run.Finished(run.Cancelled)))
     let assert Ok(snapshot) = fabric.snapshot(run)
     let assert [action] = snapshot.actions
     case answer {
@@ -378,8 +411,16 @@ pub fn cancelling_a_paused_run_after_a_restart_test() {
     restart.owned(fn() {
       let store = support.directory(dir)
       let assert Ok(run) =
-        fabric.start(store, paying_agent(probe), open_desk(), "pay")
-      let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
+        fabric.start(
+          store,
+          paying_agent(probe),
+          id: run.new_id(),
+          context: open_desk(),
+          prompt: "pay",
+          correlation: None,
+        )
+      let assert Ok(run.Suspended([_], [])) =
+        fabric.await(run, within: duration.milliseconds(5000))
       #(store, fabric.id(run))
     })
   restart.crash(owner, old)
@@ -440,8 +481,17 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
     )
     |> support.agent
   let first = flaky.store(backend)
-  let assert Ok(run) = fabric.start(first, agent, Nil, "pay")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(run) =
+    fabric.start(
+      first,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "pay",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let id = fabric.id(run)
   let reason = "not today"
 
@@ -465,7 +515,7 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
   flaky.drop_held(backend)
   let assert Ok(outcome) = process.receive(second, 5000)
   probe.release(calling)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
 
   let assert Error(fabric.Unreadable(fabric.StoreUnavailable(_))) = outcome

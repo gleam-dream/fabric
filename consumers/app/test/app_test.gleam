@@ -11,6 +11,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/static_supervisor
 import gleam/string
+import gleam/time/duration
 import gleeunit
 import gleeunit/should
 import sinal
@@ -21,8 +22,15 @@ pub fn main() -> Nil {
 
 pub fn a_member_finds_and_reserves_a_book_test() {
   let assert Ok(run) =
-    fabric.start(memory(), librarian(), app.member("ada"), "reserve Dune")
-  fabric.await(run, 5000)
+    fabric.start(
+      memory(),
+      librarian(),
+      id: run.new_id(),
+      context: app.member("ada"),
+      prompt: "reserve Dune",
+      correlation: None,
+    )
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
       run.Finished(run.Completed(
@@ -37,10 +45,12 @@ pub fn a_missing_book_is_explained_to_the_model_test() {
     fabric.start(
       memory(),
       librarian(),
-      app.member("ada"),
-      "reserve Necronomicon",
+      id: run.new_id(),
+      context: app.member("ada"),
+      prompt: "reserve Necronomicon",
+      correlation: None,
     )
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
       run.Finished(run.Completed(
@@ -52,8 +62,16 @@ pub fn a_missing_book_is_explained_to_the_model_test() {
 
 pub fn the_policy_denies_guests_with_a_visible_reason_test() {
   let assert Ok(run) =
-    fabric.start(memory(), librarian(), app.member("guest"), "reserve Dune")
-  let assert Ok(run.Finished(run.Completed(answer))) = fabric.await(run, 5000)
+    fabric.start(
+      memory(),
+      librarian(),
+      id: run.new_id(),
+      context: app.member("guest"),
+      prompt: "reserve Dune",
+      correlation: None,
+    )
+  let assert Ok(run.Finished(run.Completed(answer))) =
+    fabric.await(run, within: duration.milliseconds(5000))
   answer
   |> should.equal(
     "done: {\"isbn\":\"978-0441013593\",\"title\":\"Dune\"} | {\"error\":\"denied\",\"detail\":\"guests cannot reserve\"}",
@@ -62,9 +80,16 @@ pub fn the_policy_denies_guests_with_a_visible_reason_test() {
 
 pub fn an_unavailable_member_directory_is_a_host_failure_test() {
   let assert Ok(run) =
-    fabric.start(memory(), librarian(), app.member(""), "reserve Dune")
+    fabric.start(
+      memory(),
+      librarian(),
+      id: run.new_id(),
+      context: app.member(""),
+      prompt: "reserve Dune",
+      correlation: None,
+    )
   let assert Ok(run.Finished(run.Failed(run.PolicyFailed(_, reason)))) =
-    fabric.await(run, 5000)
+    fabric.await(run, within: duration.milliseconds(5000))
   reason |> should.equal("member directory unavailable")
 }
 
@@ -74,13 +99,16 @@ pub fn a_long_inventory_scan_can_be_cancelled_test() {
     fabric.start(
       memory(),
       librarian(),
-      app.member_with_scan_gate("ada", arrivals),
-      "scan the inventory",
+      id: run.new_id(),
+      context: app.member_with_scan_gate("ada", arrivals),
+      prompt: "scan the inventory",
+      correlation: None,
     )
   // The scan body is running and blocked.
   let assert Ok(_release) = process.receive(arrivals, 5000)
   let assert Ok(_) = fabric.cancel(run)
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert Ok(snapshot) = fabric.snapshot(run)
   snapshot.actions
   |> list.map(fn(action) { action.state })
@@ -96,8 +124,16 @@ pub fn the_configuration_is_checked_before_anything_starts_test() {
 
 pub fn a_guardian_approves_a_junior_reservation_test() {
   let assert Ok(run) =
-    fabric.start(memory(), librarian(), app.member("junior"), "reserve Dune")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+    fabric.start(
+      memory(),
+      librarian(),
+      id: run.new_id(),
+      context: app.member("junior"),
+      prompt: "reserve Dune",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   pending.tool |> should.equal("reserve_book")
   let assert Ok(_) =
     fabric.approve(
@@ -106,7 +142,7 @@ pub fn a_guardian_approves_a_junior_reservation_test() {
       reviewer: Some("guardian-ann"),
       context: app.member("junior"),
     )
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
       run.Finished(run.Completed(
@@ -118,8 +154,16 @@ pub fn a_guardian_approves_a_junior_reservation_test() {
 
 pub fn a_rejected_reservation_is_explained_to_the_model_test() {
   let assert Ok(run) =
-    fabric.start(memory(), librarian(), app.member("junior"), "reserve Dune")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+    fabric.start(
+      memory(),
+      librarian(),
+      id: run.new_id(),
+      context: app.member("junior"),
+      prompt: "reserve Dune",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let assert Ok(_) =
     fabric.reject(
       run,
@@ -127,7 +171,7 @@ pub fn a_rejected_reservation_is_explained_to_the_model_test() {
       reason: "ask again tomorrow",
       reviewer: Some("guardian-ann"),
     )
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
       run.Finished(run.Completed(
@@ -139,8 +183,16 @@ pub fn a_rejected_reservation_is_explained_to_the_model_test() {
 
 pub fn a_paused_reservation_can_be_cancelled_test() {
   let assert Ok(run) =
-    fabric.start(memory(), librarian(), app.member("junior"), "reserve Dune")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+    fabric.start(
+      memory(),
+      librarian(),
+      id: run.new_id(),
+      context: app.member("junior"),
+      prompt: "reserve Dune",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   fabric.cancel(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.approve(
     run,
@@ -164,8 +216,16 @@ pub fn a_paused_reservation_survives_a_restart_test() {
       let store = store.directory(process.new_name("desk-store"), dir)
       let assert Ok(Nil) = store.start(store)
       let assert Ok(run) =
-        fabric.start(store, librarian(), app.member("junior"), "reserve Dune")
-      let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
+        fabric.start(
+          store,
+          librarian(),
+          id: run.new_id(),
+          context: app.member("junior"),
+          prompt: "reserve Dune",
+          correlation: None,
+        )
+      let assert Ok(run.Suspended([_], [])) =
+        fabric.await(run, within: duration.milliseconds(5000))
       process.send(started, fabric.id(run))
       process.sleep_forever()
     })
@@ -189,7 +249,8 @@ pub fn a_paused_reservation_survives_a_restart_test() {
       reviewer: Some("guardian-ann"),
       context: app.member("junior"),
     )
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(run, within: duration.milliseconds(5000))
   delete_directory(dir)
 }
 
@@ -215,8 +276,16 @@ fn getenv(name: String) -> Result(String, Nil)
 /// desk, naming the purchaser's run. Both are answered through the desk.
 pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
   let assert Ok(desk) =
-    fabric.start(memory(), app.front_desk(), app.member("ada"), "acquire Dune")
-  let assert Ok(run.Suspended([committee], [])) = fabric.await(desk, 5000)
+    fabric.start(
+      memory(),
+      app.front_desk(),
+      id: run.new_id(),
+      context: app.member("ada"),
+      prompt: "acquire Dune",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([committee], [])) =
+    fabric.await(desk, within: duration.milliseconds(5000))
   committee.tool |> should.equal("acquire")
   committee.reference.run |> should.equal(fabric.id(desk))
   let assert Ok(_) =
@@ -227,7 +296,8 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
       context: app.member("ada"),
     )
 
-  let assert Ok(run.Suspended([treasurer], [])) = fabric.await(desk, 5000)
+  let assert Ok(run.Suspended([treasurer], [])) =
+    fabric.await(desk, within: duration.milliseconds(5000))
   treasurer.tool |> should.equal("order_book")
   { treasurer.reference.run != fabric.id(desk) } |> should.be_true
   let assert Ok(_) =
@@ -237,7 +307,7 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
       reviewer: Some("treasurer-tom"),
       context: app.member("ada"),
     )
-  fabric.await(desk, 5000)
+  fabric.await(desk, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
       run.Finished(run.Completed(
@@ -251,8 +321,16 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
 /// the purchaser too; its pending order is void.
 pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
   let assert Ok(desk) =
-    fabric.start(memory(), app.front_desk(), app.member("ada"), "acquire Dune")
-  let assert Ok(run.Suspended([committee], [])) = fabric.await(desk, 5000)
+    fabric.start(
+      memory(),
+      app.front_desk(),
+      id: run.new_id(),
+      context: app.member("ada"),
+      prompt: "acquire Dune",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([committee], [])) =
+    fabric.await(desk, within: duration.milliseconds(5000))
   let assert Ok(_) =
     fabric.approve(
       desk,
@@ -260,12 +338,15 @@ pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
       reviewer: None,
       context: app.member("ada"),
     )
-  let assert Ok(run.Suspended([treasurer], [])) = fabric.await(desk, 5000)
+  let assert Ok(run.Suspended([treasurer], [])) =
+    fabric.await(desk, within: duration.milliseconds(5000))
   let assert Ok(purchaser) = fabric.child(desk, treasurer.reference.run)
 
   let assert Ok(_) = fabric.cancel(desk)
-  fabric.await(desk, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.await(purchaser, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(desk, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(purchaser, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.approve(
     desk,
     treasurer.reference,
@@ -279,8 +360,15 @@ pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
 
 pub fn an_interlibrary_loan_runs_as_one_tool_test() {
   let assert Ok(loan) =
-    fabric.start(memory(), app.front_desk(), app.member("ada"), "borrow Dune")
-  fabric.await(loan, 5000)
+    fabric.start(
+      memory(),
+      app.front_desk(),
+      id: run.new_id(),
+      context: app.member("ada"),
+      prompt: "borrow Dune",
+      correlation: None,
+    )
+  fabric.await(loan, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("done: {\"delivery\":\"REQ-Dune/COURIER\"}"))),
   )
@@ -290,10 +378,12 @@ pub fn an_interlibrary_loan_runs_as_one_tool_test() {
     fabric.start(
       memory(),
       app.front_desk(),
-      app.member("ada"),
-      "borrow Lost Scroll",
+      id: run.new_id(),
+      context: app.member("ada"),
+      prompt: "borrow Lost Scroll",
+      correlation: None,
     )
-  fabric.await(lost, 5000)
+  fabric.await(lost, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
       run.Finished(run.Completed(
@@ -332,8 +422,16 @@ pub fn observations_show_what_a_run_did_test() {
     })
 
   let assert Ok(desk) =
-    fabric.start(memory(), app.front_desk(), app.member("ada"), "acquire Dune")
-  let assert Ok(run.Suspended([committee], [])) = fabric.await(desk, 5000)
+    fabric.start(
+      memory(),
+      app.front_desk(),
+      id: run.new_id(),
+      context: app.member("ada"),
+      prompt: "acquire Dune",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([committee], [])) =
+    fabric.await(desk, within: duration.milliseconds(5000))
   let assert Ok(_) =
     fabric.approve(
       desk,
@@ -341,7 +439,8 @@ pub fn observations_show_what_a_run_did_test() {
       reviewer: None,
       context: app.member("ada"),
     )
-  let assert Ok(run.Suspended([treasurer], [])) = fabric.await(desk, 5000)
+  let assert Ok(run.Suspended([treasurer], [])) =
+    fabric.await(desk, within: duration.milliseconds(5000))
   let assert Ok(_) =
     fabric.approve(
       desk,
@@ -349,7 +448,8 @@ pub fn observations_show_what_a_run_did_test() {
       reviewer: None,
       context: app.member("ada"),
     )
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(desk, 5000)
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(desk, within: duration.milliseconds(5000))
   let seen = receive_until(events, "finished Completed after 2 turns", [])
   list.each([started, child, finished], fn(attachment) {
     let _ = sinal.detach(attachment)
@@ -403,16 +503,25 @@ pub fn a_run_outlives_the_request_that_started_it_test() {
   let handed = process.new_subject()
   process.spawn_unlinked(fn() {
     let assert Ok(run) =
-      fabric.start(runs, librarian(), app.member("junior"), "reserve Dune")
+      fabric.start(
+        runs,
+        librarian(),
+        id: run.new_id(),
+        context: app.member("junior"),
+        prompt: "reserve Dune",
+        correlation: None,
+      )
     process.send(handed, fabric.id(run))
   })
   let assert Ok(id) = process.receive(handed, 5000)
   let assert Ok(run) = fabric.open(runs, librarian(), app.member("junior"), id)
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   run.parse_id(run.id_to_string(pending.reference.run))
   |> should.equal(Ok(fabric.id(run)))
   run.parse_id("../etc") |> should.equal(Error(Nil))
   let assert Ok(_) =
     fabric.reject(run, pending.reference, reason: "not today", reviewer: None)
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(run, within: duration.milliseconds(5000))
 }

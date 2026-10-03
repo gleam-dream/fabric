@@ -105,6 +105,13 @@
 //// refused. `NotAwaited` and `NotReached` mean what the settlement knew is
 //// not in the record and needs a person.
 ////
+//// Every event of a run (all but `lease_lost`, `renewal_failed`, `sweep`,
+//// `drain` and `drain_unavailable`) carries the run's `correlation`, under
+//// the `correlation` key that every gleam-dream package uses: the one given
+//// to `fabric.start`, or one derived from the run id. A sub-agent run's
+//// events carry its root's. The same value reaches the model's requests
+//// and the tools' calls, so their own events join the run's.
+////
 //// Metadata carries identifiers and closed kinds only, never arguments,
 //// tool results, or model text, with one exception: `settlement_refused`
 //// carries the refused settlement's summary as the tool gave it to
@@ -116,6 +123,7 @@
 import fabric/model.{type Usage, Usage}
 import gleam/option.{type Option, None, Some}
 import sinal.{type Event}
+import sinal/correlation.{type Correlation}
 import sinal/fields.{type Fields}
 
 /// An action of a run: model turn, provider call id, and tool or
@@ -130,23 +138,29 @@ pub type RunStarted {
     agent: String,
     agent_version: Int,
     parent: Option(String),
+    correlation: Correlation,
   )
 }
 
 pub type RunRecovered {
-  RunRecovered(run: String, incarnation: Int)
+  RunRecovered(run: String, incarnation: Int, correlation: Correlation)
 }
 
 /// The incarnation whose runner handed the run off; `fabric.recover` goes
 /// on with the next.
 pub type RunHandedOff {
-  RunHandedOff(run: String, incarnation: Int)
+  RunHandedOff(run: String, incarnation: Int, correlation: Correlation)
 }
 
 /// A recovery took over a run whose lease another owner held (expired, or
 /// of an earlier process of the recovering store), as `incarnation`.
 pub type RunTakenOver {
-  RunTakenOver(run: String, incarnation: Int, previous_owner: String)
+  RunTakenOver(
+    run: String,
+    incarnation: Int,
+    previous_owner: String,
+    correlation: Correlation,
+  )
 }
 
 /// Why a leased store killed a runner.
@@ -187,7 +201,12 @@ pub type TurnResult {
 }
 
 pub type ModelTurn {
-  ModelTurn(run: String, turn: Int, result: TurnResult)
+  ModelTurn(
+    run: String,
+    turn: Int,
+    result: TurnResult,
+    correlation: Correlation,
+  )
 }
 
 pub type Answered {
@@ -201,15 +220,21 @@ pub type ApprovalRequested {
     requirement: String,
     requirement_version: Int,
     revision: Int,
+    correlation: Correlation,
   )
 }
 
 pub type ApprovalAnswered {
-  ApprovalAnswered(action: ActionRef, revision: Int, answer: Answered)
+  ApprovalAnswered(
+    action: ActionRef,
+    revision: Int,
+    answer: Answered,
+    correlation: Correlation,
+  )
 }
 
 pub type ToolDispatched {
-  ToolDispatched(action: ActionRef)
+  ToolDispatched(action: ActionRef, correlation: Correlation)
 }
 
 /// How an action's result reached the run.
@@ -226,15 +251,24 @@ pub type Disposition {
 }
 
 pub type ToolSettled {
-  ToolSettled(action: ActionRef, disposition: Disposition)
+  ToolSettled(
+    action: ActionRef,
+    disposition: Disposition,
+    correlation: Correlation,
+  )
 }
 
 pub type ChildStarted {
-  ChildStarted(action: ActionRef, child: String)
+  ChildStarted(action: ActionRef, child: String, correlation: Correlation)
 }
 
 pub type ChildSettled {
-  ChildSettled(action: ActionRef, child: String, disposition: Disposition)
+  ChildSettled(
+    action: ActionRef,
+    child: String,
+    disposition: Disposition,
+    correlation: Correlation,
+  )
 }
 
 /// Why a late settlement was not recorded.
@@ -256,11 +290,12 @@ pub type SettlementRefused {
     /// What a person needs to reconcile the action, as the tool gave it to
     /// `tool.settle`.
     summary: String,
+    correlation: Correlation,
   )
 }
 
 pub type RunCancelled {
-  RunCancelled(run: String)
+  RunCancelled(run: String, correlation: Correlation)
 }
 
 pub type OutcomeKind {
@@ -274,7 +309,7 @@ pub type OutcomeKind {
 }
 
 pub type RunFinished {
-  RunFinished(run: String, outcome: OutcomeKind)
+  RunFinished(run: String, outcome: OutcomeKind, correlation: Correlation)
 }
 
 /// Totals over the whole run. The token counts sum the replies that
@@ -308,7 +343,16 @@ pub fn run_started() -> Event(Nil, RunStarted) {
       fields.optional(fields.string("parent")),
       get: fn(started) { started.parent },
     )
-    fields.success(RunStarted(run:, agent:, agent_version:, parent:))
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(RunStarted(
+      run:,
+      agent:,
+      agent_version:,
+      parent:,
+      correlation:,
+    ))
   })
 }
 
@@ -321,7 +365,10 @@ pub fn run_recovered() -> Event(Nil, RunRecovered) {
       fields.int("incarnation"),
       get: fn(recovered) { recovered.incarnation },
     )
-    fields.success(RunRecovered(run:, incarnation:))
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(RunRecovered(run:, incarnation:, correlation:))
   })
 }
 
@@ -334,7 +381,10 @@ pub fn run_handed_off() -> Event(Nil, RunHandedOff) {
       fields.int("incarnation"),
       get: fn(handed) { handed.incarnation },
     )
-    fields.success(RunHandedOff(run:, incarnation:))
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(RunHandedOff(run:, incarnation:, correlation:))
   })
 }
 
@@ -348,7 +398,15 @@ pub fn run_taken_over() -> Event(Nil, RunTakenOver) {
       fields.string("previous_owner"),
       get: fn(taken) { taken.previous_owner },
     )
-    fields.success(RunTakenOver(run:, incarnation:, previous_owner:))
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(RunTakenOver(
+      run:,
+      incarnation:,
+      previous_owner:,
+      correlation:,
+    ))
   })
 }
 
@@ -411,7 +469,10 @@ pub fn model_turn() -> Event(Option(Usage), ModelTurn) {
       ),
       get: fn(turn) { turn.result },
     )
-    fields.success(ModelTurn(run:, turn:, result:))
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(ModelTurn(run:, turn:, result:, correlation:))
   })
 }
 
@@ -431,11 +492,15 @@ pub fn approval_requested() -> Event(Nil, ApprovalRequested) {
     use revision <- fields.include(fields.int("revision"), get: fn(requested) {
       requested.revision
     })
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
     fields.success(ApprovalRequested(
       action:,
       requirement:,
       requirement_version:,
       revision:,
+      correlation:,
     ))
   })
 }
@@ -452,14 +517,20 @@ pub fn approval_answered() -> Event(Nil, ApprovalAnswered) {
       fields.enum("answer", [Approved, Rejected], answered_name),
       get: fn(answered) { answered.answer },
     )
-    fields.success(ApprovalAnswered(action:, revision:, answer:))
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(ApprovalAnswered(action:, revision:, answer:, correlation:))
   })
 }
 
 pub fn tool_dispatched() -> Event(Nil, ToolDispatched) {
   event(["tool", "start"], fields.empty(), {
     use action <- fields.include(action_fields(), get: fn(tool) { tool.action })
-    fields.success(ToolDispatched(action:))
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(ToolDispatched(action:, correlation:))
   })
 }
 
@@ -472,7 +543,10 @@ pub fn tool_settled() -> Event(Nil, ToolSettled) {
       disposition("disposition"),
       get: fn(settled) { settled.disposition },
     )
-    fields.success(ToolSettled(action:, disposition:))
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(ToolSettled(action:, disposition:, correlation:))
   })
 }
 
@@ -484,7 +558,10 @@ pub fn child_started() -> Event(Nil, ChildStarted) {
     use child <- fields.include(fields.string("child"), get: fn(started) {
       started.child
     })
-    fields.success(ChildStarted(action:, child:))
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(ChildStarted(action:, child:, correlation:))
   })
 }
 
@@ -500,7 +577,10 @@ pub fn child_settled() -> Event(Nil, ChildSettled) {
       disposition("disposition"),
       get: fn(settled) { settled.disposition },
     )
-    fields.success(ChildSettled(action:, child:, disposition:))
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(ChildSettled(action:, child:, disposition:, correlation:))
   })
 }
 
@@ -523,7 +603,16 @@ pub fn settlement_refused() -> Event(Nil, SettlementRefused) {
     use summary <- fields.include(fields.string("summary"), get: fn(refused) {
       refused.summary
     })
-    fields.success(SettlementRefused(action:, offered:, reason:, summary:))
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(SettlementRefused(
+      action:,
+      offered:,
+      reason:,
+      summary:,
+      correlation:,
+    ))
   })
 }
 
@@ -532,7 +621,10 @@ pub fn run_cancelled() -> Event(Nil, RunCancelled) {
     use run <- fields.include(fields.string("run"), get: fn(cancelled) {
       cancelled.run
     })
-    fields.success(RunCancelled(run:))
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(RunCancelled(run:, correlation:))
   })
 }
 
@@ -582,7 +674,11 @@ pub fn run_finished() -> Event(RunTotals, RunFinished) {
         ),
         get: fn(finished) { finished.outcome },
       )
-      fields.success(RunFinished(run:, outcome:))
+      use correlation <- fields.include(
+        correlation.required_field(),
+        get: fn(m) { m.correlation },
+      )
+      fields.success(RunFinished(run:, outcome:, correlation:))
     },
   )
 }

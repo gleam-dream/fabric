@@ -11,7 +11,9 @@ import fabric_postgres/agents
 import fabric_postgres/support
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{None}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 
 /// Leases short enough to expire within a test: renewed every 200 ms.
@@ -22,7 +24,7 @@ fn node_settings(node: String, schema: String) -> Settings {
   let assert Ok(settings) =
     fabric_postgres.settings(support.pool(4), node:)
     |> fabric_postgres.with_schema(schema)
-  fabric_postgres.with_lease(settings, lease)
+  fabric_postgres.with_lease(settings, duration.milliseconds(lease))
 }
 
 /// A started store of `node`, linked to the caller.
@@ -79,21 +81,31 @@ pub fn a_live_lease_on_one_node_reads_working_on_the_other_test() {
   let agent = agents.agent(gate, 5)
   let a = node("a", schema)
   let b = node("b", schema)
-  let assert Ok(started) = fabric.start(a, agent, Nil, "go")
+  let assert Ok(started) =
+    fabric.start(
+      a,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let arrival = agents.arrival(gate)
   let id = fabric.id(started)
   holder(schema, id) |> should.equal(Ok(#("a", True)))
   let assert Ok(seen) = fabric.open(b, agent, Nil, id)
-  fabric.await(seen, 0) |> should.equal(Ok(run.Working))
+  fabric.await(seen, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Working))
   // Longer than a lease: node a's renewals keep it live.
   process.sleep(lease + 300)
   let assert Ok(recovered) = fabric.recover(b, agent, Nil, id)
-  fabric.await(recovered, 0) |> should.equal(Ok(run.Working))
+  fabric.await(recovered, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Working))
   incarnation(seen) |> should.equal(1)
   holder(schema, id) |> should.equal(Ok(#("a", True)))
   agents.release(arrival)
   // Node b sees the end committed by node a.
-  fabric.await(seen, 5000)
+  fabric.await(seen, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done: {\"done\":5}"))))
   holder(schema, id) |> should.equal(Error(Nil))
   agents.another(gate, 100) |> should.be_false
@@ -112,7 +124,15 @@ pub fn an_expired_lease_is_taken_over_exactly_once_test() {
   let #(owner, id) =
     agents.owned(fn() {
       let a = started(settings)
-      let assert Ok(started) = fabric.start(a, agent, Nil, "go")
+      let assert Ok(started) =
+        fabric.start(
+          a,
+          agent,
+          id: run.new_id(),
+          context: Nil,
+          prompt: "go",
+          correlation: None,
+        )
       fabric.id(started)
     })
   let arrival = agents.arrival(gate)
@@ -122,7 +142,7 @@ pub fn an_expired_lease_is_taken_over_exactly_once_test() {
   let recover_all = fn() {
     together(others, fn(node) {
       let assert Ok(there) = fabric.recover(node, agent, Nil, id)
-      fabric.await(there, 0)
+      fabric.await(there, within: duration.milliseconds(0))
     })
   }
   recover_all() |> list.unique |> should.equal([Ok(run.Working)])
@@ -135,7 +155,7 @@ pub fn an_expired_lease_is_taken_over_exactly_once_test() {
   holder(schema, id) |> should.equal(Error(Nil))
   agents.another(gate, 200) |> should.be_false
   let assert Ok(_) = fabric.reconcile(seen, uncertain.reference, "{\"done\":5}")
-  fabric.await(seen, 5000)
+  fabric.await(seen, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done: {\"done\":5}"))))
   agents.another(gate, 100) |> should.be_false
 }
@@ -149,14 +169,23 @@ pub fn a_cancellation_from_the_other_node_wins_test() {
   let agent = agents.agent(gate, 5)
   let a = node("a", schema)
   let b = node("b", schema)
-  let assert Ok(started) = fabric.start(a, agent, Nil, "go")
+  let assert Ok(started) =
+    fabric.start(
+      a,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let arrival = agents.arrival(gate)
   let id = fabric.id(started)
   fabric.cancel_stored(b, id)
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   holder(schema, id) |> should.equal(Error(Nil))
   agents.gone(arrival.body, 2000) |> should.be_true
-  fabric.await(started, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(started, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert Ok(snapshot) = fabric.snapshot(started)
   let assert [run.Uncertain(_)] =
     list.map(snapshot.actions, fn(action) { action.state })

@@ -71,13 +71,22 @@ fn start(
       execution.config()
         |> execution.with_max_concurrency(2)
         |> execution.with_settle_timeout(duration.seconds(5)),
+      input: fn(_, _, input) { input },
       explain: fn(failure) { "typed error: " <> string.inspect(failure) },
-      rollback_within: 5000,
+      rollback_within: duration.milliseconds(5000),
     )
   let assert Ok(agent) =
     agent.new("agent", model_once(), [tool], policy.always_allow())
     |> agent.build
-  let assert Ok(run) = fabric.start(watched.memory(), agent, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      watched.memory(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   run
 }
 
@@ -107,7 +116,8 @@ pub fn a_crash_its_decider_aborted_is_uncertain_test() {
   let workflow = saga.define("pay_once", saga.perform(_, pay))
 
   let run = start(workflow)
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   string.contains(uncertain.evidence, "attempt 1 of step pay crashed")
   |> should.be_true
   string.contains(uncertain.evidence, "Declined") |> should.be_false
@@ -168,7 +178,8 @@ pub fn a_sibling_that_crashed_while_settling_is_uncertain_test() {
   let assert Ok(Nil) = process.receive(a_failed, 5000)
   process.send(b_gate, Nil)
 
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let _ = sinal.detach(attached)
   string.contains(uncertain.evidence, "attempt 1 of step b crashed")
   |> should.be_true
@@ -202,7 +213,8 @@ pub fn a_crash_retried_to_success_is_uncertain_test() {
   let assert Ok(second) = process.receive(attempts, 5000)
   process.send(second, False)
 
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   string.contains(uncertain.evidence, "attempt 1 of step pay crashed")
   |> should.be_true
   string.contains(uncertain.evidence, "attempt 2") |> should.be_false
@@ -223,7 +235,8 @@ pub fn a_crashed_recovery_decision_is_uncertain_test() {
   let workflow = saga.define("decision_crash", saga.perform(_, pay))
 
   let run = start(workflow)
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   string.contains(
     uncertain.evidence,
     "the recovery decision on attempt 1 of step pay crashed",
@@ -250,7 +263,8 @@ pub fn a_crashed_undo_is_uncertain_test() {
     saga.define("undo_crash", fn(x) { saga.perform(saga.perform(x, hold), pay) })
 
   let run = start(workflow)
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   string.contains(uncertain.evidence, "the undo of step hold crashed")
   |> should.be_true
   string.contains(uncertain.evidence, "while releasing") |> should.be_false
@@ -274,7 +288,8 @@ pub fn a_refund_the_provider_may_have_taken_is_uncertain_test() {
   let workflow = saga.define("refund", saga.perform(_, refund))
 
   let run = start(workflow)
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   uncertain.tool |> should.equal("workflow")
   string.contains(
     uncertain.evidence,
@@ -307,7 +322,8 @@ pub fn a_rolled_back_unknown_effect_is_uncertain_test() {
   let workflow = saga.define("refund", saga.perform(_, refund))
 
   let run = start(workflow)
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   uncertain.tool |> should.equal("workflow")
   string.contains(
     uncertain.evidence,
@@ -330,7 +346,7 @@ pub fn an_unmarked_typed_error_is_definite_test() {
   let workflow = saga.define("refund", saga.perform(_, refund))
 
   let run = start(workflow)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
       run.Finished(run.Completed(

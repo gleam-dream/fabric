@@ -5,7 +5,7 @@
 //// ```gleam
 //// let settings =
 ////   fabric_postgres.settings(db, node: "api-1")
-////   |> fabric_postgres.with_lease(30_000)
+////   |> fabric_postgres.with_lease(duration.seconds(30))
 //// let assert Ok(Nil) = fabric_postgres.migrate(settings)
 //// let assert Ok(runs) =
 ////   fabric_postgres.store(process.new_name("runs"), settings)
@@ -35,16 +35,22 @@ import gleam/erlang/process.{type Name}
 import gleam/list
 import gleam/result
 import gleam/string
+import gleam/time/duration.{type Duration}
 import pog
 
 /// Where and how a store keeps its runs: the connection, this node's id,
 /// the lease duration and the schema.
 pub opaque type Settings {
-  Settings(connection: pog.Connection, node: String, lease: Int, schema: String)
+  Settings(
+    connection: pog.Connection,
+    node: String,
+    lease: Duration,
+    schema: String,
+  )
 }
 
-/// Settings over `connection` for the node `node`, with a 30 000 ms lease
-/// in the schema `public`.
+/// Settings over `connection` for the node `node`, with a 30 s lease in the
+/// schema `public`.
 ///
 /// `node` names this VM among every VM that shares the database: unique to
 /// it, and the same after it restarts (a host name, or a pod's stable name),
@@ -52,15 +58,15 @@ pub opaque type Settings {
 /// `nonode@nohost`, the name of every undistributed VM. Two VMs given one
 /// node id would each take over the other's runs as soon as they restart.
 pub fn settings(connection: pog.Connection, node node: String) -> Settings {
-  Settings(connection:, node:, lease: 30_000, schema: "public")
+  Settings(connection:, node:, lease: duration.seconds(30), schema: "public")
 }
 
-/// Sets the lease duration in milliseconds (default 30 000): how long a
-/// run stays with this node after its last renewal (every `lease / 3` ms),
-/// and so how long another node waits before taking over a run whose node
-/// stopped. `store` checks it: at least 100 ms, at most 2^32 - 1 ms.
-pub fn with_lease(settings: Settings, milliseconds: Int) -> Settings {
-  Settings(..settings, lease: milliseconds)
+/// Sets the lease duration (default 30 s): how long a run stays with this
+/// node after its last renewal (every third of the lease), and so how long
+/// another node waits before taking over a run whose node stopped. `store`
+/// checks it: at least 100 ms, at most 2^32 - 1 ms.
+pub fn with_lease(settings: Settings, lease: Duration) -> Settings {
+  Settings(..settings, lease:)
 }
 
 /// Why a schema name was refused (`with_schema`).
@@ -190,8 +196,8 @@ pub fn backend(settings: Settings) -> LeasedBackend {
 
 /// A leased store of these settings, registered as `name` (see
 /// `fabric/store.leased`): its process identifies itself as
-/// `<node>/<name>/<random>`, and renews its runners' leases every
-/// `lease / 3` ms. Run `migrate` first. Refused when the node id or the
+/// `<node>/<name>/<random>`, and renews its runners' leases every third of
+/// the lease. Run `migrate` first. Refused when the node id or the
 /// lease duration is invalid.
 pub fn store(
   name: Name(store.Message),
@@ -207,7 +213,7 @@ pub fn store(
 
 /// Why `prune` could not confirm a deletion count.
 pub type PruneError {
-  PruneAgeNegative(Int)
+  PruneAgeNegative(Duration)
   PruneLimitNotPositive(Int)
   /// The database was unreachable or refused the transaction. A lost commit
   /// acknowledgement can leave the outcome unknown. Repeating pruning is safe,
@@ -216,7 +222,7 @@ pub type PruneError {
 }
 
 /// Deletes finished runs, a whole family at a time: up to `limit` root
-/// runs that ended at least `ended_for` milliseconds ago (by the
+/// runs that ended at least `ended_for` ago, in whole milliseconds (by the
 /// database's clock), each with every graph and agent descendant. All members
 /// must have current, readable retention projections, reciprocal attachments,
 /// no missing children, no unresolved effects and no live lease. Every member
@@ -226,12 +232,13 @@ pub type PruneError {
 /// nodes at once: each family is deleted by one of them.
 pub fn prune(
   settings: Settings,
-  ended_for milliseconds: Int,
+  ended_for ended_for: Duration,
   limit limit: Int,
 ) -> Result(Int, PruneError) {
   let table = table(settings)
+  let milliseconds = duration.to_milliseconds(ended_for)
   case milliseconds < 0, limit < 1 {
-    True, _ -> Error(PruneAgeNegative(milliseconds))
+    True, _ -> Error(PruneAgeNegative(ended_for))
     _, True -> Error(PruneLimitNotPositive(limit))
     False, False ->
       retention.prune(settings.connection, table, milliseconds, limit)

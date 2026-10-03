@@ -26,6 +26,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/result
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import sinal
@@ -89,7 +90,8 @@ fn start(runs, recovery) {
 }
 
 fn start_all(runs, recoveries) {
-  let assert Ok(spec) = fabric.sweeper(runs, recoveries, every: 60_000)
+  let assert Ok(spec) =
+    fabric.sweeper(runs, recoveries, every: duration.milliseconds(60_000))
   let assert Ok(started) = spec.start()
   started.pid
 }
@@ -157,7 +159,7 @@ pub fn mixed_family_scanning_keeps_the_foreign_parent_lease_and_uses_its_graph_r
   let sweeper = start_all(b, registrations)
   process.receive(events, 5000) |> should.equal(Ok(o.Sweep(1, 1, 0, 0)))
   let assert Ok(worker) = fabric.open(b, worker(calls), Nil, child)
-  fabric.await(worker, 5000)
+  fabric.await(worker, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("42"))))
   nodes.revision(memory.backend, graph.id(parent))
   |> should.equal(parent_revision)
@@ -173,7 +175,7 @@ pub fn mixed_family_scanning_keeps_the_foreign_parent_lease_and_uses_its_graph_r
   let assert Ok(summary) = process.receive(events, 5000)
   summary.claimed |> should.equal(1)
   let handle = graph.attach(managed(b, calls), graph.id(parent))
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(42))
   probe.count(calls, "model") |> should.equal(2)
   probe.count(contexts, "wrong-agent-root") |> should.equal(0)
@@ -187,7 +189,11 @@ pub fn invalid_graph_registrations_do_not_change_the_claimed_execution_test() {
   let calls = probe.new()
   let registration =
     graph.recovery(identity(), fn(runs) { runtime(runs, calls) })
-  fabric.sweeper(b, [registration, registration], every: 100)
+  fabric.sweeper(
+    b,
+    [registration, registration],
+    every: duration.milliseconds(100),
+  )
   |> should.equal(Error([fabric.DuplicateRecovery(identity())]))
   let assert Ok(handle) =
     graph.start(runtime(a, calls), support.id("wrong-binding"), 41)
@@ -227,7 +233,11 @@ pub fn competing_graph_scans_claim_each_expired_run_once_test() {
   one.claimed + two.claimed |> should.equal(6)
   one.recovered + two.recovered |> should.equal(6)
   list.each(ids, fn(id) {
-    let assert Ok(done) = graph.await(graph.attach(runtime(b, calls), id), 5000)
+    let assert Ok(done) =
+      graph.await(
+        graph.attach(runtime(b, calls), id),
+        within: duration.milliseconds(5000),
+      )
     let assert graph.Blocked(_, graph.EffectUncertain(_)) = done.status
     done.receipts |> should.equal([])
   })
@@ -327,7 +337,8 @@ pub fn expired_graph_work_recovers_without_repeating_its_started_effect_test() {
     start(b, graph.recovery(identity(), fn(runs) { runtime(runs, calls) }))
   process.receive(events, 5000) |> should.equal(Ok(o.Sweep(1, 1, 0, 0)))
   let handle = graph.attach(runtime(b, calls), graph.id(handle))
-  let assert Ok(snapshot) = graph.await(handle, 5000)
+  let assert Ok(snapshot) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Blocked(_, graph.EffectUncertain(_)) = snapshot.status
   snapshot.receipts |> should.equal([])
   probe.count(calls, "effect") |> should.equal(1)
@@ -456,7 +467,8 @@ pub fn cancelled_nested_fork_settles_without_routing_or_repeating_effects_test()
   let second = probe.arrival(calls)
   probe.release(first)
   probe.release(second)
-  let assert Ok(waiting) = graph.await(root, 5000)
+  let assert Ok(waiting) =
+    graph.await(root, within: duration.milliseconds(5000))
   let assert graph.Child(_, child.Fork(_)) = waiting.status
   let members =
     map_children(original, barrier_uncertain_leaf(original, calls), codec.int())
@@ -469,7 +481,8 @@ pub fn cancelled_nested_fork_settles_without_routing_or_repeating_effects_test()
       graph.id(leaf)
     })
   let assert Ok(_) = graph.cancel(root)
-  let assert Ok(cancelled) = graph.await(root, 5000)
+  let assert Ok(cancelled) =
+    graph.await(root, within: duration.milliseconds(5000))
   let assert graph.Cancelled(graph.ChildUnresolved(_, _)) = cancelled.status
   let ids = [id, middle_id, ..leaves]
   await_free(memory.backend, ids, 200)
@@ -490,7 +503,11 @@ pub fn cancelled_nested_fork_settles_without_routing_or_repeating_effects_test()
   })
   let _ = scan_runtime(a, build)
   let members = map_children(a, barrier_uncertain_leaf(a, calls), codec.int())
-  let assert Ok(middle) = graph.await(graph.attach(members, middle_id), 5000)
+  let assert Ok(middle) =
+    graph.await(
+      graph.attach(members, middle_id),
+      within: duration.milliseconds(5000),
+    )
   middle.status |> should.equal(graph.Cancelled(graph.ForkSettled(1)))
   let _ = scan_runtime(a, build)
   let assert Ok(done) = graph.read(graph.attach(build(a), id))
@@ -535,7 +552,8 @@ pub fn nested_forks_release_leases_and_converge_after_lost_notifications_test() 
       let runs = nodes.node(memory.backend, "original", nodes.long)
       let assert Ok(root) =
         graph.start(nested_forks(runs), id, [[1, 2], [3, 4]])
-      let assert Ok(waiting) = graph.await(root, 5000)
+      let assert Ok(waiting) =
+        graph.await(root, within: duration.milliseconds(5000))
       let assert graph.Child(_, child.Fork(_)) = waiting.status
       let outer_runtime =
         map_children(runs, mapped_signals(runs), codec.list(codec.int()))
@@ -580,7 +598,11 @@ pub fn nested_forks_release_leases_and_converge_after_lost_notifications_test() 
       graph.deliver(leaf, reference, response(), waiting.value * 10)
   })
   let _ = scan_runtime(a, nested_forks)
-  let assert Ok(done) = graph.await(graph.attach(nested_forks(a), id), 5000)
+  let assert Ok(done) =
+    graph.await(
+      graph.attach(nested_forks(a), id),
+      within: duration.milliseconds(5000),
+    )
   done.status |> should.equal(graph.Completed([[10, 20], [30, 40]]))
 }
 
@@ -592,7 +614,8 @@ pub fn fork_discovery_survives_lost_watches_and_does_not_repeat_unchanged_waits_
     restart.owned(fn() {
       let runs = nodes.node(memory.backend, "original", nodes.long)
       let assert Ok(handle) = graph.start(mapped_signals(runs), id, [1, 2, 3])
-      let assert Ok(waiting) = graph.await(handle, 5000)
+      let assert Ok(waiting) =
+        graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.Fork(_, _) = waiting.status
       runs
     })
@@ -618,7 +641,10 @@ pub fn fork_discovery_survives_lost_watches_and_does_not_repeat_unchanged_waits_
   let assert Ok(_) = graph.deliver(second, reference, response(), 20)
   scan_runtime(a, mapped_signals).claimed |> should.equal(1)
   let assert Ok(waiting) =
-    graph.await(graph.attach(mapped_signals(a), id), 5000)
+    graph.await(
+      graph.attach(mapped_signals(a), id),
+      within: duration.milliseconds(5000),
+    )
   let assert graph.Fork(_, _) = waiting.status
   await_free(memory.backend, ids, 200)
   // The new wait has one fewer dependency; one claim records that new scope.
@@ -632,7 +658,11 @@ pub fn fork_discovery_survives_lost_watches_and_does_not_repeat_unchanged_waits_
     let assert Ok(_) = graph.deliver(handle, reference, response(), member * 10)
   })
   scan_runtime(a, mapped_signals).claimed |> should.equal(1)
-  let assert Ok(done) = graph.await(graph.attach(mapped_signals(a), id), 5000)
+  let assert Ok(done) =
+    graph.await(
+      graph.attach(mapped_signals(a), id),
+      within: duration.milliseconds(5000),
+    )
   done.status |> should.equal(graph.Completed([10, 20, 30]))
 }
 
@@ -654,7 +684,8 @@ pub fn nested_idle_discovery_converges_and_later_observes_an_external_signal_tes
       let original = nodes.node(memory.backend, "original", nodes.long)
       let assert Ok(handle) =
         graph.start(nested(original), support.id("idle-root"), 41)
-      let assert Ok(waiting) = graph.await(handle, 5000)
+      let assert Ok(waiting) =
+        graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.Child(_, child.Signal(_)) = waiting.status
       original
     })
@@ -680,7 +711,11 @@ pub fn nested_idle_discovery_converges_and_later_observes_an_external_signal_tes
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Ok(_) = graph.deliver(handle, reference, response(), 42)
   let _ = scan_once(a)
-  let assert Ok(done) = graph.await(graph.attach(nested(a), root), 5000)
+  let assert Ok(done) =
+    graph.await(
+      graph.attach(nested(a), root),
+      within: duration.milliseconds(5000),
+    )
   done.status |> should.equal(graph.Completed(42))
 }
 
@@ -718,7 +753,8 @@ pub fn nested_blocked_discovery_converges_without_replaying_uncertain_effects_te
   let leaf = support.id(child.reserved_id(run.id_to_string(middle), 1))
   let ids = [root, middle, leaf]
   let assert Ok(handle) = graph.start(build(a), root, 41)
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(_, child.Uncertain(_)) = waiting.status
   await_free(memory.backend, ids, 200)
   let _ = scan_runtime(b, build)
@@ -736,7 +772,7 @@ pub fn nested_blocked_discovery_converges_without_replaying_uncertain_effects_te
   let assert graph.Blocked(reference, _) = waiting.status
   let assert Ok(_) = graph.reconcile(leaf_handle, reference, "42")
   let _ = scan_runtime(a, build)
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(42))
   probe.count(calls, "effect") |> should.equal(1)
 }

@@ -10,6 +10,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleeunit/should
+import sinal/correlation
 
 fn action(child) {
   run.ActionRecord(
@@ -36,6 +37,7 @@ fn state(id, parent, actions) {
     0,
     controller.Ended(run.Cancelled),
     None,
+    correlation.from_key(id),
   )
 }
 

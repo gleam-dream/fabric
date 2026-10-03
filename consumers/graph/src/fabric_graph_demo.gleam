@@ -17,6 +17,7 @@ import gleam/io
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import gleam/time/duration
 import json/blueprint/codec
 
 fn infallible(_error: Nil) -> operation.Failure {
@@ -25,7 +26,8 @@ fn infallible(_error: Nil) -> operation.Failure {
 
 pub fn execute(limit: Int) -> graph.Snapshot(Int, Int) {
   let handle = start_with_reviewer(limit, scripted_reviewer())
-  let assert Ok(snapshot) = graph.await(handle, 5000)
+  let assert Ok(snapshot) =
+    graph.await(handle, within: duration.milliseconds(5000))
   snapshot
 }
 
@@ -88,7 +90,7 @@ pub fn execute_batch(
     graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
   let assert Ok(id) = run.parse_id("batch-demo")
   let assert Ok(handle) = graph.start(runtime, id, initial)
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done
 }
 
@@ -143,7 +145,7 @@ pub fn execute_agent(limit: Int) -> graph.Snapshot(Int, Int) {
       fn() { Nil },
     )
   let handle = start_on(runs, limit, agent_node.as_operation(reviewer))
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done
 }
 

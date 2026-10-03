@@ -15,6 +15,7 @@ import fabric_postgres/support
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{Some}
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import pog
@@ -71,7 +72,7 @@ fn inner(runs, arrivals) {
 fn parent(runs, arrivals) {
   let assert Ok(op) =
     graph.map(run.Identity("outer-map", 1), inner(runs, arrivals), 3, 2)
-  let assert Ok(op) = operation.with_deadline(op, 5000)
+  let assert Ok(op) = operation.with_deadline(op, duration.milliseconds(5000))
   wrap(
     runs,
     "pg-fork-deadline",
@@ -97,7 +98,7 @@ fn sweep(runs, arrivals) {
           parent(runs, arrivals)
         }),
       ],
-      every: 20,
+      every: duration.milliseconds(20),
     )
   let assert Ok(started) = spec.start()
   started
@@ -167,7 +168,8 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
   let assert Ok(second) = process.receive(arrivals, 5000)
   process.send(first, Nil)
   process.send(second, Nil)
-  let assert Ok(waiting) = graph.await(root, 5000)
+  let assert Ok(waiting) =
+    graph.await(root, within: duration.milliseconds(5000))
   let assert graph.Fork(_, _) = waiting.status
   let assert Some(due) = waiting.deadline
   let members =
@@ -215,7 +217,11 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
       fork.Withdrawn,
     )),
   )
-  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
   |> should.equal(Ok(0))
   process.sleep(100)
   idle(backend, ids, 300)
@@ -239,6 +245,10 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
   idle(backend, ids, 300)
   process.unlink(started.pid)
   agents.kill(started.pid)
-  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
   |> should.equal(Ok(6))
 }

@@ -13,6 +13,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
+import sinal/correlation
 
 fn agent_state(id, parent, actions) {
   agent.State(
@@ -29,6 +30,7 @@ fn agent_state(id, parent, actions) {
     0,
     agent.Ended(run.Cancelled),
     None,
+    correlation.from_key(id),
   )
 }
 

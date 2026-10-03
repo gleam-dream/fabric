@@ -37,7 +37,15 @@ fn dead(
   agent: agent.Agent(Nil),
   body: probe.Probe,
 ) -> run.RunId {
-  let assert Ok(run) = fabric.start(node, agent, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      node,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(body)
   expire(node, backend, fabric.id(run))
   fabric.id(run)
@@ -52,7 +60,8 @@ fn expire(node: store.Store, backend: store.LeasedBackend, id: run.RunId) {
 }
 
 fn start(node: store.Store, recoveries: List(fabric.Recovery), every: Int) {
-  let assert Ok(spec) = fabric.sweeper(node, recoveries, every:)
+  let assert Ok(spec) =
+    fabric.sweeper(node, recoveries, every: duration.milliseconds(every))
   let assert Ok(started) = spec.start()
   started.pid
 }
@@ -78,7 +87,7 @@ fn claimed(events: process.Subject(o.Sweep)) -> o.Sweep {
 }
 
 fn uncertain(run: fabric.Run(Nil), tries: Int) -> run.UncertainAction {
-  case fabric.await(run, 0) {
+  case fabric.await(run, within: duration.milliseconds(0)) {
     Ok(run.Suspended([], [effect])) -> effect
     _ if tries > 0 -> {
       process.sleep(10)
@@ -91,23 +100,32 @@ fn uncertain(run: fabric.Run(Nil), tries: Int) -> run.UncertainAction {
   }
 }
 
+import gleam/option.{None}
 import gleam/string
+import gleam/time/duration
 
 pub fn invalid_configuration_is_reported_before_starting_test() {
   let memory = testing.leased_memory()
   let node = nodes.node(memory.backend, "a", nodes.long)
   let agent = worker("worker", probe.new())
   let recovery = fabric.recovery(agent, fn(_) { Nil })
-  fabric.sweeper(node, [recovery, recovery], every: 0)
+  fabric.sweeper(node, [recovery, recovery], every: duration.milliseconds(0))
   |> should.equal(
     Error([
-      fabric.EveryNotPositive(0),
+      fabric.EveryNotPositive(duration.milliseconds(0)),
       fabric.DuplicateRecovery(run.Identity("worker", 1)),
     ]),
   )
-  fabric.sweeper(node, [], every: 4_294_967_296)
-  |> should.equal(Error([fabric.EveryTooLarge(4_294_967_296, 4_294_967_295)]))
-  fabric.sweeper(support.store(), [], every: 100)
+  fabric.sweeper(node, [], every: duration.milliseconds(4_294_967_296))
+  |> should.equal(
+    Error([
+      fabric.EveryTooLarge(
+        duration.milliseconds(4_294_967_296),
+        duration.milliseconds(4_294_967_295),
+      ),
+    ]),
+  )
+  fabric.sweeper(support.store(), [], every: duration.milliseconds(100))
   |> should.equal(Error([fabric.StoreNotLeased]))
 }
 
@@ -118,7 +136,15 @@ pub fn boot_and_periodic_scans_recover_only_expired_work_test() {
   let body = probe.new()
   let agent = worker("worker", body)
   let id = dead(a, memory.backend, agent, body)
-  let assert Ok(live) = fabric.start(a, agent, Nil, "go")
+  let assert Ok(live) =
+    fabric.start(
+      a,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(body)
   let #(events, attachment) = capture()
   let sweeper = start(b, [fabric.recovery(agent, fn(_) { Nil })], 20)
@@ -212,7 +238,7 @@ pub fn supervisor_shutdown_stops_a_blocked_context_before_store_drain_test() {
     store.leased(
       process.new_name("sweeper-stop"),
       node: "b",
-      lease: nodes.long,
+      lease: duration.milliseconds(nodes.long),
       backend: memory.backend,
     )
   let entered = process.new_subject()
@@ -226,7 +252,7 @@ pub fn supervisor_shutdown_stops_a_blocked_context_before_store_drain_test() {
           process.receive_forever(process.new_subject())
         }),
       ],
-      every: 10,
+      every: duration.milliseconds(10),
     )
   let app = restart.application_with(b, [spec])
   let assert Ok(context) = process.receive(entered, 1000)
@@ -266,7 +292,7 @@ pub fn a_restarted_store_replaces_the_sweeper_and_its_pending_context_test() {
     store.leased(
       process.new_name("sweeper-restart"),
       node: "b",
-      lease: nodes.long,
+      lease: duration.milliseconds(nodes.long),
       backend: memory.backend,
     )
   let entered = process.new_subject()
@@ -285,7 +311,7 @@ pub fn a_restarted_store_replaces_the_sweeper_and_its_pending_context_test() {
           }
         }),
       ],
-      every: 10,
+      every: duration.milliseconds(10),
     )
   let app = restart.application_with(b, [spec])
   let assert Ok(context) = process.receive(entered, 1000)
@@ -348,7 +374,15 @@ pub fn a_record_under_the_wrong_run_id_is_rejected_before_recovery_test() {
   let b = nodes.node(memory.backend, "b", nodes.long)
   let body = probe.new()
   let agent = worker("worker", body)
-  let assert Ok(original) = fabric.start(a, agent, Nil, "go")
+  let assert Ok(original) =
+    fabric.start(
+      a,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(body)
   let assert Ok(record) =
     memory.backend.get(run.id_to_string(fabric.id(original)))
@@ -371,7 +405,7 @@ pub fn a_record_under_the_wrong_run_id_is_rejected_before_recovery_test() {
     memory.backend.get(run.id_to_string(fabric.id(original)))
   after.revision |> should.equal(record.revision)
   probe.release(running)
-  fabric.await(original, 5000)
+  fabric.await(original, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"work\""))))
   stop(sweeper)
   let _ = sinal.detach(attachment)

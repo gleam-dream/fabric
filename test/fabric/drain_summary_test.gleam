@@ -15,6 +15,7 @@ import fabric/support/scripted
 import fabric/testing
 import gleam/erlang/process
 import gleam/option.{None}
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import sinal
@@ -26,7 +27,15 @@ pub fn shutdown_reports_a_confirmed_handoff_and_runner_exit_test() {
   let ledger = probe.new()
   let agent = slow(ledger)
   let application = restart.application(runs)
-  let assert Ok(_) = fabric.start(runs, agent, Nil, "go")
+  let assert Ok(_) =
+    fabric.start(
+      runs,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let held = probe.arrival(ledger)
   restart.begin_stop(application)
   restart.draining(runs)
@@ -77,8 +86,10 @@ fn leased(
   backend: store.LeasedBackend,
   milliseconds: Int,
 ) -> store.Store {
-  let assert Ok(runs) = store.leased(name, "summary", 60_000, backend)
-  let assert Ok(runs) = store.with_drain(runs, milliseconds)
+  let assert Ok(runs) =
+    store.leased(name, "summary", duration.seconds(60), backend)
+  let assert Ok(runs) =
+    store.with_drain(runs, duration.milliseconds(milliseconds))
   runs
 }
 
@@ -102,7 +113,15 @@ pub fn a_lost_handoff_acknowledgment_is_confirmed_by_readback_test() {
   let #(events, attached) = capture(name)
   let ledger = probe.new()
   let application = restart.application(runs)
-  let assert Ok(_) = fabric.start(runs, slow(ledger), Nil, "go")
+  let assert Ok(_) =
+    fabric.start(
+      runs,
+      slow(ledger),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let held = probe.arrival(ledger)
   restart.begin_stop(application)
   restart.draining(runs)
@@ -129,7 +148,15 @@ pub fn an_unconfirmed_handoff_is_reported_as_failed_test() {
   let #(events, attached) = capture(name)
   let ledger = probe.new()
   let application = restart.application(runs)
-  let assert Ok(_) = fabric.start(runs, slow(ledger), Nil, "go")
+  let assert Ok(_) =
+    fabric.start(
+      runs,
+      slow(ledger),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let held = probe.arrival(ledger)
   restart.begin_stop(application)
   restart.draining(runs)
@@ -141,11 +168,20 @@ pub fn an_unconfirmed_handoff_is_reported_as_failed_test() {
 
 pub fn the_supervisor_deadline_is_counted_as_a_forced_exit_test() {
   let name = process.new_name("drain-killed")
-  let assert Ok(runs) = store.with_drain(store.in_memory(name), 50)
+  let assert Ok(runs) =
+    store.with_drain(store.in_memory(name), duration.milliseconds(50))
   let #(events, attached) = capture(name)
   let ledger = probe.new()
   let application = restart.application(runs)
-  let assert Ok(_) = fabric.start(runs, slow(ledger), Nil, "go")
+  let assert Ok(_) =
+    fabric.start(
+      runs,
+      slow(ledger),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(ledger)
   restart.stop(application)
   let summary = reported(events, o.Drain(1, 0, 0, 0, 1, 0, 0, 0))
@@ -172,7 +208,15 @@ pub fn a_commit_still_pending_after_the_deadline_is_not_reported_as_success_or_f
   let #(events, attached) = capture(name)
   let ledger = probe.new()
   let application = restart.application(runs)
-  let assert Ok(_) = fabric.start(runs, slow(ledger), Nil, "go")
+  let assert Ok(_) =
+    fabric.start(
+      runs,
+      slow(ledger),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let held = probe.arrival(ledger)
   restart.begin_stop(application)
   restart.draining(runs)
@@ -188,12 +232,21 @@ pub fn a_commit_still_pending_after_the_deadline_is_not_reported_as_success_or_f
 
 pub fn a_handoff_can_be_confirmed_even_if_its_runner_is_then_killed_test() {
   let name = process.new_name("drain-confirmed-kill")
-  let assert Ok(runs) = store.with_drain(store.in_memory(name), 100)
+  let assert Ok(runs) =
+    store.with_drain(store.in_memory(name), duration.milliseconds(100))
   let #(events, attached) = capture(name)
   let ledger = probe.new()
   let observations = probe.new()
   let application = restart.application(runs)
-  let assert Ok(handle) = fabric.start(runs, slow(ledger), Nil, "go")
+  let assert Ok(handle) =
+    fabric.start(
+      runs,
+      slow(ledger),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let held = probe.arrival(ledger)
   let blocked =
     sinal.observe(o.run_handed_off(), fn(_, meta) {
@@ -244,8 +297,17 @@ pub fn idle_shutdown_excludes_completed_and_suspended_runs_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(completed) = fabric.start(runs, complete, Nil, "go")
-  let assert Ok(run.Finished(_)) = fabric.await(completed, 1000)
+  let assert Ok(completed) =
+    fabric.start(
+      runs,
+      complete,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Finished(_)) =
+    fabric.await(completed, within: duration.milliseconds(1000))
   let waiting =
     agent.new(
       "waiting",
@@ -254,8 +316,17 @@ pub fn idle_shutdown_excludes_completed_and_suspended_runs_test() {
       fn(_, _) { Ok(policy.RequireApproval(run.Requirement("review", 1))) },
     )
     |> support.agent
-  let assert Ok(suspended) = fabric.start(runs, waiting, Nil, "go")
-  let assert Ok(run.Suspended(_, _)) = fabric.await(suspended, 1000)
+  let assert Ok(suspended) =
+    fabric.start(
+      runs,
+      waiting,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended(_, _)) =
+    fabric.await(suspended, within: duration.milliseconds(1000))
   // Reading readiness is a round trip after both runners' final writes.
   let assert Ok(store.Readiness(runners: 0, ..)) = store.readiness(runs)
   restart.stop(application)
@@ -326,7 +397,17 @@ pub fn a_runner_admitted_before_drain_is_counted_while_its_first_write_is_pendin
   let application = restart.application(runs)
   let started = process.new_subject()
   process.spawn(fn() {
-    process.send(started, fabric.start(runs, slow(ledger), Nil, "go"))
+    process.send(
+      started,
+      fabric.start(
+        runs,
+        slow(ledger),
+        id: run.new_id(),
+        context: Nil,
+        prompt: "go",
+        correlation: None,
+      ),
+    )
   })
   let writing = probe.arrival(writes)
   restart.begin_stop(application)
@@ -341,7 +422,8 @@ pub fn a_runner_admitted_before_drain_is_counted_while_its_first_write_is_pendin
 
 pub fn store_loss_during_drain_reports_unavailable_accounting_test() {
   let name = process.new_name("drain-store-loss")
-  let assert Ok(runs) = store.with_drain(store.in_memory(name), 100)
+  let assert Ok(runs) =
+    store.with_drain(store.in_memory(name), duration.milliseconds(100))
   let unavailable = process.new_subject()
   let attached =
     sinal.observe(o.drain_unavailable(), fn(_, meta) {
@@ -353,7 +435,15 @@ pub fn store_loss_during_drain_reports_unavailable_accounting_test() {
   let #(events, capture) = capture(name)
   let ledger = probe.new()
   let application = restart.application(runs)
-  let assert Ok(_) = fabric.start(runs, slow(ledger), Nil, "go")
+  let assert Ok(_) =
+    fabric.start(
+      runs,
+      slow(ledger),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(ledger)
   restart.begin_stop(application)
   restart.draining(runs)
@@ -383,7 +473,15 @@ pub fn a_runner_that_finishes_during_drain_needs_no_handoff_test() {
     )
     |> support.agent
   let application = restart.application(runs)
-  let assert Ok(_) = fabric.start(runs, final, Nil, "go")
+  let assert Ok(_) =
+    fabric.start(
+      runs,
+      final,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let replying = probe.arrival(replies)
   restart.begin_stop(application)
   restart.draining(runs)

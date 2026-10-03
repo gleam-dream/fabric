@@ -25,6 +25,7 @@ import gleam/erlang/process.{type Pid}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
@@ -200,7 +201,7 @@ fn transfers_need_approval(
 fn paying_tool(probe: Probe) -> tool.Tool(Nil) {
   tool.bind(
     apps.transfer_definition(),
-    fn(_, transfer: apps.Transfer) -> Result(apps.Receipt, Nil) {
+    fn(_, _call, transfer: apps.Transfer) -> Result(apps.Receipt, Nil) {
       probe.record(probe, "pay:" <> transfer.to)
       Ok(apps.Receipt("r-" <> transfer.to))
     },
@@ -222,7 +223,15 @@ fn start_owned(
   let #(owner, #(store, run)) =
     restart.owned(fn() {
       let store = support.directory(dir)
-      let assert Ok(run) = fabric.start(store, agent, Nil, prompt)
+      let assert Ok(run) =
+        fabric.start(
+          store,
+          agent,
+          id: run.new_id(),
+          context: Nil,
+          prompt: prompt,
+          correlation: None,
+        )
       #(store, run)
     })
   #(owner, store, run)
@@ -273,7 +282,8 @@ pub fn a_sub_agent_starts_only_after_approval_even_across_a_restart_test() {
       review_delegation(probe),
     )
   let #(owner, old, run) = start_owned(dir, parent, "look it up")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   pending.tool |> should.equal("research")
   pending.reference.run |> should.equal(fabric.id(run))
   only_action(run).child |> should.equal(None)
@@ -285,7 +295,7 @@ pub fn a_sub_agent_starts_only_after_approval_even_across_a_restart_test() {
   restart.list_dir(dir) |> should.equal(Ok([support.text(fabric.id(run))]))
   let assert Ok(_) =
     fabric.approve(run, pending.reference, reviewer: None, context: Nil)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"found gleam\"}"))),
   )
@@ -317,8 +327,17 @@ pub fn a_rejected_sub_agent_never_starts_test() {
       quick_researcher(probe),
       review_delegation(probe),
     )
-  let assert Ok(run) = fabric.start(support.store(), parent, Nil, "go")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      parent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let assert Ok(_) =
     fabric.reject(
       run,
@@ -326,7 +345,7 @@ pub fn a_rejected_sub_agent_never_starts_test() {
       reason: "not today",
       reviewer: Some("ann"),
     )
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
       run.Finished(run.Completed(
@@ -364,20 +383,29 @@ fn paying_family(probe: Probe) -> Agent(Nil) {
 pub fn a_child_pause_surfaces_to_the_parent_and_is_answered_through_it_test() {
   let probe = probe.new()
   let assert Ok(run) =
-    fabric.start(support.store(), paying_family(probe), Nil, "go")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+    fabric.start(
+      support.store(),
+      paying_family(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let assert Some(child_id) = only_action(run).child
   pending.reference.run |> should.equal(child_id)
   pending.tool |> should.equal("transfer_funds")
   fabric.pending(run) |> should.equal(Ok([pending]))
-  fabric.await(run, 0) |> should.equal(Ok(run.Suspended([pending], [])))
+  fabric.await(run, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Suspended([pending], [])))
   only_action(run).state |> should.equal(run.Delegated)
   probe.count(probe, "parent:model") |> should.equal(1)
   probe.count(probe, "pay:bob") |> should.equal(0)
 
   let assert Ok(_) =
     fabric.approve(run, pending.reference, reviewer: None, context: Nil)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
       run.Finished(run.Completed(
@@ -397,13 +425,23 @@ pub fn a_child_pause_surfaces_to_the_parent_and_is_answered_through_it_test() {
 pub fn cancelling_the_parent_cancels_a_paused_child_test() {
   let probe = probe.new()
   let assert Ok(run) =
-    fabric.start(support.store(), paying_family(probe), Nil, "go")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+    fabric.start(
+      support.store(),
+      paying_family(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let child = child_of(run)
 
   let assert Ok(_) = fabric.cancel(run)
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   child_states(child) |> should.equal([run.NotStarted])
   only_action(run).state
   |> should.equal(run.ToolFailed("{\"error\":\"the sub-agent was cancelled\"}"))
@@ -429,14 +467,24 @@ pub fn cancelling_the_parent_stops_an_active_child_test() {
       ),
       policy.always_allow(),
     )
-  let assert Ok(run) = fabric.start(support.store(), parent, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      parent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   running.name |> should.equal("s")
   let child = child_of(run)
 
   let assert Ok(run.Working) = fabric.cancel(run)
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   child_states(child) |> should.equal([run.Uncertain("stopped while running")])
   let assert run.Uncertain(evidence) = only_action(run).state
   string.contains(evidence, support.text(fabric.id(child))) |> should.be_true
@@ -466,13 +514,23 @@ pub fn a_child_reply_after_the_parent_was_cancelled_is_discarded_test() {
       slow_child,
       policy.always_allow(),
     )
-  let assert Ok(run) = fabric.start(support.store(), parent, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      parent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let replying = probe.arrival(probe)
   let child = child_of(run)
   let assert Ok(_) = fabric.cancel(run)
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   probe.release(replying)
-  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   only_action(run).state
   |> should.equal(run.ToolFailed("{\"error\":\"the sub-agent was cancelled\"}"))
   probe.count(probe, "parent:model") |> should.equal(1)
@@ -508,7 +566,7 @@ pub fn recovering_the_parent_recovers_its_child_test() {
   crash(owner, old)
 
   let assert Ok(run) = fabric.recover(reopen(dir), parent, Nil, fabric.id(run))
-  fabric.await(run, 0)
+  fabric.await(run, within: duration.milliseconds(0))
   |> should.equal(
     Ok(
       run.Suspended([], [
@@ -527,7 +585,7 @@ pub fn recovering_the_parent_recovers_its_child_test() {
       run.ActionRef(fabric.id(child), ActionId(1, "s")),
       "\"s\"",
     )
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"found \\\"s\\\"\"}"))),
   )
@@ -558,10 +616,11 @@ pub fn a_child_effect_is_reconciled_through_the_parent_test() {
   crash(owner, old)
 
   let assert Ok(run) = fabric.recover(reopen(dir), parent, Nil, fabric.id(run))
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 0)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(0))
   { uncertain.reference.run != fabric.id(run) } |> should.be_true
   let assert Ok(_) = fabric.reconcile(run, uncertain.reference, "\"s\"")
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"found \\\"s\\\"\"}"))),
   )
@@ -576,7 +635,8 @@ pub fn an_unreadable_child_is_an_uncertain_effect_of_the_parent_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
   let #(owner, old, run) = start_owned(dir, paying_family(probe), "go")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   crash(owner, old)
   let assert Ok(Nil) =
     restart.write_file(
@@ -589,14 +649,15 @@ pub fn an_unreadable_child_is_an_uncertain_effect_of_the_parent_test() {
 
   let assert Ok(run) =
     fabric.recover(reopen(dir), paying_family(probe), Nil, fabric.id(run))
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 0)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(0))
   uncertain.reference.run |> should.equal(fabric.id(run))
   uncertain.tool |> should.equal("research")
   string.contains(uncertain.evidence, support.text(pending.reference.run))
   |> should.be_true
   let assert Ok(_) =
     fabric.reconcile(run, uncertain.reference, "{\"summary\":\"unknown\"}")
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"unknown\"}"))),
   )
@@ -624,8 +685,17 @@ pub fn delegations_beyond_the_child_limit_are_refused_test() {
       agent.Limits(..agent.default_limits(), max_children: 2),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), parent, Nil, "go")
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      parent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let assert Ok(snapshot) = fabric.snapshot(run)
   list.map(snapshot.actions, fn(action) { action.state })
   |> should.equal([
@@ -667,14 +737,32 @@ pub fn nested_delegation_is_bounded_by_the_root_depth_test() {
     |> support.agent
   }
 
-  let assert Ok(shallow) = fabric.start(support.store(), root(1), Nil, "go")
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(shallow, 5000)
+  let assert Ok(shallow) =
+    fabric.start(
+      support.store(),
+      root(1),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(shallow, within: duration.milliseconds(5000))
   let assert Ok(snapshot) = fabric.snapshot(child_of(shallow))
   list.map(snapshot.actions, fn(action) { action.state })
   |> should.equal([run.LimitReached(run.DepthLimit(1))])
 
-  let assert Ok(deep) = fabric.start(support.store(), root(2), Nil, "go")
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(deep, 5000)
+  let assert Ok(deep) =
+    fabric.start(
+      support.store(),
+      root(2),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(deep, within: duration.milliseconds(5000))
   let assert Ok(snapshot) = fabric.snapshot(child_of(deep))
   list.map(snapshot.actions, fn(action) { action.state })
   |> should.equal([run.Succeeded("{\"summary\":\"found deeper\"}")])
@@ -743,12 +831,22 @@ pub fn delegation_limits_keep_child_ids_valid_test() {
 pub fn cancel_stored_cancels_the_children_first_test() {
   let probe = probe.new()
   let store = support.store()
-  let assert Ok(run) = fabric.start(store, paying_family(probe), Nil, "go")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(run) =
+    fabric.start(
+      store,
+      paying_family(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let child = child_of(run)
   fabric.cancel_stored(store, fabric.id(run))
   |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert run.Uncertain(_) = only_action(run).state
   fabric.approve(run, pending.reference, reviewer: None, context: Nil)
   |> should.equal(Error(fabric.RunEnded))
@@ -763,14 +861,24 @@ pub fn a_transient_store_failure_does_not_leave_a_child_uncancelled_test() {
   let probe = probe.new()
   let backend = flaky.new()
   let assert Ok(run) =
-    fabric.start(flaky.store(backend), paying_family(probe), Nil, "go")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+    fabric.start(
+      flaky.store(backend),
+      paying_family(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let child = child_of(run)
   flaky.arm_run(backend, fabric.id(child), [flaky.FailBefore])
 
   let assert Ok(_) = fabric.cancel(run)
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   fabric.pending(run) |> should.equal(Ok([]))
   fabric.approve(run, pending.reference, reviewer: None, context: Nil)
   |> should.equal(Error(fabric.RunEnded))
@@ -786,13 +894,22 @@ pub fn a_child_that_cannot_be_cancelled_can_no_longer_act_test() {
   let probe = probe.new()
   let backend = flaky.new()
   let assert Ok(run) =
-    fabric.start(flaky.store(backend), paying_family(probe), Nil, "go")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+    fabric.start(
+      flaky.store(backend),
+      paying_family(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let child = child_of(run)
   flaky.arm_run(backend, fabric.id(child), list.repeat(flaky.FailBefore, 64))
 
   let assert Ok(_) = fabric.cancel(run)
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert run.Uncertain(evidence) = only_action(run).state
   string.contains(evidence, "could not be cancelled") |> should.be_true
   fabric.approve(run, pending.reference, reviewer: None, context: Nil)
@@ -828,14 +945,24 @@ pub fn a_child_that_cannot_be_cancelled_can_no_longer_be_reconciled_test() {
       ),
       policy.always_allow(),
     )
-  let assert Ok(run) = fabric.start(flaky.store(backend), family, Nil, "go")
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  let assert Ok(run) =
+    fabric.start(
+      flaky.store(backend),
+      family,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let child = child_of(run)
   uncertain.reference.run |> should.equal(fabric.id(child))
   flaky.arm_run(backend, fabric.id(child), list.repeat(flaky.FailBefore, 64))
 
   let assert Ok(_) = fabric.cancel(run)
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert run.Uncertain(evidence) = only_action(run).state
   string.contains(evidence, "could not be cancelled") |> should.be_true
   fabric.reconcile(run, uncertain.reference, "{\"receipt\":\"r-1\"}")
@@ -872,7 +999,15 @@ pub fn a_child_stored_after_its_parent_was_cancelled_never_runs_test() {
   let backend = flaky.new()
   let held = flaky.hold(backend, first_child)
   let owner = flaky.store(backend)
-  let assert Ok(run) = fabric.start(owner, eager_family(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      owner,
+      eager_family(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let assert Ok(child_id) = process.receive(held, 5000)
   let assert Ok(runner) = restart.runner(owner, fabric.id(run))
   let runner_exit = process.monitor(runner)
@@ -886,7 +1021,8 @@ pub fn a_child_stored_after_its_parent_was_cancelled_never_runs_test() {
     |> process.selector_receive(5000)
 
   let assert Ok(child) = fabric.child(run, support.id(child_id))
-  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   only_action(run).state |> should.equal(run.NotStarted)
   probe.count(probe, "child:model") |> should.equal(0)
   probe.count(probe, "pay:bob") |> should.equal(0)
@@ -902,7 +1038,15 @@ pub fn recovery_does_not_start_a_child_after_its_parent_was_cancelled_test() {
   let #(owner, #(first, run)) =
     restart.owned(fn() {
       let store = flaky.store(backend)
-      let assert Ok(run) = fabric.start(store, eager_family(probe), Nil, "go")
+      let assert Ok(run) =
+        fabric.start(
+          store,
+          eager_family(probe),
+          id: run.new_id(),
+          context: Nil,
+          prompt: "go",
+          correlation: None,
+        )
       #(store, run)
     })
   let assert Ok(_) = process.receive(held, 5000)
@@ -926,7 +1070,8 @@ pub fn recovery_does_not_start_a_child_after_its_parent_was_cancelled_test() {
   let assert Ok(Ok(recovered)) = process.receive(recovering, 5000)
 
   let assert Ok(child) = fabric.child(recovered, support.id(child_id))
-  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   only_action(recovered).state |> should.equal(run.NotStarted)
   probe.count(probe, "child:model") |> should.equal(0)
   probe.count(probe, "pay:bob") |> should.equal(0)
@@ -938,8 +1083,16 @@ pub fn a_child_whose_first_insert_fails_still_starts_test() {
   let backend = flaky.new()
   flaky.arm_where(backend, first_child, [flaky.FailBefore])
   let assert Ok(run) =
-    fabric.start(flaky.store(backend), eager_family(probe), Nil, "go")
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+    fabric.start(
+      flaky.store(backend),
+      eager_family(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(run, within: duration.milliseconds(5000))
   probe.count(probe, "pay:bob") |> should.equal(1)
 }
 
@@ -952,8 +1105,16 @@ pub fn a_child_whose_insert_lands_late_still_runs_test() {
   let backend = flaky.new()
   flaky.arm_where(backend, first_child, [flaky.FailLate])
   let assert Ok(run) =
-    fabric.start(flaky.store(backend), eager_family(probe), Nil, "go")
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+    fabric.start(
+      flaky.store(backend),
+      eager_family(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(run, within: duration.milliseconds(5000))
   probe.count(probe, "pay:bob") |> should.equal(1)
 }
 
@@ -966,8 +1127,16 @@ pub fn an_identical_child_record_by_another_writer_is_recovered_test() {
   let backend = flaky.new()
   flaky.arm_where(backend, first_child, [flaky.StoredByAnother])
   let assert Ok(run) =
-    fabric.start(flaky.store(backend), eager_family(probe), Nil, "go")
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(run, 5000)
+    fabric.start(
+      flaky.store(backend),
+      eager_family(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let assert Ok(store.Entry(record: stored, ..)) =
     store.get(flaky.store(backend), support.text(fabric.id(run)) <> "-1")
   let assert Ok(child) = record.decode(stored)
@@ -982,8 +1151,16 @@ pub fn a_child_that_cannot_be_stored_is_uncertain_test() {
   let backend = flaky.new()
   flaky.arm_where(backend, first_child, list.repeat(flaky.FailBefore, 64))
   let assert Ok(run) =
-    fabric.start(flaky.store(backend), eager_family(probe), Nil, "go")
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+    fabric.start(
+      flaky.store(backend),
+      eager_family(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   string.contains(uncertain.evidence, "could not be stored")
   |> should.be_true
   probe.count(probe, "child:model") |> should.equal(0)
@@ -996,8 +1173,17 @@ pub fn a_child_that_cannot_be_stored_is_uncertain_test() {
 pub fn cancelling_does_not_depend_on_the_current_delegations_test() {
   let probe = probe.new()
   let store = support.store()
-  let assert Ok(run) = fabric.start(store, paying_family(probe), Nil, "go")
-  let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
+  let assert Ok(run) =
+    fabric.start(
+      store,
+      paying_family(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([_], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let child = child_of(run)
   let plain =
     agent.new(
@@ -1006,7 +1192,7 @@ pub fn cancelling_does_not_depend_on_the_current_delegations_test() {
       [
         research()
         |> tool.bind(
-          fn(_, topic: Topic) { Ok(Summary(topic.topic)) },
+          fn(_, _call, topic: Topic) { Ok(Summary(topic.topic)) },
           fn(_: Nil) { tool.Explain("no") },
         ),
       ],
@@ -1016,9 +1202,10 @@ pub fn cancelling_does_not_depend_on_the_current_delegations_test() {
   let assert Ok(reopened) = fabric.recover(store, plain, Nil, fabric.id(run))
 
   let assert Ok(_) = fabric.cancel(reopened)
-  fabric.await(reopened, 5000)
+  fabric.await(reopened, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Cancelled)))
-  fabric.await(child, 0) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(child, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert run.Uncertain(_) = only_action(run).state
   probe.count(probe, "pay:bob") |> should.equal(0)
 }

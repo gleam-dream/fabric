@@ -13,6 +13,7 @@ import fabric/support/restart
 import fabric/support/scripted
 import gleam/result
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 
 pub fn the_readme_shows_the_compiled_example_test() {
@@ -93,7 +94,8 @@ pub fn the_readme_example_runs_test() {
   // At boot: a finished run is reopened unchanged; a malformed id names
   // no run.
   let assert Ok(handle) = readme_example.resume(runs, large, ann, id)
-  let assert Ok(run.Finished(_)) = fabric.await(handle, 0)
+  let assert Ok(run.Finished(_)) =
+    fabric.await(handle, within: duration.milliseconds(0))
   readme_example.resume(runs, large, ann, "../etc")
   |> should.equal(Error(fabric.Unreadable(fabric.RunNotFound)))
   restart.remove_dir(dir)

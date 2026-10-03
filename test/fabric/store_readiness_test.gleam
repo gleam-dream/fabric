@@ -4,6 +4,7 @@ import fabric
 import fabric/agent
 import fabric/observation
 import fabric/policy
+import fabric/run
 import fabric/store
 import fabric/support
 import fabric/support/nodes
@@ -14,6 +15,7 @@ import fabric/testing
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import sinal
 
@@ -75,7 +77,15 @@ pub fn claims_cover_initial_work_and_only_successful_renewals_refresh_age_test()
       }
     })
   let runs = nodes.node(backend, "readiness", nodes.long)
-  let assert Ok(handle) = fabric.start(runs, slow(bodies), Nil, "go")
+  let assert Ok(handle) =
+    fabric.start(
+      runs,
+      slow(bodies),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let body = probe.arrival(bodies)
   let assert Ok(before) = memory.backend.get(support.text(fabric.id(handle)))
   store.readiness(runs)
@@ -100,7 +110,7 @@ pub fn claims_cover_initial_work_and_only_successful_renewals_refresh_age_test()
   should.be_true(age >= first_age)
   let _ = sinal.detach(attachment)
   probe.release(body)
-  let assert Ok(_) = fabric.await(handle, 5000)
+  let assert Ok(_) = fabric.await(handle, within: duration.milliseconds(5000))
   let assert Ok(idle) = store.readiness(runs)
   idle.status |> should.equal(store.Accepting)
   idle.runners |> should.equal(0)
@@ -165,11 +175,19 @@ pub fn a_probe_finishing_after_drain_starts_reports_the_current_state_test() {
     store.leased(
       process.new_name("readiness-drain"),
       node: "drain",
-      lease: nodes.long,
+      lease: duration.milliseconds(nodes.long),
       backend:,
     )
   let app = restart.application(runs)
-  let assert Ok(_) = fabric.start(runs, slow(bodies), Nil, "go")
+  let assert Ok(_) =
+    fabric.start(
+      runs,
+      slow(bodies),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let body = probe.arrival(bodies)
   probe.record(gates, "armed")
   let reply = process.new_subject()
@@ -193,16 +211,24 @@ pub fn a_restart_does_not_reuse_the_previous_process_renewal_time_test() {
     store.leased(
       process.new_name("readiness-restart"),
       node: "restart",
-      lease: nodes.long,
+      lease: duration.milliseconds(nodes.long),
       backend: memory.backend,
     )
   let app = restart.application(runs)
-  let assert Ok(handle) = fabric.start(runs, slow(bodies), Nil, "go")
+  let assert Ok(handle) =
+    fabric.start(
+      runs,
+      slow(bodies),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let body = probe.arrival(bodies)
   store.renew_now(runs)
   let _ = renewed(runs, 1000)
   probe.release(body)
-  let assert Ok(_) = fabric.await(handle, 5000)
+  let assert Ok(_) = fabric.await(handle, within: duration.milliseconds(5000))
   restart.stop(app)
   let app = restart.application(runs)
   store.readiness(runs)
@@ -226,7 +252,15 @@ pub fn a_delayed_report_cannot_reuse_an_expired_lease_window_test() {
       found
     })
   let runs = nodes.node(backend, "delayed-health", 3000)
-  let assert Ok(handle) = fabric.start(runs, slow(bodies), Nil, "go")
+  let assert Ok(handle) =
+    fabric.start(
+      runs,
+      slow(bodies),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let body = probe.arrival(bodies)
   probe.record(probes, "armed")
   let reply = process.new_subject()

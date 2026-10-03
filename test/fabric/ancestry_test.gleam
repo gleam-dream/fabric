@@ -23,7 +23,9 @@ import fabric/support/probe
 import fabric/support/scripted
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/time/duration
 import gleeunit/should
+import sinal/correlation
 
 fn graph_parent(runs: store.Store) -> #(graph.State, String) {
   let assert Ok(#(state, _)) =
@@ -78,7 +80,8 @@ fn worker(model: model.Model) -> agent.Agent(Nil) {
 
 fn child_state(runs, worker, id) {
   let setup = runner.setup(runs, agent.admitted(worker), Nil, None)
-  let #(state, effects) = runner.root_state(setup, id, "go")
+  let #(state, effects) =
+    runner.root_state(setup, id, "go", correlation.from_key(id))
   #(
     setup,
     controller.State(
@@ -168,7 +171,8 @@ pub fn a_stopped_graph_parent_prevents_the_agents_first_model_call_test() {
   stop_parent(runs, parent)
   let assert Ok(_) = runner.launch_new(setup, state, effects)
   let assert Ok(handle) = fabric.open(runs, worker, Nil, support.id(id))
-  fabric.await(handle, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(handle, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   probe.entries(calls) |> should.equal([])
 }
 
@@ -190,7 +194,8 @@ pub fn graph_cancellation_prevents_a_model_retry_test() {
   stop_parent(runs, parent)
   probe.release(first_call)
   let assert Ok(handle) = fabric.open(runs, worker, Nil, support.id(id))
-  fabric.await(handle, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(handle, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   probe.entries(calls) |> should.equal(["called"])
 }
 
@@ -209,7 +214,8 @@ pub fn graph_cancellation_refuses_agent_approval_without_starting_its_tool_test(
   let #(setup, state, effects) = child_state(runs, worker, id)
   let assert Ok(_) = runner.launch_new(setup, state, effects)
   let assert Ok(handle) = fabric.open(runs, worker, Nil, support.id(id))
-  let assert Ok(run.Suspended([approval], [])) = fabric.await(handle, 5000)
+  let assert Ok(run.Suspended([approval], [])) =
+    fabric.await(handle, within: duration.milliseconds(5000))
   stop_parent(runs, parent)
   fabric.approve(handle, approval.reference, None, Nil) |> should.be_error
   probe.entries(body) |> should.equal([])

@@ -22,6 +22,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import sinal
 
@@ -55,7 +56,8 @@ pub fn a_leased_store_checks_its_settings_test() {
   let backend = testing.leased_memory().backend
   let name = process.new_name("settings")
   let leased = fn(node, lease) {
-    store.leased(name, node:, lease:, backend:) |> result_error
+    store.leased(name, node:, lease: duration.milliseconds(lease), backend:)
+    |> result_error
   }
   leased("", 1000) |> should.equal(Error(store.InvalidNodeId("")))
   leased("a/b", 1000) |> should.equal(Error(store.InvalidNodeId("a/b")))
@@ -64,9 +66,19 @@ pub fn a_leased_store_checks_its_settings_test() {
   leased(string.repeat("n", 129), 1000)
   |> should.equal(Error(store.InvalidNodeId(string.repeat("n", 129))))
   leased("app@host-1.example:9", 99)
-  |> should.equal(Error(store.LeaseTooShort(99, 100)))
+  |> should.equal(
+    Error(store.LeaseTooShort(
+      duration.milliseconds(99),
+      duration.milliseconds(100),
+    )),
+  )
   leased("app@host-1.example:9", 4_294_967_296)
-  |> should.equal(Error(store.LeaseTooLong(4_294_967_296, 4_294_967_295)))
+  |> should.equal(
+    Error(store.LeaseTooLong(
+      duration.milliseconds(4_294_967_296),
+      duration.milliseconds(4_294_967_295),
+    )),
+  )
   leased("app@host-1.example:9", 100) |> should.equal(Ok(Nil))
   leased("app@host-1.example:9", 4_294_967_295) |> should.equal(Ok(Nil))
 }
@@ -86,12 +98,20 @@ pub fn a_runner_holds_its_runs_lease_while_it_works_test() {
   let probe = probe.new()
   let memory = testing.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   nodes.holding(memory.backend, fabric.id(run))
   |> should.equal(Ok(#("a", True)))
   probe.release(running)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   nodes.holding(memory.backend, fabric.id(run)) |> should.equal(Error(Nil))
 }
@@ -103,14 +123,23 @@ pub fn a_live_lease_elsewhere_reads_working_test() {
   let memory = testing.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   let assert Ok(seen) = fabric.open(b, one_slow(probe), Nil, fabric.id(run))
-  fabric.await(seen, 0) |> should.equal(Ok(run.Working))
+  fabric.await(seen, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Working))
   let assert Ok(snapshot) = fabric.snapshot(seen)
   snapshot.status |> should.equal(run.Working)
   probe.release(running)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
 }
 
@@ -121,7 +150,15 @@ pub fn recover_does_not_take_a_live_lease_test() {
   let memory = testing.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   let assert Ok(before) = fabric.snapshot(run)
   let revision = nodes.revision(memory.backend, fabric.id(run))
@@ -131,9 +168,10 @@ pub fn recover_does_not_take_a_live_lease_test() {
   nodes.revision(memory.backend, fabric.id(run)) |> should.equal(revision)
   nodes.holding(memory.backend, fabric.id(run))
   |> should.equal(Ok(#("a", True)))
-  fabric.await(recovered, 0) |> should.equal(Ok(run.Working))
+  fabric.await(recovered, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Working))
   probe.release(running)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   probe.count(probe, "start:a") |> should.equal(1)
 }
@@ -153,8 +191,17 @@ pub fn an_approval_of_an_idle_run_on_another_node_claims_the_lease_test() {
       b_reviewed,
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(a, agent, Nil, "go")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   nodes.holding(memory.backend, fabric.id(run)) |> should.equal(Error(Nil))
   let assert Ok(there) = fabric.open(b, agent, Nil, fabric.id(run))
   let assert Ok(run.Working) =
@@ -165,7 +212,7 @@ pub fn an_approval_of_an_idle_run_on_another_node_claims_the_lease_test() {
   let assert Ok(_) = restart.runner(b, fabric.id(run))
   restart.runner(a, fabric.id(run)) |> should.equal(Error(Nil))
   probe.release(running)
-  fabric.await(there, 5000)
+  fabric.await(there, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"b\""))))
 }
 
@@ -184,7 +231,15 @@ pub fn an_approval_needing_another_nodes_runner_is_unattended_test() {
       b_reviewed,
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(a, agent, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   let assert Ok([pending]) = fabric.pending(run)
   let assert Ok(before) = fabric.snapshot(run)
@@ -197,7 +252,7 @@ pub fn an_approval_needing_another_nodes_runner_is_unattended_test() {
   let second = probe.arrival(probe)
   probe.release(running)
   probe.release(second)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\" | \"b\""))))
 }
 
@@ -211,7 +266,15 @@ pub fn a_cancellation_from_another_node_wins_over_a_live_lease_test() {
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let events = capture()
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   let body = body(running)
   let assert Ok(runner) = restart.runner(a, fabric.id(run))
@@ -241,7 +304,15 @@ pub fn a_lost_lease_kills_the_runner_and_its_running_body_test() {
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let events = capture()
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   let body = body(running)
   let assert Ok(runner) = restart.runner(a, fabric.id(run))
@@ -249,7 +320,8 @@ pub fn a_lost_lease_kills_the_runner_and_its_running_body_test() {
   let assert Ok(there) = fabric.recover(b, one_slow(probe), Nil, fabric.id(run))
   // The new incarnation has nothing in flight: it waits for the uncertain
   // effect to be reconciled, and the lease is free.
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(there, 0)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(there, within: duration.milliseconds(0))
   nodes.holding(memory.backend, fabric.id(run)) |> should.equal(Error(Nil))
   store.renew_now(a)
   restart.gone(runner)
@@ -262,7 +334,7 @@ pub fn a_lost_lease_kills_the_runner_and_its_running_body_test() {
   ])
   release(events)
   let assert Ok(_) = fabric.reconcile(there, uncertain.reference, "\"a\"")
-  fabric.await(there, 5000)
+  fabric.await(there, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   probe.count(probe, "start:a") |> should.equal(1)
   probe.count(probe, "end:a") |> should.equal(0)
@@ -281,7 +353,15 @@ pub fn a_store_that_cannot_renew_kills_its_runners_before_their_leases_expire_te
     })
   let a = nodes.node(unreachable, "a", 1000)
   let events = capture()
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let body = body(probe.arrival(probe))
   let assert Ok(runner) = restart.runner(a, fabric.id(run))
   restart.gone(body)
@@ -313,7 +393,15 @@ pub fn a_slow_lease_event_handler_does_not_hold_up_the_store_test() {
       process.send(entered, Nil)
       process.sleep(2000)
     })
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(probe)
   let assert Ok(Nil) = process.receive(entered, 5000)
   let read = process.new_subject()
@@ -339,7 +427,15 @@ pub fn a_tick_during_a_renewal_is_made_up_when_it_completes_test() {
     })
   // Ticks every 500 ms; a renewal may take up to 500 ms.
   let a = nodes.node(slow, "a", 1500)
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   // A tick's renewal, at once.
   let assert Ok(first) = process.receive(calls, 2000)
@@ -353,7 +449,7 @@ pub fn a_tick_during_a_renewal_is_made_up_when_it_completes_test() {
   let assert Ok(third) = process.receive(calls, 150)
   process.send(third, Nil)
   probe.release(running)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
 }
 
@@ -370,7 +466,15 @@ pub fn renewals_keep_a_lease_live_past_its_duration_test() {
       renewed
     })
   let a = nodes.node(counted, "a", 150)
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   let id = support.text(fabric.id(run))
   // Ten renewals take over three lease durations.
@@ -380,7 +484,7 @@ pub fn renewals_keep_a_lease_live_past_its_duration_test() {
   nodes.holding(memory.backend, fabric.id(run))
   |> should.equal(Ok(#("a", True)))
   probe.release(running)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
 }
 
@@ -394,7 +498,15 @@ pub fn an_expired_lease_is_taken_over_once_by_racing_recoveries_test() {
   let #(owner, a) =
     restart.owned(fn() { nodes.node(memory.backend, "a", nodes.long) })
   let events = capture()
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(probe)
   let assert Ok(before) = fabric.snapshot(run)
   // The node stops: its store and runner are gone, its lease is not.
@@ -407,7 +519,7 @@ pub fn an_expired_lease_is_taken_over_once_by_racing_recoveries_test() {
     together(others, fn(node) {
       let assert Ok(there) =
         fabric.recover(node, one_slow(probe), Nil, fabric.id(run))
-      fabric.await(there, 0)
+      fabric.await(there, within: duration.milliseconds(0))
     })
   }
   recover_all() |> list.unique |> should.equal([Ok(run.Working)])
@@ -439,25 +551,41 @@ pub fn a_restarted_store_takes_its_earlier_processes_lease_at_once_test() {
   let name = process.new_name("restarting")
   let leased = fn() {
     let assert Ok(leased) =
-      store.leased(name, node: "a", lease: nodes.long, backend: memory.backend)
+      store.leased(
+        name,
+        node: "a",
+        lease: duration.milliseconds(nodes.long),
+        backend: memory.backend,
+      )
     leased
   }
   let #(owner, a) = restart.owned(fn() { support.started(leased()) })
   let b = nodes.node(memory.backend, "b", nodes.long)
   let events = capture()
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(probe)
   restart.crash(owner, a)
   let assert Ok(there) = fabric.recover(b, one_slow(probe), Nil, fabric.id(run))
-  fabric.await(there, 0) |> should.equal(Ok(run.Working))
+  fabric.await(there, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Working))
 
   let again = support.started(leased())
   let assert Ok(reopened) =
     fabric.open(again, one_slow(probe), Nil, fabric.id(run))
-  fabric.await(reopened, 0) |> should.equal(Ok(run.Unattended))
+  fabric.await(reopened, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Unattended))
   let assert Ok(recovered) =
     fabric.recover(again, one_slow(probe), Nil, fabric.id(run))
-  let assert Ok(run.Suspended([], [_])) = fabric.await(recovered, 0)
+  let assert Ok(run.Suspended([], [_])) =
+    fabric.await(recovered, within: duration.milliseconds(0))
   let id = support.text(fabric.id(run))
   lines(events, 1) |> should.equal(["run_taken_over " <> id <> " 2 a"])
   release(events)
@@ -471,11 +599,24 @@ pub fn an_await_on_another_node_sees_the_end_of_the_run_test() {
   let memory = testing.leased_memory()
   let a = nodes.node(memory.backend, "a", 300)
   let b = nodes.node(memory.backend, "b", 300)
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   let assert Ok(seen) = fabric.open(b, one_slow(probe), Nil, fabric.id(run))
   let awaited = process.new_subject()
-  process.spawn(fn() { process.send(awaited, fabric.await(seen, 60_000)) })
+  process.spawn(fn() {
+    process.send(
+      awaited,
+      fabric.await(seen, within: duration.milliseconds(60_000)),
+    )
+  })
   probe.release(running)
   process.receive(awaited, 5000)
   |> should.equal(Ok(Ok(run.Finished(run.Completed("final: \"a\"")))))
@@ -491,12 +632,20 @@ pub fn a_handoff_releases_the_lease_as_already_expired_test() {
     store.leased(
       process.new_name("draining"),
       node: "a",
-      lease: nodes.long,
+      lease: duration.milliseconds(nodes.long),
       backend: memory.backend,
     )
   let app = restart.application(a)
   let b = nodes.node(memory.backend, "b", nodes.long)
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   restart.begin_stop(app)
   restart.draining(a)
@@ -506,9 +655,10 @@ pub fn a_handoff_releases_the_lease_as_already_expired_test() {
   nodes.holding(memory.backend, fabric.id(run))
   |> should.equal(Ok(#("a", False)))
   let assert Ok(there) = fabric.open(b, one_slow(probe), Nil, fabric.id(run))
-  fabric.await(there, 0) |> should.equal(Ok(run.Unattended))
+  fabric.await(there, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Unattended))
   let assert Ok(there) = fabric.recover(b, one_slow(probe), Nil, fabric.id(run))
-  fabric.await(there, 5000)
+  fabric.await(there, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   probe.count(probe, "start:a") |> should.equal(1)
 }
@@ -522,12 +672,20 @@ pub fn a_start_committed_during_drain_is_recovered_on_another_node_test() {
     store.leased(
       process.new_name("draining"),
       node: "a",
-      lease: nodes.long,
+      lease: duration.milliseconds(nodes.long),
       backend: memory.backend,
     )
   let app = restart.application(a)
   let b = nodes.node(memory.backend, "b", nodes.long)
-  let assert Ok(_) = fabric.start(a, one_slow(probe), Nil, "hold the drain")
+  let assert Ok(_) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "hold the drain",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   restart.begin_stop(app)
   restart.draining(a)
@@ -540,13 +698,22 @@ pub fn a_start_committed_during_drain_is_recovered_on_another_node_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(started) = fabric.start(a, next, Nil, "go")
+  let assert Ok(started) =
+    fabric.start(
+      a,
+      next,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   nodes.holding(memory.backend, fabric.id(started))
   |> should.equal(Ok(#("a", False)))
   let assert Ok(there) = fabric.open(b, next, Nil, fabric.id(started))
-  fabric.await(there, 0) |> should.equal(Ok(run.Unattended))
+  fabric.await(there, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Unattended))
   let assert Ok(there) = fabric.recover(b, next, Nil, fabric.id(started))
-  fabric.await(there, 5000)
+  fabric.await(there, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
 
   probe.release(running)
@@ -593,12 +760,20 @@ pub fn a_renewal_applied_after_the_handoff_leaves_the_lease_expired_test() {
     store.leased(
       process.new_name("renewing"),
       node: "a",
-      lease: nodes.long,
+      lease: duration.milliseconds(nodes.long),
       backend:,
     )
   let app = restart.application(a)
   let b = nodes.node(memory.backend, "b", nodes.long)
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   store.renew_now(a)
   let assert Ok(Nil) = process.receive(renewing, 5000)
@@ -610,7 +785,7 @@ pub fn a_renewal_applied_after_the_handoff_leaves_the_lease_expired_test() {
   nodes.holding(memory.backend, fabric.id(run))
   |> should.equal(Ok(#("a", False)))
   let assert Ok(there) = fabric.recover(b, one_slow(probe), Nil, fabric.id(run))
-  fabric.await(there, 5000)
+  fabric.await(there, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   probe.count(probe, "start:a") |> should.equal(1)
 }
@@ -668,7 +843,15 @@ pub fn a_tool_start_is_refused_once_another_owner_claimed_the_lease_test() {
       let _ = process.receive(go, 5000)
       Nil
     })
-  let assert Ok(run) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let assert Ok(#(replied, runner, go)) = process.receive(replies, 5000)
   let _ = sinal.detach(attachment)
   replied |> should.equal(support.text(fabric.id(run)))

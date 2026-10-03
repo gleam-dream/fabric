@@ -17,6 +17,7 @@ import fabric/support/restart
 import fabric/testing
 import gleam/erlang/process
 import gleam/result
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import sinal
@@ -29,7 +30,8 @@ fn runtime(runs, every, read) {
       codec.int(),
       fn(_, receipt) { read(receipt) },
     )
-  let assert Ok(observer) = job.with_poll_interval(observer, every)
+  let assert Ok(observer) =
+    job.with_poll_interval(observer, duration.milliseconds(every))
   let assert Ok(id) = definition.node_id("result")
   let node =
     definition.node(
@@ -59,7 +61,7 @@ fn scan(runs, build) {
     fabric.sweeper(
       runs,
       [graph.recovery(run.Identity("scheduled-flow", 1), build)],
-      every: 60_000,
+      every: duration.milliseconds(60_000),
     )
   let assert Ok(started) = spec.start()
   let assert Ok(summary) = process.receive(events, 5000)
@@ -91,7 +93,8 @@ pub fn scheduled_observation_reuses_one_work_grant_and_waits_for_backend_time_te
       "job-receipt",
       budget.Limits(1, 1, 1),
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(_) = waiting.status
   scan(runs, build).recovered |> should.equal(1)
   probe.entries(calls) |> should.equal(["observe"])
@@ -111,15 +114,18 @@ pub fn polling_intervals_are_bounded_and_part_of_definition_compatibility_test()
     job.observe(run.Identity("job", 1), codec.string(), codec.int(), fn(_, _) {
       Ok(job.Completed(42))
     })
-  job.with_poll_interval(observer, 0) |> should.be_error
-  job.with_poll_interval(observer, -1) |> should.be_error
-  job.with_poll_interval(observer, 4_294_967_296) |> should.be_error
-  job.with_poll_interval(observer, 4_294_967_295) |> should.be_ok
+  job.with_poll_interval(observer, duration.milliseconds(0)) |> should.be_error
+  job.with_poll_interval(observer, duration.milliseconds(-1)) |> should.be_error
+  job.with_poll_interval(observer, duration.milliseconds(4_294_967_296))
+  |> should.be_error
+  job.with_poll_interval(observer, duration.milliseconds(4_294_967_295))
+  |> should.be_ok
   let runs = support.store()
   let id = support.id("changed-poll")
   let assert Ok(handle) =
     graph.start(runtime(runs, 1000, fn(_) { Ok(job.Pending) }), id, "receipt")
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let changed =
     graph.attach(
@@ -143,7 +149,8 @@ pub fn a_failed_observer_keeps_a_retry_claim_until_expiry_and_recovers_after_sto
         )
       #(runs, handle)
     })
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   scan(runs, fn(runs) {
     runtime(runs, 1000, fn(_) { Error("service unavailable") })
@@ -198,7 +205,7 @@ pub fn discovery_of_a_parent_does_not_poll_an_unclaimed_job_early_test() {
   }
   let id = support.id("nested-job-root")
   let assert Ok(handle) = graph.start(build(runs), id, "receipt")
-  let assert Ok(_) = graph.await(handle, 5000)
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
   let _ = scan(runs, build)
   probe.entries(calls) |> should.equal(["observe"])
   // The child revision changed when the first poll released its claim. A
@@ -209,7 +216,7 @@ pub fn discovery_of_a_parent_does_not_poll_an_unclaimed_job_early_test() {
   memory.advance(60_000)
   let _ = scan(runs, build)
   let _ = scan(runs, build)
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(42))
   probe.entries(calls) |> should.equal(["observe", "observe"])
 }
@@ -225,7 +232,8 @@ pub fn each_new_visit_is_eligible_without_waiting_for_the_previous_interval_test
         codec.int(),
         fn(_, n) { Ok(job.Completed(n + 1)) },
       )
-    let assert Ok(observer) = job.with_poll_interval(observer, 60_000)
+    let assert Ok(observer) =
+      job.with_poll_interval(observer, duration.milliseconds(60_000))
     let assert Ok(id) = definition.node_id("observe")
     let node =
       definition.node(
@@ -252,9 +260,10 @@ pub fn each_new_visit_is_eligible_without_waiting_for_the_previous_interval_test
     graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
   }
   let assert Ok(handle) = graph.start(build(runs), support.id("poll-cycle"), 0)
-  let assert Ok(_) = graph.await(handle, 5000)
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
   scan(runs, build) |> should.equal(o.Sweep(1, 1, 0, 0))
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   reference.activation |> should.equal(2)
   scan(runs, build).claimed |> should.equal(1)
@@ -300,7 +309,8 @@ pub fn discovery_rechecks_a_claim_released_after_its_initial_read_test() {
     })
   }
   let assert Ok(handle) = graph.start(build(runs), id, "receipt")
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(_) = waiting.status
   scan(runs, fn(runs) {
     probe.record(race, "armed")
@@ -329,13 +339,14 @@ pub fn losing_a_scan_releases_its_local_observation_without_releasing_the_claim_
   }
   let id = support.id("lost-job-scan")
   let assert Ok(handle) = graph.start(build(runs), id, "receipt")
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(_) = waiting.status
   let assert Ok(spec) =
     fabric.sweeper(
       runs,
       [graph.recovery(run.Identity("scheduled-flow", 1), build)],
-      every: 60_000,
+      every: duration.milliseconds(60_000),
     )
   let assert Ok(started) = spec.start()
   let _ = probe.arrival(calls)

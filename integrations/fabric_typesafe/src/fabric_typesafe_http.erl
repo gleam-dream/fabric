@@ -1,7 +1,7 @@
 -module(fabric_typesafe_http).
 -export([request/7]).
 
-request(Host, Port, Path, Tls, Key, Body, {bounds, Timeout, _, MaxBody, MaxHeaders}) ->
+request(Host, Port, Path, Tls, Key, Body, {wire_bounds, Timeout, _, MaxBody, MaxHeaders}) ->
     Owner = self(), Reply = alias(),
     Deadline = erlang:monotonic_time(millisecond) + Timeout,
     {Worker, Monitor} = spawn_monitor(fun() ->

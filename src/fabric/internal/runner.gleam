@@ -56,6 +56,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import sinal/correlation.{type Correlation}
 
 pub type Setup(context) {
   Setup(
@@ -74,6 +75,13 @@ pub type Setup(context) {
     policy_timeout: Int,
     /// How long a command waits for this run's live runner to take it.
     command_timeout: Int,
+    /// Milliseconds a model call may take once issued; `None`: unbounded.
+    model_timeout: Option(Int),
+    /// Milliseconds a tool body may run, unless the tool sets its own;
+    /// `None`: unbounded.
+    tool_timeout: Option(Int),
+    /// The largest tool result content a run keeps, in bytes.
+    max_result_bytes: Int,
     /// For a sub-agent run: where its end is delivered.
     parent: Option(Parent(context)),
   )
@@ -112,6 +120,9 @@ pub fn setup(
     children: admitted.children,
     policy_timeout: admitted.policy_timeout,
     command_timeout: admitted.command_timeout,
+    model_timeout: admitted.model_timeout,
+    tool_timeout: admitted.tool_timeout,
+    max_result_bytes: admitted.max_result_bytes,
     parent:,
   )
 }
@@ -121,18 +132,34 @@ pub fn setup(
 /// link back to the run keeps `setup`).
 pub fn work(setup: Setup(context), context: context) -> Work {
   live.Work(
-    invoke: fn(run: String, id: ActionId, call: model.ToolCall) {
+    invoke: fn(
+      run_id: String,
+      correlation: Correlation,
+      id: ActionId,
+      call: model.ToolCall,
+    ) {
       // Invoked in the action's task.
       let task = process.self()
       registry.invoke(
         setup.env.registry,
         context,
+        tool.Call(run: run.issued(run_id), action: id, correlation:),
         call.name,
         call.arguments_json,
         fn(outcome, summary) {
-          settle_late(setup, run, id, call.name, task, outcome, summary)
+          settle_late(
+            setup,
+            run_id,
+            correlation,
+            id,
+            call.name,
+            task,
+            bounded_outcome(setup, outcome),
+            summary,
+          )
         },
       )
+      |> bounded_outcome(setup, _)
     },
     start_child: fn(parent, id, child, call) {
       start_child(setup, context, parent, id, child, call)
@@ -151,6 +178,7 @@ pub fn work(setup: Setup(context), context: context) -> Work {
 fn settle_late(
   setup: Setup(context),
   run: String,
+  correlation: Correlation,
   id: ActionId,
   name: String,
   task: Pid,
@@ -174,9 +202,45 @@ fn settle_late(
   case settled {
     Ok(Nil) -> Nil
     Error(error) ->
-      observe.settlement_refused(run, id, name, outcome, summary, error)
+      observe.settlement_refused(
+        run,
+        correlation,
+        id,
+        name,
+        outcome,
+        summary,
+        error,
+      )
   }
   settled
+}
+
+/// A result over the agent's `max_result_bytes` is not kept: it becomes a
+/// host failure that names the limit, and the run stops.
+fn bounded_outcome(
+  setup: Setup(context),
+  outcome: invocation.Outcome,
+) -> invocation.Outcome {
+  let content = case outcome {
+    invocation.Returned(content) | invocation.FailedVisibly(content) ->
+      Some(content)
+    _ -> None
+  }
+  case content {
+    Some(content) ->
+      case string.byte_size(content) {
+        size if size > setup.max_result_bytes ->
+          invocation.OutputUnencodable(
+            "the tool's result is "
+            <> int.to_string(size)
+            <> " bytes, more than the run keeps ("
+            <> int.to_string(setup.max_result_bytes)
+            <> " bytes, agent.Limits.max_result_bytes)",
+          )
+        _ -> outcome
+      }
+    None -> outcome
+  }
 }
 
 type Offer(context) {
@@ -279,8 +343,18 @@ pub fn root_state(
   setup: Setup(context),
   id: String,
   prompt: String,
+  correlation: Correlation,
 ) -> #(State, List(Effect)) {
-  controller.start(setup.env, id, setup.identity, setup.limits, prompt, None, 0)
+  controller.start_correlated(
+    setup.env,
+    id,
+    setup.identity,
+    setup.limits,
+    prompt,
+    None,
+    0,
+    correlation,
+  )
 }
 
 /// The first state of the child run `id` that `parent`'s delegation
@@ -296,7 +370,8 @@ pub fn child_state(
   let depth = parent.depth + 1
   let max_depth =
     int.min(parent.limits.max_depth, depth + setup.limits.max_depth)
-  controller.start(
+  // A sub-agent run carries its parent's correlation.
+  controller.start_correlated(
     setup.env,
     id,
     setup.identity,
@@ -304,6 +379,7 @@ pub fn child_state(
     prompt,
     Some(run.AgentParent(run.issued(parent.run), action)),
     depth,
+    parent.correlation,
   )
 }
 
@@ -791,6 +867,18 @@ fn receive_next(runner: Runner(context)) -> Nil {
           invocation.EffectUncertain("tool crashed: " <> reason),
         ),
       )
+    live.Executed(executor.TimedOut(id, after)) ->
+      apply(
+        runner,
+        controller.ToolReported(
+          id,
+          invocation.EffectUncertain(
+            "the tool body was stopped after its "
+            <> int.to_string(after)
+            <> " ms timeout (agent.Limits.tool_timeout or tool.with_timeout)",
+          ),
+        ),
+      )
     live.Executed(executor.Lost(id, reason)) ->
       apply(runner, controller.ToolLost(id, reason))
     live.Executed(executor.Stopped) ->
@@ -1110,6 +1198,7 @@ fn perform(
       let declaration = runner.state.family_budget
       let delay =
         retry_delay(runner.setup.model_retry_delay, runner.model_failures)
+      let model_timeout = runner.setup.model_timeout
       let issue = claim.new()
       // Linked: the task dies with the runner, and the runner (trapping
       // exits) learns of a task that dies without answering. A retry waits
@@ -1140,16 +1229,7 @@ fn perform(
                   case ancestors_open(runs, id, parent) {
                     False -> process.send(self, live.Apply(controller.Cancel))
                     True -> {
-                      let result = case
-                        executor.rescue(fn() { model.call(model, request) })
-                      {
-                        Ok(result) -> result
-                        Error(crash) ->
-                          Error(model.ModelError(
-                            "model crashed: " <> crash,
-                            retryable: False,
-                          ))
-                      }
+                      let result = call_model(model, request, model_timeout)
                       process.send(self, live.ModelDone(turn, result))
                     }
                   }
@@ -1169,7 +1249,16 @@ fn perform(
         executor,
         list.map(actions, fn(action) {
           let #(id, call) = action
-          executor.Job(id, fn() { work.invoke(runner.state.run, id, call) })
+          let state = runner.state
+          executor.Job(
+            id,
+            fn() { work.invoke(state.run, state.correlation, id, call) },
+            registry.timeout(
+              runner.setup.env.registry,
+              call.name,
+              runner.setup.tool_timeout,
+            ),
+          )
         }),
       )
       Runner(..runner, executor: Some(executor))
@@ -1975,6 +2064,38 @@ pub fn live_runner(
     Some(store.Live(incarnation, mailbox)) if incarnation == state.incarnation ->
       Some(mailbox)
     _ -> None
+  }
+}
+
+/// Calls the model in the calling task, bounded by `timeout` milliseconds
+/// when there is one. A call still running at its timeout is stopped and
+/// is a retryable failure; a crash is a non-retryable one.
+fn call_model(
+  model: Model,
+  request: model.Request,
+  timeout: Option(Int),
+) -> Result(model.Reply, model.ModelError) {
+  let crashed = fn(crash) {
+    Error(model.ModelError("model crashed: " <> crash, retryable: False))
+  }
+  case timeout {
+    None ->
+      case executor.rescue(fn() { model.call(model, request) }) {
+        Ok(result) -> result
+        Error(crash) -> crashed(crash)
+      }
+    Some(ms) ->
+      case bounded.call(ms, fn() { model.call(model, request) }) {
+        Ok(result) -> result
+        Error(bounded.Crashed(crash)) -> crashed(crash)
+        Error(bounded.TimedOut) ->
+          Error(model.ModelError(
+            "the model call did not finish within "
+              <> int.to_string(ms)
+              <> " ms (agent.Limits.model_timeout)",
+            retryable: True,
+          ))
+      }
   }
 }
 

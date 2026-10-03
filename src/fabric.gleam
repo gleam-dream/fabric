@@ -7,8 +7,10 @@
 //// let assert Ok(agent) =
 ////   agent.new("desk", model, [weather_tool, transfer_tool], my_policy)
 ////   |> agent.build
-//// let assert Ok(handle) = fabric.start(runs, agent, context, "Pay Bob")
-//// case fabric.await(handle, 5000) {
+//// let assert Ok(handle) =
+////   fabric.start(runs, agent, id: run.new_id(), context:, prompt: "Pay Bob",
+////     correlation: None)
+//// case fabric.await(handle, within: duration.seconds(5)) {
 ////   Ok(run.Suspended([pending, ..], _)) ->
 ////     fabric.approve(handle, pending.reference,
 ////       reviewer: Some("alice"), context: current_context)
@@ -16,8 +18,11 @@
 //// }
 //// ```
 ////
-//// A run's record lives in a store, and a run is named by its `run.RunId`:
-//// a string from outside becomes one only through `run.parse_id`. A runner
+//// A run's record lives in a store, and a run is named by its `run.RunId`,
+//// which the caller chooses: `run.new_id()`, or `run.parse_id` of an
+//// application key (a job id) so that a retried start finds the run it
+//// started (`AlreadyStarted`). A string from outside becomes an id only
+//// through `run.parse_id`. A runner
 //// process exists only while a model call or a tool is in flight; a
 //// suspended or finished run has no process.
 //// Commands (`approve`, `reject`, `cancel`, `reconcile`) go to the live
@@ -80,6 +85,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision
 import gleam/result
+import gleam/time/duration.{type Duration}
+import sinal/correlation.{type Correlation}
 
 /// A handle on one run, for the agent and context it was started, opened
 /// or recovered with. It holds no process: it can be dropped and rebuilt
@@ -89,15 +96,19 @@ pub opaque type Run(context) {
 }
 
 pub type StartError {
+  /// A run with this id is already stored: this start stored nothing. A
+  /// start retried with the same id (by a job delivered again, say) gets
+  /// this once the first start landed; `open` the run to read or command
+  /// it, or `recover` it to take over its work.
+  AlreadyStarted(id: RunId)
   /// The store did not confirm the run's first record, so its outcome is
   /// unknown: the backend may still store it later, as the run `id` with
   /// work in flight and no runner (`await` then reports `Unattended`).
-  /// `cancel_stored(store, id)` ends such a run if it lands.
+  /// Starting again with the same id is safe: it is `AlreadyStarted` if the
+  /// first start landed. `cancel_stored(store, id)` ends such a run instead.
   StartUnconfirmed(id: RunId, reason: String)
-  /// The store reported the new run's fresh id taken, and the record under
-  /// it is not the one this start wrote: a backend that breaks its
-  /// contract (random ids do not collide). The id names someone else's
-  /// record, so it is not given; this start stored nothing.
+  /// The start's configuration was refused (an invalid family budget, or a
+  /// store whose record version cannot hold one). Nothing was stored.
   StartRefused(reason: String)
 }
 
@@ -161,15 +172,27 @@ pub type CommandError {
 
 const retries = 3
 
-/// Starts a run of `agent` in `store`: stores its first record under a
-/// fresh id and hands the first model call to a new runner.
+/// Starts a run of `agent` in `store` under `id`: stores its first record
+/// and hands the first model call to a new runner. `id` is the caller's:
+/// `run.new_id()` for a fresh run, or an id derived from the work that
+/// starts it (`run.parse_id(job_id)`), so that starting again finds the run
+/// (`AlreadyStarted`) instead of starting a second one.
+///
+/// `correlation` is carried in every event of the run, its sub-agent runs
+/// included, in every `model.Request` (which `fabric/llm` puts on its HTTP
+/// requests) and in every tool's `tool.Call`; it is stored with the run, so
+/// a recovered run keeps it. `None` derives it from the id
+/// (`correlation.from_key(run.id_to_string(id))`); pass the correlation of
+/// the request or job that starts the run to join their events.
 pub fn start(
   store: Store,
   agent: Agent(context),
-  context: context,
-  prompt: String,
+  id id: RunId,
+  context context: context,
+  prompt prompt: String,
+  correlation correlation: Option(Correlation),
 ) -> Result(Run(context), StartError) {
-  start_root(store, agent, context, prompt, None)
+  start_root(store, agent, id, context, prompt, correlation, None)
 }
 
 /// Starts a root with one durable budget shared by all managed descendants.
@@ -178,9 +201,11 @@ pub fn start(
 pub fn start_with_budget(
   store: Store,
   agent: Agent(context),
-  context: context,
-  prompt: String,
-  limits: budget.Limits,
+  id id: RunId,
+  context context: context,
+  prompt prompt: String,
+  correlation correlation: Option(Correlation),
+  limits limits: budget.Limits,
 ) -> Result(Run(context), StartError) {
   use _ <- result.try(
     reservations.new(limits)
@@ -193,8 +218,10 @@ pub fn start_with_budget(
   start_root(
     store,
     agent,
+    id,
     context,
     prompt,
+    correlation,
     Some(reservations.Declaration(limits, False)),
   )
 }
@@ -202,19 +229,22 @@ pub fn start_with_budget(
 fn start_root(
   store: Store,
   agent: Agent(context),
+  id: RunId,
   context: context,
   prompt: String,
+  correlation: Option(Correlation),
   declaration: Option(reservations.Declaration),
 ) -> Result(Run(context), StartError) {
   let setup = runner.setup(store, agent.admitted(agent), context, None)
-  let id = "run-" <> random_id()
-  let #(state, effects) = runner.root_state(setup, id, prompt)
+  let text = id_to_string(id)
+  let correlation =
+    option.lazy_unwrap(correlation, fn() { correlation.from_key(text) })
+  let #(state, effects) = runner.root_state(setup, text, prompt, correlation)
   let state = controller.State(..state, family_budget: declaration)
   case runner.launch_new(setup, state, effects) {
-    Ok(_) -> Ok(Run(id:, setup:))
-    Error(store.AlreadyExists) ->
-      Error(StartRefused("the store reported the new run id taken"))
-    Error(error) -> Error(StartUnconfirmed(issued(id), describe_store(error)))
+    Ok(_) -> Ok(Run(id: text, setup:))
+    Error(store.AlreadyExists) -> Error(AlreadyStarted(id))
+    Error(error) -> Error(StartUnconfirmed(id, describe_store(error)))
   }
 }
 
@@ -321,8 +351,8 @@ pub fn child(
   |> result.map_error(record_error)
 }
 
-/// Blocks until the run is no longer `Working`, or until `within`
-/// milliseconds pass, and returns its status: `Working` when the time ran
+/// Blocks until the run is no longer `Working`, or until `within` passes,
+/// and returns its status: `Working` when the time ran
 /// out, `Suspended` or `Finished`, or `Unattended` when work is in flight
 /// but no runner known to this store drives it. On an unleased store,
 /// `Unattended` means the runner was lost or handed the run off at
@@ -343,17 +373,69 @@ pub fn child(
 /// With no store process running when it starts, or none registered again
 /// in time, it is `StoreUnavailable`. A run whose
 /// sub-agents work is working; one waiting only on paused sub-agents is
-/// suspended on their approvals. `await(run, 0)` reads the status now; a
-/// `within` longer than the runtime's longest timer (2^32 - 1 ms) is waited
-/// in parts.
-pub fn await(run: Run(context), within: Int) -> Result(Status, RecordError) {
-  attend(run, process.new_subject(), now() + within, None)
+/// suspended on their approvals. A `within` of zero (or less) reads the
+/// status now; one longer than the runtime's longest timer (2^32 - 1 ms) is
+/// waited in parts.
+///
+/// To wait for the run or for something else at once (a caller's
+/// cancellation, a shutdown message), use `await_with`.
+pub fn await(
+  run: Run(context),
+  within within: Duration,
+) -> Result(Status, RecordError) {
+  case await_with(run, within:, or: process.new_selector()) {
+    Ok(Reached(status)) -> Ok(status)
+    // An empty selector receives nothing: this branch never runs.
+    Ok(Interrupted(never)) -> never
+    Error(error) -> Error(error)
+  }
+}
+
+/// What `await_with` ended with.
+pub type Awaited(message) {
+  /// The run's status, as `await` returns it.
+  Reached(Status)
+  /// A message of the caller's selector arrived first. The wait changed
+  /// nothing: the run goes on, and the caller decides (for example
+  /// `cancel`).
+  Interrupted(message)
+}
+
+/// `await`, ending early when `or` receives a message: one receive waits for
+/// the run and for the caller's own messages, so a handler needs no helper
+/// process. The message is returned as `Interrupted(message)` and is
+/// consumed; the run is left as it is. A request handler that must stop
+/// the run when its caller goes away selects on that signal:
+///
+/// ```gleam
+/// let cancelled = relay_tool.cancelled(call)   // a process.Selector(Nil)
+/// case fabric.await_with(handle, within: duration.seconds(30), or: cancelled) {
+///   Ok(fabric.Interrupted(Nil)) -> {
+///     let _ = fabric.cancel(handle)
+///     Error(Cancelled)
+///   }
+///   Ok(fabric.Reached(run.Finished(outcome))) -> Ok(outcome)
+///   Ok(fabric.Reached(_)) -> Error(NotFinished)
+///   Error(error) -> Error(Unreadable(error))
+/// }
+/// ```
+///
+/// The selector is checked whenever the wait blocks, and a message already
+/// queued for it wins over a status read in the same moment only if it
+/// arrived first.
+pub fn await_with(
+  run: Run(context),
+  within within: Duration,
+  or interrupt: process.Selector(message),
+) -> Result(Awaited(message), RecordError) {
+  let deadline = now() + int.max(0, duration.to_milliseconds(within))
+  attend(run, process.new_subject(), interrupt, deadline, None)
 }
 
 /// What a wait ended with: an outcome, or the store process stopped (its
 /// watches are gone with it).
-type Waited {
-  Waited(Result(Status, RecordError))
+type Waited(message) {
+  Waited(Result(Awaited(message), RecordError))
   StoreStopped
 }
 
@@ -363,40 +445,45 @@ type Waited {
 fn attend(
   run: Run(context),
   watcher: process.Subject(Nil),
+  interrupt: process.Selector(message),
   deadline: Int,
   stopped: Option(Pid),
-) -> Result(Status, RecordError) {
-  case store_process(run.setup.store, stopped, deadline) {
+) -> Result(Awaited(message), RecordError) {
+  case store_process(run.setup.store, interrupt, stopped, deadline) {
     Error(Nil) -> Error(StoreUnavailable("the store is not running"))
-    Ok(pid) -> {
+    Ok(Error(message)) -> Ok(Interrupted(message))
+    Ok(Ok(pid)) -> {
       let monitor = process.monitor(pid)
-      let waited = wait(run, watcher, pid, monitor, [], deadline)
+      let waited = wait(run, watcher, interrupt, pid, monitor, [], deadline)
       process.demonitor_process(monitor)
       case waited {
         Waited(outcome) -> outcome
-        StoreStopped -> attend(run, watcher, deadline, Some(pid))
+        StoreStopped -> attend(run, watcher, interrupt, deadline, Some(pid))
       }
     }
   }
 }
 
 /// The store's process. After `stopped` stopped, the next process
-/// registered under the store's name, waited for until `deadline`.
+/// registered under the store's name, waited for until `deadline` or a
+/// message of `interrupt` (`Ok(Error(message))`).
 fn store_process(
   store: Store,
+  interrupt: process.Selector(message),
   stopped: Option(Pid),
   deadline: Int,
-) -> Result(Pid, Nil) {
+) -> Result(Result(Pid, message), Nil) {
   case store.pid(store), stopped {
-    Ok(pid), Some(old) if pid != old -> Ok(pid)
-    Ok(pid), None -> Ok(pid)
+    Ok(pid), Some(old) if pid != old -> Ok(Ok(pid))
+    Ok(pid), None -> Ok(Ok(pid))
     Error(Nil), None -> Error(Nil)
     _, Some(_) ->
       case deadline - now() {
-        left if left > 0 -> {
-          process.sleep(int.min(left, 5))
-          store_process(store, stopped, deadline)
-        }
+        left if left > 0 ->
+          case process.selector_receive(interrupt, int.min(left, 5)) {
+            Ok(message) -> Ok(Error(message))
+            Error(Nil) -> store_process(store, interrupt, stopped, deadline)
+          }
         _ -> Error(Nil)
       }
   }
@@ -405,15 +492,17 @@ fn store_process(
 fn wait(
   run: Run(context),
   watcher: process.Subject(Nil),
+  interrupt: process.Selector(message),
   pid: Pid,
   monitor: process.Monitor,
   watched: List(String),
   deadline: Int,
-) -> Waited {
+) -> Waited(message) {
   let done = fn(outcome) {
     list.each(watched, store.unwatch(run.setup.store, _, watcher))
     Waited(outcome)
   }
+  let reached = fn(status) { done(Ok(Reached(status))) }
   // A store call that failed because the process stopped under it is the
   // stop, not an outcome.
   let failed = fn(error) {
@@ -440,6 +529,7 @@ fn wait(
           wait(
             run,
             watcher,
+            interrupt,
             pid,
             monitor,
             list.append(watched, fresh),
@@ -448,8 +538,8 @@ fn wait(
         // Unattended only when a second read finds the family unchanged.
         Ok(Nil), [], family.View(run.Working, False) ->
           case family.load(run.setup.store, run.id) {
-            Ok(again) if again == node -> done(Ok(run.Unattended))
-            _ -> wait(run, watcher, pid, monitor, watched, deadline)
+            Ok(again) if again == node -> reached(run.Unattended)
+            _ -> wait(run, watcher, interrupt, pid, monitor, watched, deadline)
           }
         Ok(Nil), [], family.View(run.Working, True) -> {
           // Commits made through another node's store wake no watcher here:
@@ -460,21 +550,34 @@ fn wait(
           }
           let woken =
             process.new_selector()
-            |> process.select_map(watcher, Ok)
-            |> process.select_specific_monitor(monitor, fn(_) { Error(Nil) })
+            |> process.select_map(watcher, fn(_) { Woken })
+            |> process.select_specific_monitor(monitor, fn(_) { Stopped })
+            |> process.merge_selector(process.map_selector(interrupt, Caller))
             |> receive_until(wake)
           case woken {
             Error(Nil) if wake < deadline ->
-              wait(run, watcher, pid, monitor, watched, deadline)
-            Error(Nil) -> done(Ok(run.Working))
-            Ok(Error(Nil)) -> StoreStopped
-            Ok(Ok(Nil)) -> wait(run, watcher, pid, monitor, watched, deadline)
+              wait(run, watcher, interrupt, pid, monitor, watched, deadline)
+            Error(Nil) -> reached(run.Working)
+            Ok(Stopped) -> StoreStopped
+            Ok(Caller(message)) -> done(Ok(Interrupted(message)))
+            Ok(Woken) ->
+              wait(run, watcher, interrupt, pid, monitor, watched, deadline)
           }
         }
-        Ok(Nil), [], family.View(status, _) -> done(Ok(status))
+        Ok(Nil), [], family.View(status, _) -> reached(status)
       }
     }
   }
+}
+
+/// What woke a blocked wait.
+type Wake(message) {
+  /// A commit of a watched record.
+  Woken
+  /// The store's process stopped.
+  Stopped
+  /// The caller's selector.
+  Caller(message)
 }
 
 /// The longest timer the runtime can set, in milliseconds.
@@ -706,7 +809,7 @@ pub fn cancel_stored(store: Store, id: RunId) -> Result(Status, CommandError) {
   runner.cancel_unattended(
     store,
     id,
-    agent.default_limits().command_timeout,
+    duration.to_milliseconds(agent.default_limits().command_timeout),
     retries,
   )
   |> result.map(committed_status(store, id, _))
@@ -893,9 +996,6 @@ fn describe_store(error: store.StoreError) -> String {
   }
 }
 
-@external(erlang, "fabric_ffi", "random_id")
-fn random_id() -> String
-
 @external(erlang, "fabric_ffi", "now_ms")
 fn now() -> Int
 
@@ -912,15 +1012,18 @@ pub fn recovery(
 }
 
 pub type SweeperError {
-  EveryNotPositive(Int)
-  EveryTooLarge(value: Int, limit: Int)
+  /// Shorter than 1 ms.
+  EveryNotPositive(Duration)
+  /// Longer than the longest timer the runtime can set (`limit`, 2^32 - 1
+  /// ms).
+  EveryTooLarge(value: Duration, limit: Duration)
   DuplicateRecovery(run.Identity)
   StoreNotLeased
 }
 
 /// A supervised recovery driver for a leased store. Add it after the store
 /// in a rest-for-one supervisor: it stops before runners drain. It scans
-/// at boot, then waits `every` milliseconds after each bounded batch of at
+/// at boot, then waits `every` after each bounded batch of at
 /// most 50 expired leases and 50 changed idle dependencies. No scans overlap.
 /// Each candidate is recovered
 /// through its registered agent or graph root; a crashed running effect
@@ -936,14 +1039,15 @@ pub type SweeperError {
 pub fn sweeper(
   store: Store,
   recoveries: List(Recovery),
-  every milliseconds: Int,
+  every every: Duration,
 ) -> Result(supervision.ChildSpecification(Nil), List(SweeperError)) {
-  sweeper.new(store, recoveries, milliseconds)
+  sweeper.new(store, recoveries, duration.to_milliseconds(every))
   |> result.map_error(fn(errors) {
     list.map(errors, fn(error) {
       case error {
-        sweeper.EveryNotPositive(n) -> EveryNotPositive(n)
-        sweeper.EveryTooLarge(n) -> EveryTooLarge(n, 4_294_967_295)
+        sweeper.EveryNotPositive(_) -> EveryNotPositive(every)
+        sweeper.EveryTooLarge(_) ->
+          EveryTooLarge(every, duration.milliseconds(longest_timer))
         sweeper.DuplicateRecovery(identity) -> DuplicateRecovery(identity)
         sweeper.StoreNotLeased -> StoreNotLeased
       }

@@ -2,6 +2,7 @@ import fabric_typesafe/client
 import gleam/erlang/process
 import gleam/list
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import support
 
@@ -20,7 +21,10 @@ pub fn credentials_endpoints_and_bounds_are_checked_locally_test() {
     ],
     fn(url) { client.with_endpoint(config, url) |> should.be_error },
   )
-  client.with_bounds(config, client.Bounds(..client.bounds(), timeout: 0))
+  client.with_bounds(
+    config,
+    client.Bounds(..client.bounds(), timeout: duration.milliseconds(0)),
+  )
   |> should.be_error
 }
 
@@ -74,7 +78,7 @@ pub fn deadlines_and_owner_loss_close_the_actual_http_connection_test() {
   let assert Ok(config) =
     client.with_bounds(
       support.config(url, "/hold"),
-      client.Bounds(..client.bounds(), timeout: 100),
+      client.Bounds(..client.bounds(), timeout: duration.milliseconds(100)),
     )
   let assert Error(client.AfterSend(_)) = client.post(config, "{}")
   await_stat(url, "disconnected", 1, 100)

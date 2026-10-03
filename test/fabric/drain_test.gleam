@@ -21,6 +21,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
@@ -61,7 +62,15 @@ pub fn a_stop_lets_a_running_tool_finish_and_hands_the_run_off_test() {
   let probe = probe.new()
   let runs = support.restartable_store(dir)
   let app = restart.application(runs)
-  let assert Ok(run) = fabric.start(runs, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   restart.begin_stop(app)
   restart.draining(runs)
@@ -70,13 +79,14 @@ pub fn a_stop_lets_a_running_tool_finish_and_hands_the_run_off_test() {
 
   let app = restart.application(runs)
   let assert Ok(run) = fabric.open(runs, one_slow(probe), Nil, fabric.id(run))
-  fabric.await(run, 0) |> should.equal(Ok(run.Unattended))
+  fabric.await(run, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Unattended))
   states(run) |> should.equal([run.Succeeded("\"a\"")])
   turns_used(run) |> should.equal(1)
 
   let assert Ok(run) =
     fabric.recover(runs, one_slow(probe), Nil, fabric.id(run))
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   turns_used(run) |> should.equal(2)
   probe.count(probe, "start:a") |> should.equal(1)
@@ -90,21 +100,32 @@ pub fn a_stop_lets_a_running_tool_finish_and_hands_the_run_off_test() {
 pub fn a_tool_past_the_drain_window_is_uncertain_and_never_rerun_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let assert Ok(runs) = store.with_drain(support.restartable_store(dir), 50)
+  let assert Ok(runs) =
+    store.with_drain(support.restartable_store(dir), duration.milliseconds(50))
   let app = restart.application(runs)
-  let assert Ok(run) = fabric.start(runs, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(probe)
   restart.stop(app)
 
   let app = restart.application(runs)
   let assert Ok(run) = fabric.open(runs, one_slow(probe), Nil, fabric.id(run))
-  fabric.await(run, 0) |> should.equal(Ok(run.Unattended))
+  fabric.await(run, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Unattended))
   states(run) |> should.equal([run.Running])
   let assert Ok(run) =
     fabric.recover(runs, one_slow(probe), Nil, fabric.id(run))
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let assert Ok(_) = fabric.reconcile(run, uncertain.reference, "\"a\"")
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   probe.count(probe, "start:a") |> should.equal(1)
   restart.stop(app)
@@ -132,8 +153,17 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
     )
     |> support.agent
   let app = restart.application(runs)
-  let assert Ok(run) = fabric.start(runs, agent, Nil, "go")
-  let assert Ok(run.Suspended([first, second], [])) = fabric.await(run, 5000)
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([first, second], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let assert Ok(_) =
     fabric.approve(run, first.reference, reviewer: Some("alice"), context: Nil)
   let running = probe.arrival(probe)
@@ -147,7 +177,8 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
 
   let app = restart.application(runs)
   let assert Ok(run) = fabric.open(runs, agent, Nil, fabric.id(run))
-  let assert Ok(run.Suspended([renewed], [])) = fabric.await(run, 0)
+  let assert Ok(run.Suspended([renewed], [])) =
+    fabric.await(run, within: duration.milliseconds(0))
   renewed.reference.id |> should.equal(second.reference.id)
   { renewed.reference.revision > second.reference.revision } |> should.be_true
   fabric.approve(run, second.reference, reviewer: Some("alice"), context: Nil)
@@ -155,7 +186,7 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
   let assert Ok(_) =
     fabric.approve(run, renewed.reference, reviewer: Some("bob"), context: Nil)
   probe.release(probe.arrival(probe))
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\" | \"b\""))))
   probe.count(probe, "start:a") |> should.equal(1)
   probe.count(probe, "start:b") |> should.equal(1)
@@ -196,7 +227,15 @@ pub fn a_stop_waits_for_the_model_reply_in_flight_test() {
     )
     |> support.agent
   let app = restart.application(runs)
-  let assert Ok(run) = fabric.start(runs, agent, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let calling = probe.arrival(probe)
   restart.begin_stop(app)
   restart.draining(runs)
@@ -205,12 +244,13 @@ pub fn a_stop_waits_for_the_model_reply_in_flight_test() {
 
   let app = restart.application(runs)
   let assert Ok(run) = fabric.open(runs, agent, Nil, fabric.id(run))
-  fabric.await(run, 0) |> should.equal(Ok(run.Unattended))
+  fabric.await(run, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Unattended))
   states(run) |> should.equal([run.Queued])
   turns_used(run) |> should.equal(1)
   let assert Ok(run) = fabric.recover(runs, agent, Nil, fabric.id(run))
   probe.release(probe.arrival(probe))
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   turns_used(run) |> should.equal(2)
   probe.count(probe, "start:a") |> should.equal(1)
@@ -233,8 +273,17 @@ pub fn a_suspended_run_is_untouched_by_a_stop_test() {
     )
     |> support.agent
   let app = restart.application(runs)
-  let assert Ok(run) = fabric.start(runs, agent, Nil, "go")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let assert Ok(before) = fabric.snapshot(run)
   restart.stop(app)
 
@@ -249,7 +298,7 @@ pub fn a_suspended_run_is_untouched_by_a_stop_test() {
       context: Nil,
     )
   probe.release(probe.arrival(probe))
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   restart.stop(app)
   restart.remove_dir(dir)
@@ -263,7 +312,15 @@ pub fn a_store_stops_after_its_draining_runners_test() {
   let probe = probe.new()
   let runs = support.restartable_store(dir)
   let app = restart.application(runs)
-  let assert Ok(run) = fabric.start(runs, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   let assert Ok(store_process) = store.pid(runs)
   let assert Ok(runner) = restart.runner(runs, fabric.id(run))
@@ -328,7 +385,15 @@ pub fn a_child_run_drains_on_its_own_and_is_recovered_with_its_parent_test() {
     )
     |> support.agent
   let app = restart.application(runs)
-  let assert Ok(run) = fabric.start(runs, parent, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      parent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   restart.begin_stop(app)
   restart.draining(runs)
@@ -338,13 +403,14 @@ pub fn a_child_run_drains_on_its_own_and_is_recovered_with_its_parent_test() {
   let app = restart.application(runs)
   let assert Ok(run) = fabric.open(runs, parent, Nil, fabric.id(run))
   states(run) |> should.equal([run.Delegated])
-  fabric.await(run, 0) |> should.equal(Ok(run.Unattended))
+  fabric.await(run, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Unattended))
   let assert Ok(child) = fabric.child(run, support.child_id(fabric.id(run), 1))
   states(child) |> should.equal([run.Succeeded("\"a\"")])
   turns_used(child) |> should.equal(1)
 
   let assert Ok(run) = fabric.recover(runs, parent, Nil, fabric.id(run))
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done: \"final: \\\"a\\\"\""))))
   probe.count(probe, "start:a") |> should.equal(1)
   restart.stop(app)
@@ -388,7 +454,10 @@ fn delegating(
     policy,
   )
   |> agent.with_limits(
-    agent.Limits(..agent.default_limits(), policy_timeout: 60_000),
+    agent.Limits(
+      ..agent.default_limits(),
+      policy_timeout: duration.milliseconds(60_000),
+    ),
   )
   |> agent.with_sub_agent(
     research(),
@@ -418,7 +487,11 @@ fn queued(pid: process.Pid, count: Int) -> Nil {
 pub fn a_delegation_approved_ahead_of_the_stop_does_not_hold_up_the_drain_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let assert Ok(runs) = store.with_drain(support.restartable_store(dir), 60_000)
+  let assert Ok(runs) =
+    store.with_drain(
+      support.restartable_store(dir),
+      duration.milliseconds(60_000),
+    )
   let assert Ok(delegation) = testing.call(research(), "r", "weather")
   let policy = fn(_context, action: policy.Action) {
     case action.tool {
@@ -428,9 +501,18 @@ pub fn a_delegation_approved_ahead_of_the_stop_does_not_hold_up_the_drain_test()
   }
   let parent = delegating(probe, [scripted.slow("a", "a"), delegation], policy)
   let app = restart.application(runs)
-  let assert Ok(run) = fabric.start(runs, parent, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      parent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
-  let assert Ok(run.Working) = fabric.await(run, 0)
+  let assert Ok(run.Working) =
+    fabric.await(run, within: duration.milliseconds(0))
   let assert Ok([pending]) = fabric.pending(run)
   let assert Ok(runner) = restart.runner(runs, fabric.id(run))
   restart.suspend(runner)
@@ -454,7 +536,7 @@ pub fn a_delegation_approved_ahead_of_the_stop_does_not_hold_up_the_drain_test()
   let assert Ok(run) = fabric.open(runs, parent, Nil, fabric.id(run))
   states(run) |> should.equal([run.Succeeded("\"a\""), run.Delegated])
   let assert Ok(run) = fabric.recover(runs, parent, Nil, fabric.id(run))
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done: \"a\",\"found\""))))
   probe.count(probe, "start:a") |> should.equal(1)
   restart.stop(app)
@@ -469,7 +551,11 @@ pub fn a_delegation_decided_during_the_stop_does_not_hold_up_the_drain_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
   let gate = probe.new()
-  let assert Ok(runs) = store.with_drain(support.restartable_store(dir), 60_000)
+  let assert Ok(runs) =
+    store.with_drain(
+      support.restartable_store(dir),
+      duration.milliseconds(60_000),
+    )
   let assert Ok(delegation) = testing.call(research(), "r", "weather")
   let policy = fn(_context, action: policy.Action) {
     case action.tool {
@@ -480,7 +566,15 @@ pub fn a_delegation_decided_during_the_stop_does_not_hold_up_the_drain_test() {
   }
   let parent = delegating(probe, [delegation], policy)
   let app = restart.application(runs)
-  let assert Ok(run) = fabric.start(runs, parent, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      parent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let deciding = probe.arrival(gate)
   restart.begin_stop(app)
   restart.draining(runs)
@@ -491,7 +585,7 @@ pub fn a_delegation_decided_during_the_stop_does_not_hold_up_the_drain_test() {
   let assert Ok(run) = fabric.open(runs, parent, Nil, fabric.id(run))
   states(run) |> should.equal([run.Delegated])
   let assert Ok(run) = fabric.recover(runs, parent, Nil, fabric.id(run))
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done: \"found\""))))
   restart.stop(app)
   restart.remove_dir(dir)
@@ -515,12 +609,24 @@ pub fn a_retry_backoff_is_not_waited_for_and_its_turn_is_given_back_test() {
   let agent =
     agent.new("agent", flaky_model, [], policy.always_allow())
     |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), model_retry_delay: 60_000),
+      agent.Limits(
+        ..agent.default_limits(),
+        model_retry_delay: duration.milliseconds(60_000),
+      ),
     )
     |> support.agent
   let app = restart.application(runs)
-  let assert Ok(run) = fabric.start(runs, agent, Nil, "go")
-  let assert Ok(run.Working) = fabric.await(run, 0)
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Working) =
+    fabric.await(run, within: duration.milliseconds(0))
   wait_for_turns(run, 2)
   restart.stopped_within(app, 0) |> should.be_false
   restart.begin_stop(app)
@@ -531,7 +637,7 @@ pub fn a_retry_backoff_is_not_waited_for_and_its_turn_is_given_back_test() {
   let assert Ok(run) = fabric.open(runs, agent, Nil, fabric.id(run))
   turns_used(run) |> should.equal(1)
   let assert Ok(run) = fabric.recover(runs, agent, Nil, fabric.id(run))
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
   turns_used(run) |> should.equal(2)
   probe.count(calls, "call") |> should.equal(2)
@@ -557,7 +663,11 @@ fn wait_for_turns(run: fabric.Run(context), turns: Int) -> Nil {
 pub fn a_shutdown_queued_behind_a_report_is_taken_first_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let assert Ok(runs) = store.with_drain(support.restartable_store(dir), 60_000)
+  let assert Ok(runs) =
+    store.with_drain(
+      support.restartable_store(dir),
+      duration.milliseconds(60_000),
+    )
   let two =
     agent.new(
       "agent",
@@ -570,7 +680,15 @@ pub fn a_shutdown_queued_behind_a_report_is_taken_first_test() {
     )
     |> support.agent
   let app = restart.application(runs)
-  let assert Ok(run) = fabric.start(runs, two, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      two,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   let assert Ok(runner) = restart.runner(runs, fabric.id(run))
   restart.suspend(runner)
@@ -588,7 +706,7 @@ pub fn a_shutdown_queued_behind_a_report_is_taken_first_test() {
   states(run) |> should.equal([run.Succeeded("\"a\""), run.Queued])
   let assert Ok(run) = fabric.recover(runs, two, Nil, fabric.id(run))
   probe.release(probe.arrival(probe))
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\" | \"b\""))))
   probe.count(probe, "start:b") |> should.equal(1)
   restart.stop(app)
@@ -604,7 +722,11 @@ pub fn a_shutdown_queued_behind_a_report_is_taken_first_test() {
 pub fn a_tool_body_starting_a_run_during_the_stop_does_not_hold_up_the_drain_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
-  let assert Ok(runs) = store.with_drain(support.restartable_store(dir), 60_000)
+  let assert Ok(runs) =
+    store.with_drain(
+      support.restartable_store(dir),
+      duration.milliseconds(60_000),
+    )
   let child =
     agent.new(
       "child",
@@ -621,9 +743,18 @@ pub fn a_tool_body_starting_a_run_during_the_stop_does_not_hold_up_the_drain_tes
       codec.string(),
     )
     |> tool.bind(
-      fn(_context, x: String) -> Result(String, Nil) {
+      fn(_context, _call, x: String) -> Result(String, Nil) {
         probe.gate(probe, x)
-        case fabric.start(runs, child, Nil, "sub") {
+        case
+          fabric.start(
+            runs,
+            child,
+            id: run.new_id(),
+            context: Nil,
+            prompt: "sub",
+            correlation: None,
+          )
+        {
           Ok(started) -> Ok(run.id_to_string(fabric.id(started)))
           Error(_) -> Ok("refused")
         }
@@ -639,7 +770,15 @@ pub fn a_tool_body_starting_a_run_during_the_stop_does_not_hold_up_the_drain_tes
     )
     |> support.agent
   let app = restart.application(runs)
-  let assert Ok(run) = fabric.start(runs, parent, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      parent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   let assert Ok(store_process) = store.pid(runs)
   restart.suspend(store_process)
@@ -656,7 +795,8 @@ pub fn a_tool_body_starting_a_run_during_the_stop_does_not_hold_up_the_drain_tes
   let assert [run.Succeeded(started)] = states(run)
   let assert Ok(id) = run.parse_id(string.replace(started, "\"", ""))
   let assert Ok(sub) = fabric.open(runs, child, Nil, id)
-  fabric.await(sub, 0) |> should.equal(Ok(run.Unattended))
+  fabric.await(sub, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Unattended))
   restart.stop(app)
   restart.remove_dir(dir)
 }

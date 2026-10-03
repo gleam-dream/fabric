@@ -1,6 +1,7 @@
 import fabric/graph
 import fabric_graph_demo
 import gleam/list
+import gleam/time/duration
 import gleeunit
 import gleeunit/should
 
@@ -42,11 +43,13 @@ pub fn a_managed_agent_supplies_the_same_native_boolean_decision_test() {
 
 pub fn a_human_signal_can_supply_the_same_native_decision_contract_test() {
   let #(handle, decision) = fabric_graph_demo.start_manual(6)
-  let assert Ok(first) = graph.await(handle, 5000)
+  let assert Ok(first) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = first.status
   first.value |> should.equal(1)
   let assert Ok(_) = graph.deliver(handle, reference, decision, False)
-  let assert Ok(second) = graph.await(handle, 5000)
+  let assert Ok(second) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = second.status
   second.value |> should.equal(2)
   let assert Ok(done) = graph.deliver(handle, reference, decision, True)

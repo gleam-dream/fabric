@@ -7,8 +7,29 @@ integration packages under `integrations/` keep their own changelogs.
 
 ## Unreleased
 
+Round 5 is described with before/after snippets in
+[docs/migration-round-5.md](docs/migration-round-5.md).
+
 ### Added
 
+- Caller-chosen run ids: `fabric.start(.., id:, ..)` and `run.new_id()`. A
+  start under a stored id returns `AlreadyStarted(id)`, so a retried job
+  starts its run once.
+- A run correlation (`sinal/correlation.Correlation`), given to
+  `fabric.start(.., correlation: Some(c))` or derived from the run id,
+  stored with the run, inherited by sub-agent runs, and carried in every
+  `model.Request` (with `run` and `turn`), every `tool.Call` and the
+  metadata of every run event. `fabric/llm` tags each turn's HTTP Gun
+  client view with it, so one agent serves every run.
+- `tool.Call`, the call a handler answers (run, action, correlation).
+- `fabric.await_with(run, within:, or: selector)` and `fabric.Awaited`:
+  wait for the run or a caller's message in one receive.
+- Default bounds: `agent.Limits.model_timeout` (600 s; a slow call is a
+  retryable failure), `tool_timeout` (60 s; a stopped body is an uncertain
+  effect), `max_result_bytes` (1 MiB; a larger result ends the run with
+  `OutputEncodingFailed`), and `tool.with_timeout` for one tool;
+  `run.Timeout` (`After(Duration)` or `Infinity`). The README lists every
+  default.
 - Bounded agent runs (`fabric`, `fabric/agent`): typed tools, an explicit
   policy gate, turn and timer limits, shared work, child and depth budgets,
   and approval-gated sub-agents.
@@ -29,6 +50,30 @@ integration packages under `integrations/` keep their own changelogs.
 
 ### Changed
 
+- **Breaking:** `fabric.start` and `fabric.start_with_budget` take
+  labelled `id:`, `context:`, `prompt:` and `correlation:` arguments. A taken
+  id is `AlreadyStarted(id)`, no longer `StartRefused`.
+- **Breaking:** tool handlers receive a `tool.Call` after the context:
+  `fn(context, call, input)` for `tool.bind`, `fn(context, call, input,
+settlement)` for `tool.bind_settling`.
+- **Breaking:** `model.Request` gains `run`, `turn` and `correlation`.
+- **Breaking:** every public timeout, deadline, interval and lease is a
+  `gleam/time/duration.Duration`: `fabric.await(run, within:)`,
+  `graph.await(handle, within:)`, `fabric.sweeper(.., every:)`,
+  `agent.Limits.policy_timeout`, `model_retry_delay` and `command_timeout`,
+  `tool.bind_settling(.., within:)`, `store.leased(.., lease:)`,
+  `store.with_drain`, `operation.with_deadline`, `job.with_poll_interval`,
+  and the errors that report them. `graph.with_timeouts` takes labelled
+  `callbacks:`, `operations:` and `commands:`. Stored records, the backend
+  port and discovery projections keep integer milliseconds.
+- **Breaking:** the metadata records of run events gain `correlation`.
+- **Breaking:** `fabric_saga.tool` takes `input: fn(context, tool.Call,
+input) -> workflow_input`, so a workflow can use the run context, and a
+  `Duration` `rollback_within`; each Saga run carries the Fabric run's
+  correlation.
+- Fabric builds on json_blueprint's opaque `codec.Schema`:
+  `contract.from_schema` cannot fail, so `fabric/llm` no longer maps its
+  error.
 - **Breaking:** Fabric and its packages build on the wave 4 APIs of LLM Wire,
   HTTP Gun and Saga. `fabric/llm.model` takes an `llm_wire.Config` and a
   `String` model; `fabric/graph/llm.new`'s request builder returns an

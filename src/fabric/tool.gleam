@@ -6,8 +6,11 @@
 //// unrelated types share one list. The declaration the model sees and the
 //// decoder that checks its arguments come from the same input codec.
 ////
-//// The handler receives the run's context separately from the decoded
-//// business input.
+//// The handler receives the run's context, the `Call` it answers (its run,
+//// its action and the run's correlation), and the decoded business input.
+//// A handler that makes requests of its own tags them with
+//// `call.correlation` (for example `http_gun.with_correlation`), so its
+//// work joins the run's events.
 ////
 //// A tool bound with `bind_settling` also receives a `Settlement`: a
 //// handle with which its result can be settled after the invocation's task
@@ -45,11 +48,13 @@
 import fabric/internal/invocation.{type Outcome}
 import fabric/model.{type ToolCall}
 import fabric/policy
-import fabric/run
+import fabric/run.{type Timeout}
 import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/time/duration.{type Duration}
 import json/blueprint/codec.{type Codec}
+import sinal/correlation.{type Correlation}
 
 pub opaque type Definition(input, output) {
   Definition(
@@ -70,17 +75,30 @@ pub type Failure {
   Uncertain(evidence: String)
 }
 
+/// The call a handler answers. Read it by label: Fabric may add fields.
+///
+/// `run` and `action` name this call durably (the action survives restarts,
+/// so it can key an idempotent request), and `correlation` is the run's
+/// (see `fabric.start`): pass it to the packages the handler calls, such as
+/// `http_gun.with_correlation` or Saga's `execution.with_correlation`.
+pub type Call {
+  Call(run: run.RunId, action: run.ActionId, correlation: Correlation)
+}
+
 pub opaque type Tool(context) {
   Tool(
     name: String,
     description: String,
     input_schema: Result(codec.Schema, codec.SchemaError),
     check: fn(String) -> Result(Nil, String),
-    invoke: fn(context, String, Late) -> Outcome,
+    invoke: fn(context, Call, String, Late) -> Outcome,
     kind: Kind,
     /// For a tool bound with `bind_settling`: how long a stopped run waits
-    /// for its settlement, in milliseconds.
-    settles_within: Option(Int),
+    /// for its settlement.
+    settles_within: Option(Duration),
+    /// This tool's own body timeout (`with_timeout`); `None`: the agent's
+    /// `tool_timeout`.
+    timeout: Option(Timeout),
   )
 }
 
@@ -143,9 +161,13 @@ pub fn define(
 /// may have happened (`Uncertain`), which blocks the run until it is
 /// reconciled. There is no default: a timeout after a request was sent must
 /// not look like a clean failure the model could simply retry.
+///
+/// The handler runs in its own task with the run's context, the `Call` it
+/// answers and the decoded input. Its body is bounded by the agent's
+/// `tool_timeout` (60 s by default) or `with_timeout`.
 pub fn bind(
   definition: Definition(input, output),
-  handler: fn(context, input) -> Result(output, error),
+  handler: fn(context, Call, input) -> Result(output, error),
   classify: fn(error) -> Failure,
 ) -> Tool(context) {
   let Definition(name:, description:, input:, output:) = definition
@@ -156,12 +178,13 @@ pub fn bind(
     check: checker(input),
     kind: Handler,
     settles_within: None,
-    invoke: fn(context, arguments, _late) {
+    timeout: None,
+    invoke: fn(context, call, arguments, _late) {
       case codec.decode_json(input, arguments) {
         Error(error) ->
           invocation.ArgumentsRejected(codec.describe_decode_error(error))
         Ok(value) ->
-          case handler(context, value) {
+          case handler(context, call, value) {
             Ok(value) -> encode(output, value)
             Error(error) -> failure(classify(error))
           }
@@ -172,16 +195,16 @@ pub fn bind(
 
 /// Binds a typed handler that also receives its invocation's `Settlement` (see
 /// the module documentation), and whose stopped run waits up to `within`
-/// milliseconds for that settlement before recording an uncertain effect.
-/// `within` must be positive and at most 2^32 - 1, the longest timer the
-/// runtime sets (`agent.build` checks it). The handler's own result is used
-/// when it returns; the settlement matters only once its task was stopped.
-/// `classify` is as for `bind`.
+/// for that settlement before recording an uncertain effect. `within` must
+/// be at least 1 ms and at most 2^32 - 1 ms, the longest timer the runtime
+/// sets (`agent.build` checks it). The handler's own result is used when it
+/// returns; the settlement matters only once its task was stopped, also by
+/// its body timeout. `classify` is as for `bind`.
 pub fn bind_settling(
   definition: Definition(input, output),
-  handler: fn(context, input, Settlement(output)) -> Result(output, error),
+  handler: fn(context, Call, input, Settlement(output)) -> Result(output, error),
   classify: fn(error) -> Failure,
-  within milliseconds: Int,
+  within within: Duration,
 ) -> Tool(context) {
   let Definition(name:, description:, input:, output:) = definition
   Tool(
@@ -190,13 +213,14 @@ pub fn bind_settling(
     input_schema: codec.schema(input),
     check: checker(input),
     kind: Handler,
-    settles_within: Some(milliseconds),
-    invoke: fn(context, arguments, late) {
+    settles_within: Some(within),
+    timeout: None,
+    invoke: fn(context, call, arguments, late) {
       case codec.decode_json(input, arguments) {
         Error(error) ->
           invocation.ArgumentsRejected(codec.describe_decode_error(error))
         Ok(value) ->
-          case handler(context, value, Settlement(output, late)) {
+          case handler(context, call, value, Settlement(output, late)) {
             Ok(value) -> encode(output, value)
             Error(error) -> failure(classify(error))
           }
@@ -268,7 +292,8 @@ pub fn delegation(
     input_schema: codec.schema(input),
     check: checker(input),
     settles_within: None,
-    invoke: fn(_, _, _) {
+    timeout: None,
+    invoke: fn(_, _, _, _) {
       invocation.ArgumentsRejected(
         "a delegation starts a run; it is not invoked",
       )
@@ -404,16 +429,33 @@ pub fn kind(tool: Tool(context)) -> Kind {
 }
 
 @internal
-pub fn settles_within(tool: Tool(context)) -> Option(Int) {
+pub fn settles_within(tool: Tool(context)) -> Option(Duration) {
   tool.settles_within
+}
+
+/// Bounds this tool's body by `timeout` instead of the agent's
+/// `tool_timeout`: `run.After(duration)`, or `run.Infinity` for a body
+/// that may run as long as it needs. A body still running at its timeout is
+/// stopped and its action becomes an uncertain effect (it may have acted).
+/// `agent.build` refuses a timeout under 1 ms or over 2^32 - 1 ms
+/// (`InvalidToolTimeout`). A sub-agent delegation has no body: its child
+/// run's own limits bound it.
+pub fn with_timeout(tool: Tool(context), timeout: Timeout) -> Tool(context) {
+  Tool(..tool, timeout: Some(timeout))
+}
+
+@internal
+pub fn timeout(tool: Tool(context)) -> Option(Timeout) {
+  tool.timeout
 }
 
 @internal
 pub fn invoke(
   tool: Tool(context),
   context: context,
+  call: Call,
   arguments: String,
   late: Late,
 ) -> Outcome {
-  tool.invoke(context, arguments, late)
+  tool.invoke(context, call, arguments, late)
 }

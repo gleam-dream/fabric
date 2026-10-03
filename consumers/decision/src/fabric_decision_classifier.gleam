@@ -13,6 +13,7 @@ import gleam/io
 import gleam/option.{None}
 import gleam/result
 import gleam/string
+import gleam/time/duration
 import json/blueprint/codec
 import json/blueprint/value
 
@@ -95,7 +96,8 @@ pub fn main() -> Nil {
   let assert Ok(id) = run.parse_id("classifier-decision")
   let assert Ok(handle) =
     graph.start(runtime(runs, settings, model), id, "2 + 2 = 4")
-  let assert Ok(done) = graph.await(handle, 30_000)
+  let assert Ok(done) =
+    graph.await(handle, within: duration.milliseconds(30_000))
   let assert graph.Completed("approved") = done.status
   let assert [review, terminal] = done.receipts
   io.println(terminal.node)

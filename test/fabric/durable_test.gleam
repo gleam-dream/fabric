@@ -25,8 +25,10 @@ import gleam/erlang/process.{type Pid}
 import gleam/list
 import gleam/option.{None}
 import gleam/result
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
+import sinal/correlation
 
 // --- instruments ---------------------------------------------------------------
 
@@ -41,7 +43,15 @@ fn start_owned(
   let #(owner, #(store, run)) =
     restart.owned(fn() {
       let store = support.directory(dir)
-      let assert Ok(run) = fabric.start(store, agent, context, prompt)
+      let assert Ok(run) =
+        fabric.start(
+          store,
+          agent,
+          id: run.new_id(),
+          context: context,
+          prompt: prompt,
+          correlation: None,
+        )
       #(store, run)
     })
   #(owner, store, run)
@@ -113,7 +123,7 @@ pub fn restart_keeps_results_and_takes_over_running_and_queued_tools_test() {
   let queued = probe.arrival(probe)
   queued.name |> should.equal("b")
   probe.release(queued)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
       run.Suspended([], [
@@ -139,7 +149,7 @@ pub fn restart_keeps_results_and_takes_over_running_and_queued_tools_test() {
       run.ActionRef(fabric.id(run), ActionId(1, "a")),
       "\"a\"",
     )
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("final: \"c\" | \"a\" | \"b\""))),
   )
@@ -168,10 +178,11 @@ pub fn an_effect_whose_result_was_never_committed_is_uncertain_test() {
   crash(owner, old, fabric.id(run))
 
   let assert Ok(run) = fabric.recover(reopen(dir), agent, Nil, fabric.id(run))
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   uncertain.reference.id |> should.equal(ActionId(1, "a"))
   // The model is not called until the effect is reconciled.
-  fabric.await(run, 0)
+  fabric.await(run, within: duration.milliseconds(0))
   |> should.equal(Ok(run.Suspended([], [uncertain])))
   probe.count(probe, "start:a") |> should.equal(1)
   restart.remove_dir(dir)
@@ -205,7 +216,7 @@ pub fn restart_during_a_model_call_issues_it_again_against_the_turn_budget_test(
       Nil,
       fabric.id(run),
     )
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("hello"))))
   let assert Ok(snapshot) = fabric.snapshot(run)
   snapshot.turns_used |> should.equal(2)
@@ -233,7 +244,7 @@ pub fn a_lost_model_call_is_not_issued_again_beyond_the_turn_budget_test() {
   let answering = scripted.model(fn(_) { model.FinalAnswer("hello", None) })
   let assert Ok(run) =
     fabric.recover(reopen(dir), limited(answering), Nil, fabric.id(run))
-  fabric.await(run, 0)
+  fabric.await(run, within: duration.milliseconds(0))
   |> should.equal(Ok(run.Finished(run.BudgetExhausted(run.TurnLimit(1)))))
   restart.remove_dir(dir)
 }
@@ -276,7 +287,8 @@ pub fn concurrent_recoveries_take_the_run_over_once_test() {
   let assert Ok(run) = fabric.recover(store, agent, Nil, fabric.id(run))
   incarnation(run) |> should.equal(2)
   probe.release(probe.arrival(probe))
-  let assert Ok(run.Suspended([], [_])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [_])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   probe.count(probe, "start:b") |> should.equal(1)
   incarnation(run) |> should.equal(2)
   restart.remove_dir(dir)
@@ -293,12 +305,13 @@ pub fn recovering_a_finished_run_opens_it_unchanged_test() {
     )
     |> support.agent
   let #(owner, old, run) = start_owned(dir, agent, Nil, "hi")
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
   crash(owner, old, fabric.id(run))
 
   let assert Ok(run) = fabric.recover(reopen(dir), agent, Nil, fabric.id(run))
-  fabric.await(run, 0) |> should.equal(Ok(run.Finished(run.Completed("done"))))
+  fabric.await(run, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Finished(run.Completed("done"))))
   let assert Ok(snapshot) = fabric.snapshot(run)
   snapshot.incarnation |> should.equal(1)
   snapshot.turns_used |> should.equal(1)
@@ -322,7 +335,15 @@ pub fn a_runner_of_an_older_incarnation_cannot_commit_test() {
     )
     |> support.agent
   let old_store = reopen(dir)
-  let assert Ok(run) = fabric.start(old_store, agent, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      old_store,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let held = probe.arrival(probe)
   let assert Ok(old_runner) = restart.runner(old_store, fabric.id(run))
 
@@ -333,7 +354,7 @@ pub fn a_runner_of_an_older_incarnation_cannot_commit_test() {
 
   probe.count(probe, "end:a") |> should.equal(1)
   states(taken) |> should.equal([run.Uncertain(lost)])
-  fabric.await(taken, 0)
+  fabric.await(taken, within: duration.milliseconds(0))
   |> should.equal(
     Ok(
       run.Suspended([], [
@@ -379,7 +400,8 @@ fn paying_agent(tools: List(tool.Tool(Nil))) -> Agent(Nil) {
 fn suspended_on_disk(dir: String) -> RunId {
   let #(owner, old, run) =
     start_owned(dir, paying_agent([apps.transfer_tool()]), Nil, "pay bob")
-  let assert Ok(run.Suspended([_], [])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([_], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   crash(owner, old, fabric.id(run))
   fabric.id(run)
 }
@@ -435,7 +457,9 @@ pub fn recovery_refuses_a_tool_that_no_longer_accepts_pending_arguments_test() {
       codecs.one_field("memo", codec.string()),
       codec.string(),
     )
-    |> tool.bind(fn(_, memo) { Ok(memo) }, fn(_: Nil) { tool.Explain("no") })
+    |> tool.bind(fn(_, _call, memo) { Ok(memo) }, fn(_: Nil) {
+      tool.Explain("no")
+    })
   let assert Error(fabric.Unreadable(fabric.IncompatibleAgent([
     run.ArgumentsNotAccepted(id: ActionId(1, "t"), tool: "transfer_funds", ..),
   ]))) = fabric.recover(reopen(dir), paying_agent([stricter]), Nil, id)
@@ -498,12 +522,21 @@ fn one_slow(probe: Probe) -> Agent(Nil) {
 pub fn a_killed_runner_is_reported_and_its_run_recovered_test() {
   let probe = probe.new()
   let store = support.store()
-  let assert Ok(run) = fabric.start(store, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      store,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(probe)
   let assert Ok(runner) = restart.runner(store, fabric.id(run))
   restart.kill(runner)
 
-  fabric.await(run, 5000) |> should.equal(Ok(run.Unattended))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Unattended))
   // The snapshot does not report the orphaned work as working.
   let assert Ok(snapshot) = fabric.snapshot(run)
   snapshot.status |> should.equal(run.Unattended)
@@ -517,14 +550,15 @@ pub fn a_killed_runner_is_reported_and_its_run_recovered_test() {
 
   let assert Ok(run) =
     fabric.recover(store, one_slow(probe), Nil, fabric.id(run))
-  let assert Ok(run.Suspended([], [_])) = fabric.await(run, 0)
+  let assert Ok(run.Suspended([], [_])) =
+    fabric.await(run, within: duration.milliseconds(0))
   let assert Ok(_) =
     fabric.reconcile(
       run,
       run.ActionRef(fabric.id(run), ActionId(1, "a")),
       "\"a\"",
     )
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   probe.count(probe, "start:a") |> should.equal(1)
 }
@@ -532,11 +566,20 @@ pub fn a_killed_runner_is_reported_and_its_run_recovered_test() {
 pub fn a_run_whose_runner_was_killed_can_be_cancelled_without_recovery_test() {
   let probe = probe.new()
   let store = support.store()
-  let assert Ok(run) = fabric.start(store, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      store,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(probe)
   let assert Ok(runner) = restart.runner(store, fabric.id(run))
   restart.kill(runner)
-  fabric.await(run, 5000) |> should.equal(Ok(run.Unattended))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Unattended))
 
   fabric.cancel(run) |> should.equal(Ok(run.Finished(run.Cancelled)))
   states(run) |> should.equal([run.Uncertain(lost)])
@@ -547,10 +590,20 @@ pub fn a_run_whose_runner_was_killed_can_be_cancelled_without_recovery_test() {
 pub fn await_reports_a_stopped_store_test() {
   let probe = probe.new()
   let #(owner, store) = restart.owned(support.store)
-  let assert Ok(run) = fabric.start(store, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      store,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(probe)
   let awaited = process.new_subject()
-  process.spawn(fn() { process.send(awaited, fabric.await(run, 200)) })
+  process.spawn(fn() {
+    process.send(awaited, fabric.await(run, within: duration.milliseconds(200)))
+  })
   restart.crash(owner, store)
   let assert Ok(Error(fabric.StoreUnavailable(_))) =
     process.receive(awaited, 5000)
@@ -562,14 +615,22 @@ pub fn await_reports_a_stopped_store_test() {
 pub fn an_await_longer_than_a_timer_returns_the_outcome_test() {
   let probe = probe.new()
   let store = support.store()
-  let assert Ok(run) = fabric.start(store, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      store,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let arrival = probe.arrival(probe)
   let awaiter = process.self()
   process.spawn(fn() {
     waiting_in_fabric(awaiter)
     probe.release(arrival)
   })
-  fabric.await(run, 4_294_967_296)
+  fabric.await(run, within: duration.milliseconds(4_294_967_296))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
 }
 
@@ -606,8 +667,17 @@ pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
   let a = support.directory(dir)
-  let assert Ok(run_a) = fabric.start(a, two_reviewed(probe), Nil, "go")
-  let assert Ok(run.Suspended([p, q], [])) = fabric.await(run_a, 5000)
+  let assert Ok(run_a) =
+    fabric.start(
+      a,
+      two_reviewed(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([p, q], [])) =
+    fabric.await(run_a, within: duration.milliseconds(5000))
 
   let b = reopen(dir)
   let assert Ok(run_b) =
@@ -623,11 +693,12 @@ pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
   |> should.equal(Error(fabric.RunUnattended))
 
   probe.release(started)
-  let assert Ok(run.Suspended([_], [])) = fabric.await(run_a, 5000)
+  let assert Ok(run.Suspended([_], [])) =
+    fabric.await(run_a, within: duration.milliseconds(5000))
   let assert Ok(run.Working) =
     fabric.approve(run_b, q.reference, reviewer: None, context: Nil)
   probe.release(probe.arrival(probe))
-  fabric.await(run_b, 5000)
+  fabric.await(run_b, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"p\" | \"q\""))))
   probe.count(probe, "start:p") |> should.equal(1)
   restart.remove_dir(dir)
@@ -642,17 +713,27 @@ pub fn opening_a_live_run_through_another_store_leaves_it_running_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
   let a = support.directory(dir)
-  let assert Ok(run_a) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run_a) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
 
   let b = reopen(dir)
   let assert Ok(run_b) = fabric.open(b, one_slow(probe), Nil, fabric.id(run_a))
-  fabric.await(run_b, 0) |> should.equal(Ok(run.Unattended))
-  fabric.await(run_a, 0) |> should.equal(Ok(run.Working))
+  fabric.await(run_b, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Unattended))
+  fabric.await(run_a, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Working))
   incarnation(run_b) |> should.equal(incarnation(run_a))
 
   probe.release(running)
-  fabric.await(run_a, 5000)
+  fabric.await(run_a, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   states(run_b) |> should.equal([run.Succeeded("\"a\"")])
   probe.count(probe, "start:a") |> should.equal(1)
@@ -668,7 +749,15 @@ pub fn a_family_that_moved_on_since_it_read_unattended_is_read_again_test() {
   let dir = restart.temp_dir()
   let probe = probe.new()
   let a = support.directory(dir)
-  let assert Ok(run_a) = fabric.start(a, one_slow(probe), Nil, "go")
+  let assert Ok(run_a) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   let b = reopen(dir)
   let id = support.text(fabric.id(run_a))
@@ -678,7 +767,8 @@ pub fn a_family_that_moved_on_since_it_read_unattended_is_read_again_test() {
   family.status(same) |> should.equal(run.Unattended)
 
   probe.release(running)
-  let assert Ok(run.Finished(_)) = fabric.await(run_a, 5000)
+  let assert Ok(run.Finished(_)) =
+    fabric.await(run_a, within: duration.milliseconds(5000))
   let assert Ok(again) = family.settle(b, first, 3)
   family.status(again)
   |> should.equal(run.Finished(run.Completed("final: \"a\"")))
@@ -711,18 +801,29 @@ pub fn opening_checks_the_run_and_its_agent_test() {
 pub fn an_approval_through_an_opened_handle_runs_the_action_test() {
   let probe = probe.new()
   let store = support.store()
-  let assert Ok(started) = fabric.start(store, two_reviewed(probe), Nil, "go")
-  let assert Ok(run.Suspended([p, q], [])) = fabric.await(started, 5000)
+  let assert Ok(started) =
+    fabric.start(
+      store,
+      two_reviewed(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([p, q], [])) =
+    fabric.await(started, within: duration.milliseconds(5000))
 
   let assert Ok(opened) =
     fabric.open(store, two_reviewed(probe), Nil, fabric.id(started))
   let assert Ok(run.Working) =
     fabric.approve(opened, p.reference, reviewer: None, context: Nil)
   probe.release(probe.arrival(probe))
-  let assert Ok(run.Suspended([_], [])) = fabric.await(opened, 5000)
+  let assert Ok(run.Suspended([_], [])) =
+    fabric.await(opened, within: duration.milliseconds(5000))
   let assert Ok(_) =
     fabric.reject(opened, q.reference, reason: "no", reviewer: None)
-  let assert Ok(run.Finished(run.Completed(_))) = fabric.await(opened, 5000)
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(opened, within: duration.milliseconds(5000))
   probe.count(probe, "start:p") |> should.equal(1)
   probe.count(probe, "start:q") |> should.equal(0)
 }
@@ -753,10 +854,19 @@ pub fn a_stranded_run_is_cancelled_without_an_agent_test() {
 pub fn cancel_stored_stops_a_live_run_through_its_runner_test() {
   let probe = probe.new()
   let store = support.store()
-  let assert Ok(run) = fabric.start(store, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      store,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(probe)
   let assert Ok(run.Working) = fabric.cancel_stored(store, fabric.id(run))
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   states(run) |> should.equal([run.Uncertain("stopped while running")])
 }
 
@@ -768,7 +878,6 @@ pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
   let call = scripted.slow("a", "a")
   let stopping =
     controller.State(
-      family_budget: None,
       run: "run-stopping",
       agent: run.Identity("agent", 1),
       incarnation: 1,
@@ -794,6 +903,8 @@ pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
         controller.CancelRequested,
         False,
       ),
+      family_budget: None,
+      correlation: correlation.from_key("run-stopping"),
     )
   let assert Ok(1) =
     store.insert(store, "run-stopping", record.encode(stopping), store.Keep)
@@ -843,19 +954,36 @@ fn taken_backend(memory: Store, stores: Bool) -> Store {
 pub fn a_start_the_backend_stored_despite_reporting_it_taken_runs_test() {
   let probe = probe.new()
   let runs = taken_backend(support.store(), True)
-  let assert Ok(run) = fabric.start(runs, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   probe.release(probe.arrival(probe))
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
 }
 
 /// A first write reported taken by a record the start did not write is
-/// refused: the id is someone else's run, so the error does not name it,
-/// and nothing of this start was stored.
-pub fn a_start_whose_id_holds_another_record_is_refused_test() {
+/// another run under the caller's id: the start stored nothing and names
+/// the id, so the caller can open that run.
+pub fn a_start_whose_id_holds_another_record_is_already_started_test() {
   let runs = taken_backend(support.store(), False)
-  let assert Error(fabric.StartRefused(_)) =
-    fabric.start(runs, one_slow(probe.new()), Nil, "go")
+  let id = run.new_id()
+  fabric.start(
+    runs,
+    one_slow(probe.new()),
+    id:,
+    context: Nil,
+    prompt: "go",
+    correlation: None,
+  )
+  |> result.map(fabric.id)
+  |> should.equal(Error(fabric.AlreadyStarted(id)))
 }
 
 /// A start whose first write the store does not confirm names the run it
@@ -866,7 +994,14 @@ pub fn an_unconfirmed_start_names_its_run_test() {
   let runs = flaky.store(backend)
   flaky.arm(backend, [flaky.FailLate])
   let assert Error(fabric.StartUnconfirmed(id, reason)) =
-    fabric.start(runs, one_slow(probe.new()), Nil, "go")
+    fabric.start(
+      runs,
+      one_slow(probe.new()),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   reason |> should.equal("the backend blinked")
   fabric.cancel_stored(runs, id)
   |> should.equal(Error(fabric.Unreadable(fabric.RunNotFound)))

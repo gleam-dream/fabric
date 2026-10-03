@@ -23,14 +23,16 @@ import fabric_saga
 import fabric_saga/support/watched
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import saga
 import saga/execution
+import saga/telemetry as saga_telemetry
 import sinal
+import sinal/correlation
 
 pub type Trip {
   Trip(city: String)
@@ -171,13 +173,14 @@ fn trip_tool(reports: Subject(Report), rollback_within: Int) -> tool.Tool(Nil) {
     execution.config()
       |> execution.with_max_concurrency(1)
       |> execution.with_settle_timeout(duration.milliseconds(50)),
+    input: fn(_, _, input) { input },
     explain: fn(error) {
       case error {
         NoHotel(city) -> "no hotel in " <> city
         CardDeclined -> "the card was declined"
       }
     },
-    rollback_within:,
+    rollback_within: duration.milliseconds(rollback_within),
   )
 }
 
@@ -217,7 +220,15 @@ fn start_in(
       policy.always_allow(),
     )
     |> agent.build
-  let assert Ok(run) = fabric.start(store, agent, Nil, "book")
+  let assert Ok(run) =
+    fabric.start(
+      store,
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "book",
+      correlation: None,
+    )
   run
 }
 
@@ -246,7 +257,7 @@ fn action_state(run: fabric.Run(Nil)) -> run.ActionState {
 pub fn a_completed_workflow_is_the_tool_result_test() {
   let reports = process.new_subject()
   let run = start("Porto", reports)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(
       run.Finished(run.Completed(
@@ -263,7 +274,7 @@ pub fn a_completed_workflow_is_the_tool_result_test() {
 pub fn a_failure_with_compensation_completed_is_a_typed_failure_test() {
   let reports = process.new_subject()
   let run = start("Atlantis", reports)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("{\"error\":\"no hotel in Atlantis\"}"))),
   )
@@ -281,7 +292,8 @@ pub fn a_failure_with_compensation_completed_is_a_typed_failure_test() {
 pub fn an_incomplete_compensation_is_an_uncertain_effect_test() {
   let reports = process.new_subject()
   let run = start("Mordor", reports)
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   uncertain.tool |> should.equal("book_trip")
   string.contains(uncertain.evidence, "reserve_flight") |> should.be_true
   reported(reports)
@@ -303,7 +315,8 @@ pub fn cancelling_the_run_cancels_the_workflow_test() {
   next(reports).entry |> should.equal("gate:charge")
 
   let assert Ok(_) = fabric.cancel(run)
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert run.Uncertain(evidence) = action_state(run)
   string.contains(evidence, "attempt 1 of step charge was interrupted")
   |> should.be_true
@@ -318,7 +331,7 @@ pub fn cancelling_the_run_cancels_the_workflow_test() {
 pub fn a_typed_failure_after_retries_is_definite_test() {
   let reports = process.new_subject()
   let run = start("Retrytown", reports)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("{\"error\":\"the card was declined\"}"))),
   )
@@ -349,7 +362,8 @@ pub fn a_cancellation_that_undid_everything_is_definite_test() {
   declined(reports, "Latetown")
 
   let assert Ok(_) = fabric.cancel(run)
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   action_state(run)
   |> should.equal(run.ToolFailed(
     "{\"error\":\"the workflow was cancelled; every completed step was undone\"}",
@@ -366,7 +380,8 @@ pub fn a_cancellation_whose_undo_failed_is_uncertain_test() {
   declined(reports, "Latemordor")
 
   let assert Ok(_) = fabric.cancel(run)
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert run.Uncertain(evidence) = action_state(run)
   string.contains(evidence, "not undone reserve_flight") |> should.be_true
 }
@@ -384,7 +399,8 @@ pub fn an_outcome_after_the_run_ended_is_refused_test() {
   let assert Ok(_) = fabric.cancel(run)
   let undo = next(reports)
   undo.entry |> should.equal("gate:hotel:release:HT-Lateslow")
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert run.Uncertain(evidence) = action_state(run)
   string.contains(evidence, "no settlement") |> should.be_true
   let assert Ok(before) = fabric.snapshot(run)
@@ -421,8 +437,9 @@ pub fn an_invalid_config_fails_the_call_before_any_step_runs_test() {
       trip_definition(),
       book_trip(reports),
       execution.config() |> execution.with_max_concurrency(0),
+      input: fn(_, _, input) { input },
       explain: fn(_) { "" },
-      rollback_within: 5000,
+      rollback_within: duration.milliseconds(5000),
     )
   let assert Ok(agent) =
     agent.new(
@@ -432,13 +449,61 @@ pub fn an_invalid_config_fails_the_call_before_any_step_runs_test() {
       policy.always_allow(),
     )
     |> agent.build
-  let assert Ok(run) = fabric.start(watched.memory(), agent, Nil, "book")
+  let assert Ok(run) =
+    fabric.start(
+      watched.memory(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "book",
+      correlation: None,
+    )
   let message =
     "{\"error\":\"the workflow is misconfigured: "
     <> execution.describe_config_error(execution.MaxConcurrencyNotPositive(0))
     <> "\"}"
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed(message))))
   action_state(run) |> should.equal(run.ToolFailed(message))
   reported(reports) |> should.equal([])
+}
+
+/// The workflow's input is built from the run's context, the call and the
+/// tool's input, and the Saga run carries the Fabric run's correlation.
+pub fn the_workflow_gets_the_call_and_the_runs_correlation_test() {
+  let reports = process.new_subject()
+  let seen = process.new_subject()
+  let attachment =
+    sinal.observe(saga_telemetry.run_started(), fn(_, metadata) {
+      process.send(seen, metadata.correlation)
+    })
+  let trip =
+    fabric_saga.tool(
+      trip_definition(),
+      book_trip(reports),
+      execution.config(),
+      input: fn(_context, call: tool.Call, trip: Trip) {
+        Trip(trip.city <> "-" <> call.action.call_id)
+      },
+      explain: fn(_) { "failed" },
+      rollback_within: duration.seconds(5),
+    )
+  let assert Ok(agent) =
+    agent.new("traveller", traveller("Porto"), [trip], policy.always_allow())
+    |> agent.build
+  let ticket = correlation.from_key("trip-ticket")
+  let assert Ok(handle) =
+    fabric.start(
+      watched.memory(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "book",
+      correlation: Some(ticket),
+    )
+  let assert Ok(run.Finished(run.Completed(text))) =
+    fabric.await(handle, within: duration.seconds(5))
+  let _ = sinal.detach(attachment)
+  string.contains(text, "FL-Porto-c1") |> should.be_true
+  process.receive(seen, 1000) |> should.equal(Ok(Some(ticket)))
 }

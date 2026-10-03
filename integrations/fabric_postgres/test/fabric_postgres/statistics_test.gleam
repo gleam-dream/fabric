@@ -17,6 +17,7 @@ import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import pog
@@ -68,23 +69,64 @@ pub fn counts_follow_real_runs_and_lease_backlog_without_mutation_test() {
   let runs = started(settings)
   let backend = fabric_postgres.backend(settings)
   let gate = agents.gate()
-  let assert Ok(working) = fabric.start(runs, agents.agent(gate, 1), Nil, "go")
+  let assert Ok(working) =
+    fabric.start(
+      runs,
+      agents.agent(gate, 1),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let working_body = agents.arrival(gate)
   let assert Ok(approval) =
-    fabric.start(runs, agents.agent(gate, 500), Nil, "go")
-  let assert Ok(run.Suspended([_], [])) = fabric.await(approval, 5000)
-  let assert Ok(finished) = fabric.start(runs, agents.agent(gate, 2), Nil, "go")
+    fabric.start(
+      runs,
+      agents.agent(gate, 500),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([_], [])) =
+    fabric.await(approval, within: duration.milliseconds(5000))
+  let assert Ok(finished) =
+    fabric.start(
+      runs,
+      agents.agent(gate, 2),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   agents.release(agents.arrival(gate))
-  let assert Ok(run.Finished(_)) = fabric.await(finished, 5000)
+  let assert Ok(run.Finished(_)) =
+    fabric.await(finished, within: duration.milliseconds(5000))
   let assert Ok(uncertain) =
-    fabric.start(runs, agents.agent(gate, 3), Nil, "go")
+    fabric.start(
+      runs,
+      agents.agent(gate, 3),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   agents.kill(agents.arrival(gate).body)
-  let assert Ok(run.Suspended([], [_])) = fabric.await(uncertain, 5000)
+  let assert Ok(run.Suspended([], [_])) =
+    fabric.await(uncertain, within: duration.milliseconds(5000))
   let #(owner, lost) =
     agents.owned(fn() {
       let settings = support.migrated(connection, "lost", schema)
       let runs = started(settings)
-      let assert Ok(lost) = fabric.start(runs, agents.agent(gate, 4), Nil, "go")
+      let assert Ok(lost) =
+        fabric.start(
+          runs,
+          agents.agent(gate, 4),
+          id: run.new_id(),
+          context: Nil,
+          prompt: "go",
+          correlation: None,
+        )
       fabric.id(lost)
     })
   let _ = agents.arrival(gate)
@@ -148,7 +190,7 @@ pub fn counts_follow_real_runs_and_lease_backlog_without_mutation_test() {
   after_cancel.reconciliation.count |> should.equal(1)
   after_cancel.finished.count |> should.equal(2)
   agents.release(working_body)
-  let assert Ok(_) = fabric.await(working, 5000)
+  let assert Ok(_) = fabric.await(working, within: duration.milliseconds(5000))
 }
 
 pub fn stale_statistics_are_unknown_until_explicit_refresh_and_keep_record_age_test() {
@@ -157,8 +199,16 @@ pub fn stale_statistics_are_unknown_until_explicit_refresh_and_keep_record_age_t
   let settings = support.migrated(connection, "refresh", schema)
   let runs = started(settings)
   let assert Ok(waiting) =
-    fabric.start(runs, agents.agent(agents.gate(), 500), Nil, "go")
-  let assert Ok(run.Suspended([_], [])) = fabric.await(waiting, 5000)
+    fabric.start(
+      runs,
+      agents.agent(agents.gate(), 500),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([_], [])) =
+    fabric.await(waiting, within: duration.milliseconds(5000))
   let backend = fabric_postgres.backend(settings)
   let assert Ok(Nil) = backend.insert("broken", "not-json", store.Release)
   execute(
@@ -228,7 +278,8 @@ pub fn a_graph_wait_is_neither_unattended_work_nor_a_budget_run_test() {
   let assert Ok(id) = run.parse_id("graph-stats")
   let assert Ok(handle) =
     graph.start_with_budget(runtime, id, 1, budget.Limits(1, 1, 1))
-  let assert Ok(snapshot) = graph.await(handle, 5000)
+  let assert Ok(snapshot) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = snapshot.status
   let assert Ok(waiting) = fabric_postgres.stats(settings)
   waiting.waiting.count |> should.equal(1)
@@ -259,8 +310,16 @@ pub fn a_concurrent_write_and_refresh_leave_current_statistics_test() {
   let settings = support.migrated(connection, "race", schema)
   let runs = started(settings)
   let assert Ok(waiting) =
-    fabric.start(runs, agents.agent(agents.gate(), 500), Nil, "go")
-  let assert Ok(run.Suspended([_], [])) = fabric.await(waiting, 5000)
+    fabric.start(
+      runs,
+      agents.agent(agents.gate(), 500),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([_], [])) =
+    fabric.await(waiting, within: duration.milliseconds(5000))
   let backend = fabric_postgres.backend(settings)
   let id = run.id_to_string(fabric.id(waiting))
   let assert Ok(before) = backend.get(id)

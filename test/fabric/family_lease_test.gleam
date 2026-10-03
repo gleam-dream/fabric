@@ -73,7 +73,15 @@ pub fn a_child_is_recovered_beneath_a_live_foreign_parent_test() {
       output: Ok,
     )
     |> support.agent
-  let assert Ok(root) = fabric.start(a, parent, Nil, "go")
+  let assert Ok(root) =
+    fabric.start(
+      a,
+      parent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(body)
   let _ = probe.arrival(calls)
   let child = support.child_id(fabric.id(root), 1)
@@ -89,7 +97,7 @@ pub fn a_child_is_recovered_beneath_a_live_foreign_parent_test() {
     fabric.sweeper(
       b,
       [fabric.recovery(parent, fn(id) { process.send(contexts, id) })],
-      every: 10,
+      every: duration.milliseconds(10),
     )
   let assert Ok(started) = spec.start()
   child_completed(root, 500)
@@ -104,7 +112,7 @@ pub fn a_child_is_recovered_beneath_a_live_foreign_parent_test() {
   |> should.equal(Ok([run.id_to_string(child)]))
   await_free(memory.backend, child, 200)
   probe.release(running)
-  fabric.await(root, 5000)
+  fabric.await(root, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("\"a\",\"found\""))))
   process.unlink(started.pid)
   restart.kill(started.pid)
@@ -154,13 +162,13 @@ pub fn a_stopping_child_is_recovered_beneath_a_live_cancelling_parent_test() {
   let child_tool =
     tool.bind_settling(
       slow,
-      fn(_, _, _settlement) {
+      fn(_, _call, _, _settlement) {
         process.send(entered, Nil)
         process.receive_forever(process.new_subject())
         Ok("done")
       },
       fn(_: Nil) { tool.Explain("failed") },
-      within: 60_000,
+      within: duration.milliseconds(60_000),
     )
   let researcher =
     agent.new(
@@ -182,7 +190,15 @@ pub fn a_stopping_child_is_recovered_beneath_a_live_cancelling_parent_test() {
       output: Ok,
     )
     |> support.agent
-  let assert Ok(root) = fabric.start(a, parent, Nil, "go")
+  let assert Ok(root) =
+    fabric.start(
+      a,
+      parent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   process.receive(entered, 5000) |> should.equal(Ok(Nil))
   let child = support.child_id(fabric.id(root), 1)
   let assert Ok(_) = fabric.cancel(root)
@@ -193,9 +209,14 @@ pub fn a_stopping_child_is_recovered_beneath_a_live_cancelling_parent_test() {
   memory.backend.renew(owner, [run.id_to_string(child)], 0)
   |> should.equal(Ok([run.id_to_string(child)]))
   let assert Ok(spec) =
-    fabric.sweeper(b, [fabric.recovery(parent, fn(_) { Nil })], every: 10)
+    fabric.sweeper(
+      b,
+      [fabric.recovery(parent, fn(_) { Nil })],
+      every: duration.milliseconds(10),
+    )
   let assert Ok(started) = spec.start()
-  fabric.await(root, 3000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(root, within: duration.milliseconds(3000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert Ok(snapshot) = fabric.snapshot(root)
   snapshot.incarnation |> should.equal(1)
   process.unlink(started.pid)
@@ -204,6 +225,7 @@ pub fn a_stopping_child_is_recovered_beneath_a_live_cancelling_parent_test() {
 
 import fabric/internal/controller
 import fabric/internal/runner
+import gleam/time/duration
 
 fn await_stopping(node, id, tries) {
   case runner.load(node, run.id_to_string(id)) {

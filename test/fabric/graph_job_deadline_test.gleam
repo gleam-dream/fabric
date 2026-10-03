@@ -18,6 +18,7 @@ import fabric/support/restart
 import fabric/testing
 import gleam/erlang/process
 import gleam/option.{None, Some}
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import sinal
@@ -37,7 +38,8 @@ fn runtime_with(runs, owned, polling, read, request, accept) {
   let observer = case polling {
     job.Manual -> observer
     job.Every(every) -> {
-      let assert Ok(observer) = job.with_poll_interval(observer, every)
+      let assert Ok(observer) =
+        job.with_poll_interval(observer, duration.milliseconds(every))
       observer
     }
   }
@@ -50,7 +52,7 @@ fn runtime_with(runs, owned, polling, read, request, accept) {
       )
     False -> operation.await_job(observer)
   }
-  let assert Ok(op) = operation.with_deadline(op, 60_000)
+  let assert Ok(op) = operation.with_deadline(op, duration.milliseconds(60_000))
   let assert Ok(node) = definition.node_id("job")
   let assert Ok(spec) =
     definition.build(definition.Spec(
@@ -85,10 +87,12 @@ pub fn ownership_can_be_cancelled_even_when_arming_cannot_read_the_clock_test() 
     )
   let assert Ok(handle) =
     graph.start(spec, support.id("unarmed-owner"), "receipt")
-  let assert Ok(unattended) = graph.await(handle, 5000)
+  let assert Ok(unattended) =
+    graph.await(handle, within: duration.milliseconds(5000))
   unattended.status |> should.equal(graph.Unattended)
   graph.cancel(handle) |> should.equal(Ok(Nil))
-  let assert Ok(pending) = graph.await(handle, 5000)
+  let assert Ok(pending) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.CancellingJob(
     reference,
     job.RequestAccepted,
@@ -116,7 +120,8 @@ pub fn a_terminal_result_observed_after_the_deadline_is_retained_without_routing
     )
   let assert Ok(handle) =
     graph.start(spec, support.id("late-job-result"), "receipt")
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   let assert Ok(done) = graph.poll_job(handle, reference)
@@ -158,11 +163,13 @@ pub fn a_failed_read_cannot_extend_a_deadline_and_cleanup_ignores_clock_failure_
     )
   let assert Ok(handle) =
     graph.start(spec, support.id("failed-job-read"), "receipt")
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   let assert Ok(_) = graph.poll_job(handle, reference)
-  let assert Ok(pending) = graph.await(handle, 5000)
+  let assert Ok(pending) =
+    graph.await(handle, within: duration.milliseconds(5000))
   pending.status
   |> should.equal(graph.CancellingJob(
     reference,
@@ -183,7 +190,7 @@ fn scan(runs, build) {
     fabric.sweeper(
       runs,
       [graph.recovery(run.Identity("job-deadline", 1), build)],
-      every: 60_000,
+      every: duration.milliseconds(60_000),
     )
   let assert Ok(started) = spec.start()
   let assert Ok(summary) = process.receive(events, 5000)
@@ -218,7 +225,8 @@ pub fn the_deadline_preempts_polling_but_does_not_spin_cleanup_observations_test
   }
   let assert Ok(handle) =
     graph.start(build(runs), support.id("scheduled-deadline"), "receipt")
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   scan(runs, build).claimed |> should.equal(1)
@@ -226,7 +234,8 @@ pub fn the_deadline_preempts_polling_but_does_not_spin_cleanup_observations_test
   scan(runs, build).claimed |> should.equal(0)
   memory.advance(60_001)
   scan(runs, build).claimed |> should.equal(1)
-  let assert Ok(pending) = graph.await(handle, 5000)
+  let assert Ok(pending) =
+    graph.await(handle, within: duration.milliseconds(5000))
   pending.status
   |> should.equal(graph.CancellingJob(
     reference,
@@ -258,7 +267,8 @@ pub fn read_only_expiration_detaches_without_observation_or_a_stop_request_test(
     )
   let assert Ok(handle) =
     graph.start(spec, support.id("readonly-deadline"), "receipt")
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   memory.advance(60_001)
@@ -293,12 +303,14 @@ pub fn owned_expiration_keeps_its_cause_and_cleanup_across_restart_test() {
       "receipt",
       budget.Limits(1, 1, 1),
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   memory.advance(60_001)
   let assert Ok(_) = graph.recover(handle)
-  let assert Ok(pending) = graph.await(handle, 5000)
+  let assert Ok(pending) =
+    graph.await(handle, within: duration.milliseconds(5000))
   pending.status
   |> should.equal(graph.CancellingJob(
     reference,

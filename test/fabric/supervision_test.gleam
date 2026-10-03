@@ -13,7 +13,9 @@ import fabric/support/restart
 import fabric/support/scripted
 import gleam/erlang/process.{type Pid}
 import gleam/list
+import gleam/option.{None}
 import gleam/otp/static_supervisor
+import gleam/time/duration
 import gleeunit/should
 
 fn one_slow(probe: Probe) -> Agent(Nil) {
@@ -57,7 +59,15 @@ pub fn a_request_process_that_exits_leaves_its_run_intact_test() {
   let handed = process.new_subject()
   let request =
     process.spawn_unlinked(fn() {
-      let assert Ok(run) = fabric.start(runs, one_slow(probe), Nil, "go")
+      let assert Ok(run) =
+        fabric.start(
+          runs,
+          one_slow(probe),
+          id: run.new_id(),
+          context: Nil,
+          prompt: "go",
+          correlation: None,
+        )
       process.send(handed, fabric.id(run))
     })
   let assert Ok(id) = process.receive(handed, 5000)
@@ -65,9 +75,10 @@ pub fn a_request_process_that_exits_leaves_its_run_intact_test() {
 
   let arrival = probe.arrival(probe)
   let assert Ok(run) = fabric.recover(runs, one_slow(probe), Nil, id)
-  fabric.await(run, 0) |> should.equal(Ok(run.Working))
+  fabric.await(run, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Working))
   probe.release(arrival)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   probe.count(probe, "start:a") |> should.equal(1)
 }
@@ -81,7 +92,15 @@ pub fn a_restarted_store_leaves_its_runs_unattended_until_recovered_test() {
   let name = process.new_name("restarting")
   let runs = store.directory(name, dir)
   supervise(runs)
-  let assert Ok(run) = fabric.start(runs, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(probe)
   let assert Ok(runner) = restart.runner(runs, fabric.id(run))
 
@@ -89,20 +108,30 @@ pub fn a_restarted_store_leaves_its_runs_unattended_until_recovered_test() {
   process.kill(old)
   let _ = restarted(name, old, 5000)
   restart.gone(runner)
-  fabric.await(run, 5000) |> should.equal(Ok(run.Unattended))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Unattended))
 
   let assert Ok(run) =
     fabric.recover(runs, one_slow(probe), Nil, fabric.id(run))
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let assert Ok(_) = fabric.reconcile(run, uncertain.reference, "\"a\"")
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   probe.count(probe, "start:a") |> should.equal(1)
 
   // The restarted subtree runs new runners.
-  let assert Ok(next) = fabric.start(runs, one_slow(probe), Nil, "again")
+  let assert Ok(next) =
+    fabric.start(
+      runs,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "again",
+      correlation: None,
+    )
   probe.release(probe.arrival(probe))
-  fabric.await(next, 5000)
+  fabric.await(next, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
   restart.remove_dir(dir)
 }
@@ -116,7 +145,15 @@ pub fn an_await_follows_a_restarted_store_test() {
   let name = process.new_name("awaited")
   let runs = store.directory(name, dir)
   supervise(runs)
-  let assert Ok(run) = fabric.start(runs, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let _ = probe.arrival(probe)
 
   let assert Ok(old) = process.named(name)
@@ -125,7 +162,8 @@ pub fn an_await_follows_a_restarted_store_test() {
     blocked(awaiter, old)
     process.kill(old)
   })
-  fabric.await(run, 5000) |> should.equal(Ok(run.Unattended))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Unattended))
   restart.remove_dir(dir)
 }
 
@@ -152,7 +190,15 @@ pub fn a_runner_never_commits_through_a_restarted_store_test() {
   let name = process.new_name("pinned")
   let runs = store.directory(name, dir)
   supervise(runs)
-  let assert Ok(run) = fabric.start(runs, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      runs,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
   let assert Ok(runner) = restart.runner(runs, fabric.id(run))
 
@@ -165,7 +211,8 @@ pub fn a_runner_never_commits_through_a_restarted_store_test() {
   restart.resume(runner)
   restart.gone(runner)
 
-  fabric.await(run, 0) |> should.equal(Ok(run.Unattended))
+  fabric.await(run, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Unattended))
   let assert Ok(snapshot) = fabric.snapshot(run)
   snapshot.actions
   |> list.map(fn(action) { action.state })
@@ -193,11 +240,20 @@ pub fn two_store_values_of_one_name_share_the_runners_test() {
   let supervised = store.in_memory(name)
   let requests = store.in_memory(name)
   supervise(supervised)
-  let assert Ok(run) = fabric.start(requests, one_slow(probe), Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      requests,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let running = probe.arrival(probe)
-  fabric.await(run, 0) |> should.equal(Ok(run.Working))
+  fabric.await(run, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Working))
   let assert Ok(_) = restart.runner(requests, fabric.id(run))
   probe.release(running)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
 }

@@ -13,6 +13,7 @@ import fabric_postgres/agents
 import fabric_postgres/support
 import gleam/erlang/process
 import gleam/option.{None, Some}
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import pog
@@ -24,7 +25,7 @@ fn runtime(runs) {
       codec.int(),
       signal.new(run.Identity("answer", 1), codec.bool()),
     )
-    |> operation.with_deadline(2000)
+    |> operation.with_deadline(duration.milliseconds(2000))
   let assert Ok(spec) =
     definition.build(definition.Spec(
       run.Identity("pg-deadline", 1),
@@ -56,7 +57,8 @@ pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
         fabric_postgres.store(process.new_name("deadline-original"), settings)
       let assert Ok(Nil) = store.start(runs)
       let assert Ok(handle) = graph.start(runtime(runs), id, 7)
-      let assert Ok(waiting) = graph.await(handle, 5000)
+      let assert Ok(waiting) =
+        graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.AwaitingSignal(_) = waiting.status
       let assert Ok(row) = store.get(runs, run.id_to_string(id))
       row.live |> should.equal(None)
@@ -82,7 +84,7 @@ pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
     fabric.sweeper(
       runs,
       [graph.recovery(run.Identity("pg-deadline", 1), runtime)],
-      every: 60_000,
+      every: duration.milliseconds(60_000),
     )
   let assert Ok(started) = spec.start()
   let expired = await_expired(graph.attach(runtime(runs), id), 300)
@@ -93,7 +95,8 @@ pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
   let assert Ok(row) = backend.get(run.id_to_string(id))
   row.holder |> should.equal(store.Free)
   backend.claim_ready("after", 60_000, 5) |> should.equal(Ok([]))
-  fabric_postgres.prune(settings, ended_for: 0, limit: 1) |> should.equal(Ok(1))
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
+  |> should.equal(Ok(1))
 }
 
 fn await_expired(handle, remaining) {

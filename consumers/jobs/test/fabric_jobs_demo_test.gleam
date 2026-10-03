@@ -12,6 +12,7 @@ import fabric_jobs_demo/client
 import fabric_jobs_demo/support
 import gleam/erlang/process
 import gleam/list
+import gleam/time/duration
 import gleeunit
 import gleeunit/should
 import json/blueprint/codec
@@ -35,7 +36,8 @@ pub fn a_restarted_sweeper_observes_the_real_job_without_manual_polling_test() {
         )
       #(runs, handle)
     })
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(_) = waiting.status
   let assert demo.Accepted(receipt) = waiting.value
   client.read(support.url(), receipt) |> should.equal(Ok(client.Queued))
@@ -53,7 +55,7 @@ pub fn a_restarted_sweeper_observes_the_real_job_without_manual_polling_test() {
     fabric.sweeper(
       runs,
       [graph.recovery(run.Identity("artifact-submit-and-wait", 1), build)],
-      every: 20,
+      every: duration.milliseconds(20),
     )
   let assert Ok(sweeper) = spec.start()
   let done = await_scheduled(handle, 200)
@@ -71,7 +73,7 @@ fn leased(backend, node) {
     store.leased(
       process.new_name("scheduled-service-job"),
       node:,
-      lease: 1000,
+      lease: duration.milliseconds(1000),
       backend:,
     )
   let assert Ok(Nil) = store.start(runs)
@@ -129,7 +131,7 @@ pub fn an_acceptance_receipt_does_not_claim_business_completion_test() {
       id("receipt-before-work"),
       client.Request("Fabric composes jobs", 2000),
     )
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
   client.read(support.url(), receipt) |> should.equal(Ok(client.Queued))
   let assert client.Complete(digest) = await_job(receipt, 200)
@@ -165,7 +167,7 @@ pub fn lost_acceptance_acknowledgement_replays_the_same_logical_submission_test(
   let runs = support.directory(directory)
   let handle = graph.attach(runtime(runs, send), id("lost-acceptance"))
   let assert Ok(_) = graph.recover(handle)
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(receipt))
   let assert [saved] = done.receipts
   saved.activation |> should.equal(1)
@@ -189,7 +191,7 @@ pub fn a_saved_receipt_survives_restart_without_another_submission_test() {
         )
       #(runs, handle)
     })
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
   support.crash(owner, runs)
   let runs = support.directory(directory)
@@ -291,7 +293,8 @@ pub fn a_retained_job_attachment_survives_restart_without_resubmitting_test() {
         )
       #(runs, handle)
     })
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert demo.Accepted(receipt) = waiting.value
   client.read(support.url(), receipt) |> should.equal(Ok(client.Queued))
@@ -321,7 +324,8 @@ pub fn canceling_a_read_only_attachment_leaves_the_real_remote_job_running_test(
       id("detached-job"),
       demo.Submitting(client.Request("still external", 1000)),
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert demo.Accepted(receipt) = waiting.value
   graph.cancel(handle) |> should.equal(Ok(Nil))

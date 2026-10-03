@@ -64,7 +64,7 @@ pub fn agent(gate: Gate, amount: Int) -> Agent(Nil) {
   let work =
     tool.bind(
       definition(),
-      fn(_context, amount: Int) -> Result(Int, Nil) {
+      fn(_context, _call, amount: Int) -> Result(Int, Nil) {
         let release = process.new_subject()
         process.send(gate.arrivals, Arrival(amount, process.self(), release))
         process.receive_forever(release)

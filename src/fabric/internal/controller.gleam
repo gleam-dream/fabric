@@ -59,6 +59,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
+import sinal/correlation.{type Correlation}
 
 // --- vocabulary ----------------------------------------------------------------
 
@@ -131,6 +132,10 @@ pub type State {
     phase: Phase,
     /// Only a root declares limits; children inherit via saved attachments.
     family_budget: Option(budget.Declaration),
+    /// Carried in every model request, tool call and event of the run. A
+    /// record stores it only when it differs from the default derived from
+    /// the run id (`correlation.from_key(run)`).
+    correlation: Correlation,
   )
 }
 
@@ -225,6 +230,29 @@ pub fn start(
   parent: Option(run.Parent),
   depth: Int,
 ) -> #(State, List(Effect)) {
+  start_correlated(
+    env,
+    run,
+    agent,
+    limits,
+    prompt,
+    parent,
+    depth,
+    correlation.from_key(run),
+  )
+}
+
+/// `start` with the run's correlation.
+pub fn start_correlated(
+  env: Env(context),
+  run: String,
+  agent: Identity,
+  limits: Limits,
+  prompt: String,
+  parent: Option(run.Parent),
+  depth: Int,
+  correlation: Correlation,
+) -> #(State, List(Effect)) {
   let state =
     State(
       run:,
@@ -240,6 +268,7 @@ pub fn start(
       approvals_issued: 0,
       phase: AwaitingModel(0),
       family_budget: None,
+      correlation:,
     )
   call_model(env, state)
 }
@@ -1301,6 +1330,9 @@ fn call_model(env: Env(context), state: State) -> #(State, List(Effect)) {
       let turn = state.turns_used + 1
       let request =
         model.Request(
+          run: run.issued(state.run),
+          turn:,
+          correlation: state.correlation,
           system: env.system,
           messages: state.transcript,
           tools: offered_tools(env, state),
@@ -1571,6 +1603,7 @@ pub fn never_started(
     approvals_issued: 0,
     phase: NeverStarted,
     family_budget: None,
+    correlation: parent.correlation,
   )
 }
 

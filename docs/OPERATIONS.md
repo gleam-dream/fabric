@@ -34,7 +34,7 @@ execution; they never authorize recovery or prove an external effect happened.
    fails. The migration barrier must complete before the sweeper's immediate
    boot scan. Keep the pool and forwarder alive until the store finishes stopping.
 6. Register every root's deployed recovery code with `fabric.recovery` or
-   `graph.recovery`, then construct `fabric.sweeper(runs, recoveries, every: 1000)`.
+   `graph.recovery`, then construct `fabric.sweeper(runs, recoveries, every: duration.seconds(1))`.
    Context is rebuilt from the root id; it is not stored. A graph factory must
    rebuild its children against the supplied pinned store. Reject configuration
    errors at startup. Expose admission only after `store.readiness(runs)` returns
@@ -222,7 +222,7 @@ are completed or deliberately migrated.
 ## Retain and prune families
 
 Choose the retention interval according to application needs. After refreshing
-retention metadata, `fabric_postgres.prune(settings, ended_for: ms, limit: n)`
+retention metadata, `fabric_postgres.prune(settings, ended_for: duration.hours(7 * 24), limit: n)`
 deletes up to `n` eligible root families and returns the number of records deleted,
 including children. Every member must be settled, old enough, currently readable,
 reciprocally attached and free of a live lease. Uncertain effects, missing children,

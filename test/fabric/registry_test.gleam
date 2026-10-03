@@ -14,9 +14,11 @@ import fabric/tool
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import json/blueprint/value
+import sinal/correlation
 
 pub fn registry_rejects_duplicate_names_test() {
   registry.new([apps.weather_tool(), apps.weather_tool()])
@@ -41,7 +43,9 @@ pub fn registry_rejects_codecs_without_schema_test() {
     )
   let custom =
     tool.define("custom", "", schemaless, codec.string())
-    |> tool.bind(fn(_, _) { Ok("ok") }, fn(_: Nil) { tool.Explain("failed") })
+    |> tool.bind(fn(_, _call, _) { Ok("ok") }, fn(_: Nil) {
+      tool.Explain("failed")
+    })
   registry.new([custom])
   |> should.equal(Error([registry.SchemaUnavailable("custom")]))
 }
@@ -51,16 +55,10 @@ pub fn declarations_derive_from_the_input_codec_test() {
     registry.new([apps.weather_tool(), apps.transfer_tool()])
   let assert Ok(city_schema) = codec.schema(apps.city_codec())
   let assert Ok(transfer_schema) = codec.schema(apps.transfer_codec())
-  city_schema
-  |> should.equal(
-    codec.ObjectSchema([
-      codec.PropertySchema(
-        "city",
-        True,
-        codec.DescribedSchema("City to look up", codec.StringSchema),
-      ),
-    ]),
-  )
+  codec.schema_json(apps.city_codec())
+  |> should.equal(Ok(
+    "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"city\":{\"description\":\"City to look up\",\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false}",
+  ))
   registry.declarations(tools)
   |> should.equal([
     model.ToolSpec(
@@ -98,7 +96,7 @@ pub fn invocation_distinguishes_success_failure_and_uncertainty_test() {
   let assert Ok(tools) =
     registry.new([apps.weather_tool(), apps.transfer_tool()])
   let invoke = fn(name, args) {
-    registry.invoke(tools, Nil, name, args, unsettled)
+    registry.invoke(tools, Nil, call(), name, args, unsettled)
   }
   invoke("lookup_weather", "{\"city\":\"Paris\"}")
   |> should.equal(invocation.Returned("{\"summary\":\"sunny\"}"))
@@ -122,6 +120,7 @@ pub fn the_binding_classifies_every_typed_error_test() {
     registry.invoke(
       tools,
       Nil,
+      call(),
       "transfer_funds",
       "{\"to\":\"bob\",\"amount\":" <> amount <> "}",
       unsettled,
@@ -137,11 +136,20 @@ pub fn handler_receives_context_separately_from_input_test() {
   let echo_context =
     tool.define("whoami", "", apps.city_codec(), codec.string())
     |> tool.bind(
-      fn(context: String, city: apps.City) { Ok(context <> "@" <> city.name) },
+      fn(context: String, _call, city: apps.City) {
+        Ok(context <> "@" <> city.name)
+      },
       fn(_: Nil) { tool.Explain("failed") },
     )
   let assert Ok(tools) = registry.new([echo_context])
-  registry.invoke(tools, "alice", "whoami", "{\"city\":\"Rome\"}", unsettled)
+  registry.invoke(
+    tools,
+    "alice",
+    call(),
+    "whoami",
+    "{\"city\":\"Rome\"}",
+    unsettled,
+  )
   |> should.equal(invocation.Returned("\"alice@Rome\""))
 }
 
@@ -155,12 +163,19 @@ pub fn unencodable_output_is_a_host_failure_test() {
     )
   let broken =
     tool.define("broken", "", apps.city_codec(), refusing)
-    |> tool.bind(fn(_, _) { Ok("anything") }, fn(_: Nil) {
+    |> tool.bind(fn(_, _call, _) { Ok("anything") }, fn(_: Nil) {
       tool.Explain("failed")
     })
   let assert Ok(tools) = registry.new([broken])
   let assert invocation.OutputUnencodable(_) =
-    registry.invoke(tools, Nil, "broken", "{\"city\":\"Rome\"}", unsettled)
+    registry.invoke(
+      tools,
+      Nil,
+      call(),
+      "broken",
+      "{\"city\":\"Rome\"}",
+      unsettled,
+    )
 }
 
 /// A scripted model builds its calls from the same typed definitions the
@@ -240,7 +255,23 @@ pub fn a_drifted_definition_fails_the_policy_closed_test() {
       gate,
     )
     |> support.agent
-  let assert Ok(handle) = fabric.start(support.store(), desk, Nil, "Pay")
+  let assert Ok(handle) =
+    fabric.start(
+      support.store(),
+      desk,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "Pay",
+      correlation: None,
+    )
   let assert Ok(run.Finished(run.Failed(run.PolicyFailed(_, _)))) =
-    fabric.await(handle, 5000)
+    fabric.await(handle, within: duration.milliseconds(5000))
+}
+
+fn call() -> tool.Call {
+  tool.Call(
+    run: run.issued("registry"),
+    action: run.ActionId(1, "c1"),
+    correlation: correlation.from_key("registry"),
+  )
 }

@@ -22,6 +22,7 @@ import fabric/support/scripted
 import fabric/testing
 import gleam/erlang/process
 import gleam/option.{None, Some}
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
@@ -40,7 +41,7 @@ fn runtime(runs, identity, op, accept) {
 }
 
 fn parent(runs, op, accept) {
-  let assert Ok(op) = operation.with_deadline(op, 60_000)
+  let assert Ok(op) = operation.with_deadline(op, duration.milliseconds(60_000))
   runtime(runs, "child-deadline", op, accept)
 }
 
@@ -71,7 +72,8 @@ pub fn expiration_after_restart_cancels_the_same_signal_child_test() {
       support.id("expiring-child"),
       41,
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(reference, child.Signal(_)) = waiting.status
   let assert Some(due) = waiting.deadline
   parked(runs, graph.id(handle), 300)
@@ -87,7 +89,7 @@ pub fn expiration_after_restart_cancels_the_same_signal_child_test() {
       support.id("expiring-child"),
     )
   let assert Ok(_) = graph.recover(handle)
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Expired(due, graph.ChildSettled(reference)))
   done.receipts |> should.equal([])
   let assert Ok(child_handle) = graph.child(handle, reference.activation, leaf)
@@ -125,7 +127,7 @@ pub fn result_mapping_cannot_cross_the_child_deadline_test() {
       support.id("late-child-mapping"),
       41,
     )
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Expired(_, graph.ChildSettled(reference)) = done.status
   done.value |> should.equal(41)
   done.receipts |> should.equal([])
@@ -174,7 +176,8 @@ pub fn an_expired_agent_keeps_uncertain_effects_until_the_child_is_reconciled_te
       support.id("expired-agent-effect"),
       41,
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(reference, child.AgentInput([], [uncertain])) =
     waiting.status
   let assert Some(due) = waiting.deadline
@@ -224,7 +227,8 @@ pub fn a_clock_failure_before_arming_starts_no_child_test() {
       support.id("unarmed-child"),
       41,
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   waiting.status |> should.equal(graph.Unattended)
   graph.cancel(handle) |> should.equal(Ok(Nil))
   let assert Ok(done) = graph.read(handle)
@@ -291,7 +295,8 @@ pub fn expired_reconciliation_keeps_the_child_result_without_calling_parent_mapp
       support.id("expired-mapping"),
       41,
     )
-  let assert Ok(blocked) = graph.await(handle, 5000)
+  let assert Ok(blocked) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Blocked(reference, graph.InvalidResult(_, _)) =
     blocked.status
   let assert Some(due) = blocked.deadline
@@ -337,7 +342,8 @@ pub fn a_sweeper_settles_nested_cleanup_after_expiration_without_a_working_clock
           }
         },
       )
-    let assert Ok(observer) = job.with_poll_interval(observer, 100)
+    let assert Ok(observer) =
+      job.with_poll_interval(observer, duration.milliseconds(100))
     let job_child =
       runtime(
         runs,
@@ -355,7 +361,8 @@ pub fn a_sweeper_settles_nested_cleanup_after_expiration_without_a_working_clock
   }
   let assert Ok(handle) =
     graph.start(build(runs), support.id("nested-deadline"), 41)
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(reference, child.Job(_)) = waiting.status
   let assert Some(due) = waiting.deadline
   parked(runs, graph.id(handle), 300)
@@ -369,7 +376,7 @@ pub fn a_sweeper_settles_nested_cleanup_after_expiration_without_a_working_clock
     fabric.sweeper(
       runs,
       [graph.recovery(run.Identity("child-deadline", 1), build)],
-      every: 10,
+      every: duration.milliseconds(10),
     )
   let assert Ok(started) = spec.start()
   let done = settled(handle, 300)
@@ -402,7 +409,8 @@ pub fn an_overdue_retained_wait_cannot_replace_a_missing_child_with_a_tombstone_
     parent(runs, graph.as_subgraph(waiting_child(runs)), finish)
   }
   let assert Ok(handle) = graph.start(build(runs), support.id(root), 41)
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(reference, child.Signal(_)) = waiting.status
   parked(runs, graph.id(handle), 300)
   restart.crash(owner, runs)

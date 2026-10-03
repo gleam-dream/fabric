@@ -23,6 +23,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import llm_wire
@@ -122,7 +123,7 @@ fn calc_tool() -> tool.Tool(Nil) {
     codecs.one_field("x", codec.int()),
     codec.int(),
   )
-  |> tool.bind(fn(_: Nil, value: Int) { Ok(value * 2) }, tool.Explain)
+  |> tool.bind(fn(_: Nil, _call, value: Int) { Ok(value * 2) }, tool.Explain)
 }
 
 fn config(
@@ -202,8 +203,16 @@ pub fn records_from_the_earlier_release_replay_unchanged_test() {
         policy.always_allow(),
       )
       |> support.agent
-    let assert Ok(started) = fabric.start(support.store(), agent, Nil, "go")
-    fabric.await(started, 10_000)
+    let assert Ok(started) =
+      fabric.start(
+        support.store(),
+        agent,
+        id: run.new_id(),
+        context: Nil,
+        prompt: "go",
+        correlation: None,
+      )
+    fabric.await(started, within: duration.milliseconds(10_000))
     |> should.equal(Ok(run.Finished(run.Completed("done"))))
     let assert [body] = fake_provider.bodies(fake)
     let assert Ok(expected) = json.parse(fixture.replayed, decode.dynamic)
@@ -286,8 +295,16 @@ pub fn new_records_are_the_earlier_bytes_without_issues_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(started) = fabric.start(support.store(), agent, Nil, "go")
-  fabric.await(started, 10_000)
+  let assert Ok(started) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  fabric.await(started, within: duration.milliseconds(10_000))
   |> should.equal(Ok(run.Finished(run.Completed("finished"))))
   let assert Ok(snapshot) = fabric.snapshot(started)
   let assert [

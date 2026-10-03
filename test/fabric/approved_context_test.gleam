@@ -27,6 +27,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
@@ -36,7 +37,7 @@ import json/blueprint/codec
 fn paying_tool(probe: Probe) -> tool.Tool(String) {
   tool.bind(
     apps.transfer_definition(),
-    fn(who: String, transfer: apps.Transfer) -> Result(apps.Receipt, Nil) {
+    fn(who: String, _call, transfer: apps.Transfer) -> Result(apps.Receipt, Nil) {
       probe.record(probe, "pay as " <> who)
       Ok(apps.Receipt("r-" <> transfer.to))
     },
@@ -53,7 +54,7 @@ fn note_tool(probe: Probe, label: String) -> tool.Tool(String) {
     codec.string(),
   )
   |> tool.bind(
-    fn(who: String, x: String) -> Result(String, Nil) {
+    fn(who: String, _call, x: String) -> Result(String, Nil) {
       probe.record(probe, label <> " as " <> who)
       Ok(x)
     },
@@ -141,12 +142,15 @@ pub fn an_approved_tool_runs_with_the_recheck_context_without_a_runner_test() {
     fabric.start(
       support.store(),
       paying_agent(probe, [transfer_call()]),
-      "carol",
-      "pay",
+      id: run.new_id(),
+      context: "carol",
+      prompt: "pay",
+      correlation: None,
     )
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let assert Ok(_) = approve(run, pending, "alice")
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
   acts(probe)
   |> should.equal([
@@ -165,15 +169,17 @@ pub fn an_approved_tool_runs_with_the_recheck_context_under_a_live_runner_test()
     fabric.start(
       store,
       paying_agent(probe, [scripted.slow("s", "s"), transfer_call()]),
-      "carol",
-      "pay",
+      id: run.new_id(),
+      context: "carol",
+      prompt: "pay",
+      correlation: None,
     )
   let slow = probe.arrival(probe)
   let assert Ok(_) = restart.runner(store, fabric.id(run))
   let assert Ok([pending]) = fabric.pending(run)
   let assert Ok(run.Working) = approve(run, pending, "alice")
   probe.release(slow)
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
   acts(probe)
   |> should.equal([
@@ -200,7 +206,15 @@ pub fn an_approved_tool_not_started_before_a_restart_is_asked_for_again_test() {
   let #(owner, #(old, run)) =
     restart.owned(fn() {
       let store = support.directory(dir)
-      let assert Ok(run) = fabric.start(store, agent, "carol", "pay")
+      let assert Ok(run) =
+        fabric.start(
+          store,
+          agent,
+          id: run.new_id(),
+          context: "carol",
+          prompt: "pay",
+          correlation: None,
+        )
       #(store, run)
     })
   let _ = probe.arrival(probe)
@@ -213,7 +227,8 @@ pub fn an_approved_tool_not_started_before_a_restart_is_asked_for_again_test() {
 
   let store = support.directory(dir)
   let assert Ok(run) = fabric.recover(store, agent, "carol", fabric.id(run))
-  let assert Ok(run.Suspended([renewed], [uncertain])) = fabric.await(run, 0)
+  let assert Ok(run.Suspended([renewed], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(0))
   uncertain.tool |> should.equal("slow")
   renewed.reference.id |> should.equal(pending.reference.id)
   renewed.reference.requirement |> should.equal(pending.reference.requirement)
@@ -222,9 +237,10 @@ pub fn an_approved_tool_not_started_before_a_restart_is_asked_for_again_test() {
   approve(run, pending, "alice") |> should.equal(Error(fabric.StaleReference))
 
   let assert Ok(_) = approve(run, renewed, "dave")
-  let assert Ok(run.Suspended([], [_])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [_])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let assert Ok(_) = fabric.reconcile(run, uncertain.reference, "\"s\"")
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
   acts(probe)
   |> should.equal([
@@ -300,10 +316,18 @@ fn delegating(probe: Probe) -> Agent(String) {
 pub fn an_approved_sub_agent_starts_with_the_recheck_context_test() {
   let probe = probe.new()
   let assert Ok(run) =
-    fabric.start(support.store(), delegating(probe), "carol", "look it up")
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+    fabric.start(
+      support.store(),
+      delegating(probe),
+      id: run.new_id(),
+      context: "carol",
+      prompt: "look it up",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let assert Ok(_) = approve(run, pending, "alice")
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
   acts(probe)
   |> should.equal([
@@ -324,10 +348,18 @@ pub fn an_approved_sub_agent_never_stored_is_asked_for_again_test() {
     restart.owned(fn() {
       let store = flaky.store(backend)
       let assert Ok(run) =
-        fabric.start(store, delegating(probe), "carol", "look it up")
+        fabric.start(
+          store,
+          delegating(probe),
+          id: run.new_id(),
+          context: "carol",
+          prompt: "look it up",
+          correlation: None,
+        )
       #(store, run)
     })
-  let assert Ok(run.Suspended([pending], [])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   // The answer commits; its runner is lost while it stores the child.
   let held = flaky.hold(backend, string.ends_with(_, "-1"))
   let assert Ok(_) = approve(run, pending, "alice")
@@ -338,7 +370,8 @@ pub fn an_approved_sub_agent_never_stored_is_asked_for_again_test() {
   let store = flaky.store(backend)
   let assert Ok(run) =
     fabric.recover(store, delegating(probe), "rita", fabric.id(run))
-  let assert Ok(run.Suspended([renewed], [])) = fabric.await(run, 0)
+  let assert Ok(run.Suspended([renewed], [])) =
+    fabric.await(run, within: duration.milliseconds(0))
   renewed.reference.id |> should.equal(pending.reference.id)
   { renewed.reference.revision > pending.reference.revision }
   |> should.be_true
@@ -347,7 +380,7 @@ pub fn an_approved_sub_agent_never_stored_is_asked_for_again_test() {
   action.child |> should.equal(None)
 
   let assert Ok(_) = approve(run, renewed, "dave")
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
   acts(probe)
   |> should.equal([

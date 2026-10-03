@@ -20,6 +20,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{None}
+import gleam/time/duration
 import gleeunit/should
 import http_gun
 import http_gun/cassette
@@ -48,7 +49,7 @@ fn calculation(
     |> codec.describe("A calculation request")
   tool.define(name, "Calculate a number", input, codec.int())
   |> tool.bind(
-    fn(_: Nil, value: Int) -> Result(Int, String) {
+    fn(_: Nil, _call, value: Int) -> Result(Int, String) {
       probe.record(ledger, name <> ":" <> int.to_string(value))
       Ok(value * multiplier)
     },
@@ -194,8 +195,17 @@ pub fn google_signed_parts_survive_approval_and_directory_restart_test() -> Nil 
   let runs = store.directory(process.new_name("signed-restart"), directory)
   let #(owner, Nil) = restart.owned(fn() { store.start(runs) |> should.be_ok })
   let assert Ok(first_store_process) = store.pid(runs)
-  let assert Ok(started) = fabric.start(runs, before, Nil, "calculate")
-  let assert Ok(run.Suspended([approval], [])) = fabric.await(started, 5000)
+  let assert Ok(started) =
+    fabric.start(
+      runs,
+      before,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "calculate",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([approval], [])) =
+    fabric.await(started, within: duration.milliseconds(5000))
   probe.entries(ledger) |> should.equal([])
   list.length(fake_provider.bodies(fake)) |> should.equal(1)
 
@@ -212,11 +222,12 @@ pub fn google_signed_parts_survive_approval_and_directory_restart_test() -> Nil 
       reviewed(),
     )
   let assert Ok(resumed) = fabric.recover(runs, after, Nil, fabric.id(started))
-  fabric.await(resumed, 0) |> should.equal(Ok(run.Suspended([approval], [])))
+  fabric.await(resumed, within: duration.milliseconds(0))
+  |> should.equal(Ok(run.Suspended([approval], [])))
   list.length(fake_provider.bodies(fake)) |> should.equal(1)
   let assert Ok(_) =
     fabric.approve(resumed, approval.reference, reviewer: None, context: Nil)
-  fabric.await(resumed, 5000)
+  fabric.await(resumed, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("finished"))))
   probe.entries(ledger) |> should.equal(["calc:7"])
   let assert [_, replayed] = fake_provider.bodies(fake)
@@ -267,8 +278,15 @@ pub fn repeated_provider_call_ids_remain_paired_with_their_own_round_test() -> N
       policy.always_allow(),
     )
   let assert Ok(started) =
-    fabric.start(support.store(), agent, Nil, "calculate")
-  fabric.await(started, 5000)
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "calculate",
+      correlation: None,
+    )
+  fabric.await(started, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("finished"))))
   probe.entries(ledger) |> should.equal(["calc:1", "lookup:2"])
   let assert [_, _, third] = fake_provider.bodies(fake)
@@ -304,7 +322,11 @@ fn text_agent(
     policy.always_allow(),
   )
   |> agent.with_limits(
-    agent.Limits(..agent.default_limits(), max_turns:, model_retry_delay: 0),
+    agent.Limits(
+      ..agent.default_limits(),
+      max_turns:,
+      model_retry_delay: duration.milliseconds(0),
+    ),
   )
   |> support.agent
 }
@@ -319,11 +341,13 @@ pub fn http_501_stops_without_retrying_the_unchanged_request_test() -> Nil {
     fabric.start(
       support.store(),
       text_agent(fake.client, fake_provider.scripted(fake), 3),
-      Nil,
-      "Hello",
+      id: run.new_id(),
+      context: Nil,
+      prompt: "Hello",
+      correlation: None,
     )
   let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =
-    fabric.await(started, 5000)
+    fabric.await(started, within: duration.milliseconds(5000))
   error.retryable |> should.be_false
   let assert Ok(snapshot) = fabric.snapshot(started)
   snapshot.turns_used |> should.equal(1)
@@ -343,14 +367,17 @@ pub fn http_503_retries_only_within_the_existing_turn_budget_test() -> Nil {
       fabric.start(
         support.store(),
         text_agent(fake.client, fake_provider.scripted(fake), max_turns),
-        Nil,
-        "Hello",
+        id: run.new_id(),
+        context: Nil,
+        prompt: "Hello",
+        correlation: None,
       )
     let expected = case max_turns {
       1 -> run.BudgetExhausted(run.TurnLimit(1))
       _ -> run.Completed("recovered")
     }
-    fabric.await(started, 5000) |> should.equal(Ok(run.Finished(expected)))
+    fabric.await(started, within: duration.milliseconds(5000))
+    |> should.equal(Ok(run.Finished(expected)))
     let assert Ok(snapshot) = fabric.snapshot(started)
     snapshot.turns_used |> should.equal(max_turns)
     list.length(fake_provider.bodies(fake)) |> should.equal(max_turns)
@@ -373,8 +400,15 @@ pub fn blueprint_descriptions_reach_the_outgoing_provider_schema_test() -> Nil {
       policy.always_allow(),
     )
   let assert Ok(started) =
-    fabric.start(support.store(), agent, Nil, "calculate")
-  fabric.await(started, 5000)
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "calculate",
+      correlation: None,
+    )
+  fabric.await(started, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("finished"))))
   let assert [request] = fake_provider.bodies(fake)
   let assert Ok([first, second]) =
@@ -395,8 +429,15 @@ pub fn a_disk_cassette_runs_through_the_public_fabric_flow_test() -> Nil {
   let assert Ok(client) = http_testing.playback(tape, http_config.default())
   let settings = openai.new("local-script-key") |> openai.config
   let assert Ok(started) =
-    fabric.start(support.store(), text_agent(client, settings, 2), Nil, "Hello")
-  fabric.await(started, 5000)
+    fabric.start(
+      support.store(),
+      text_agent(client, settings, 2),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "Hello",
+      correlation: None,
+    )
+  fabric.await(started, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("from disk cassette"))))
   http_gun.stop(client)
   Nil

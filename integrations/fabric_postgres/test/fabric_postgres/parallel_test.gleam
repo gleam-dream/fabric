@@ -13,6 +13,7 @@ import fabric_postgres/agents
 import fabric_postgres/support
 import gleam/erlang/process
 import gleam/list
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
@@ -126,7 +127,8 @@ pub fn all_branch_revisions_are_claimed_once_and_swept_after_store_loss_test() {
     agents.owned(fn() {
       let runs = start_store(settings)
       let assert Ok(handle) = graph.start(mapped(runs), id, [1, 2, 3])
-      let assert Ok(waiting) = graph.await(handle, 5000)
+      let assert Ok(waiting) =
+        graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.Fork(_, _) = waiting.status
       Nil
     })
@@ -165,7 +167,7 @@ pub fn all_branch_revisions_are_claimed_once_and_swept_after_store_loss_test() {
     fabric.sweeper(
       runs,
       [graph.recovery(run.Identity("pg-parallel", 1), mapped)],
-      every: 20,
+      every: duration.milliseconds(20),
     )
   let assert Ok(sweeper) = spec.start()
   let done = await_done(root, 300)
@@ -173,6 +175,10 @@ pub fn all_branch_revisions_are_claimed_once_and_swept_after_store_loss_test() {
   idle(backend, "pg-parallel", 200)
   process.unlink(sweeper.pid)
   agents.kill(sweeper.pid)
-  fabric_postgres.prune(settings, ended_for: 0, limit: 10)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
   |> should.equal(Ok(4))
 }

@@ -1,7 +1,8 @@
 //// A Saga workflow as one typed Fabric tool.
 ////
-//// The workflow takes the tool's decoded input and produces its output,
-//// so the model sees one tool while Saga orders the steps, retries them as
+//// The workflow takes an input built from the run's context, the call and
+//// the tool's decoded input, and produces the tool's output, so the model
+//// sees one tool while Saga orders the steps, retries them as
 //// the workflow says, and compensates what completed when a step fails.
 //// Saga's outcome becomes the tool's result. A result is definite only
 //// when Saga's report proves that every effect of the run is known and
@@ -27,7 +28,7 @@
 //// forwards the outcome to it; once the task was stopped, the receiver
 //// settles the call with the outcome (`tool.bind_settling`), and the
 //// stopped Fabric run waits for that settlement, up to `rollback_within`
-//// milliseconds after the call's task was confirmed stopped, before it
+//// after the call's task was confirmed stopped, before it
 //// ends. A settlement that arrives later is refused and changes nothing;
 //// the action stays an uncertain effect, and Fabric observes the refusal
 //// (`settlement_refused`) with a summary of Saga's report, for a person to
@@ -40,28 +41,48 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/duration.{type Duration}
 import saga
 import saga/execution
 
-/// A tool bound to `workflow`, run with `config` for every call. `explain`
-/// renders a step's typed error for the model. When the call's task is
-/// stopped, Fabric waits up to `rollback_within` milliseconds for Saga's
-/// outcome (its settle window and the undo steps it runs) before recording
-/// an uncertain effect. Saga checks the configuration when a call starts
-/// the workflow: a configuration it refuses fails that call definitely,
-/// naming every violation, and runs no step.
+/// A tool bound to `workflow`, run with `config` for every call. `input`
+/// builds the workflow's input from the run's context, the call and the
+/// tool's decoded input, so the workflow can use what the context owns (a
+/// per-tenant client, the approver an approved call ran with) and the
+/// call's run and action (an idempotency key); a workflow that needs only
+/// the tool's input passes `fn(_, _, input) { input }`. Each call's Saga run
+/// carries the Fabric run's correlation (`execution.with_correlation`), so
+/// its events join the run's. `explain` renders a step's typed error for the
+/// model. When the call's task is stopped, Fabric waits up to
+/// `rollback_within` for Saga's outcome (its settle window and the undo steps
+/// it runs) before recording an uncertain effect. Saga checks the
+/// configuration when a call starts the workflow: a configuration it refuses
+/// fails that call definitely, naming every violation, and runs no step.
+///
+/// The tool's body timeout (`agent.Limits.tool_timeout`, 60 s by default)
+/// also stops the task: give a long workflow `tool.with_timeout`.
 pub fn tool(
   definition: tool.Definition(input, output),
-  workflow: saga.Workflow(input, output, error, undo_error),
+  workflow: saga.Workflow(workflow_input, output, error, undo_error),
   config: execution.Config,
+  input input: fn(context, tool.Call, input) -> workflow_input,
   explain explain: fn(error) -> String,
-  rollback_within rollback_within: Int,
+  rollback_within rollback_within: Duration,
 ) -> tool.Tool(context) {
   let judge = fn(delivery) { outcome(delivery, explain) }
+  let rollback_ms = duration.to_milliseconds(rollback_within)
   tool.bind_settling(
     definition,
-    fn(_context, input, settlement) {
-      run(workflow, input, config, judge, settlement, rollback_within)
+    fn(context, call: tool.Call, value, settlement) {
+      let config = execution.with_correlation(config, call.correlation)
+      run(
+        workflow,
+        input(context, call, value),
+        config,
+        judge,
+        settlement,
+        rollback_ms,
+      )
     },
     failure,
     within: rollback_within,

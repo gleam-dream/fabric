@@ -15,6 +15,7 @@ import fabric/support/restart
 import fabric/testing
 import gleam/erlang/process
 import gleam/option.{None, Some}
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import sinal
@@ -41,7 +42,7 @@ fn runtime_with(runs, inspect, within, accept) {
   let assert Ok(node) = definition.node_id("wait")
   let assert Ok(wait) =
     operation.await_signal(codec.int(), answer())
-    |> operation.with_deadline(within)
+    |> operation.with_deadline(duration.milliseconds(within))
   let assert Ok(spec) =
     definition.build(definition.Spec(
       run.Identity("deadline-loop", 1),
@@ -64,10 +65,12 @@ fn runtime_with(runs, inspect, within, accept) {
 
 pub fn deadline_configuration_is_bounded_and_part_of_definition_compatibility_test() {
   let wait = operation.await_signal(codec.int(), answer())
-  operation.with_deadline(wait, 0) |> should.be_error
-  operation.with_deadline(wait, -1) |> should.be_error
-  operation.with_deadline(wait, 4_294_967_296) |> should.be_error
-  operation.with_deadline(wait, 4_294_967_295) |> should.be_ok
+  operation.with_deadline(wait, duration.milliseconds(0)) |> should.be_error
+  operation.with_deadline(wait, duration.milliseconds(-1)) |> should.be_error
+  operation.with_deadline(wait, duration.milliseconds(4_294_967_296))
+  |> should.be_error
+  operation.with_deadline(wait, duration.milliseconds(4_294_967_295))
+  |> should.be_ok
   let activity =
     operation.new(
       run.Identity("body", 1),
@@ -76,7 +79,7 @@ pub fn deadline_configuration_is_bounded_and_part_of_definition_compatibility_te
       fn(_, _, n) { Ok(n) },
       fn(_error: Nil) { operation.DefiniteFailure("none") },
     )
-  operation.with_deadline(activity, 1000)
+  operation.with_deadline(activity, duration.milliseconds(1000))
   |> should.equal(Error(operation.DeadlineRequiresWait))
   let memory = testing.leased_memory()
   let runs = nodes.node(memory.backend, "definition", nodes.long)
@@ -86,7 +89,8 @@ pub fn deadline_configuration_is_bounded_and_part_of_definition_compatibility_te
       id("deadline-contract"),
       1,
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
   let changed =
     graph.attach(
@@ -120,11 +124,13 @@ pub fn interrupted_arming_recovers_once_without_repeating_policy_test() {
       id("deadline-arming"),
       1,
     )
-  let assert Ok(interrupted) = graph.await(handle, 5000)
+  let assert Ok(interrupted) =
+    graph.await(handle, within: duration.milliseconds(5000))
   interrupted.status |> should.equal(graph.Unattended)
   interrupted.deadline |> should.equal(None)
   let assert Ok(_) = graph.recover(handle)
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(_) = waiting.status
   let assert Some(_) = waiting.deadline
   probe.count(calls, "policy") |> should.equal(1)
@@ -150,7 +156,8 @@ pub fn a_clock_failure_refuses_delivery_but_allows_explicit_cancellation_test() 
       id("deadline-clock-failure"),
       1,
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
   probe.record(calls, "offline")
   graph.deliver(handle, reference, answer(), True)
@@ -171,7 +178,8 @@ pub fn a_delivery_that_crosses_the_deadline_during_acceptance_cannot_route_test(
       Ok(definition.Finish(n, n))
     })
   let assert Ok(handle) = graph.start(spec, id("deadline-slow-route"), 1)
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   let assert Ok(expired) = graph.deliver(handle, reference, answer(), True)
@@ -193,7 +201,7 @@ fn scan(runs) {
           runtime(runs, fn(_, _) { Ok(policy.Allow) })
         }),
       ],
-      every: 60_000,
+      every: duration.milliseconds(60_000),
     )
   let assert Ok(started) = spec.start()
   let assert Ok(summary) = process.receive(events, 5000)
@@ -215,7 +223,8 @@ pub fn due_discovery_expires_a_wait_after_store_loss_without_manual_delivery_tes
       id("deadline-scan"),
       1,
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert Some(due) = waiting.deadline
   scan(runs).claimed |> should.equal(0)
   memory.advance(60_001)
@@ -242,7 +251,8 @@ pub fn a_clock_correction_releases_the_claim_without_resetting_the_due_time_test
       id("deadline-correction"),
       1,
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert Some(due) = waiting.deadline
   memory.advance(60_001)
   store.claim_ready(runs, 1) |> should.equal(Ok(["deadline-correction"]))
@@ -269,7 +279,8 @@ pub fn an_expiration_commit_wins_against_an_in_progress_delivery_test() {
       Ok(definition.Finish(n, n))
     })
   let assert Ok(handle) = graph.start(spec, id("deadline-race"), 1)
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   let reply = process.new_subject()
@@ -293,7 +304,8 @@ pub fn overdue_waits_expire_after_restart_without_a_signal_or_runner_test() {
     restart.owned(fn() { nodes.node(memory.backend, "deadline", nodes.long) })
   let spec = runtime(runs, fn(_, _) { Ok(policy.Allow) })
   let assert Ok(handle) = graph.start(spec, id("deadline-restart"), 7)
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   let assert Ok(row) = store.get(runs, "deadline-restart")
@@ -321,12 +333,14 @@ pub fn approval_does_not_start_the_clock_and_revisits_get_new_deadlines_test() {
       Ok(policy.RequireApproval(run.Requirement("publish", 1)))
     })
   let assert Ok(handle) = graph.start(spec, id("deadline-approval"), 0)
-  let assert Ok(pending) = graph.await(handle, 5000)
+  let assert Ok(pending) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = pending.status
   pending.deadline |> should.equal(None)
   memory.advance(120_000)
   let assert Ok(approved) = graph.approve(handle, approval)
-  let assert Ok(first) = graph.await(handle, 5000)
+  let assert Ok(first) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = first.status
   let assert Some(due) = first.deadline
   let assert Ok(now) = store.now(runs)
@@ -334,10 +348,12 @@ pub fn approval_does_not_start_the_clock_and_revisits_get_new_deadlines_test() {
   let _ = approved
   memory.advance(10_000)
   let assert Ok(_) = graph.deliver(handle, reference, answer(), False)
-  let assert Ok(pending) = graph.await(handle, 5000)
+  let assert Ok(pending) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = pending.status
   let assert Ok(_) = graph.approve(handle, approval)
-  let assert Ok(second) = graph.await(handle, 5000)
+  let assert Ok(second) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert Some(next_due) = second.deadline
   should.be_true(next_due >= due + 10_000)
   let assert Ok(duplicate) = graph.deliver(handle, reference, answer(), False)
@@ -354,7 +370,8 @@ pub fn late_delivery_commits_expiration_without_accepting_the_result_test() {
       id("deadline-delivery"),
       1,
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   memory.advance(60_001)

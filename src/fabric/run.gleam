@@ -2,17 +2,36 @@
 //// run is exactly its stored `Snapshot`, with no process behind it.
 
 import fabric/budget
+import fabric/internal/run_id
 import fabric/model.{type Message, type ModelError, type ToolCall}
 import gleam/list
 import gleam/option.{type Option}
 import gleam/string
+import gleam/time/duration.{type Duration}
 
-/// The id of a run Fabric issued. Every operation takes one; a string from
-/// outside (a link, a form, a job payload) becomes one only through
-/// `parse_id`.
-pub opaque type RunId {
-  RunId(String)
+/// The id of a run. The caller chooses it when it starts a run
+/// (`fabric.start`, `graph.start`): `new_id()` for a fresh one, or
+/// `parse_id` of an application key (a job id, an order id) so that a
+/// retried start finds the run it already started. A string from outside (a
+/// link, a form, a job payload) becomes one only through `parse_id`.
+pub type RunId =
+  run_id.RunId
+
+/// A bound on a wait. `Infinity` is never a default: a caller that wants
+/// a wait unbounded says so.
+pub type Timeout {
+  After(Duration)
+  Infinity
 }
+
+/// A fresh run id: `run-` and 32 random lowercase hexadecimal characters
+/// (128 random bits), so fresh ids do not collide.
+pub fn new_id() -> RunId {
+  run_id.from_string("run-" <> random_id())
+}
+
+@external(erlang, "fabric_ffi", "random_id")
+fn random_id() -> String
 
 /// A run id in the shape Fabric issues: 1 to 128 letters, digits, `-` and
 /// `_`. Anything else names no run. A well-formed id may still name no
@@ -26,20 +45,19 @@ pub fn parse_id(text: String) -> Result(RunId, Nil) {
     && length <= 128
     && list.all(string.to_graphemes(text), string.contains(allowed, _))
   {
-    True -> Ok(RunId(text))
+    True -> Ok(run_id.from_string(text))
     False -> Error(Nil)
   }
 }
 
 pub fn id_to_string(id: RunId) -> String {
-  let RunId(text) = id
-  text
+  run_id.to_string(id)
 }
 
 /// A run id Fabric issued or read from a record it wrote.
 @internal
 pub fn issued(text: String) -> RunId {
-  RunId(text)
+  run_id.from_string(text)
 }
 
 /// Identifies an action within one run. A provider call id alone is not

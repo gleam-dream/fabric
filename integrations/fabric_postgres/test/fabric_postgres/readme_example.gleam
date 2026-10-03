@@ -2,6 +2,7 @@ import fabric/store
 import fabric_postgres
 import gleam/erlang/process
 import gleam/otp/static_supervisor
+import gleam/time/duration
 import pog
 
 pub fn start(database_url: String, node: String) -> store.Store {
@@ -9,7 +10,7 @@ pub fn start(database_url: String, node: String) -> store.Store {
   let assert Ok(config) = pog.url_config(pool, database_url)
   let settings =
     fabric_postgres.settings(pog.named_connection(pool), node:)
-    |> fabric_postgres.with_lease(30_000)
+    |> fabric_postgres.with_lease(duration.seconds(30))
   let assert Ok(runs) =
     fabric_postgres.store(process.new_name("runs"), settings)
 

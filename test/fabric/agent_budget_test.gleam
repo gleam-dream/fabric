@@ -14,12 +14,16 @@ import fabric/support/restart
 import fabric/support/scripted
 import gleam/list
 import gleam/option.{None}
+import gleam/time/duration
 import gleeunit/should
 
 fn worker(model) {
   agent.new("worker", model, [], policy.always_allow())
   |> agent.with_limits(
-    agent.Limits(..agent.default_limits(), model_retry_delay: 1),
+    agent.Limits(
+      ..agent.default_limits(),
+      model_retry_delay: duration.milliseconds(1),
+    ),
   )
   |> support.agent
 }
@@ -39,12 +43,30 @@ pub fn model_attempts_spend_family_capacity_including_retryable_failures_test() 
     )
   let runs = support.store()
   let assert Ok(zero) =
-    fabric.start_with_budget(runs, worker, Nil, "go", budget.Limits(0, 0, 0))
-  fabric.await(zero, 5000) |> should.equal(Ok(exhausted(0)))
+    fabric.start_with_budget(
+      runs,
+      worker,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+      limits: budget.Limits(0, 0, 0),
+    )
+  fabric.await(zero, within: duration.milliseconds(5000))
+  |> should.equal(Ok(exhausted(0)))
   probe.entries(calls) |> should.equal([])
   let assert Ok(handle) =
-    fabric.start_with_budget(runs, worker, Nil, "go", budget.Limits(2, 0, 0))
-  fabric.await(handle, 5000) |> should.equal(Ok(exhausted(2)))
+    fabric.start_with_budget(
+      runs,
+      worker,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+      limits: budget.Limits(2, 0, 0),
+    )
+  fabric.await(handle, within: duration.milliseconds(5000))
+  |> should.equal(Ok(exhausted(2)))
   probe.entries(calls) |> should.equal(["model", "model"])
 }
 
@@ -66,9 +88,11 @@ pub fn a_lost_model_attempt_keeps_its_charge_across_directory_restart_test() {
         fabric.start_with_budget(
           runs,
           blocking,
-          Nil,
-          "go",
-          budget.Limits(1, 0, 0),
+          id: run.new_id(),
+          context: Nil,
+          prompt: "go",
+          correlation: None,
+          limits: budget.Limits(1, 0, 0),
         )
       #(runs, handle)
     })
@@ -83,7 +107,8 @@ pub fn a_lost_model_attempt_keeps_its_charge_across_directory_restart_test() {
     )
   let assert Ok(recovered) =
     fabric.recover(support.directory(dir), next, Nil, fabric.id(handle))
-  fabric.await(recovered, 5000) |> should.equal(Ok(exhausted(1)))
+  fabric.await(recovered, within: duration.milliseconds(5000))
+  |> should.equal(Ok(exhausted(1)))
   probe.entries(calls) |> should.equal(["model"])
   restart.remove_dir(dir)
 }
@@ -107,10 +132,19 @@ pub fn tool_bodies_are_reserved_before_start_and_unstarted_calls_are_withdrawn_t
     |> support.agent
   let runs = support.store()
   let assert Ok(handle) =
-    fabric.start_with_budget(runs, worker, Nil, "go", budget.Limits(3, 0, 0))
+    fabric.start_with_budget(
+      runs,
+      worker,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+      limits: budget.Limits(3, 0, 0),
+    )
   probe.arrival(calls) |> probe.release
   probe.arrival(calls) |> probe.release
-  fabric.await(handle, 5000) |> should.equal(Ok(exhausted(3)))
+  fabric.await(handle, within: duration.milliseconds(5000))
+  |> should.equal(Ok(exhausted(3)))
   let assert Ok(snapshot) = fabric.snapshot(handle)
   let assert [run.Succeeded(_), run.Succeeded(_), run.NotStarted] =
     list.map(snapshot.actions, fn(action) { action.state })
@@ -140,15 +174,18 @@ pub fn budget_refusal_stops_running_effects_without_claiming_they_did_not_happen
     fabric.start_with_budget(
       support.store(),
       worker,
-      Nil,
-      "go",
-      budget.Limits(2, 0, 0),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+      limits: budget.Limits(2, 0, 0),
     )
   let _ = probe.arrival(calls)
   let assert Ok([pending]) = fabric.pending(handle)
   let assert Ok(_) =
     fabric.approve(handle, pending.reference, reviewer: None, context: Nil)
-  fabric.await(handle, 5000) |> should.equal(Ok(exhausted(2)))
+  fabric.await(handle, within: duration.milliseconds(5000))
+  |> should.equal(Ok(exhausted(2)))
   let assert Ok(snapshot) = fabric.snapshot(handle)
   let assert [run.Uncertain(_), run.NotStarted] =
     list.map(snapshot.actions, fn(action) { action.state })
@@ -169,8 +206,16 @@ pub fn a_lost_reservation_acknowledgement_never_duplicates_a_model_call_test() {
   // Root insert, ledger insert, initialized marker, then the model grant.
   flaky.arm(backend, [flaky.Pass, flaky.Pass, flaky.Pass, flaky.FailAfter])
   let assert Ok(handle) =
-    fabric.start_with_budget(runs, worker, Nil, "go", budget.Limits(1, 0, 0))
-  fabric.await(handle, 5000)
+    fabric.start_with_budget(
+      runs,
+      worker,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+      limits: budget.Limits(1, 0, 0),
+    )
+  fabric.await(handle, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
   probe.entries(calls) |> should.equal(["model"])
   let assert Ok(#(_, saved)) =
@@ -189,9 +234,25 @@ pub fn invalid_limits_and_incapable_writers_are_refused_before_start_test() {
     )
   let runs = support.store()
   let assert Error(fabric.StartRefused(_)) =
-    fabric.start_with_budget(runs, worker, Nil, "go", budget.Limits(-1, 0, 0))
+    fabric.start_with_budget(
+      runs,
+      worker,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+      limits: budget.Limits(-1, 0, 0),
+    )
   let assert Ok(old) = store.with_record_version(runs, 6)
   let assert Error(fabric.StartRefused(_)) =
-    fabric.start_with_budget(old, worker, Nil, "go", budget.Limits(1, 0, 0))
+    fabric.start_with_budget(
+      old,
+      worker,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+      limits: budget.Limits(1, 0, 0),
+    )
   probe.entries(calls) |> should.equal([])
 }

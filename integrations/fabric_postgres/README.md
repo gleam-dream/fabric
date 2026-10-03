@@ -19,6 +19,7 @@ import fabric/store
 import fabric_postgres
 import gleam/erlang/process
 import gleam/otp/static_supervisor
+import gleam/time/duration
 import pog
 
 pub fn start(database_url: String, node: String) -> store.Store {
@@ -26,7 +27,7 @@ pub fn start(database_url: String, node: String) -> store.Store {
   let assert Ok(config) = pog.url_config(pool, database_url)
   let settings =
     fabric_postgres.settings(pog.named_connection(pool), node:)
-    |> fabric_postgres.with_lease(30_000)
+    |> fabric_postgres.with_lease(duration.seconds(30))
   let assert Ok(runs) =
     fabric_postgres.store(process.new_name("runs"), settings)
 
@@ -55,7 +56,7 @@ triggered the scan:
 
 ```gleam
 let recoveries = [fabric.recovery(root_agent, context_for_run)]
-let assert Ok(sweeper) = fabric.sweeper(runs, recoveries, every: 1000)
+let assert Ok(sweeper) = fabric.sweeper(runs, recoveries, every: duration.seconds(1))
 ```
 
 For graph roots, add `graph.recovery(identity, build_runtime)` to the same
@@ -180,9 +181,9 @@ A state that cannot retain its meaning in version 2 fails before writing.
   ordinal, say), 1 to 128 letters, digits, and `.`, `_`, `-`, `@` or `:`.
   Never `nonode@nohost`, the name of every undistributed VM. Two live VMs
   given one node id could take each other's runs over.
-- **`with_lease(settings, milliseconds)`**: how long a run stays with this
-  node after its last renewal (default 30 000 ms, at least 100, at most
-  2^32 - 1; `store` checks it). The store renews its runners' leases every
+- **`with_lease(settings, lease)`**: how long a run stays with this
+  node after its last renewal (default 30 s, at least 100 ms, at most
+  2^32 - 1 ms; `store` checks it). The store renews its runners' leases every
   third of the lease and kills a runner it could not renew in time. A
   shorter lease lets another node take over a stopped node's runs sooner,
   at the cost of more renewals; the database's clock alone judges expiry
@@ -246,12 +247,12 @@ Fabric confirms by reading its write back.
 
 ## Pruning
 
-`prune(settings, ended_for: ms, limit: n)` deletes up to `n` complete,
+`prune(settings, ended_for: age, limit: n)` (`age` a `Duration`) deletes up to `n` complete,
 settled families, oldest first. A family follows saved parent attachments,
 including hashed graph children, managed agents and delegated descendants.
 Run names do not establish membership. Every member must have a current,
 readable retention projection, a definite terminal outcome, no live lease,
-and no record update within `ms`. Terminal uncertainty, missing children,
+and no record update within `age`. Terminal uncertainty, missing children,
 unreadable records, mismatched attachments and unacknowledged children retain
 the whole family. A new settlement starts its member's retention interval
 again. A child is never pruned alone.

@@ -12,6 +12,7 @@ import fabric_jobs_demo/support
 import gleam/erlang/process
 import gleam/list
 import gleam/result
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
@@ -75,11 +76,13 @@ pub fn cancellation_requires_approval_and_acknowledgment_is_not_confirmation_tes
       },
     )
   let assert Ok(handle) = graph.start(runtime, id("gated-stop-flow"), receipt)
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
   client.read(support.url(), receipt) |> should.equal(Ok(client.Queued))
   let assert Ok(_) = graph.approve(handle, approval)
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert [ack] = waiting.receipts
   codec.decode_json(client.cancel_reply_codec(), ack.output_json)
@@ -101,7 +104,7 @@ pub fn cancellation_requires_approval_and_acknowledgment_is_not_confirmation_tes
     )
   let assert Ok(handle) =
     graph.start(denied, id("denied-stop-flow"), denied_receipt)
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Failed(graph.Denied("not owned")))
   client.read(support.url(), denied_receipt) |> should.equal(Ok(client.Queued))
 }
@@ -116,7 +119,8 @@ pub fn a_saved_cancellation_request_reconnects_without_requesting_again_test() {
       id("saved-stop-flow"),
       receipt,
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   support.crash(owner, runs)
   let handle =
@@ -168,7 +172,8 @@ pub fn lost_stop_acknowledgment_replays_only_under_the_service_idempotency_contr
       id("replayed-stop"),
     )
   let assert Ok(_) = graph.recover(handle)
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert [ack] = waiting.receipts
   ack.attempt |> should.equal(2)
@@ -197,7 +202,8 @@ pub fn an_unrepeatable_stop_request_remains_uncertain_until_reconciled_test() {
   let assert Ok(encoded) =
     codec.encode_json(client.cancel_reply_codec(), client.StopRequested)
   let assert Ok(_) = graph.reconcile(handle, reference, encoded)
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   poll(handle, reference, 100).status
   |> should.equal(graph.Completed(client.Stopped))
@@ -218,7 +224,8 @@ pub fn a_returned_transport_error_never_claims_cancellation_or_automatic_replay_
       id("uncertain-stop-flow"),
       receipt,
     )
-  let assert Ok(blocked) = graph.await(handle, 5000)
+  let assert Ok(blocked) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Blocked(reference, graph.EffectUncertain(_)) = blocked.status
   let handle =
     graph.attach(
@@ -236,7 +243,8 @@ pub fn a_returned_transport_error_never_claims_cancellation_or_automatic_replay_
   let assert Ok(encoded) =
     codec.encode_json(client.cancel_reply_codec(), client.StopRequested)
   let assert Ok(_) = graph.reconcile(handle, reference, encoded)
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   poll(handle, reference, 100).status
   |> should.equal(graph.Completed(client.Stopped))
@@ -263,7 +271,7 @@ pub fn completion_that_won_before_stop_is_returned_without_erasing_the_artifact_
       id("late-stop-flow"),
       receipt,
     )
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(client.Finished(digest)))
   list.length(done.receipts) |> should.equal(1)
   client.artifact(support.url(), receipt)
@@ -299,11 +307,13 @@ pub fn owned_cancellation_reconnects_to_the_real_terminal_outcome_after_restart_
       id("owned-real-stop"),
       demo.Submitting(client.Request("never published", 5000)),
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert demo.Accepted(receipt) = waiting.value
   graph.cancel(handle) |> should.equal(Ok(Nil))
-  let assert Ok(pending) = graph.await(handle, 5000)
+  let assert Ok(pending) =
+    graph.await(handle, within: duration.milliseconds(5000))
   pending.status
   |> should.equal(graph.CancellingJob(
     reference,
@@ -345,7 +355,8 @@ pub fn an_interrupted_owned_request_is_resolved_by_real_observation_without_repl
       id("owned-lost-stop"),
       demo.Submitting(client.Request("lost stop ack", 5000)),
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   graph.cancel(handle) |> should.equal(Ok(Nil))
   process.receive(accepted, 5000) |> should.equal(Ok(Nil))
@@ -376,12 +387,13 @@ pub fn a_completed_owned_job_keeps_its_artifact_when_local_cancellation_wins_tes
       id("owned-completed-stop"),
       demo.Submitting(client.Request("already published", 0)),
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert demo.Accepted(receipt) = waiting.value
   let digest = completed(receipt, 100)
   graph.cancel(handle) |> should.equal(Ok(Nil))
-  let assert Ok(_) = graph.await(handle, 5000)
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
   let done = poll_owned(handle, reference, 100)
   done.status |> should.equal(graph.Cancelled(graph.AfterResult))
   let assert [_, outcome] = done.receipts

@@ -15,6 +15,7 @@ import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import sinal
+import sinal/correlation.{type Correlation}
 
 pub fn committed(before: Option(State), after: State) -> Nil {
   started(before, after)
@@ -27,7 +28,11 @@ pub fn committed(before: Option(State), after: State) -> Nil {
 
 /// A draining runner committed the handoff of `state`.
 pub fn handed_off(state: State) -> Nil {
-  emit(o.run_handed_off(), Nil, o.RunHandedOff(state.run, state.incarnation))
+  emit(
+    o.run_handed_off(),
+    Nil,
+    o.RunHandedOff(state.run, state.incarnation, state.correlation),
+  )
 }
 
 pub fn drained(summary: o.Drain, store: String) -> Nil {
@@ -43,7 +48,12 @@ pub fn taken_over(state: State, previous_owner: String) -> Nil {
   emit(
     o.run_taken_over(),
     Nil,
-    o.RunTakenOver(state.run, state.incarnation, previous_owner),
+    o.RunTakenOver(
+      state.run,
+      state.incarnation,
+      previous_owner,
+      state.correlation,
+    ),
   )
 }
 
@@ -69,6 +79,7 @@ fn started(before: Option(State), after: State) -> Nil {
           after.agent.name,
           after.agent.version,
           option.map(after.parent, fn(parent) { run.id_to_string(parent.run) }),
+          after.correlation,
         ),
       )
   }
@@ -77,7 +88,11 @@ fn started(before: Option(State), after: State) -> Nil {
 fn recovered(before: Option(State), after: State) -> Nil {
   case before {
     Some(before) if after.incarnation > before.incarnation ->
-      emit(o.run_recovered(), Nil, o.RunRecovered(after.run, after.incarnation))
+      emit(
+        o.run_recovered(),
+        Nil,
+        o.RunRecovered(after.run, after.incarnation, after.correlation),
+      )
     _ -> Nil
   }
 }
@@ -92,7 +107,7 @@ fn model_turn(before: Option(State), after: State) -> Nil {
               emit(
                 o.model_turn(),
                 turn_usage(before, after, result),
-                o.ModelTurn(after.run, turn, result),
+                o.ModelTurn(after.run, turn, result, after.correlation),
               )
             None -> Nil
           }
@@ -173,12 +188,13 @@ fn actions(before: Option(State), after: State) -> Nil {
   }
   list.each(every_action(after), fn(action) {
     let previous = dict.get(earlier, action.id) |> option.from_result
-    action_changed(after.run, previous, action)
+    action_changed(after.run, after.correlation, previous, action)
   })
 }
 
 fn action_changed(
   run_id: String,
+  correlation: Correlation,
   before: Option(ActionRecord),
   after: ActionRecord,
 ) -> Nil {
@@ -195,10 +211,15 @@ fn action_changed(
     emit(
       o.approval_answered(),
       Nil,
-      o.ApprovalAnswered(reference, approval.revision, case approval.answer {
-        run.Approve -> o.Approved
-        run.Reject(_) -> o.Rejected
-      }),
+      o.ApprovalAnswered(
+        reference,
+        approval.revision,
+        case approval.answer {
+          run.Approve -> o.Approved
+          run.Reject(_) -> o.Rejected
+        },
+        correlation,
+      ),
     )
   })
   case after.state {
@@ -213,41 +234,58 @@ fn action_changed(
           requirement.name,
           requirement.version,
           revision,
+          correlation,
         ),
       )
     _ -> Nil
   }
   case after.child {
-    None -> tool_changed(reference, old_state, after.state)
+    None -> tool_changed(reference, correlation, old_state, after.state)
     Some(child) ->
-      child_changed(reference, run.id_to_string(child), old_state, after.state)
+      child_changed(
+        reference,
+        correlation,
+        run.id_to_string(child),
+        old_state,
+        after.state,
+      )
   }
 }
 
 fn tool_changed(
   reference: o.ActionRef,
+  correlation: Correlation,
   before: Option(run.ActionState),
   after: run.ActionState,
 ) -> Nil {
   case before, after {
     Some(run.Running), run.Running -> Nil
     _, run.Running ->
-      emit(o.tool_dispatched(), Nil, o.ToolDispatched(reference))
+      emit(o.tool_dispatched(), Nil, o.ToolDispatched(reference, correlation))
     Some(run.Running), _ ->
       case disposition(after) {
         Some(disposition) ->
-          emit(o.tool_settled(), Nil, o.ToolSettled(reference, disposition))
+          emit(
+            o.tool_settled(),
+            Nil,
+            o.ToolSettled(reference, disposition, correlation),
+          )
         None -> Nil
       }
     // A task lost before its fence may have run its body.
     Some(run.Queued), run.Uncertain(_) ->
-      emit(o.tool_settled(), Nil, o.ToolSettled(reference, o.EffectUncertain))
+      emit(
+        o.tool_settled(),
+        Nil,
+        o.ToolSettled(reference, o.EffectUncertain, correlation),
+      )
     _, _ -> Nil
   }
 }
 
 fn child_changed(
   reference: o.ActionRef,
+  correlation: Correlation,
   child: String,
   before: Option(run.ActionState),
   after: run.ActionState,
@@ -258,7 +296,11 @@ fn child_changed(
   }
   case after, was_active {
     run.Delegated, _ if before != Some(run.Delegated) ->
-      emit(o.child_started(), Nil, o.ChildStarted(reference, child))
+      emit(
+        o.child_started(),
+        Nil,
+        o.ChildStarted(reference, child, correlation),
+      )
     run.Delegated, _ | run.Running, _ -> Nil
     _, True ->
       case disposition(after) {
@@ -266,7 +308,7 @@ fn child_changed(
           emit(
             o.child_settled(),
             Nil,
-            o.ChildSettled(reference, child, disposition),
+            o.ChildSettled(reference, child, disposition, correlation),
           )
         None -> Nil
       }
@@ -295,7 +337,12 @@ fn cancelled(before: Option(State), after: State) -> Nil {
   case before {
     Some(before) ->
       case cancelling(after) && !cancelling(before) {
-        True -> emit(o.run_cancelled(), Nil, o.RunCancelled(after.run))
+        True ->
+          emit(
+            o.run_cancelled(),
+            Nil,
+            o.RunCancelled(after.run, after.correlation),
+          )
         False -> Nil
       }
     None -> Nil
@@ -319,7 +366,7 @@ fn finished(before: Option(State), after: State) -> Nil {
           after.usage.output_tokens,
           after.usage.unreported_replies,
         ),
-        o.RunFinished(after.run, outcome_kind(outcome)),
+        o.RunFinished(after.run, outcome_kind(outcome), after.correlation),
       )
     _, _ -> Nil
   }
@@ -343,6 +390,7 @@ fn outcome_kind(outcome: run.Outcome) -> o.OutcomeKind {
 /// was committed.
 pub fn settlement_refused(
   run: String,
+  correlation: Correlation,
   id: ActionId,
   tool: String,
   outcome: invocation.Outcome,
@@ -368,6 +416,7 @@ pub fn settlement_refused(
       offered,
       reason,
       summary,
+      correlation,
     ),
   )
 }

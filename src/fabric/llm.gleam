@@ -25,7 +25,6 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
 import http_gun
 import json/blueprint/contract
 import llm_wire
@@ -34,11 +33,14 @@ import llm_wire/message
 import llm_wire/tool
 
 /// A model backed by llm_wire. `client` is the caller's started HTTP Gun
-/// client: its destination, trust, connection policy and correlation apply to
-/// every turn, and Fabric neither starts nor stops it. `config` owns the
-/// provider, endpoint, credentials, limits, and timeouts. Nothing is
-/// allocated until a turn runs. Killing the task that runs a turn closes its
-/// HTTP stream.
+/// client: its destination, trust and connection policy apply to every
+/// turn, and Fabric neither starts nor stops it. Each turn runs through
+/// `http_gun.with_correlation(client, request.correlation)`, so the HTTP and
+/// llm_wire events of a turn carry its run's correlation (see
+/// `fabric.start`) and one model, and one agent, serves every run. `config`
+/// owns the provider, endpoint, credentials, limits, and timeouts. Nothing
+/// is allocated until a turn runs. Killing the task that runs a turn closes
+/// its HTTP stream.
 pub fn model(
   client: http_gun.Client,
   config: llm_wire.Config,
@@ -65,6 +67,7 @@ fn call(
       model.ModelError(error.describe_prepare_error(error), retryable: False)
     }),
   )
+  let client = http_gun.with_correlation(client, request.correlation)
   case llm_wire.run(client, prepared) {
     Ok(llm_wire.Answer(text:, usage:, ..)) ->
       Ok(model.FinalAnswer(text, usage_of(usage)))
@@ -79,18 +82,7 @@ fn call(
 }
 
 fn declaration(spec: model.ToolSpec) -> Result(tool.Tool, ModelError) {
-  use contract <- result.try(
-    contract.from_schema(spec.schema)
-    |> result.map_error(fn(error) {
-      model.ModelError(
-        "tool "
-          <> spec.name
-          <> " has no admissible schema: "
-          <> string.inspect(error),
-        retryable: False,
-      )
-    }),
-  )
+  let contract = contract.from_schema(spec.schema)
   // A tool name outside the providers' grammar cannot be sent; retrying does
   // not help.
   tool.from_contract(spec.name, spec.description, contract)

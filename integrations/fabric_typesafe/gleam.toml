@@ -9,6 +9,7 @@ internal_modules = ["fabric_typesafe/internal", "fabric_typesafe/internal/*"]
 [dependencies]
 gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_time = ">= 1.11.0 and < 2.0.0"
 fabric = { path = "../.." }
 json_blueprint = { path = "../../../json_blueprint" }
 gun = ">= 2.6.0 and < 3.0.0"

@@ -18,6 +18,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
+import sinal/correlation
 
 fn state(phase: agent.Phase) -> agent.State {
   agent.State(
@@ -34,6 +35,7 @@ fn state(phase: agent.Phase) -> agent.State {
     0,
     phase,
     None,
+    correlation.from_key("stats-agent"),
   )
 }
 

@@ -10,6 +10,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 import json/blueprint/value
@@ -88,7 +89,7 @@ pub fn an_http_classifier_batch_retains_native_answers_models_usage_and_rubric_t
       id("batch"),
       "2 + 2 = 4",
     )
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
   receipt.requested_model |> should.equal("jev-latest")
   receipt.resolved_model |> should.equal("protocol-fixture-only")
@@ -117,11 +118,12 @@ pub fn approval_precedes_request_construction_and_the_http_call_test() {
       id("approval"),
       "sample",
     )
-  let assert Ok(waiting) = graph.await(handle, 5000)
+  let assert Ok(waiting) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
   support.stats(url, "calls") |> should.equal(0)
   graph.approve(handle, approval) |> should.be_ok
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(_) = done.status
   support.stats(url, "calls") |> should.equal(1)
   Nil
@@ -136,7 +138,8 @@ pub fn malformed_results_rate_limits_and_lost_replies_never_route_or_retry_test(
         id("uncertain"),
         "sample",
       )
-    let assert Ok(blocked) = graph.await(handle, 5000)
+    let assert Ok(blocked) =
+      graph.await(handle, within: duration.milliseconds(5000))
     let assert graph.Blocked(_, graph.EffectUncertain(detail)) = blocked.status
     string.contains(detail, "private diagnostic body") |> should.be_false
     string.contains(detail, "test-key") |> should.be_false
@@ -156,7 +159,7 @@ pub fn an_unsent_request_is_a_definite_failure_test() {
     )
   let assert Ok(handle) =
     graph.start(runtime(memory(), config, allow), id("too-large"), "sample")
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Failed(graph.OperationFailed(_)) = done.status
   support.stats(url, "calls") |> should.equal(0)
   Nil
@@ -172,7 +175,7 @@ pub fn cancellation_closes_local_work_and_preserves_remote_uncertainty_test() {
     )
   await_stat(url, "calls", 1, 100)
   graph.cancel(handle) |> should.be_ok
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Cancelled(graph.Unresolved(_, _)) = done.status
   await_stat(url, "disconnected", 1, 100)
   done.receipts |> should.equal([])
@@ -192,7 +195,8 @@ pub fn recovery_after_store_loss_reuses_the_receipt_with_the_server_stopped_test
       process.receive_forever(process.new_subject())
     })
   let #(runs, handle) = process.receive_forever(ready)
-  let assert Ok(before) = graph.await(handle, 5000)
+  let assert Ok(before) =
+    graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(_) = before.status
   support.stats(url, "calls") |> should.equal(1)
   let assert Ok(pid) = store.pid(runs)
@@ -218,7 +222,7 @@ pub fn corrupt_receipts_and_changed_question_meaning_cannot_restore_test() {
       id("codec"),
       "sample",
     )
-  let assert Ok(done) = graph.await(handle, 5000)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done.status
   let codec = fabric_typesafe.receipt_codec(questions())
   codec.encode(

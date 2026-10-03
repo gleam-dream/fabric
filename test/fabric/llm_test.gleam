@@ -14,13 +14,18 @@ import fabric/support/apps
 import fabric/support/fake_provider
 import fabric/support/scripted
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
+import http_gun/telemetry as http_telemetry
 import llm_wire/message
 import llm_wire/testing
+import sinal
+import sinal/correlation
 
 /// A model whose OpenAI requests the fake provider answers.
 fn openai_model(fake: fake_provider.Fake) -> model.Model {
@@ -99,8 +104,15 @@ pub fn two_tool_calls_round_trip_through_llm_wire_test() {
     )
     |> support.agent
   let assert Ok(run) =
-    fabric.start(support.store(), agent, Nil, "weather, then pay bob")
-  fabric.await(run, 10_000)
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "weather, then pay bob",
+      correlation: None,
+    )
+  fabric.await(run, within: duration.milliseconds(10_000))
   |> should.equal(
     Ok(run.Finished(run.Completed("Sunny in Paris; bob is paid."))),
   )
@@ -162,8 +174,17 @@ pub fn unsupported_or_corrupt_stored_adapter_data_stops_before_provider_io_test(
         )
         |> support.agent
       let runs = support.store()
-      let assert Ok(started) = fabric.start(runs, original, Nil, "weather")
-      let assert Ok(run.Suspended([pending], [])) = fabric.await(started, 5000)
+      let assert Ok(started) =
+        fabric.start(
+          runs,
+          original,
+          id: run.new_id(),
+          context: Nil,
+          prompt: "weather",
+          correlation: None,
+        )
+      let assert Ok(run.Suspended([pending], [])) =
+        fabric.await(started, within: duration.milliseconds(5000))
       let fake =
         fake_provider.start([
           testing.events_for(message.OpenAI, testing.text("unused")),
@@ -176,7 +197,7 @@ pub fn unsupported_or_corrupt_stored_adapter_data_stops_before_provider_io_test(
       let assert Ok(_) =
         fabric.approve(opened, pending.reference, reviewer: None, context: Nil)
       let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =
-        fabric.await(opened, 5000)
+        fabric.await(opened, within: duration.milliseconds(5000))
       error.retryable |> should.be_false
       fake_provider.bodies(fake) |> should.equal([])
       fake_provider.remaining(fake) |> should.equal(1)
@@ -205,8 +226,16 @@ pub fn invalid_calls_through_llm_wire_get_per_call_feedback_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
-  fabric.await(run, 10_000)
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "weather",
+      correlation: None,
+    )
+  fabric.await(run, within: duration.milliseconds(10_000))
   |> should.equal(Ok(run.Finished(run.Completed("I will ask properly."))))
   let assert Ok(snapshot) = fabric.snapshot(run)
   let assert [
@@ -258,13 +287,29 @@ pub fn refusal_and_truncation_through_llm_wire_end_the_run_test() {
   let agent =
     agent.new("agent", scripted_model(fake), [], policy.always_allow())
     |> support.agent
-  let assert Ok(refused) = fabric.start(support.store(), agent, Nil, "a")
-  fabric.await(refused, 10_000)
+  let assert Ok(refused) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "a",
+      correlation: None,
+    )
+  fabric.await(refused, within: duration.milliseconds(10_000))
   |> should.equal(Ok(run.Finished(run.Refused("not allowed"))))
   let assert Ok(snapshot) = fabric.snapshot(refused)
   snapshot.usage |> should.equal(run.TokenUsage(3, 1, 0))
-  let assert Ok(limited) = fabric.start(support.store(), agent, Nil, "b")
-  fabric.await(limited, 10_000)
+  let assert Ok(limited) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "b",
+      correlation: None,
+    )
+  fabric.await(limited, within: duration.milliseconds(10_000))
   |> should.equal(Ok(run.Finished(run.OutputLimited("partial ans"))))
   fake_provider.stop(fake)
 }
@@ -277,11 +322,22 @@ pub fn http_statuses_through_llm_wire_are_classified_for_retry_test() {
   let agent =
     agent.new("agent", scripted_model(fake), [], policy.always_allow())
     |> agent.with_limits(
-      agent.Limits(..agent.default_limits(), model_retry_delay: 0),
+      agent.Limits(
+        ..agent.default_limits(),
+        model_retry_delay: duration.milliseconds(0),
+      ),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "hi")
-  fabric.await(run, 10_000)
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "hi",
+      correlation: None,
+    )
+  fabric.await(run, within: duration.milliseconds(10_000))
   |> should.equal(Ok(run.Finished(run.Completed("recovered"))))
   fake_provider.stop(fake)
 
@@ -289,9 +345,17 @@ pub fn http_statuses_through_llm_wire_are_classified_for_retry_test() {
   let agent =
     agent.new("agent", scripted_model(fake), [], policy.always_allow())
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "hi")
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "hi",
+      correlation: None,
+    )
   let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =
-    fabric.await(run, 10_000)
+    fabric.await(run, within: duration.milliseconds(10_000))
   error.retryable |> should.be_false
   fake_provider.remaining(fake) |> should.equal(0)
   fake_provider.stop(fake)
@@ -322,8 +386,16 @@ pub fn unparseable_arguments_replay_to_anthropic_as_an_object_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
-  fabric.await(run, 10_000)
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "weather",
+      correlation: None,
+    )
+  fabric.await(run, within: duration.milliseconds(10_000))
   |> should.equal(Ok(run.Finished(run.Completed("I will ask properly."))))
 
   let assert Ok(snapshot) = fabric.snapshot(run)
@@ -376,8 +448,16 @@ pub fn unparseable_arguments_replay_to_openai_verbatim_test() {
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
-  fabric.await(run, 10_000)
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "weather",
+      correlation: None,
+    )
+  fabric.await(run, within: duration.milliseconds(10_000))
   |> should.equal(Ok(run.Finished(run.Completed("I will ask properly."))))
 
   let assert [_, second] = fake_provider.bodies(fake)
@@ -392,4 +472,54 @@ pub fn unparseable_arguments_replay_to_openai_verbatim_test() {
   |> list.filter(fn(item) { item.0 == "function_call" })
   |> should.equal([#("function_call", "{\"city\": ")])
   fake_provider.stop(fake)
+}
+
+/// One agent serves two runs, and each run's model HTTP requests carry that
+/// run's correlation: `fabric/llm` tags each turn's client view with it.
+pub fn each_runs_model_requests_carry_its_correlation_test() {
+  let fake =
+    fake_provider.start([testing.text("first"), testing.text("second")])
+  let seen = process.new_subject()
+  let attachment =
+    sinal.observe(http_telemetry.event(), fn(_, metadata) {
+      process.send(seen, metadata.correlation)
+    })
+  let agent =
+    agent.new("agent", scripted_model(fake), [], policy.always_allow())
+    |> support.agent
+  let ticket = fn(name) { correlation.from_key(name) }
+  list.each(["ticket-a", "ticket-b"], fn(name) {
+    let assert Ok(handle) =
+      fabric.start(
+        support.store(),
+        agent,
+        id: run.new_id(),
+        context: Nil,
+        prompt: name,
+        correlation: Some(ticket(name)),
+      )
+    let assert Ok(run.Finished(run.Completed(_))) =
+      fabric.await(handle, within: duration.seconds(10))
+    Nil
+  })
+  let _ = sinal.detach(attachment)
+  fake_provider.stop(fake)
+  let correlations = drain(seen, [])
+  list.is_empty(correlations) |> should.be_false
+  list.all(correlations, fn(found) {
+    found == Some(ticket("ticket-a")) || found == Some(ticket("ticket-b"))
+  })
+  |> should.be_true
+  list.contains(correlations, Some(ticket("ticket-a"))) |> should.be_true
+  list.contains(correlations, Some(ticket("ticket-b"))) |> should.be_true
+}
+
+fn drain(
+  seen: process.Subject(option.Option(correlation.Correlation)),
+  acc: List(option.Option(correlation.Correlation)),
+) -> List(option.Option(correlation.Correlation)) {
+  case process.receive(seen, 50) {
+    Ok(found) -> drain(seen, [found, ..acc])
+    Error(Nil) -> acc
+  }
 }

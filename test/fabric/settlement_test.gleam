@@ -15,7 +15,9 @@ import fabric/support/scripted
 import fabric/tool
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import gleam/option.{None}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import sinal
 
@@ -43,7 +45,7 @@ fn settling_tool(
 ) -> tool.Tool(Nil) {
   tool.bind_settling(
     apps.weather_definition(),
-    fn(_, _city: City, settlement) {
+    fn(_, _call, _city: City, settlement) {
       let release = process.new_subject()
       process.send(handed, Handed(settlement, release))
       case then {
@@ -65,7 +67,7 @@ fn settling_tool(
       }
     },
     fn(_: Nil) { tool.Explain("failed") },
-    within:,
+    within: duration.milliseconds(within),
   )
 }
 
@@ -84,7 +86,15 @@ fn start(
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "weather")
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "weather",
+      correlation: None,
+    )
   let assert Ok(handed) = process.receive(handed, 5000)
   #(run, handed)
 }
@@ -103,7 +113,8 @@ pub fn a_stopped_tool_is_settled_definitely_before_the_run_ends_test() {
   let assert Ok(run.Working) = fabric.cancel(run)
   tool.settle(handed.settlement, Ok(Forecast("cloudy")), summary: "")
   |> should.equal(Ok(Nil))
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   only_state(run) |> should.equal(run.Succeeded("{\"summary\":\"cloudy\"}"))
 
   // Exactly once: the action has its result, and nothing is lost.
@@ -122,7 +133,8 @@ pub fn a_stopped_tool_can_settle_as_uncertain_test() {
       Error(tool.Uncertain("undo failed")),
       summary: "undo failed",
     )
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   only_state(run) |> should.equal(run.Uncertain("undo failed"))
 }
 
@@ -132,7 +144,8 @@ pub fn a_stopped_tool_can_settle_as_uncertain_test() {
 pub fn a_settlement_after_the_run_ended_is_refused_test() {
   let #(run, handed) = start(process.new_subject(), Wait, 20)
   let assert Ok(_) = fabric.cancel(run)
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert run.Uncertain(evidence) = only_state(run)
   string.contains(evidence, "no settlement") |> should.be_true
   let assert Ok(before) = fabric.snapshot(run)
@@ -157,7 +170,7 @@ pub fn a_settlement_while_the_task_runs_waits_for_its_report_test() {
   process.send(handed.release, Nil)
   process.receive(offered, 5000)
   |> should.equal(Ok(Error(tool.AlreadyRecorded)))
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
   )
@@ -169,7 +182,7 @@ pub fn a_handler_settling_its_own_call_is_refused_test() {
   let settled = process.new_subject()
   let #(run, _) = start(process.new_subject(), SettleOwn(settled), 5000)
   process.receive(settled, 5000) |> should.equal(Ok(Error(tool.NotAwaited)))
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
   )
@@ -181,7 +194,8 @@ pub fn a_handler_settling_its_own_call_is_refused_test() {
 /// uncertain one learns nothing new and is refused.
 pub fn a_settlement_resolves_an_uncertain_effect_test() {
   let #(run, handed) = start(process.new_subject(), Die, 5000)
-  let assert Ok(run.Suspended([], [_])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [_])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   tool.settle(
     handed.settlement,
     Error(tool.Uncertain("still unknown")),
@@ -194,7 +208,7 @@ pub fn a_settlement_resolves_an_uncertain_effect_test() {
     summary: "",
   )
   |> should.equal(Ok(Nil))
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"error\":\"no forecast today\"}"))),
   )
@@ -203,12 +217,13 @@ pub fn a_settlement_resolves_an_uncertain_effect_test() {
 /// A human reconciliation that came first wins.
 pub fn a_settlement_after_a_reconciliation_is_refused_test() {
   let #(run, handed) = start(process.new_subject(), Die, 5000)
-  let assert Ok(run.Suspended([], [uncertain])) = fabric.await(run, 5000)
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(run, within: duration.milliseconds(5000))
   let assert Ok(_) =
     fabric.reconcile(run, uncertain.reference, "{\"summary\":\"?\"}")
   tool.settle(handed.settlement, Ok(Forecast("cloudy")), summary: "")
   |> should.equal(Error(tool.AlreadyRecorded))
-  fabric.await(run, 5000)
+  fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("final: {\"summary\":\"?\"}"))))
 }
 
@@ -221,7 +236,12 @@ pub fn a_settlement_bound_must_be_positive_test() {
   )
   |> agent.build
   |> should.equal(
-    Error([agent.SettlementBoundNotPositive("lookup_weather", 0)]),
+    Error([
+      agent.SettlementBoundNotPositive(
+        "lookup_weather",
+        duration.milliseconds(0),
+      ),
+    ]),
   )
 }
 
@@ -240,14 +260,14 @@ fn named_settling(
 ) -> tool.Tool(Nil) {
   tool.define(name, "weather", apps.city_codec(), apps.forecast_codec())
   |> tool.bind_settling(
-    fn(_, _city: City, settlement) {
+    fn(_, _call, _city: City, settlement) {
       process.send(handed, Named(name, settlement))
       let never = process.new_subject()
       let _ = process.receive_forever(never)
       Ok(Forecast("never"))
     },
     fn(_: Nil) { tool.Explain("failed") },
-    within:,
+    within: duration.milliseconds(within),
   )
 }
 
@@ -272,7 +292,15 @@ fn start_two(
       policy.always_allow(),
     )
     |> support.agent
-  let assert Ok(run) = fabric.start(support.store(), agent, Nil, "go")
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
   let assert Ok(first) = process.receive(handed, 5000)
   let assert Ok(second) = process.receive(handed, 5000)
   case first.name {
@@ -297,7 +325,8 @@ pub fn a_settlement_is_accepted_once_per_action_test() {
   tool.settle(a, Ok(Forecast("cloudy")), summary: "")
   |> should.equal(Error(tool.NotAwaited))
   tool.settle(b, Ok(Forecast("rain")), summary: "") |> should.equal(Ok(Nil))
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
   states(run)
   |> should.equal([
     run.Uncertain("unknown"),
@@ -327,7 +356,8 @@ pub fn a_settlement_after_the_bound_is_refused_while_stopping_test() {
   let assert [run.Uncertain(evidence), run.Running] = states(run)
   string.contains(evidence, "no settlement") |> should.be_true
   tool.settle(b, Ok(Forecast("rain")), summary: "") |> should.equal(Ok(Nil))
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
 }
 
 /// A refused settlement is observed with why and with the summary the tool
@@ -340,7 +370,8 @@ pub fn a_refused_settlement_is_observed_test() {
     })
   let #(run, handed) = start(process.new_subject(), Wait, 20)
   let assert Ok(_) = fabric.cancel(run)
-  fabric.await(run, 5000) |> should.equal(Ok(run.Finished(run.Cancelled)))
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Cancelled)))
 
   tool.settle(
     handed.settlement,
@@ -381,6 +412,11 @@ pub fn a_settlement_bound_must_fit_a_timer_test() {
   )
   |> agent.build
   |> should.equal(
-    Error([agent.SettlementBoundTooLarge("lookup_weather", 5_000_000_000)]),
+    Error([
+      agent.SettlementBoundTooLarge(
+        "lookup_weather",
+        duration.milliseconds(5_000_000_000),
+      ),
+    ]),
   )
 }
