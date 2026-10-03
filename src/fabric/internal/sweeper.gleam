@@ -55,10 +55,13 @@ const timer_limit = 4_294_967_295
 
 const batch_size = 100
 
+/// `caller`: the process a sweeper started outside a supervisor stops
+/// with, besides its store.
 pub fn new(
   store: Store,
   roots: List(Root),
   every: Int,
+  caller: Option(Pid),
 ) -> Result(supervision.ChildSpecification(Nil), List(ConfigError)) {
   let errors = case every {
     n if n <= 0 -> [EveryNotPositive(n)]
@@ -77,7 +80,7 @@ pub fn new(
       }
     })
   case errors {
-    [] -> Ok(supervision.worker(fn() { start(store, indexed, every) }))
+    [] -> Ok(supervision.worker(fn() { start(store, indexed, every, caller) }))
     _ -> Error(list.reverse(errors))
   }
 }
@@ -92,6 +95,7 @@ type Loop {
   Loop(
     store: Store,
     owner: Pid,
+    caller: Option(Pid),
     self: process.Subject(Message),
     busy: Option(Pid),
   )
@@ -101,6 +105,7 @@ fn start(
   store: Store,
   roots: Dict(record.Key, Root),
   every: Int,
+  caller: Option(Pid),
 ) -> actor.StartResult(Nil) {
   actor.new_with_initialiser(5000, fn(self) {
     case store.runners(store) {
@@ -108,6 +113,7 @@ fn start(
       Ok(#(pinned, _, _)) -> {
         let assert Ok(owner) = store.pid(pinned)
         process.monitor(owner)
+        option.map(caller, process.monitor)
         let selector =
           process.new_selector()
           |> process.select(self)
@@ -119,7 +125,7 @@ fn start(
           })
         process.send(self, Tick)
         Ok(
-          actor.initialised(Loop(pinned, owner, self, None))
+          actor.initialised(Loop(pinned, owner, caller, self, None))
           |> actor.selecting(selector),
         )
       }
@@ -129,6 +135,9 @@ fn start(
     case message {
       Down(pid) if pid == state.owner ->
         actor.stop_abnormal("the sweeper's store stopped")
+      // A sweeper started outside a supervisor does not outlive its
+      // caller, whichever way the caller exits.
+      Down(pid) if state.caller == Some(pid) -> actor.stop()
       Tick if state.busy == None -> {
         let worker =
           process.spawn(fn() {
