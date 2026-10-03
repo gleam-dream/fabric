@@ -8,6 +8,7 @@ import fabric/graph/child
 import fabric/graph/definition
 import fabric/graph/operation
 import fabric/graph/signal
+import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as control
 import fabric/internal/graph/record
 import fabric/internal/store as store_core
@@ -141,7 +142,7 @@ pub fn mixed_family_scanning_keeps_the_foreign_parent_lease_and_uses_its_graph_r
   let assert Ok(parent) =
     graph.start(managed(a, calls), support.id("mixed-root"), 41)
   let _ = probe.arrival(calls)
-  let child = support.id(child.reserved_id("mixed-root", 1))
+  let child = support.id(attachment.reserved_id("mixed-root", 1))
   // Preserve the foreign parent's lease while only the child expires.
   let assert Ok(parent_runner) = restart.runner(a, graph.id(parent))
   restart.kill(parent_runner)
@@ -287,7 +288,7 @@ pub fn a_child_without_a_reciprocal_parent_reservation_cannot_trigger_root_recov
   let _ = probe.arrival(calls)
   let assert Ok(pid) = restart.runner(a, graph.id(parent))
   restart.kill(pid)
-  let child = support.id(child.reserved_id("damaged-family", 1))
+  let child = support.id(attachment.reserved_id("damaged-family", 1))
   expire(a, memory.backend, child)
   // Inject a decodable parent record that no longer names this child.
   let assert Ok(row) = store_core.get(a, "damaged-family")
@@ -624,7 +625,7 @@ pub fn fork_discovery_survives_lost_watches_and_does_not_repeat_unchanged_waits_
   let ids = [
     id,
     ..list.map([1, 2, 3], fn(member) {
-      support.id(child.branch_id("fork-discovery", 1, member))
+      support.id(attachment.branch_id("fork-discovery", 1, member))
     })
   ]
   await_free(memory.backend, ids, 200)
@@ -692,8 +693,8 @@ pub fn nested_idle_discovery_converges_and_later_observes_an_external_signal_tes
       original
     })
   let root = support.id("idle-root")
-  let middle = support.id(child.reserved_id("idle-root", 1))
-  let leaf = support.id(child.reserved_id(run.id_to_string(middle), 1))
+  let middle = support.id(attachment.reserved_id("idle-root", 1))
+  let leaf = support.id(attachment.reserved_id(run.id_to_string(middle), 1))
   let ids = [root, middle, leaf]
   await_free(memory.backend, ids, 200)
   restart.crash(owner, original)
@@ -751,8 +752,8 @@ pub fn nested_blocked_discovery_converges_without_replaying_uncertain_effects_te
   let calls = probe.new()
   let build = fn(runs) { nested_uncertain(runs, calls) }
   let root = support.id("blocked-root")
-  let middle = support.id(child.reserved_id("blocked-root", 1))
-  let leaf = support.id(child.reserved_id(run.id_to_string(middle), 1))
+  let middle = support.id(attachment.reserved_id("blocked-root", 1))
+  let leaf = support.id(attachment.reserved_id(run.id_to_string(middle), 1))
   let ids = [root, middle, leaf]
   let assert Ok(handle) = graph.start(build(a), root, 41)
   let assert Ok(waiting) =

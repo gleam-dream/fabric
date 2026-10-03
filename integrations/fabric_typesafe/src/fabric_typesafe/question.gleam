@@ -1,5 +1,6 @@
 //// Typed TypeSafe questions, independent of chat and graph scheduling.
 
+import fabric_typesafe/internal/batch as internal
 import fabric_typesafe/internal/wire
 import gleam/float
 import gleam/int
@@ -39,21 +40,14 @@ pub type Score {
   )
 }
 
-pub opaque type Question(a) {
-  Question(
-    definition: Value,
-    decode: fn(Value) -> Result(a, String),
-    placeholder: a,
-  )
-}
+/// One typed question. Build one with `noul`, `choice` or `score`.
+pub type Question(a) =
+  internal.Question(a)
 
-pub opaque type Batch(a) {
-  Batch(
-    definitions: List(#(String, Value)),
-    decode: fn(List(#(String, Value))) -> Result(a, String),
-    placeholder: a,
-  )
-}
+/// Named questions asked together, decoded into one typed answer. Build one
+/// with `ask` and `combine`.
+pub type Batch(a) =
+  internal.Batch(a)
 
 /// Keep a yes probability until application routing chooses its own threshold.
 pub fn noul(
@@ -69,7 +63,7 @@ pub fn noul(
       [#("criteria", value.Object([#("true", yes), #("false", no)]))]
     }
   })
-  Ok(Question(
+  Ok(internal.question(
     value.Object([
       #("type", value.String("noul")),
       #("instructions", instructions),
@@ -118,7 +112,7 @@ pub fn choice(
     list.first(alternatives)
     |> result.replace_error("a Choice requires 2–255 options"),
   )
-  Ok(Question(
+  Ok(internal.question(
     value.Object([
       #("type", value.String("choice")),
       #("instructions", instructions),
@@ -176,7 +170,7 @@ pub fn score(
   use levels <- result.try(list.try_map(levels, wire.content))
   let legend =
     list.index_map(levels, fn(level, index) { #(int.to_string(index), level) })
-  Ok(Question(
+  Ok(internal.question(
     value.Object([
       #("type", value.String("score")),
       #("instructions", instructions),
@@ -222,11 +216,11 @@ pub fn ask(id: String, question: Question(a)) -> Result(Batch(a), String) {
     string.trim(id) != "",
     "empty classifier question ID",
   ))
-  let decode = question.decode
-  Batch(
-    [#(id, question.definition)],
+  let decode = internal.question_decode(question)
+  internal.batch(
+    [#(id, internal.question_definition(question))],
     fn(fields) { wire.required(fields, id) |> result.try(decode) },
-    question.placeholder,
+    internal.question_placeholder(question),
   )
 }
 
@@ -235,7 +229,8 @@ pub fn combine(
   left: Batch(a),
   right: Batch(b),
 ) -> Result(Batch(#(a, b)), String) {
-  let entries = list.append(left.definitions, right.definitions)
+  let entries =
+    list.append(internal.definitions(left), internal.definitions(right))
   use Nil <- result.try(wire.require(
     list.length(entries) <= 256,
     "classifier question count exceeds 256",
@@ -244,39 +239,32 @@ pub fn combine(
     value.object(entries)
     |> result.map_error(fn(_) { "duplicate classifier question ID" }),
   )
-  let decode_left = left.decode
-  let decode_right = right.decode
+  let decode_left = internal.decode(left)
+  let decode_right = internal.decode(right)
   Ok(
-    Batch(
+    internal.batch(
       entries,
       fn(fields) {
         use left <- result.try(decode_left(fields))
         use right <- result.map(decode_right(fields))
         #(left, right)
       },
-      #(left.placeholder, right.placeholder),
+      #(internal.placeholder(left), internal.placeholder(right)),
     ),
   )
 }
 
-/// An answer of the batch's type, for a codec that needs one; it is not a
-/// real answer.
-@internal
-pub fn placeholder(batch: Batch(a)) -> a {
-  batch.placeholder
-}
-
 pub fn definitions(batch: Batch(a)) -> Value {
-  value.Object(batch.definitions)
+  value.Object(internal.definitions(batch))
 }
 
 pub fn decode(batch: Batch(a), answers: Value) -> Result(a, String) {
   use fields <- result.try(wire.object(answers))
   use Nil <- result.try(wire.require(
-    wire.same_keys(fields, wire.keys(batch.definitions)),
+    wire.same_keys(fields, wire.keys(internal.definitions(batch))),
     "classifier answer IDs do not match its questions",
   ))
-  batch.decode(fields)
+  internal.decode(batch)(fields)
 }
 
 fn answer_fields(

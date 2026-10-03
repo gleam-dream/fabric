@@ -5,6 +5,7 @@ import fabric/graph
 import fabric/graph/agent as node
 import fabric/graph/child
 import fabric/graph/definition
+import fabric/internal/graph/attachment
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
@@ -124,7 +125,7 @@ pub fn a_zero_child_budget_refuses_a_managed_agent_before_creating_it_test() {
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status
   |> should.equal(graph.Failed(graph.FamilyBudget(budget.ChildLimit(0))))
-  store_core.get(runs, child.reserved_id("no-children", 1))
+  store_core.get(runs, attachment.reserved_id("no-children", 1))
   |> should.equal(Error(backend.NotFound))
   probe.entries(calls) |> should.equal([])
 }
@@ -581,7 +582,7 @@ pub fn lost_start_and_completion_acknowledgements_reuse_the_agent_test() {
   let id = support.id("lost-agent-ack")
   flaky.arm_run(
     backend,
-    support.id(child.reserved_id(run.id_to_string(id), 1)),
+    support.id(attachment.reserved_id(run.id_to_string(id), 1)),
     [flaky.FailAfter],
   )
   let assert Ok(handle) = graph.start(parent(runs, runtime), id, 41)
@@ -601,7 +602,7 @@ pub fn cancellation_buries_a_reserved_agent_without_calling_prompt_or_context_te
   let worker = fixed("42", calls)
   let runtime = runtime(runs, worker)
   let id = support.id("bury-agent")
-  let child_id = child.reserved_id(run.id_to_string(id), 1)
+  let child_id = attachment.reserved_id(run.id_to_string(id), 1)
   let held = flaky.hold(backend, fn(id) { id == child_id })
   let assert Ok(handle) = graph.start(parent(runs, runtime), id, 41)
   let assert Ok(_) = process.receive(held, 5000)

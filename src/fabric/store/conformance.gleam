@@ -2,9 +2,9 @@
 //// and a leased backend kept in memory for tests. A backend author runs
 //// every check of `checks` in a test.
 
-import fabric/graph/child
 import fabric/graph/job
 import fabric/graph/operation
+import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
 import fabric/internal/run_id
@@ -735,7 +735,7 @@ fn idle_pair(
   let definition = graph.Definition(run.DefinitionId("parent", 1), "v1", 1)
   let assert Ok(#(state, _)) = graph.start(root, definition, "0", prepared)
   let assert graph.Ready(a) = state.phase
-  let child_id = child.reserved_id(root, 1)
+  let child_id = attachment.reserved_id(root, 1)
   let parent = graph.State(..state, phase: graph.WaitingChild(a, child_id))
   let assert Ok(parent_record) = graph_record.encode(parent)
   let assert Ok(#(child_state, _)) =

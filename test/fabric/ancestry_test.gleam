@@ -4,10 +4,10 @@
 
 import fabric/budget as quota
 import fabric/internal/checked_agent
+import fabric/internal/graph/attachment
 
 import fabric
 import fabric/agent
-import fabric/graph/child
 import fabric/graph/operation
 import fabric/internal/ancestry
 import fabric/internal/budget/model as budget
@@ -59,7 +59,7 @@ fn graph_parent(runs: store.Store) -> #(graph.State, String) {
       encoded,
       store_core.Detached(in_flight: False, seize: False),
     )
-  #(state, child.reserved_id(state.run, a.id))
+  #(state, attachment.reserved_id(state.run, a.id))
 }
 
 fn stop_parent(runs: store.Store, state: graph.State) {

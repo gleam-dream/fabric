@@ -30,6 +30,7 @@ import fabric_postgres/internal/backend
 import fabric_postgres/internal/discovery
 import fabric_postgres/internal/migrations
 import fabric_postgres/internal/retention
+import fabric_postgres/internal/statistics as statistics_sql
 import fabric_postgres/statistics
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Name}
@@ -263,7 +264,7 @@ pub type StatsError {
 /// or unreadable projections are explicit unknowns. This performs no refresh,
 /// writes or claims. See `fabric_postgres/statistics` for the returned values.
 pub fn stats(settings: Settings) -> Result(statistics.Snapshot, StatsError) {
-  statistics.read(settings.connection, table(settings))
+  statistics_sql.read(settings.connection, table(settings))
   |> result.map_error(StatsFailed)
 }
 
@@ -277,7 +278,7 @@ pub fn refresh_statistics(
   case limit > 0 {
     False -> Error(RefreshLimitNotPositive(limit))
     True ->
-      statistics.refresh(settings.connection, table(settings), limit)
+      statistics_sql.refresh(settings.connection, table(settings), limit)
       |> result.map_error(RefreshFailed)
   }
 }

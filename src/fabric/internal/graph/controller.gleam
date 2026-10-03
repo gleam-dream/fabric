@@ -4,13 +4,13 @@
 //// this module consumes its validated encoded input and completion decisions.
 
 import fabric/budget as quota
-import fabric/graph/child
 import fabric/graph/fork
 import fabric/graph/job
 import fabric/graph/operation.{
   type Recovery, ReplayInterrupted, RequireReconciliation,
 }
 import fabric/internal/budget/model as budget
+import fabric/internal/graph/attachment
 import fabric/internal/graph/fork as scope
 import fabric/internal/run_id
 import fabric/policy
@@ -399,7 +399,8 @@ pub fn step(
       use _ <- result.try(matches(state, a, ref))
       case a.prepared.kind {
         operation.Fork(..) -> expire_fork(state, a, now)
-        _ -> expire_child(state, a, child.reserved_id(state.run, a.id), now)
+        _ ->
+          expire_child(state, a, attachment.reserved_id(state.run, a.id), now)
       }
     }
     JobExpired(ref, now, progress), WaitingJob(a) -> {
@@ -480,7 +481,7 @@ pub fn step(
       }
     -> {
       use _ <- result.try(matches(state, a, ref))
-      use _ <- result.try(case id == child.reserved_id(state.run, a.id) {
+      use _ <- result.try(case id == attachment.reserved_id(state.run, a.id) {
         True -> Ok(Nil)
         False -> Error(StaleInvocation)
       })
@@ -749,7 +750,7 @@ fn waiting(state: State, a: Activation) -> #(State, List(Effect)) {
       PrepareFork(a),
     ])
     operation.Subgraph | operation.Agent -> {
-      let id = child.reserved_id(state.run, a.id)
+      let id = attachment.reserved_id(state.run, a.id)
       #(State(..state, phase: Joining(a, id)), [ObserveChild(a, id)])
     }
     _ -> #(
@@ -1139,7 +1140,12 @@ pub fn check_prepared(prepared: Prepared) -> Result(Nil, Rejection) {
           Error(InvalidPrepared("invalid fork membership bounds or signature"))
       }
     operation.Job(polling) | operation.OwnedJob(polling) ->
-      case job.valid_polling(polling) {
+      case
+        case polling {
+          job.Manual -> True
+          job.Every(ms) -> ms > 0 && ms <= 4_294_967_295
+        }
+      {
         True -> Ok(Nil)
         False -> Error(InvalidPrepared("invalid job polling interval"))
       }

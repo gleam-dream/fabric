@@ -11,6 +11,8 @@ import fabric/graph/fork
 import fabric/graph/job
 import fabric/graph/operation.{type Invocation, type Operation}
 import fabric/internal/graph/child_driver
+import fabric/internal/graph/compiled
+import fabric/internal/graph/contract
 import fabric/internal/graph/controller as control
 import fabric/internal/graph/fork_driver
 import fabric/internal/graph/record
@@ -67,8 +69,13 @@ pub type Spec(context, state, answer) {
   )
 }
 
-pub opaque type Definition(context, state, answer) {
-  Definition(
+/// A built graph. Build one with `build`.
+pub type Definition(context, state, answer) =
+  compiled.Definition(context, state, answer, Error)
+
+/// The built graph that `compile` turns into a `Definition`.
+type Graph(context, state, answer) {
+  Graph(
     entry: NodeId,
     state: Codec(state),
     answer: Codec(answer),
@@ -123,10 +130,10 @@ pub fn node(
   accept accept: fn(state, output) -> Result(Command(state, answer), String),
   destinations destinations: List(NodeId),
 ) -> Node(context, state, answer) {
-  let input = operation.input_codec(op)
-  let output = operation.output_codec(op)
-  let invoke = operation.invoker(op)
-  let fork_driver = operation.fork_driver(op)
+  let input = contract.input(op)
+  let output = contract.output(op)
+  let invoke = contract.invoker(op)
+  let fork_driver = contract.fork_driver(op)
   let check_member = case fork_driver {
     Ok(driver) -> driver.check
     Error(_) -> fn(_, _) { Error("operation has no fork members") }
@@ -161,7 +168,7 @@ pub fn node(
     operation: operation.identity(op),
     kind: operation.kind(op),
     recovery: operation.recovery(op),
-    deadline: operation.deadline(op),
+    deadline: contract.deadline(op),
     destinations:,
     prepare: fn(state) {
       use value <- result.try(
@@ -182,13 +189,13 @@ pub fn node(
     },
     check_input: fn(text) { decode_input(text) |> result.replace(Nil) },
     check_output: fn(text) { decode_output(text) |> result.replace(Nil) },
-    child: operation.child_driver(op) |> result.map_error(OperationRejected),
+    child: contract.child_driver(op) |> result.map_error(OperationRejected),
     fork: fork_driver |> result.map_error(OperationRejected),
     check_member:,
     prepare_members:,
     join_output:,
-    job: operation.job_reader(op),
-    stop_job: operation.job_canceller(op),
+    job: contract.job_reader(op),
+    stop_job: contract.job_canceller(op),
   )
 }
 
@@ -215,13 +222,15 @@ pub fn build(
       })
     }),
   )
-  Ok(Definition(
-    spec.entry,
-    spec.state,
-    spec.answer,
-    nodes,
-    control.Definition(spec.identity, manifest(spec), spec.max_activations),
-  ))
+  Ok(
+    compile(Graph(
+      spec.entry,
+      spec.state,
+      spec.answer,
+      nodes,
+      control.Definition(spec.identity, manifest(spec), spec.max_activations),
+    )),
+  )
 }
 
 fn check_identity(identity: run.DefinitionId) -> Result(Nil, BuildError) {
@@ -319,22 +328,15 @@ fn manifest(spec: Spec(context, state, answer)) -> String {
   |> json.to_string
 }
 
-@internal
-pub fn identity(
-  definition: Definition(context, state, answer),
-) -> control.Definition {
-  definition.identity
-}
-
 fn lookup(
-  definition: Definition(context, state, answer),
+  definition: Graph(context, state, answer),
   id: NodeId,
 ) -> Result(Node(context, state, answer), Error) {
   dict.get(definition.nodes, id) |> result.replace_error(NodeMissing(id))
 }
 
 fn prepare_node(
-  definition: Definition(context, state, answer),
+  definition: Graph(context, state, answer),
   id: NodeId,
   state: state,
 ) -> Result(control.Prepared, Error) {
@@ -352,7 +354,7 @@ fn prepare_node(
 }
 
 fn encode_state(
-  definition: Definition(context, state, answer),
+  definition: Graph(context, state, answer),
   state: state,
 ) -> Result(String, Error) {
   use encoded <- result.try(
@@ -363,9 +365,8 @@ fn encode_state(
   Ok(encoded)
 }
 
-@internal
-pub fn decode_state(
-  definition: Definition(context, state, answer),
+fn decode_state(
+  definition: Graph(context, state, answer),
   text: String,
 ) -> Result(state, Error) {
   codec.decode_json(definition.state, text)
@@ -374,9 +375,8 @@ pub fn decode_state(
   })
 }
 
-@internal
-pub fn decode_answer(
-  definition: Definition(context, state, answer),
+fn decode_answer(
+  definition: Graph(context, state, answer),
   text: String,
 ) -> Result(answer, Error) {
   codec.decode_json(definition.answer, text)
@@ -385,9 +385,8 @@ pub fn decode_answer(
   })
 }
 
-@internal
-pub fn prepare(
-  definition: Definition(context, state, answer),
+fn prepare(
+  definition: Graph(context, state, answer),
   initial: state,
 ) -> Result(#(String, control.Prepared), Error) {
   use encoded <- result.try(encode_state(definition, initial))
@@ -396,7 +395,7 @@ pub fn prepare(
 }
 
 fn check_prepared(
-  definition: Definition(context, state, answer),
+  definition: Graph(context, state, answer),
   prepared: control.Prepared,
 ) -> Result(Node(context, state, answer), Error) {
   let id = NodeId(prepared.node)
@@ -417,9 +416,8 @@ fn check_prepared(
 }
 
 /// Only the fenced runner calls this, after persisting the admitted start.
-@internal
-pub fn invoke(
-  definition: Definition(context, state, answer),
+fn invoke(
+  definition: Graph(context, state, answer),
   context: context,
   invocation: Invocation,
   prepared: control.Prepared,
@@ -428,9 +426,8 @@ pub fn invoke(
   node.invoke(context, invocation, prepared.input)
 }
 
-@internal
-pub fn observe_job(
-  definition: Definition(context, state, answer),
+fn observe_job(
+  definition: Graph(context, state, answer),
   context: context,
   prepared: control.Prepared,
 ) -> Result(job.Progress(String), Error) {
@@ -441,9 +438,8 @@ pub fn observe_job(
   })
 }
 
-@internal
-pub fn cancel_job(
-  definition: Definition(context, state, answer),
+fn cancel_job(
+  definition: Graph(context, state, answer),
   context: context,
   invocation: Invocation,
   prepared: control.Prepared,
@@ -453,9 +449,8 @@ pub fn cancel_job(
   |> result.map_error(OperationRejected)
 }
 
-@internal
-pub fn accept(
-  definition: Definition(context, state, answer),
+fn accept(
+  definition: Graph(context, state, answer),
   state: String,
   prepared: control.Prepared,
   output: String,
@@ -494,9 +489,8 @@ fn allowed(
 
 /// Read-only compatibility check. Never reruns selection, body or acceptance
 /// callbacks to reconstruct results or decisions already saved in a record.
-@internal
-pub fn validate(
-  definition: Definition(context, state, answer),
+fn validate(
+  definition: Graph(context, state, answer),
   saved: control.State,
 ) -> Result(Nil, Error) {
   use _ <- result.try(case saved.definition == definition.identity {
@@ -603,9 +597,8 @@ pub fn validate(
 
 /// Fork results are derived from retained member evidence. Reconciliation may
 /// retry acceptance but cannot replace those results or turn failure into success.
-@internal
-pub fn check_join(
-  definition: Definition(context, state, answer),
+fn check_join(
+  definition: Graph(context, state, answer),
   state: control.State,
   activation: control.Activation,
   output: String,
@@ -636,9 +629,8 @@ pub fn check_join(
 }
 
 /// Validate a reconciliation or cancelled result without running its route.
-@internal
-pub fn check_output(
-  definition: Definition(context, state, answer),
+fn check_output(
+  definition: Graph(context, state, answer),
   prepared: control.Prepared,
   output: String,
 ) -> Result(Nil, Error) {
@@ -646,32 +638,17 @@ pub fn check_output(
   node.check_output(output)
 }
 
-@internal
-pub fn state_codec(
-  definition: Definition(context, state, answer),
-) -> Codec(state) {
-  definition.state
-}
-
-@internal
-pub fn answer_codec(
-  definition: Definition(context, state, answer),
-) -> Codec(answer) {
-  definition.answer
-}
-
-@internal
-pub fn detach_children(
-  definition: Definition(context, state, answer),
+fn detach_children(
+  definition: Graph(context, state, answer),
 ) -> #(
-  Definition(context, state, answer),
+  Graph(context, state, answer),
   fn(control.Prepared) -> Result(child_driver.Driver, Error),
   fn(control.Prepared) -> Result(fork_driver.Driver, Error),
 ) {
   let children = dict.map_values(definition.nodes, fn(_, node) { node.child })
   let forks = dict.map_values(definition.nodes, fn(_, node) { node.fork })
   let definition =
-    Definition(
+    Graph(
       ..definition,
       nodes: dict.map_values(definition.nodes, fn(_, node) {
         Node(
@@ -691,6 +668,42 @@ pub fn detach_children(
     fn(prepared) {
       use node <- result.try(check_prepared(definition, prepared))
       dict.get(forks, node.id) |> result.unwrap(Error(NodeMissing(node.id)))
+    },
+  )
+}
+
+/// The runtime's view of `graph`: every function it calls, built over it.
+fn compile(
+  graph: Graph(context, state, answer),
+) -> Definition(context, state, answer) {
+  compiled.new(graph.identity, graph.state, graph.answer, fn() { parts(graph) })
+}
+
+fn parts(
+  graph: Graph(context, state, answer),
+) -> compiled.Parts(context, state, answer, Error) {
+  compiled.Parts(
+    decode_state: decode_state(graph, _),
+    decode_answer: decode_answer(graph, _),
+    prepare: prepare(graph, _),
+    invoke: fn(context, invocation, prepared) {
+      invoke(graph, context, invocation, prepared)
+    },
+    observe_job: fn(context, prepared) { observe_job(graph, context, prepared) },
+    cancel_job: fn(context, invocation, prepared) {
+      cancel_job(graph, context, invocation, prepared)
+    },
+    accept: fn(state, prepared, output) {
+      accept(graph, state, prepared, output)
+    },
+    validate: validate(graph, _),
+    check_join: fn(state, activation, output) {
+      check_join(graph, state, activation, output)
+    },
+    check_output: fn(prepared, output) { check_output(graph, prepared, output) },
+    detach_children: fn() {
+      let #(detached, child, fork) = detach_children(graph)
+      compiled.Detached(compile(detached), child, fork)
     },
   )
 }

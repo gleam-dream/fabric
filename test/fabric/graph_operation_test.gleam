@@ -1,5 +1,6 @@
 import fabric/graph/operation
 import fabric/graph/signal
+import fabric/internal/graph/contract
 import fabric/run
 import gleam/erlang/process
 import gleam/option.{None}
@@ -28,8 +29,8 @@ pub fn native_body_receives_the_stable_logical_identity_and_current_attempt_test
       },
       no_error,
     )
-  operation.invoke(op, calls, invocation(1), "6") |> should.equal(Ok("7"))
-  operation.invoke(op, calls, invocation(2), "6") |> should.equal(Ok("7"))
+  contract.invoker(op)(calls, invocation(1), "6") |> should.equal(Ok("7"))
+  contract.invoker(op)(calls, invocation(2), "6") |> should.equal(Ok("7"))
   let assert Ok(first) = process.receive(calls, 1000)
   let assert Ok(second) = process.receive(calls, 1000)
   first.run |> should.equal(second.run)
@@ -56,7 +57,7 @@ pub fn undecodable_input_does_not_enter_the_native_body_test() {
       no_error,
     )
   let assert Error(operation.InputDecodingFailed(_)) =
-    operation.invoke(op, Nil, invocation(1), "true")
+    contract.invoker(op)(Nil, invocation(1), "true")
   process.receive(calls, 0) |> should.equal(Error(Nil))
 }
 
@@ -77,7 +78,7 @@ pub fn unusable_output_retains_evidence_of_the_returned_value_test() {
       fn(_, _, n) { Ok(n + 1) },
       no_error,
     )
-  operation.invoke(op, Nil, invocation(1), "6")
+  contract.invoker(op)(Nil, invocation(1), "6")
   |> should.equal(Error(operation.OutputEncodingFailed("7", reason)))
 }
 
@@ -101,7 +102,7 @@ pub fn application_error_classification_preserves_uncertainty_test() {
         }
       },
     )
-  operation.invoke(op, Rejected, invocation(1), "0")
+  contract.invoker(op)(Rejected, invocation(1), "0")
   |> should.equal(
     Error(
       operation.BodyFailed(operation.DefiniteFailure(
@@ -109,7 +110,7 @@ pub fn application_error_classification_preserves_uncertainty_test() {
       )),
     ),
   )
-  operation.invoke(op, LostReceipt, invocation(1), "0")
+  contract.invoker(op)(LostReceipt, invocation(1), "0")
   |> should.equal(
     Error(
       operation.BodyFailed(operation.UncertainEffect(
@@ -126,7 +127,7 @@ pub fn signal_operations_cannot_be_executed_or_declared_replayable_test() {
       signal.new(run.DefinitionId("human", 1), codec.bool()),
     )
   operation.kind(op) |> should.equal(operation.Signal)
-  operation.invoke(op, Nil, invocation(1), "1")
+  contract.invoker(op)(Nil, invocation(1), "1")
   |> should.equal(Error(operation.NotExecutable))
   operation.with_replay(op, 2)
   |> should.equal(Error(operation.ReplayRequiresActivity))

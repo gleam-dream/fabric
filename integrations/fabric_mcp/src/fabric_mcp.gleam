@@ -3,6 +3,7 @@
 import fabric/graph/operation
 import fabric/run
 import fabric_mcp/client
+import fabric_mcp/internal/frame
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -461,8 +462,8 @@ fn restore_result(
   output: codec.Codec(output),
   convert: fn(ToolResult) -> Result(output, String),
 ) -> Result(output, String) {
-  use response <- result.try(case client.admit_frame(raw) {
-    client.Reply(_, Ok(response)) -> Ok(response)
+  use response <- result.try(case frame.admit_frame(raw) {
+    frame.Reply(_, Ok(response)) -> Ok(response)
     _ -> Error("MCP receipt requires a valid successful RPC response")
   })
   use result <- result.try(tool_result(tool, response.result))

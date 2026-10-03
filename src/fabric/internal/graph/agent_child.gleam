@@ -4,6 +4,7 @@
 import fabric/graph/child
 import fabric/internal/controller
 import fabric/internal/family
+import fabric/internal/graph/attachment
 import fabric/internal/runner
 import fabric/internal/store
 import fabric/run
@@ -16,8 +17,8 @@ pub fn check(
   parent: child.Parent,
 ) -> Result(Nil, String) {
   case
-    state.parent == Some(child.attachment(parent))
-    && state.run == child.reserved_id(parent.run, parent.activation)
+    state.parent == Some(attachment.parent(parent))
+    && state.run == attachment.reserved_id(parent.run, parent.activation)
   {
     True -> Ok(Nil)
     False -> Error("agent belongs to a different parent activation")

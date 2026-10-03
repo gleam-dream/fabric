@@ -15,6 +15,7 @@ import fabric/internal/budget/bootstrap
 import fabric/internal/budget/model as reservations
 import fabric/internal/claim
 import fabric/internal/executor
+import fabric/internal/graph/attachment
 import fabric/internal/graph/child_driver
 import fabric/internal/graph/controller as g
 import fabric/internal/graph/fork as scope
@@ -142,7 +143,7 @@ pub fn admit(
         state.run,
         state.parent,
         state.family_budget,
-        child.reserved_id(state.run, activation.id),
+        attachment.reserved_id(state.run, activation.id),
       )
       |> result.map_error(capacity_error)
     _, _ -> Ok(Nil)
@@ -936,7 +937,7 @@ fn admit_fork_members(
           runner.state.run,
           runner.state.parent,
           runner.state.family_budget,
-          child.branch_id(runner.state.run, a.id, member.member),
+          attachment.branch_id(runner.state.run, a.id, member.member),
         )
       case capacity {
         Error(error) ->
@@ -996,7 +997,7 @@ fn observe_fork_member(
     |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
   )
   let stopping = scope.snapshot(members).stop != None
-  let id = child.branch_id(runner.state.run, a.id, reference.member)
+  let id = attachment.branch_id(runner.state.run, a.id, reference.member)
   let parent = child.Branch(runner.state.run, a.id, reference.member)
   use progress <- result.try(
     bounded.call(runner.options.callback_timeout, fn() {
@@ -1069,7 +1070,7 @@ fn park_fork(
   let dependencies = case g.current_fork(state, a.id) {
     Ok(members) ->
       scope.unsettled(members)
-      |> list.map(fn(ref) { child.branch_id(state.run, a.id, ref.member) })
+      |> list.map(fn(ref) { attachment.branch_id(state.run, a.id, ref.member) })
     Error(_) -> []
   }
   store.Park(dependencies, fn() {
@@ -1095,7 +1096,7 @@ pub fn fork_has_activity(
         scope.member(members, ref) |> result.map_error(string.inspect),
       )
       use driver <- result.try(driver.member(ref.member))
-      let child = child.branch_id(state.run, a.id, ref.member)
+      let child = attachment.branch_id(state.run, a.id, ref.member)
       use _ <- result.try(
         store.get(runs, child) |> result.map_error(string.inspect),
       )
@@ -1380,7 +1381,7 @@ fn discover_fork(
             scope.member(members, ref) |> result.map_error(string.inspect),
           )
           use binding <- result.try(driver.member(ref.member))
-          let id = child.branch_id(state.run, a.id, ref.member)
+          let id = attachment.branch_id(state.run, a.id, ref.member)
           case store.get(runs, id), member.status {
             Error(backend.NotFound), fork.Reserved -> Ok(Nil)
             Error(error), _ -> Error(string.inspect(error))
@@ -1989,7 +1990,7 @@ pub fn managed_due(
               case a.prepared.kind {
                 operation.Fork(..) -> Ok(Nil)
                 _ ->
-                  store.get(runs, child.reserved_id(state.run, a.id))
+                  store.get(runs, attachment.reserved_id(state.run, a.id))
                   |> result.replace(Nil)
                   |> result.map_error(StoreFailed)
               }
@@ -2098,7 +2099,7 @@ fn settle_child(
   tries: Int,
   discover: Bool,
 ) -> Result(g.State, Error) {
-  let id = child.reserved_id(state.run, activation.id)
+  let id = attachment.reserved_id(state.run, activation.id)
   use progress <- result.try(
     bounded.call(options.callback_timeout, fn() {
       use driver <- result.try(checked_child(runs, work, activation))

@@ -1,8 +1,8 @@
 //// Checked execution topology for recovery discovery. This is independent of
 //// deployed callbacks and accepts both open and ended family attachments.
 
-import fabric/graph/child
 import fabric/internal/controller as agent
+import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
 import fabric/internal/record as agent_record
@@ -135,7 +135,7 @@ fn awaits(record: Record, child: String) -> Bool {
         | graph.StoppingChild(_, id, _) -> id == child
         graph.Ended(graph.Cancelled(a, graph.UnresolvedCancellation(_)))
         | graph.Ended(graph.Expired(a, graph.UnresolvedCancellation(_))) ->
-          child.reserved_id(state.run, a.id) == child
+          attachment.reserved_id(state.run, a.id) == child
         _ -> False
       }
   }

@@ -3,11 +3,11 @@
 //// definition is an additional check before recovery may perform effects.
 //// Encode once per write and reuse those bytes for acknowledgement recovery.
 
-import fabric/graph/child
 import fabric/graph/fork
 import fabric/graph/job
 import fabric/graph/operation
 import fabric/internal/budget/config as budget_config
+import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as g
 import fabric/internal/graph/fork as scope
 import fabric/internal/graph/fork_record
@@ -869,7 +869,6 @@ fn check_activation(activation: g.Activation) -> Result(Nil, String) {
 }
 
 /// Validate cross-field invariants before trusting a persisted control state.
-@internal
 pub fn validate(state: g.State) -> Result(Nil, String) {
   use Nil <- result.try(budget_config.validate(
     state.parent == None,
@@ -904,7 +903,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
         activation > 0
           && member > 0
           && state.run
-          == child.branch_id(run.id_to_string(parent), activation, member),
+          == attachment.branch_id(run.id_to_string(parent), activation, member),
         "branch record does not match its parent reservation",
       )
     }
@@ -914,7 +913,8 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
         run.parse_id(parent) |> result.replace_error("invalid parent run"),
       )
       require(
-        activation > 0 && state.run == child.reserved_id(parent, activation),
+        activation > 0
+          && state.run == attachment.reserved_id(parent, activation),
         "child record does not match its parent reservation",
       )
     }
@@ -978,7 +978,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
           a.prepared.kind == operation.Subgraph
           || a.prepared.kind == operation.Agent
         }
-          && id == child.reserved_id(state.run, a.id),
+          && id == attachment.reserved_id(state.run, a.id),
         "invalid child reservation",
       ))
       pending(state, count, last, a)
@@ -986,7 +986,8 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
     g.StoppingChild(a, id, cause) -> {
       use _ <- result.try(check_armed_wait(a))
       use _ <- result.try(require(
-        is_child(a.prepared.kind) && id == child.reserved_id(state.run, a.id),
+        is_child(a.prepared.kind)
+          && id == attachment.reserved_id(state.run, a.id),
         "invalid stopped child reservation",
       ))
       use _ <- result.try(check_stop_reason(a, cause))
@@ -1187,7 +1188,7 @@ pub fn validate(state: g.State) -> Result(Nil, String) {
               a.prepared.kind == operation.Subgraph
               || a.prepared.kind == operation.Agent
             }
-              && id == child.reserved_id(state.run, a.id),
+              && id == attachment.reserved_id(state.run, a.id),
             "cancellation does not identify its child",
           )
         }
@@ -1296,7 +1297,8 @@ fn check_expired(
     }
     g.AfterChild(id) -> {
       use _ <- result.try(require(
-        is_child(a.prepared.kind) && id == child.reserved_id(state.run, a.id),
+        is_child(a.prepared.kind)
+          && id == attachment.reserved_id(state.run, a.id),
         "expiration does not identify its child",
       ))
       pending(state, count, last, a)

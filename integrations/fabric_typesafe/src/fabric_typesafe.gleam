@@ -3,6 +3,7 @@
 import fabric/graph/operation
 import fabric/run
 import fabric_typesafe/client
+import fabric_typesafe/internal/batch
 import fabric_typesafe/internal/wire
 import fabric_typesafe/question
 import gleam/int
@@ -136,7 +137,7 @@ pub fn receipt_codec(
     },
     schema: None,
     placeholder: Receipt(
-      question.placeholder(questions),
+      batch.placeholder(questions),
       "",
       "",
       Usage(0, 0),

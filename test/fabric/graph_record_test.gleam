@@ -1,6 +1,6 @@
-import fabric/graph/child
 import fabric/graph/job
 import fabric/graph/operation
+import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record
 import fabric/internal/store as store_core
@@ -364,7 +364,7 @@ pub fn waiting_children_keep_their_reserved_identity_and_roundtrip_test() {
       ..a,
       prepared: graph.Prepared(..a.prepared, kind: operation.Subgraph),
     )
-  let id = child.reserved_id(state.run, a.id)
+  let id = attachment.reserved_id(state.run, a.id)
   let waiting = graph.State(..state, phase: graph.WaitingChild(a, id))
   record.decode(encoded(waiting)) |> should.equal(Ok(waiting))
   record.encode(

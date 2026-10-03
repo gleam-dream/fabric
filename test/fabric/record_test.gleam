@@ -1,7 +1,7 @@
 //// The versioned run record codec.
 
-import fabric/graph/child
 import fabric/internal/controller.{type State}
+import fabric/internal/graph/attachment
 import fabric/internal/record
 import fabric/internal/registry
 import fabric/model.{ToolCall}
@@ -168,7 +168,7 @@ pub fn a_graph_parent_is_retained_and_refused_by_legacy_writers_test() {
   let state =
     controller.State(
       ..base(),
-      run: child.reserved_id(support.text(parent), 3),
+      run: attachment.reserved_id(support.text(parent), 3),
       parent: Some(run.GraphParent(parent, 3)),
       history: [],
     )
