@@ -1,6 +1,5 @@
 //// J11–J13: storage owns due observation; claims survive process loss.
 
-import fabric
 import fabric/budget
 import fabric/graph
 import fabric/graph/definition
@@ -14,6 +13,7 @@ import fabric/support
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
+import fabric/sweeper
 import fabric/telemetry as o
 import gleam/erlang/process
 import gleam/result
@@ -57,16 +57,15 @@ fn scan(runs, build) {
   let events = process.new_subject()
   let attachment =
     sinal.observe(o.sweep(), fn(summary, _) { process.send(events, summary) })
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(started) =
+    sweeper.start(
       runs,
-      [graph.recovery(run.DefinitionId("scheduled-flow", 1), build)],
+      [sweeper.graph(run.DefinitionId("scheduled-flow", 1), build)],
       every: duration.milliseconds(60_000),
     )
-  let assert Ok(started) = spec.start()
   let assert Ok(summary) = process.receive(events, 5000)
-  process.unlink(started.pid)
-  restart.kill(started.pid)
+  process.unlink(started)
+  restart.kill(started)
   let _ = sinal.detach(attachment)
   summary
 }
@@ -345,16 +344,15 @@ pub fn losing_a_scan_releases_its_local_observation_without_releasing_the_claim_
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(_) = waiting.status
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(started) =
+    sweeper.start(
       runs,
-      [graph.recovery(run.DefinitionId("scheduled-flow", 1), build)],
+      [sweeper.graph(run.DefinitionId("scheduled-flow", 1), build)],
       every: duration.milliseconds(60_000),
     )
-  let assert Ok(started) = spec.start()
   let _ = probe.arrival(calls)
-  process.unlink(started.pid)
-  restart.kill(started.pid)
+  process.unlink(started)
+  restart.kill(started)
   let assert backend.Held(_, True) = nodes.holder(memory.backend, id)
   let finish = fn(runs) {
     runtime(runs, 60_000, fn(_) { Ok(job.Completed(42)) })

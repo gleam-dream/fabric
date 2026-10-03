@@ -1,6 +1,5 @@
 //// D9–D13: a real service retains the effects of deadline-triggered cleanup.
 
-import fabric
 import fabric/budget
 import fabric/graph
 import fabric/graph/job
@@ -8,6 +7,7 @@ import fabric/graph/operation
 import fabric/run
 import fabric/store
 import fabric/store/conformance
+import fabric/sweeper
 import fabric_jobs_demo as demo
 import fabric_jobs_demo/client
 import fabric_jobs_demo/support
@@ -44,16 +44,15 @@ fn stop(_, receipt) {
 }
 
 fn settle(runs, build, id) {
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(started) =
+    sweeper.start(
       runs,
-      [graph.recovery(run.DefinitionId("artifact-submit-and-wait", 1), build)],
+      [sweeper.graph(run.DefinitionId("artifact-submit-and-wait", 1), build)],
       every: duration.milliseconds(20),
     )
-  let assert Ok(started) = spec.start()
   let done = await_expired(graph.attach(build(runs), id), 200)
-  process.unlink(started.pid)
-  process.kill(started.pid)
+  process.unlink(started)
+  process.kill(started)
   done
 }
 

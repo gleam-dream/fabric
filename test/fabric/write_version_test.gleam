@@ -12,6 +12,7 @@ import fabric/support
 import fabric/support/probe
 import fabric/support/scripted
 import fabric/support/v2/record as old_record
+import fabric/sweeper
 import fabric/testing
 import gleam/erlang/process
 import gleam/list
@@ -264,13 +265,12 @@ pub fn automatic_crash_recovery_and_reconciliation_keep_version_2_test() {
   let assert backend.Held(owner, True) = row.holder
   let assert Ok(_) =
     memory.backend.renew(owner, [run.id_to_string(fabric.id(started))], 0)
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(sweeper_pid) =
+    sweeper.start(
       b,
-      [fabric.recovery(agent, fn(_) { Nil })],
+      [sweeper.agent(agent, fn(_) { Nil })],
       every: duration.milliseconds(10),
     )
-  let assert Ok(sweeper) = spec.start()
   let assert Ok(opened) = fabric.open(b, agent, Nil, fabric.id(started))
   let uncertain = await_uncertain(opened, 200)
   writes(memory.backend, fabric.id(opened), 2)
@@ -279,8 +279,8 @@ pub fn automatic_crash_recovery_and_reconciliation_keep_version_2_test() {
   |> should.equal(Ok(run.Finished(run.Completed("final: \"work\""))))
   writes(memory.backend, fabric.id(opened), 2)
   probe.count(body, "start:work") |> should.equal(1)
-  process.unlink(sweeper.pid)
-  restart.kill(sweeper.pid)
+  process.unlink(sweeper_pid)
+  restart.kill(sweeper_pid)
 }
 
 fn await_uncertain(run, tries) {

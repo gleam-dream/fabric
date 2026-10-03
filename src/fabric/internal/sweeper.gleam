@@ -21,13 +21,13 @@ import gleam/otp/supervision
 import gleam/result
 import sinal
 
-pub opaque type Recovery {
-  Recovery(key: record.Key, restore: fn(Store, String) -> Result(Nil, Nil))
+pub opaque type Root {
+  Root(key: record.Key, restore: fn(Store, String) -> Result(Nil, Nil))
 }
 
-pub fn recovery(agent: Agent(c), context: fn(RunId) -> c) -> Recovery {
+pub fn agent_root(agent: Agent(c), context: fn(RunId) -> c) -> Root {
   let admitted = checked_agent.admitted(agent)
-  Recovery(record.Key(record.Agent, admitted.identity), fn(store, root) {
+  Root(record.Key(record.Agent, admitted.identity), fn(store, root) {
     use context <- result.try(
       bounded.call(5000, fn() { context(run_id.from_string(root)) })
       |> result.map_error(fn(_) { Nil }),
@@ -37,17 +37,17 @@ pub fn recovery(agent: Agent(c), context: fn(RunId) -> c) -> Recovery {
   })
 }
 
-pub fn graph_recovery(
+pub fn graph_root(
   identity: DefinitionId,
   restore: fn(Store, String) -> Result(Nil, Nil),
-) -> Recovery {
-  Recovery(record.Key(record.Graph, identity), restore)
+) -> Root {
+  Root(record.Key(record.Graph, identity), restore)
 }
 
 pub type ConfigError {
   EveryNotPositive(Int)
   EveryTooLarge(Int)
-  DuplicateRecovery(DefinitionId)
+  DuplicateRoot(DefinitionId)
   StoreNotLeased
 }
 
@@ -57,7 +57,7 @@ const batch_size = 100
 
 pub fn new(
   store: Store,
-  recoveries: List(Recovery),
+  roots: List(Root),
   every: Int,
 ) -> Result(supervision.ChildSpecification(Nil), List(ConfigError)) {
   let errors = case every {
@@ -70,9 +70,9 @@ pub fn new(
     Some(_) -> errors
   }
   let #(indexed, errors) =
-    list.fold(recoveries, #(dict.new(), errors), fn(acc, recovery) {
+    list.fold(roots, #(dict.new(), errors), fn(acc, recovery) {
       case dict.has_key(acc.0, recovery.key) {
-        True -> #(acc.0, [DuplicateRecovery(recovery.key.identity), ..acc.1])
+        True -> #(acc.0, [DuplicateRoot(recovery.key.identity), ..acc.1])
         False -> #(dict.insert(acc.0, recovery.key, recovery), acc.1)
       }
     })
@@ -99,7 +99,7 @@ type Loop {
 
 fn start(
   store: Store,
-  recoveries: Dict(record.Key, Recovery),
+  roots: Dict(record.Key, Root),
   every: Int,
 ) -> actor.StartResult(Nil) {
   actor.new_with_initialiser(5000, fn(self) {
@@ -132,7 +132,7 @@ fn start(
       Tick if state.busy == None -> {
         let worker =
           process.spawn(fn() {
-            let summary = scan(state.store, recoveries)
+            let summary = scan(state.store, roots)
             // Contain synchronous handlers too; they cannot accumulate
             // an unbounded number of blocked emitters across scans.
             let _ =
@@ -160,7 +160,7 @@ fn empty() -> o.Sweep {
   o.Sweep(claimed: 0, recovered: 0, unmatched: 0, failed: 0)
 }
 
-fn scan(store: Store, recoveries: Dict(record.Key, Recovery)) -> o.Sweep {
+fn scan(store: Store, registered: Dict(record.Key, Root)) -> o.Sweep {
   // Reserve half the batch for each source so neither a stream of expired
   // runners nor changing dependencies can starve the other.
   let expired = store.claim_expired(store, batch_size / 2)
@@ -184,7 +184,7 @@ fn scan(store: Store, recoveries: Dict(record.Key, Recovery)) -> o.Sweep {
     o.Sweep(..empty(), claimed: list.length(ids), failed: failures),
     fn(summary, key, candidates) {
       let #(root, identity) = key
-      case dict.get(recoveries, identity) {
+      case dict.get(registered, identity) {
         Error(_) -> o.Sweep(..summary, unmatched: summary.unmatched + 1)
         Ok(recovery) -> {
           let before =

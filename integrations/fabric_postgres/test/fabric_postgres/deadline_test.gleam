@@ -1,6 +1,5 @@
 //// D4–D8: the real database discovers overdue signals after process loss.
 
-import fabric
 import fabric/graph
 import fabric/graph/definition
 import fabric/graph/operation
@@ -10,6 +9,7 @@ import fabric/policy
 import fabric/run
 import fabric/store
 import fabric/store/backend
+import fabric/sweeper
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -82,16 +82,15 @@ pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
   let assert Ok(runs) =
     fabric_postgres.store(process.new_name("deadline-restored"), settings)
   let assert Ok(Nil) = store.start(runs)
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(started) =
+    sweeper.start(
       runs,
-      [graph.recovery(run.DefinitionId("pg-deadline", 1), runtime)],
+      [sweeper.graph(run.DefinitionId("pg-deadline", 1), runtime)],
       every: duration.milliseconds(60_000),
     )
-  let assert Ok(started) = spec.start()
   let expired = await_expired(graph.attach(runtime(runs), id), 300)
-  process.unlink(started.pid)
-  agents.kill(started.pid)
+  process.unlink(started)
+  agents.kill(started)
   expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
   expired.receipts |> should.equal([])
   let assert Ok(row) = backend.get(run.id_to_string(id))

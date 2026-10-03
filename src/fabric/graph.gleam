@@ -28,10 +28,10 @@ import fabric/internal/graph/live
 import fabric/internal/graph/managed
 import fabric/internal/graph/record
 import fabric/internal/graph/runner
+import fabric/internal/graph/runtime as graph_runtime
 import fabric/internal/graph/signal as signal_contract
 import fabric/internal/run_id
 import fabric/internal/store as store_core
-import fabric/internal/sweeper
 import fabric/policy
 import fabric/run
 import fabric/store
@@ -60,47 +60,15 @@ pub type Action {
 pub type Policy(context) =
   fn(context, Action) -> Result(policy.Decision, String)
 
-pub opaque type Runtime(context, state, answer) {
-  Runtime(
-    definition: definition.Definition(context, state, answer),
-    store: store.Store,
-    work: live.Work,
-    options: runner.Options,
-  )
-}
+/// A graph definition bound to its store, context and policy. Build one
+/// with `new`.
+pub type Runtime(context, state, answer) =
+  graph_runtime.Runtime(context, state, answer)
 
 /// A handle on one graph run, for the runtime it was started or opened
 /// with. It holds no process.
 pub type Handle(context, state, answer) =
   graph_handle.Handle(Runtime(context, state, answer))
-
-/// Register a root graph for `fabric.sweeper`. The bounded factory rebuilds
-/// its complete runtime and children against the supplied pinned store.
-/// Registration discovers expired leases and changed idle dependencies,
-/// including waits whose local wakeup was lost.
-pub fn recovery(
-  identity: run.DefinitionId,
-  build: fn(store.Store) -> Runtime(context, state, answer),
-) -> sweeper.Recovery {
-  sweeper.graph_recovery(identity, fn(runs, id) {
-    use runtime <- result.try(
-      bounded.call(5000, fn() { build(runs) }) |> result.replace_error(Nil),
-    )
-    use Nil <- result.try(
-      case
-        compiled.identity(runtime.definition).identity == identity,
-        store_core.pid(runtime.store),
-        store_core.pid(runs)
-      {
-        True, Ok(actual), Ok(expected) if actual == expected -> Ok(Nil)
-        _, _, _ -> Error(Nil)
-      },
-    )
-    runner.discover(runs, runtime.work, runtime.options, id, 3)
-    |> result.replace(Nil)
-    |> result.replace_error(Nil)
-  })
-}
 
 pub type ApprovalRef {
   ApprovalRef(
@@ -297,7 +265,7 @@ pub fn new(
       child: fn(activation) { child(activation.prepared) },
       fork: fn(activation) { fork(activation.prepared) },
     )
-  Runtime(definition, store, work, runner.Options(1000, 60_000, 1000))
+  graph_runtime.new(definition, store, work, runner.Options(1000, 60_000, 1000))
 }
 
 /// Sets the runtime's three bounds (defaults: 1 s, 60 s and 1 s):
@@ -335,16 +303,17 @@ pub fn with_timeouts(
     }),
   )
   let assert [callbacks, operations, commands] = values
-  Ok(
-    Runtime(..runtime, options: runner.Options(callbacks, operations, commands)),
-  )
+  Ok(graph_runtime.with_options(
+    runtime,
+    runner.Options(callbacks, operations, commands),
+  ))
 }
 
 pub fn attach(
   runtime: Runtime(context, state, answer),
   id: run.RunId,
 ) -> Handle(context, state, answer) {
-  graph_handle.new(runtime, id, runtime.store)
+  graph_handle.new(runtime, id, graph_runtime.store(runtime))
 }
 
 pub fn id(handle: Handle(context, state, answer)) -> run.RunId {
@@ -357,11 +326,11 @@ pub fn id(handle: Handle(context, state, answer)) -> run.RunId {
 pub fn as_subgraph(
   runtime: Runtime(child_context, child_state, child_answer),
 ) -> operation.Operation(parent_context, child_state, child_answer) {
-  let runs = runtime.store
+  let runs = graph_runtime.store(runtime)
   managed.subgraph(
-    compiled.identity(runtime.definition).identity,
-    compiled.state_codec(runtime.definition),
-    compiled.answer_codec(runtime.definition),
+    compiled.identity(graph_runtime.definition(runtime)).identity,
+    compiled.state_codec(graph_runtime.definition(runtime)),
+    compiled.answer_codec(graph_runtime.definition(runtime)),
     child_driver.Driver(
       store: fn() { store_core.pid(runs) },
       reserve: fn(parent, id, input, reservation) {
@@ -389,11 +358,11 @@ pub fn both(
   ),
   Error,
 ) {
-  let left_input = compiled.state_codec(left.definition)
-  let right_input = compiled.state_codec(right.definition)
+  let left_input = compiled.state_codec(graph_runtime.definition(left))
+  let right_input = compiled.state_codec(graph_runtime.definition(right))
   let input = codec.pair(left_input, right_input)
-  let left_output = compiled.answer_codec(left.definition)
-  let right_output = compiled.answer_codec(right.definition)
+  let left_output = compiled.answer_codec(graph_runtime.definition(left))
+  let right_output = compiled.answer_codec(graph_runtime.definition(right))
   let output = fork.result_codec(codec.pair(left_output, right_output))
   use left_driver <- result.try(
     contract.child_driver(as_subgraph(left))
@@ -403,10 +372,10 @@ pub fn both(
     contract.child_driver(as_subgraph(right))
     |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
   )
-  let left_definition = compiled.identity(left.definition)
-  let right_definition = compiled.identity(right.definition)
-  let left_store = left.store
-  let right_store = right.store
+  let left_definition = compiled.identity(graph_runtime.definition(left))
+  let right_definition = compiled.identity(graph_runtime.definition(right))
+  let left_store = graph_runtime.store(left)
+  let right_store = graph_runtime.store(right)
   let driver =
     fork_driver.Driver(
       stores: fn() { [store_core.pid(left_store), store_core.pid(right_store)] },
@@ -493,16 +462,16 @@ pub fn map(
         "map requires positive membership and concurrency bounds",
       ))
   })
-  let child_input = compiled.state_codec(child.definition)
-  let child_output = compiled.answer_codec(child.definition)
+  let child_input = compiled.state_codec(graph_runtime.definition(child))
+  let child_output = compiled.answer_codec(graph_runtime.definition(child))
   let input = codec.list(child_input)
   let output = fork.result_codec(codec.list(child_output))
   use binding <- result.try(
     contract.child_driver(as_subgraph(child))
     |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
   )
-  let child_definition = compiled.identity(child.definition)
-  let runs = child.store
+  let child_definition = compiled.identity(graph_runtime.definition(child))
+  let runs = graph_runtime.store(child)
   let driver =
     fork_driver.Driver(
       stores: fn() { [store_core.pid(runs)] },
@@ -617,8 +586,8 @@ fn attached_child(
 ) -> Result(Handle(child_context, child_state, child_answer), Error) {
   use _ <- result.try(
     case
-      store_core.pid(graph_handle.runtime(parent).store),
-      store_core.pid(runtime.store)
+      store_core.pid(graph_runtime.store(graph_handle.runtime(parent))),
+      store_core.pid(graph_runtime.store(runtime))
     {
       Ok(parent_store), Ok(child_store) if parent_store == child_store -> Ok(Nil)
       _, _ ->
@@ -626,7 +595,12 @@ fn attached_child(
     },
   )
   use #(_, state) <- result.try(
-    runner.load(runtime.store, runtime.work, runtime.options, id)
+    runner.load(
+      graph_runtime.store(runtime),
+      graph_runtime.work(runtime),
+      graph_runtime.options(runtime),
+      id,
+    )
     |> result.map_error(from_runner),
   )
   use _ <- result.try(check_attachment(state, link))
@@ -652,7 +626,7 @@ fn reserved_child(
   reservation: child_driver.Reservation,
   tries: Int,
 ) -> Result(Nil, Error) {
-  case runner.load_raw(runtime.store, id) {
+  case runner.load_raw(graph_runtime.store(runtime), id) {
     Ok(#(_, state)) -> {
       use _ <- result.try(check_attachment(state, parent))
       use _ <- result.try(case state.initial == input {
@@ -666,17 +640,35 @@ fn reserved_child(
         | child_driver.Cancel, control.WaitingFork(_, control.ClosingFork(_))
         ->
           // Intent already committed: follow cleanup without restarting waits.
-          runner.discover(runtime.store, runtime.work, runtime.options, id, 3)
+          runner.discover(
+            graph_runtime.store(runtime),
+            graph_runtime.work(runtime),
+            graph_runtime.options(runtime),
+            id,
+            3,
+          )
           |> result.replace(Nil)
           |> result.map_error(from_runner)
         child_driver.Cancel, _ ->
-          runner.cancel(runtime.store, runtime.work, runtime.options, id, 3)
+          runner.cancel(
+            graph_runtime.store(runtime),
+            graph_runtime.work(runtime),
+            graph_runtime.options(runtime),
+            id,
+            3,
+          )
           |> result.replace(Nil)
           |> result.map_error(from_runner)
         child_driver.Discover, _ | child_driver.Start, _ ->
           // An acknowledged child may be idle inside a nested fork. Inspect
           // it without resetting unchanged waits on every parent observation.
-          runner.discover(runtime.store, runtime.work, runtime.options, id, 3)
+          runner.discover(
+            graph_runtime.store(runtime),
+            graph_runtime.work(runtime),
+            graph_runtime.options(runtime),
+            id,
+            3,
+          )
           |> result.replace(Nil)
           |> result.map_error(from_runner)
       }
@@ -686,15 +678,20 @@ fn reserved_child(
     -> Error(from_runner(runner.StoreFailed(backend.NotFound)))
     Error(runner.StoreFailed(backend.NotFound)) -> {
       use initial <- result.try(
-        compiled.decode_state(runtime.definition, input)
+        compiled.decode_state(graph_runtime.definition(runtime), input)
         |> result.map_error(DefinitionRejected),
       )
       use #(value, entry) <- result.try(
-        compiled.prepare(runtime.definition, initial)
+        compiled.prepare(graph_runtime.definition(runtime), initial)
         |> result.map_error(DefinitionRejected),
       )
       use #(state, effects) <- result.try(
-        control.start(id, compiled.identity(runtime.definition), value, entry)
+        control.start(
+          id,
+          compiled.identity(graph_runtime.definition(runtime)),
+          value,
+          entry,
+        )
         |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
       )
       let state =
@@ -708,7 +705,7 @@ fn reserved_child(
             })
           False -> {
             use _ <- result.map(
-              runner.check_ancestry(runtime.store, state)
+              runner.check_ancestry(graph_runtime.store(runtime), state)
               |> result.map_error(from_runner),
             )
             #(state, effects)
@@ -717,9 +714,9 @@ fn reserved_child(
       )
       case
         runner.launch(
-          runtime.store,
-          runtime.work,
-          runtime.options,
+          graph_runtime.store(runtime),
+          graph_runtime.work(runtime),
+          graph_runtime.options(runtime),
           None,
           state,
           effects,
@@ -868,11 +865,13 @@ pub fn start_with_budget(
     reservations.new(limits)
     |> result.replace_error(CommandRefused("invalid family budget limits")),
   )
-  use Nil <- result.try(case store_core.supports_family_budget(runtime.store) {
-    True -> Ok(Nil)
-    False ->
-      Error(CommandRefused("family budgets require agent record writer 7"))
-  })
+  use Nil <- result.try(
+    case store_core.supports_family_budget(graph_runtime.store(runtime)) {
+      True -> Ok(Nil)
+      False ->
+        Error(CommandRefused("family budgets require agent record writer 7"))
+    },
+  )
   start_root(
     runtime,
     id,
@@ -888,8 +887,8 @@ fn start_root(
   declaration: option.Option(reservations.Declaration),
 ) -> Result(Handle(context, state, answer), Error) {
   use prepared <- result.try(
-    bounded.call(runtime.options.callback_timeout, fn() {
-      compiled.prepare(runtime.definition, initial)
+    bounded.call(graph_runtime.options(runtime).callback_timeout, fn() {
+      compiled.prepare(graph_runtime.definition(runtime), initial)
     })
     |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
   )
@@ -899,7 +898,7 @@ fn start_root(
   use #(state, effects) <- result.try(
     control.start(
       run.id_to_string(id),
-      compiled.identity(runtime.definition),
+      compiled.identity(graph_runtime.definition(runtime)),
       value,
       prepared,
     )
@@ -908,9 +907,9 @@ fn start_root(
   let state = control.State(..state, family_budget: declaration)
   use _ <- result.try(
     runner.launch(
-      runtime.store,
-      runtime.work,
-      runtime.options,
+      graph_runtime.store(runtime),
+      graph_runtime.work(runtime),
+      graph_runtime.options(runtime),
       None,
       state,
       effects,
@@ -919,7 +918,7 @@ fn start_root(
     )
     |> result.map_error(from_runner),
   )
-  Ok(graph_handle.new(runtime, id, runtime.store))
+  Ok(graph_handle.new(runtime, id, graph_runtime.store(runtime)))
 }
 
 pub fn read(
@@ -928,15 +927,15 @@ pub fn read(
   let runtime = graph_handle.runtime(handle)
   use #(entry, state) <- result.try(
     runner.load(
-      runtime.store,
-      runtime.work,
-      runtime.options,
+      graph_runtime.store(runtime),
+      graph_runtime.work(runtime),
+      graph_runtime.options(runtime),
       run.id_to_string(graph_handle.id(handle)),
     )
     |> result.map_error(from_runner),
   )
   use view <- result.try(
-    bounded.call(runtime.options.callback_timeout, fn() {
+    bounded.call(graph_runtime.options(runtime).callback_timeout, fn() {
       snapshot(runtime, entry, state)
     })
     |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
@@ -956,11 +955,19 @@ pub fn await(
   let watcher = process.new_subject()
   let id = run.id_to_string(graph_handle.id(handle))
   use _ <- result.try(
-    store_core.watch(graph_handle.runtime(handle).store, id, watcher)
+    store_core.watch(
+      graph_runtime.store(graph_handle.runtime(handle)),
+      id,
+      watcher,
+    )
     |> result.map_error(StoreFailed),
   )
   let outcome = attend(handle, watcher, now() + within)
-  store_core.unwatch(graph_handle.runtime(handle).store, id, watcher)
+  store_core.unwatch(
+    graph_runtime.store(graph_handle.runtime(handle)),
+    id,
+    watcher,
+  )
   outcome
 }
 
@@ -1005,9 +1012,9 @@ pub fn recover(
   let runtime = graph_handle.runtime(handle)
   use _ <- result.try(
     runner.recover(
-      runtime.store,
-      runtime.work,
-      runtime.options,
+      graph_runtime.store(runtime),
+      graph_runtime.work(runtime),
+      graph_runtime.options(runtime),
       run.id_to_string(graph_handle.id(handle)),
       3,
     )
@@ -1032,9 +1039,9 @@ pub fn poll_job(
   let runtime = graph_handle.runtime(handle)
   use _ <- result.try(
     runner.observe_job(
-      runtime.store,
-      runtime.work,
-      runtime.options,
+      graph_runtime.store(runtime),
+      graph_runtime.work(runtime),
+      graph_runtime.options(runtime),
       reference,
       3,
     )
@@ -1052,9 +1059,9 @@ pub fn poll_job(
 pub fn cancel(handle: Handle(context, state, answer)) -> Result(Nil, Error) {
   let runtime = graph_handle.runtime(handle)
   runner.cancel(
-    runtime.store,
-    runtime.work,
-    runtime.options,
+    graph_runtime.store(runtime),
+    graph_runtime.work(runtime),
+    graph_runtime.options(runtime),
     run.id_to_string(graph_handle.id(handle)),
     3,
   )
@@ -1094,9 +1101,10 @@ pub fn deliver(
       Error(CommandRefused("signal contract does not match the reference"))
   })
   use encoded <- result.try(
-    bounded.call(graph_handle.runtime(handle).options.callback_timeout, fn() {
-      signal_contract.encode(contract, value)
-    })
+    bounded.call(
+      graph_runtime.options(graph_handle.runtime(handle)).callback_timeout,
+      fn() { signal_contract.encode(contract, value) },
+    )
     |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
   )
   use encoded <- result.try(encoded |> result.map_error(SignalEncodingFailed))
@@ -1138,9 +1146,9 @@ fn deliver_with(
   let runtime = graph_handle.runtime(handle)
   use #(entry, state) <- result.try(
     runner.load(
-      runtime.store,
-      runtime.work,
-      runtime.options,
+      graph_runtime.store(runtime),
+      graph_runtime.work(runtime),
+      graph_runtime.options(runtime),
       run.id_to_string(graph_handle.id(handle)),
     )
     |> result.map_error(from_runner),
@@ -1162,7 +1170,7 @@ fn deliver_with(
       }
     Error(Nil) -> {
       use _ <- result.try(
-        runner.check_ancestry(runtime.store, state)
+        runner.check_ancestry(graph_runtime.store(runtime), state)
         |> result.map_error(from_runner),
       )
       use activation <- result.try(case state.phase {
@@ -1174,7 +1182,7 @@ fn deliver_with(
         _ -> Error(CommandRefused("no signal is awaited"))
       })
       use due <- result.try(
-        runner.wait_due(runtime.store, activation)
+        runner.wait_due(graph_runtime.store(runtime), activation)
         |> result.map_error(from_runner),
       )
       use event <- result.try(case due {
@@ -1188,9 +1196,9 @@ fn deliver_with(
       )
       case
         runner.launch(
-          runtime.store,
-          runtime.work,
-          runtime.options,
+          graph_runtime.store(runtime),
+          graph_runtime.work(runtime),
+          graph_runtime.options(runtime),
           Some(entry.revision),
           next,
           effects,
@@ -1214,14 +1222,14 @@ fn signal_event(
   output: String,
 ) -> Result(control.Event, Error) {
   use accepted <- result.try(
-    bounded.call(runtime.options.callback_timeout, fn() {
-      runtime.work.accept(state, activation, output)
+    bounded.call(graph_runtime.options(runtime).callback_timeout, fn() {
+      graph_runtime.work(runtime).accept(state, activation, output)
     })
     |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
   )
   use decision <- result.try(accepted |> result.map_error(DefinitionRejected))
   use due <- result.map(
-    runner.wait_due(runtime.store, activation)
+    runner.wait_due(graph_runtime.store(runtime), activation)
     |> result.map_error(from_runner),
   )
   case due {
@@ -1251,7 +1259,12 @@ fn answer_approval(
     False -> Error(CommandRefused("approval belongs to another run"))
   })
   use #(entry, state) <- result.try(
-    runner.load(runtime.store, runtime.work, runtime.options, id)
+    runner.load(
+      graph_runtime.store(runtime),
+      graph_runtime.work(runtime),
+      graph_runtime.options(runtime),
+      id,
+    )
     |> result.map_error(from_runner),
   )
   use activation <- result.try(case state.phase {
@@ -1260,16 +1273,17 @@ fn answer_approval(
     _ -> Error(CommandRefused("approval is not current"))
   })
   use _ <- result.try(
-    runner.check_ancestry(runtime.store, state) |> result.map_error(from_runner),
+    runner.check_ancestry(graph_runtime.store(runtime), state)
+    |> result.map_error(from_runner),
   )
   use #(event, body) <- result.try(case rejection {
     Some(reason) -> Ok(#(control.Rejected(reference, reason), None))
     None ->
       case
         runner.admit(
-          runtime.store,
-          runtime.work,
-          runtime.options,
+          graph_runtime.store(runtime),
+          graph_runtime.work(runtime),
+          graph_runtime.options(runtime),
           state,
           activation,
         )
@@ -1293,9 +1307,9 @@ fn answer_approval(
   )
   case
     runner.launch(
-      runtime.store,
-      runtime.work,
-      runtime.options,
+      graph_runtime.store(runtime),
+      graph_runtime.work(runtime),
+      graph_runtime.options(runtime),
       Some(entry.revision),
       next,
       effects,
@@ -1334,7 +1348,12 @@ fn reconcile_with(
     False -> Error(CommandRefused("reconciliation belongs to another run"))
   })
   use #(entry, state) <- result.try(
-    runner.load(runtime.store, runtime.work, runtime.options, id)
+    runner.load(
+      graph_runtime.store(runtime),
+      graph_runtime.work(runtime),
+      graph_runtime.options(runtime),
+      id,
+    )
     |> result.map_error(from_runner),
   )
   use #(activation, cancelled) <- result.try(case state.phase {
@@ -1362,7 +1381,7 @@ fn reconcile_with(
   use _ <- result.try(case cancelled {
     True -> Ok(Nil)
     False ->
-      runner.check_ancestry(runtime.store, state)
+      runner.check_ancestry(graph_runtime.store(runtime), state)
       |> result.map_error(from_runner)
   })
   use _ <- result.try(
@@ -1378,7 +1397,7 @@ fn reconcile_with(
     case cancelled {
       True -> Ok(None)
       False ->
-        runner.managed_due(runtime.store, state)
+        runner.managed_due(graph_runtime.store(runtime), state)
         |> result.map(fn(due) { option.map(due, fn(entry) { entry.1 }) })
         |> result.map_error(from_runner)
     }
@@ -1389,17 +1408,20 @@ fn reconcile_with(
       Ok(control.ExpireWait(control.reference(state, activation), now))
     None -> {
       let accepted =
-        bounded.call(runtime.options.callback_timeout, fn() {
+        bounded.call(graph_runtime.options(runtime).callback_timeout, fn() {
           case cancelled {
             True -> {
-              use _ <- result.map(runtime.work.check_output(activation, output))
+              use _ <- result.map(graph_runtime.work(runtime).check_output(
+                activation,
+                output,
+              ))
               control.CancelledResult(
                 control.reference(state, activation),
                 output,
               )
             }
             False -> {
-              use decision <- result.map(runtime.work.accept(
+              use decision <- result.map(graph_runtime.work(runtime).accept(
                 state,
                 activation,
                 output,
@@ -1431,9 +1453,9 @@ fn reconcile_with(
   )
   case
     runner.launch(
-      runtime.store,
-      runtime.work,
-      runtime.options,
+      graph_runtime.store(runtime),
+      graph_runtime.work(runtime),
+      graph_runtime.options(runtime),
       Some(entry.revision),
       next,
       effects,
@@ -1453,7 +1475,7 @@ fn snapshot(
   entry: store_core.Entry,
   state: control.State,
 ) -> Result(Snapshot(state, answer), Error) {
-  let definition = runtime.definition
+  let definition = graph_runtime.definition(runtime)
   use value <- result.try(
     compiled.decode_state(definition, state.value)
     |> result.map_error(DefinitionRejected),
@@ -1461,7 +1483,12 @@ fn snapshot(
   use status <- result.try(case state.phase {
     control.WaitingFork(a, mode) -> {
       use active <- result.try(
-        runner.fork_has_activity(runtime.store, runtime.work, state, a)
+        runner.fork_has_activity(
+          graph_runtime.store(runtime),
+          graph_runtime.work(runtime),
+          state,
+          a,
+        )
         |> result.map_error(CallbackFailed),
       )
       use saved <- result.try(
@@ -1488,7 +1515,11 @@ fn snapshot(
       ))
     control.WaitingChild(a, id) -> {
       use driver <- result.try(
-        runner.checked_child(runtime.store, runtime.work, a)
+        runner.checked_child(
+          graph_runtime.store(runtime),
+          graph_runtime.work(runtime),
+          a,
+        )
         |> result.map_error(CallbackFailed),
       )
       use progress <- result.try(
@@ -1522,7 +1553,11 @@ fn snapshot(
         False -> Unattended
         True -> {
           let progress = case
-            runner.checked_child(runtime.store, runtime.work, a)
+            runner.checked_child(
+              graph_runtime.store(runtime),
+              graph_runtime.work(runtime),
+              a,
+            )
           {
             Error(error) -> child.Uncertain(error)
             Ok(driver) ->

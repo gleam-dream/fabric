@@ -1,6 +1,5 @@
 //// D14–D18: database discovery expires a child and retains uncertain cleanup.
 
-import fabric
 import fabric/budget
 import fabric/graph
 import fabric/graph/child
@@ -10,6 +9,7 @@ import fabric/policy
 import fabric/run
 import fabric/store
 import fabric/store/backend
+import fabric/sweeper
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -73,13 +73,12 @@ fn start_store(settings) {
 }
 
 fn sweep(runs) {
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(started) =
+    sweeper.start(
       runs,
-      [graph.recovery(run.DefinitionId("pg-child-deadline", 1), parent)],
+      [sweeper.graph(run.DefinitionId("pg-child-deadline", 1), parent)],
       every: duration.milliseconds(20),
     )
-  let assert Ok(started) = spec.start()
   started
 }
 
@@ -167,8 +166,8 @@ pub fn unchanged_children_expire_after_restart_and_remain_retained_until_reconci
   done.status |> should.equal(graph.Expired(due, graph.ChildSettled(child_ref)))
   done.value |> should.equal(41)
   done.receipts |> should.equal([])
-  process.unlink(started.pid)
-  agents.kill(started.pid)
+  process.unlink(started)
+  agents.kill(started)
   idle(backend, 300)
   fabric_postgres.prune(
     settings,

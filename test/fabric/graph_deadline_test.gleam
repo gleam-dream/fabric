@@ -1,6 +1,5 @@
 //// D4–D8: deadlines belong to admitted activations and survive store loss.
 
-import fabric
 import fabric/graph
 import fabric/graph/definition
 import fabric/graph/operation
@@ -14,6 +13,7 @@ import fabric/store/conformance
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
+import fabric/sweeper
 import fabric/telemetry
 import gleam/erlang/process
 import gleam/option.{None, Some}
@@ -197,20 +197,19 @@ fn scan(runs) {
     sinal.observe(telemetry.sweep(), fn(summary, _) {
       process.send(events, summary)
     })
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(started) =
+    sweeper.start(
       runs,
       [
-        graph.recovery(run.DefinitionId("deadline-loop", 1), fn(runs) {
+        sweeper.graph(run.DefinitionId("deadline-loop", 1), fn(runs) {
           runtime(runs, fn(_, _) { Ok(policy.Allow) })
         }),
       ],
       every: duration.milliseconds(60_000),
     )
-  let assert Ok(started) = spec.start()
   let assert Ok(summary) = process.receive(events, 5000)
-  process.unlink(started.pid)
-  restart.kill(started.pid)
+  process.unlink(started)
+  restart.kill(started)
   let _ = sinal.detach(attached)
   summary
 }

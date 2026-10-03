@@ -23,6 +23,7 @@ import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
+import fabric/sweeper
 import fabric/telemetry as o
 import gleam/erlang/process
 import gleam/int
@@ -93,10 +94,9 @@ fn start(runs, recovery) {
 }
 
 fn start_all(runs, recoveries) {
-  let assert Ok(spec) =
-    fabric.sweeper(runs, recoveries, every: duration.milliseconds(60_000))
-  let assert Ok(started) = spec.start()
-  started.pid
+  let assert Ok(started) =
+    sweeper.start(runs, recoveries, every: duration.milliseconds(60_000))
+  started
 }
 
 fn worker(calls) {
@@ -150,10 +150,10 @@ pub fn mixed_family_scanning_keeps_the_foreign_parent_lease_and_uses_its_graph_r
   let parent_holder = nodes.holder(memory.backend, graph.id(parent))
   expire(a, memory.backend, child)
   let registrations = [
-    fabric.recovery(worker(calls), fn(_) {
+    sweeper.agent(worker(calls), fn(_) {
       probe.record(contexts, "wrong-agent-root")
     }),
-    graph.recovery(identity(), fn(runs) {
+    sweeper.graph(identity(), fn(runs) {
       probe.record(contexts, "graph-root")
       managed(runs, calls)
     }),
@@ -191,21 +191,20 @@ pub fn invalid_graph_registrations_do_not_change_the_claimed_execution_test() {
   let b = nodes.node(memory.backend, "b", nodes.long)
   let calls = probe.new()
   let registration =
-    graph.recovery(identity(), fn(runs) { runtime(runs, calls) })
-  fabric.sweeper(
+    sweeper.graph(identity(), fn(runs) { runtime(runs, calls) })
+  sweeper.supervised(
     b,
     [registration, registration],
     every: duration.milliseconds(100),
   )
-  |> should.equal(Error([fabric.DuplicateRecovery(identity())]))
+  |> should.equal(Error([sweeper.DuplicateRoot(identity())]))
   let assert Ok(handle) =
     graph.start(runtime(a, calls), support.id("wrong-binding"), 41)
   let _ = probe.arrival(calls)
   expire(a, memory.backend, graph.id(handle))
   let before = nodes.revision(memory.backend, graph.id(handle))
   let #(events, attachment) = capture()
-  let sweeper =
-    start(b, graph.recovery(identity(), fn(_) { runtime(a, calls) }))
+  let sweeper = start(b, sweeper.graph(identity(), fn(_) { runtime(a, calls) }))
   process.receive(events, 5000) |> should.equal(Ok(o.Sweep(1, 0, 0, 1)))
   nodes.revision(memory.backend, graph.id(handle)) |> should.equal(before)
   probe.count(calls, "effect") |> should.equal(1)
@@ -228,7 +227,7 @@ pub fn competing_graph_scans_claim_each_expired_run_once_test() {
     })
   let #(events, attachment) = capture()
   let registration =
-    graph.recovery(identity(), fn(runs) { runtime(runs, calls) })
+    sweeper.graph(identity(), fn(runs) { runtime(runs, calls) })
   let first = start(b, registration)
   let second = start(c, registration)
   let assert Ok(one) = process.receive(events, 5000)
@@ -266,7 +265,7 @@ pub fn unknown_and_misfiled_graphs_do_not_invoke_a_registration_test() {
   let sweeper =
     start(
       b,
-      graph.recovery(run.DefinitionId("other", 1), fn(runs) {
+      sweeper.graph(run.DefinitionId("other", 1), fn(runs) {
         probe.record(calls, "wrong-factory")
         runtime(runs, calls)
       }),
@@ -308,7 +307,7 @@ pub fn a_child_without_a_reciprocal_parent_reservation_cannot_trigger_root_recov
   let sweeper =
     start(
       b,
-      graph.recovery(identity(), fn(runs) {
+      sweeper.graph(identity(), fn(runs) {
         probe.record(contexts, "factory")
         managed(runs, calls)
       }),
@@ -337,7 +336,7 @@ pub fn expired_graph_work_recovers_without_repeating_its_started_effect_test() {
   expire(a, memory.backend, graph.id(handle))
   let #(events, attachment) = capture()
   let sweeper =
-    start(b, graph.recovery(identity(), fn(runs) { runtime(runs, calls) }))
+    start(b, sweeper.graph(identity(), fn(runs) { runtime(runs, calls) }))
   process.receive(events, 5000) |> should.equal(Ok(o.Sweep(1, 1, 0, 0)))
   let handle = graph.attach(runtime(b, calls), graph.id(handle))
   let assert Ok(snapshot) =
@@ -370,7 +369,7 @@ fn scan_once(runs) {
 
 fn scan_runtime(runs, build) {
   let #(events, attachment) = capture()
-  let sweeper = start(runs, graph.recovery(identity(), build))
+  let sweeper = start(runs, sweeper.graph(identity(), build))
   let assert Ok(summary) = process.receive(events, 5000)
   stop(sweeper, attachment)
   summary

@@ -1,6 +1,5 @@
 //// F6–F8: database time and persisted dependencies drive nested fork cleanup.
 
-import fabric
 import fabric/budget
 import fabric/graph
 import fabric/graph/definition
@@ -10,6 +9,7 @@ import fabric/policy
 import fabric/run
 import fabric/store
 import fabric/store/backend
+import fabric/sweeper
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -91,17 +91,16 @@ fn start_store(settings) {
 }
 
 fn sweep(runs, arrivals) {
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(started) =
+    sweeper.start(
       runs,
       [
-        graph.recovery(run.DefinitionId("pg-fork-deadline", 1), fn(runs) {
+        sweeper.graph(run.DefinitionId("pg-fork-deadline", 1), fn(runs) {
           parent(runs, arrivals)
         }),
       ],
       every: duration.milliseconds(20),
     )
-  let assert Ok(started) = spec.start()
   started
 }
 
@@ -248,8 +247,8 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
   graph.branch(root, 1, 3, inner(runs, arrivals)) |> should.be_error
   process.receive(arrivals, 0) |> should.be_error
   idle(backend, ids, 300)
-  process.unlink(started.pid)
-  agents.kill(started.pid)
+  process.unlink(started)
+  agents.kill(started)
   fabric_postgres.prune(
     settings,
     ended_for: duration.milliseconds(0),

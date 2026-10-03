@@ -14,6 +14,7 @@ import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
+import fabric/sweeper
 import fabric/testing
 import fabric/tool
 import gleam/erlang/process
@@ -94,13 +95,12 @@ pub fn a_child_is_recovered_beneath_a_live_foreign_parent_test() {
   |> should.equal(Ok([run.id_to_string(child)]))
 
   let contexts = process.new_subject()
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(started) =
+    sweeper.start(
       b,
-      [fabric.recovery(parent, fn(id) { process.send(contexts, id) })],
+      [sweeper.agent(parent, fn(id) { process.send(contexts, id) })],
       every: duration.milliseconds(10),
     )
-  let assert Ok(started) = spec.start()
   child_completed(root, 500)
   process.receive(contexts, 100) |> should.equal(Ok(fabric.id(root)))
   let assert Ok(snapshot) = fabric.snapshot(root)
@@ -115,8 +115,8 @@ pub fn a_child_is_recovered_beneath_a_live_foreign_parent_test() {
   probe.release(running)
   fabric.await(root, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("\"a\",\"found\""))))
-  process.unlink(started.pid)
-  restart.kill(started.pid)
+  process.unlink(started)
+  restart.kill(started)
 }
 
 fn await_free(backend, id, tries) {
@@ -209,19 +209,18 @@ pub fn a_stopping_child_is_recovered_beneath_a_live_cancelling_parent_test() {
   let assert backend.Held(owner, True) = nodes.holder(memory.backend, child)
   memory.backend.renew(owner, [run.id_to_string(child)], 0)
   |> should.equal(Ok([run.id_to_string(child)]))
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(started) =
+    sweeper.start(
       b,
-      [fabric.recovery(parent, fn(_) { Nil })],
+      [sweeper.agent(parent, fn(_) { Nil })],
       every: duration.milliseconds(10),
     )
-  let assert Ok(started) = spec.start()
   fabric.await(root, within: duration.milliseconds(3000))
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert Ok(snapshot) = fabric.snapshot(root)
   snapshot.incarnation |> should.equal(1)
-  process.unlink(started.pid)
-  restart.kill(started.pid)
+  process.unlink(started)
+  restart.kill(started)
 }
 
 import fabric/internal/controller

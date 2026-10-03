@@ -1,6 +1,5 @@
 //// D9–D13: expiration closes routing and preserves owned cleanup.
 
-import fabric
 import fabric/budget
 import fabric/graph
 import fabric/graph/definition
@@ -16,6 +15,7 @@ import fabric/support
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
+import fabric/sweeper
 import fabric/telemetry
 import gleam/erlang/process
 import gleam/option.{None, Some}
@@ -187,16 +187,15 @@ fn scan(runs, build) {
     sinal.observe(telemetry.sweep(), fn(summary, _) {
       process.send(events, summary)
     })
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(started) =
+    sweeper.start(
       runs,
-      [graph.recovery(run.DefinitionId("job-deadline", 1), build)],
+      [sweeper.graph(run.DefinitionId("job-deadline", 1), build)],
       every: duration.milliseconds(60_000),
     )
-  let assert Ok(started) = spec.start()
   let assert Ok(summary) = process.receive(events, 5000)
-  process.unlink(started.pid)
-  restart.kill(started.pid)
+  process.unlink(started)
+  restart.kill(started)
   let _ = sinal.detach(attached)
   summary
 }

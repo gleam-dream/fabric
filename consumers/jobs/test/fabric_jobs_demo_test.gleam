@@ -1,12 +1,12 @@
 //// J1–J5: public Fabric APIs against a separate durable HTTP job service.
 
-import fabric
 import fabric/budget
 import fabric/graph
 import fabric/graph/operation
 import fabric/run
 import fabric/store
 import fabric/store/conformance
+import fabric/sweeper
 import fabric_jobs_demo as demo
 import fabric_jobs_demo/client
 import fabric_jobs_demo/support
@@ -51,21 +51,20 @@ pub fn a_restarted_sweeper_observes_the_real_job_without_manual_polling_test() {
     )
   }
   let handle = graph.attach(build(runs), id("scheduled-real-job"))
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(sweeper_pid) =
+    sweeper.start(
       runs,
-      [graph.recovery(run.DefinitionId("artifact-submit-and-wait", 1), build)],
+      [sweeper.graph(run.DefinitionId("artifact-submit-and-wait", 1), build)],
       every: duration.milliseconds(20),
     )
-  let assert Ok(sweeper) = spec.start()
   let done = await_scheduled(handle, 200)
   done.status
   |> should.equal(graph.Completed(support.sha256("SCHEDULED RESULT")))
   list.length(done.receipts) |> should.equal(2)
   client.artifact(support.url(), receipt)
   |> should.equal(Ok("SCHEDULED RESULT"))
-  process.unlink(sweeper.pid)
-  process.kill(sweeper.pid)
+  process.unlink(sweeper_pid)
+  process.kill(sweeper_pid)
 }
 
 fn leased(backend, node) {

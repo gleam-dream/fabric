@@ -315,7 +315,12 @@ fn keep(caller: Pid, stop: Subject(Nil)) -> Nil {
     |> process.select_map(stop, fn(_) { None })
     |> process.selector_receive_forever
   case exit {
-    None -> exit_shutdown()
+    // Stopped on request: the caller lives on, so it must not receive the
+    // keeper's exit.
+    None -> {
+      process.unlink(caller)
+      exit_shutdown()
+    }
     Some(exit) ->
       case exit.pid == caller, exit.reason {
         True, _ -> exit_shutdown()
