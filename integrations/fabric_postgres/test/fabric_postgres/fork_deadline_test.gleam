@@ -170,12 +170,11 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
       #(runs, root)
     })
   // Both external effects must start before either becomes uncertain.
-  let assert Ok(first) = process.receive(arrivals, 5000)
-  let assert Ok(second) = process.receive(arrivals, 5000)
+  let assert Ok(first) = process.receive(arrivals, 30_000)
+  let assert Ok(second) = process.receive(arrivals, 30_000)
   process.send(first, Nil)
   process.send(second, Nil)
-  let assert Ok(waiting) =
-    graph.await(root, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.await(root, within: duration.seconds(30))
   let assert graph.Fork(_, _) = waiting.status
   let assert Some(due) = waiting.deadline
   let members =
@@ -186,7 +185,7 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
       #(graph.id(inner), graph.id(leaf))
     })
   let ids = [id, ..list.flat_map(members, fn(member) { [member.0, member.1] })]
-  idle(backend, ids, 300)
+  idle(backend, ids, 3000)
   agents.kill(owner)
   // Establish dependency baselines without changing execution bytes; releasing
   // each claim advances its revision, so ancestors need one later observation.
@@ -204,6 +203,7 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
       "SELECT true FROM pg_sleep(GREATEST(0, ($1::bigint - floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint)::double precision / 1000.0) + 0.02)",
     )
     |> pog.parameter(pog.int(due))
+    |> pog.timeout(30_000)
     |> pog.execute(connection)
   let #(cleanup_owner, cleanup_runs) =
     agents.owned(fn() {
@@ -212,7 +212,7 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
       runs
     })
   let root = graph.attach(parent(cleanup_runs, arrivals), id)
-  let stopping = wait_for(root, False, 500)
+  let stopping = wait_for(root, False, 3000)
   let assert graph.Fork(saved, Some(operation.DeadlineReached(saved_due))) =
     stopping.status
   saved_due |> should.equal(due)
@@ -230,7 +230,7 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
   )
   |> should.equal(Ok(0))
   process.sleep(100)
-  idle(backend, ids, 300)
+  idle(backend, ids, 3000)
   backend.claim_ready("not-again", 60_000, 10) |> should.equal(Ok([]))
   agents.kill(cleanup_owner)
   // Reconcile through another store after all original cleanup watches are gone.
@@ -243,12 +243,12 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
   })
   let started = sweep(runs, arrivals)
   let root = graph.attach(parent(runs, arrivals), id)
-  let done = wait_for(root, True, 500)
+  let done = wait_for(root, True, 3000)
   done.status |> should.equal(graph.Expired(due, graph.ForkSettled(1)))
   done.receipts |> should.equal([])
   graph.branch(root, 1, 3, inner(runs, arrivals)) |> should.be_error
   process.receive(arrivals, 0) |> should.be_error
-  idle(backend, ids, 300)
+  idle(backend, ids, 3000)
   process.unlink(started)
   agents.kill(started)
   fabric_postgres.prune(

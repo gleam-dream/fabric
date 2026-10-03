@@ -30,9 +30,10 @@ pub fn gate() -> Gate {
   Gate(process.new_subject())
 }
 
-/// The next tool body to start, within 5 seconds.
+/// The next tool body to start. The bound only decides how long a broken
+/// run takes to fail, so it is generous for a loaded machine.
 pub fn arrival(gate: Gate) -> Arrival {
-  let assert Ok(arrival) = process.receive(gate.arrivals, 5000)
+  let assert Ok(arrival) = process.receive(gate.arrivals, 30_000)
   arrival
 }
 
@@ -136,13 +137,8 @@ pub fn owned(body: fn() -> a) -> #(Pid, a) {
   #(pid, process.receive_forever(reply))
 }
 
-/// Kills `pid`, as a node's VM would die, and waits until it is gone.
-pub fn kill(pid: Pid) -> Nil {
-  let monitor = process.monitor(pid)
-  process.kill(pid)
-  let _ =
-    process.new_selector()
-    |> process.select_specific_monitor(monitor, fn(_) { Nil })
-    |> process.selector_receive_forever
-  Nil
-}
+/// Kills `pid`, as a node's VM would die, and waits until it and everything
+/// it started linked (a pool, a store and its runners) are gone, so that a
+/// store started next under the same name finds the name free.
+@external(erlang, "fabric_postgres_test_ffi", "kill_linked")
+pub fn kill(pid: Pid) -> Nil

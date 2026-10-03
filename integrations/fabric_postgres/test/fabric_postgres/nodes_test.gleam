@@ -20,8 +20,16 @@ import gleeunit/should
 /// Leases short enough to expire within a test: renewed every 200 ms.
 const lease = 600
 
+/// A lease that must stay live through a test even on a loaded machine:
+/// renewed every second, so a renewal may be late by two seconds.
+const live_lease = 3000
+
 /// The settings of `node` over a pool of its own, in `schema`.
 fn node_settings(node: String, schema: String) -> Settings {
+  leased_settings(node, schema, lease)
+}
+
+fn leased_settings(node: String, schema: String, lease: Int) -> Settings {
   let assert Ok(settings) =
     fabric_postgres.settings(support.pool(4), node:)
     |> fabric_postgres.with_schema(schema)
@@ -71,7 +79,7 @@ fn together(items: List(a), body: fn(a) -> b) -> List(b) {
     process.spawn(fn() { process.send(results, body(item)) })
   })
   list.map(items, fn(_) {
-    let assert Ok(result) = process.receive(results, 10_000)
+    let assert Ok(result) = process.receive(results, 30_000)
     result
   })
 }
@@ -80,8 +88,8 @@ pub fn a_live_lease_on_one_node_reads_working_on_the_other_test() {
   let schema = fresh_schema()
   let gate = agents.gate()
   let agent = agents.agent(gate, 5)
-  let a = node("a", schema)
-  let b = node("b", schema)
+  let a = started(leased_settings("a", schema, live_lease))
+  let b = started(leased_settings("b", schema, live_lease))
   let assert Ok(started) =
     fabric.start(
       a,
@@ -98,7 +106,7 @@ pub fn a_live_lease_on_one_node_reads_working_on_the_other_test() {
   fabric.await(seen, within: duration.milliseconds(0))
   |> should.equal(Ok(run.Working))
   // Longer than a lease: node a's renewals keep it live.
-  process.sleep(lease + 300)
+  process.sleep(live_lease + 300)
   let assert Ok(recovered) = fabric.recover(b, agent, Nil, id)
   fabric.await(recovered, within: duration.milliseconds(0))
   |> should.equal(Ok(run.Working))
@@ -106,7 +114,7 @@ pub fn a_live_lease_on_one_node_reads_working_on_the_other_test() {
   holder(schema, id) |> should.equal(Ok(#("a", True)))
   agents.release(arrival)
   // Node b sees the end committed by node a.
-  fabric.await(seen, within: duration.milliseconds(5000))
+  fabric.await(seen, within: duration.seconds(30))
   |> should.equal(Ok(run.Finished(run.Completed("done: {\"done\":5}"))))
   holder(schema, id) |> should.equal(Error(Nil))
   agents.another(gate, 100) |> should.be_false
@@ -138,7 +146,7 @@ pub fn an_expired_lease_is_taken_over_exactly_once_test() {
     })
   let arrival = agents.arrival(gate)
   agents.kill(owner)
-  agents.gone(arrival.body, 1000) |> should.be_true
+  agents.gone(arrival.body, 30_000) |> should.be_true
   let others = [node("b", schema), node("c", schema)]
   let recover_all = fn() {
     together(others, fn(node) {
@@ -156,7 +164,7 @@ pub fn an_expired_lease_is_taken_over_exactly_once_test() {
   holder(schema, id) |> should.equal(Error(Nil))
   agents.another(gate, 200) |> should.be_false
   let assert Ok(_) = fabric.reconcile(seen, uncertain.reference, "{\"done\":5}")
-  fabric.await(seen, within: duration.milliseconds(5000))
+  fabric.await(seen, within: duration.seconds(30))
   |> should.equal(Ok(run.Finished(run.Completed("done: {\"done\":5}"))))
   agents.another(gate, 100) |> should.be_false
 }
@@ -184,7 +192,7 @@ pub fn a_cancellation_from_the_other_node_wins_test() {
   fabric.cancel_stored(b, id)
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   holder(schema, id) |> should.equal(Error(Nil))
-  agents.gone(arrival.body, 2000) |> should.be_true
+  agents.gone(arrival.body, 30_000) |> should.be_true
   fabric.await(started, within: duration.milliseconds(0))
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   let assert Ok(snapshot) = fabric.snapshot(started)

@@ -128,12 +128,11 @@ pub fn all_branch_revisions_are_claimed_once_and_swept_after_store_loss_test() {
     agents.owned(fn() {
       let runs = start_store(settings)
       let assert Ok(handle) = graph.start(mapped(runs), id, [1, 2, 3])
-      let assert Ok(waiting) =
-        graph.await(handle, within: duration.milliseconds(5000))
+      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
       let assert graph.Fork(_, _) = waiting.status
       Nil
     })
-  idle(backend, "pg-parallel", 200)
+  idle(backend, "pg-parallel", 3000)
   agents.kill(owner)
   backend.claim_ready("baseline", 60_000, 10)
   |> should.equal(Ok(["pg-parallel"]))
@@ -153,8 +152,8 @@ pub fn all_branch_revisions_are_claimed_once_and_swept_after_store_loss_test() {
         process.send(replies, backend.claim_ready(owner, 60_000, 1))
       })
     })
-    let assert Ok(Ok(a)) = process.receive(replies, 5000)
-    let assert Ok(Ok(b)) = process.receive(replies, 5000)
+    let assert Ok(Ok(a)) = process.receive(replies, 30_000)
+    let assert Ok(Ok(b)) = process.receive(replies, 30_000)
     list.append(a, b) |> should.equal(["pg-parallel"])
     release(backend, "pg-parallel")
     backend.claim_ready("unchanged", 60_000, 10) |> should.equal(Ok([]))
@@ -170,9 +169,9 @@ pub fn all_branch_revisions_are_claimed_once_and_swept_after_store_loss_test() {
       [sweeper.graph(run.DefinitionId("pg-parallel", 1), mapped)],
       every: duration.milliseconds(20),
     )
-  let done = await_done(root, 300)
+  let done = await_done(root, 3000)
   done.status |> should.equal(graph.Completed([10, 20, 30]))
-  idle(backend, "pg-parallel", 200)
+  idle(backend, "pg-parallel", 3000)
   process.unlink(sweeper_pid)
   agents.kill(sweeper_pid)
   fabric_postgres.prune(

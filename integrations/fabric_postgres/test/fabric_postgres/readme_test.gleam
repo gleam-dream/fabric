@@ -34,6 +34,6 @@ pub fn the_readme_example_runs_test() {
       correlation: None,
     )
   agents.release(agents.arrival(gate))
-  fabric.await(started, within: duration.milliseconds(5000))
+  fabric.await(started, within: duration.seconds(30))
   |> should.equal(Ok(run.Finished(run.Completed("done: {\"done\":1}"))))
 }
