@@ -1,18 +1,17 @@
 {
-  "http_gun": 1,
+  "http_gun": 2,
   "exchanges": [
     {
       "request": {
-        "url": "https://api.openai.com:443/v1/responses",
         "method": "POST",
+        "url": "https://api.openai.com:443/v1/responses",
         "headers": [
           ["accept", "text/event-stream"],
           ["accept-encoding", "identity"],
           ["content-type", "application/json"]
         ],
         "body": {
-          "bytes": 84,
-          "base64": "eyJtb2RlbCI6ImNhc3NldHRlLW1vZGVsIiwiaW5wdXQiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IkhlbGxvIn1dLCJzdHJlYW0iOnRydWV9"
+          "text": "{\"model\":\"cassette-model\",\"input\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"stream\":true}"
         }
       },
       "reply": {
@@ -21,24 +20,20 @@
         "headers": [["content-type", "text/event-stream"]],
         "chunks": [
           {
-            "bytes": 98,
-            "base64": "ZXZlbnQ6IHJlc3BvbnNlLm91dHB1dF9pdGVtLmFkZGVkCmRhdGE6IHsib3V0cHV0X2luZGV4IjowLCJpdGVtIjp7ImlkIjoidGV4dCIsInR5cGUiOiJtZXNzYWdlIn19Cgo="
+            "text": "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"text\",\"type\":\"message\"}}\n\n"
           },
           {
-            "bytes": 106,
-            "base64": "ZXZlbnQ6IHJlc3BvbnNlLm91dHB1dF90ZXh0LmRlbHRhCmRhdGE6IHsib3V0cHV0X2luZGV4IjowLCJpdGVtX2lkIjoidGV4dCIsImRlbHRhIjoiZnJvbSBkaXNrIGNhc3NldHRlIn0KCg=="
+            "text": "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"text\",\"delta\":\"from disk cassette\"}\n\n"
           },
           {
-            "bytes": 97,
-            "base64": "ZXZlbnQ6IHJlc3BvbnNlLm91dHB1dF9pdGVtLmRvbmUKZGF0YTogeyJvdXRwdXRfaW5kZXgiOjAsIml0ZW0iOnsiaWQiOiJ0ZXh0IiwidHlwZSI6Im1lc3NhZ2UifX0KCg=="
+            "text": "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"text\",\"type\":\"message\"}}\n\n"
           },
           {
-            "bytes": 82,
-            "base64": "ZXZlbnQ6IHJlc3BvbnNlLmNvbXBsZXRlZApkYXRhOiB7InJlc3BvbnNlIjp7ImlkIjoiZmluYWwiLCJzdGF0dXMiOiJjb21wbGV0ZWQifX0KCg=="
+            "text": "event: response.completed\ndata: {\"response\":{\"id\":\"final\",\"status\":\"completed\"}}\n\n"
           }
         ],
         "ending": {
-          "kind": "complete",
+          "kind": "finished",
           "trailers": []
         }
       }

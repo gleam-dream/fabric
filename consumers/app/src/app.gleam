@@ -441,7 +441,7 @@ pub type LoanError {
 pub fn loan_workflow() -> saga.Workflow(Loan, String, LoanError, Nil) {
   let request =
     saga.step("request_copy", fn(loan: Loan) { Ok("REQ-" <> loan.title) })
-    |> saga.undo(fn(_, _) { Ok(Nil) })
+    |> saga.undo(fn(_) { Ok(Nil) })
   let courier =
     saga.step("book_courier", fn(pair: #(Loan, String)) {
       let #(loan, request) = pair
@@ -459,29 +459,27 @@ pub fn loan_workflow() -> saga.Workflow(Loan, String, LoanError, Nil) {
 }
 
 pub fn loan_tool() -> tool.Tool(Member) {
-  let assert Ok(loan) =
-    fabric_saga.tool(
-      tool.define(
-        "interlibrary_loan",
-        "Borrow a book from a partner library.",
-        {
-          use title <- codec.field("title", codec.string(), get: fn(loan) {
-            loan.title
-          })
-          codec.success(Loan(title))
-        },
-        text_field("delivery"),
-      ),
-      loan_workflow(),
-      execution.config(),
-      explain: fn(error) {
-        let NoCourier(title) = error
-        "no courier carries " <> title
+  fabric_saga.tool(
+    tool.define(
+      "interlibrary_loan",
+      "Borrow a book from a partner library.",
+      {
+        use title <- codec.field("title", codec.string(), get: fn(loan) {
+          loan.title
+        })
+        codec.success(Loan(title))
       },
-      // A stopped loan waits this long for Saga to undo what it booked.
-      rollback_within: 10_000,
-    )
-  loan
+      text_field("delivery"),
+    ),
+    loan_workflow(),
+    execution.config(),
+    explain: fn(error) {
+      let NoCourier(title) = error
+      "no courier carries " <> title
+    },
+    // A stopped loan waits this long for Saga to undo what it booked.
+    rollback_within: 10_000,
+  )
 }
 
 // --- the front desk -------------------------------------------------------------

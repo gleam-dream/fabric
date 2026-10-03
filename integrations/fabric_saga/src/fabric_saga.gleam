@@ -6,14 +6,16 @@
 //// Saga's outcome becomes the tool's result. A result is definite only
 //// when Saga's report proves that every effect of the run is known and
 //// none is left in place: Saga names every step attempt, recovery decision
-//// and undo that ended without a result (`execution.unknown_effects`),
-//// whatever was decided afterwards, so a crashed attempt that was retried,
-//// continued or aborted is never hidden:
+//// and undo that ended without a result, and every attempt that returned
+//// an error its step marks with `saga.unknown_when` (a refund the provider
+//// may have taken, for example), in `execution.unknown_effects`, whatever
+//// was decided afterwards, so a crashed or possibly applied attempt that
+//// was retried, continued or aborted is never hidden:
 ////
 //// | Saga outcome | Tool result |
 //// | --- | --- |
 //// | `Completed(output)` | the output |
-//// | `Failed` by a typed error (`StepFailed`, or a retry limit whose last attempt returned one), past the deadline, or by an output crash; no unknown effect; nothing left in place (no undo or cleanup that returned an error, no step without an undo, none held) | a definite failure the model sees: `explain(error)` (or the missed deadline, or the output that could not be computed) |
+//// | `Failed` by a typed error (`StepFailed`, or a retry limit whose last attempt returned one), past the deadline, or by an output crash; no unknown effect (so no error its step marks with `unknown_when`); nothing left in place (no undo or cleanup that returned an error, no step without an undo, none held) | a definite failure the model sees: `explain(error)` (or the missed deadline, or the output that could not be computed) |
 //// | `Cancelled`, with the same conditions | a definite failure the model sees: the workflow was cancelled and every completed step undone |
 //// | anything else: `CompletedWithUnknownEffects`, an unknown effect of any action, an effect left in place, a crash or timeout cause, `Unresolved`, a lost run | an uncertain effect whose evidence summarizes Saga's report (outcome kinds, actions and step addresses, never application data) |
 ////
@@ -34,6 +36,7 @@
 import fabric/tool
 import fabric_saga/internal/verdict.{type Stopped, Definitely, Unknown}
 import gleam/erlang/process.{type Pid, type Subject}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -44,16 +47,16 @@ import saga/execution
 /// renders a step's typed error for the model. When the call's task is
 /// stopped, Fabric waits up to `rollback_within` milliseconds for Saga's
 /// outcome (its settle window and the undo steps it runs) before recording
-/// an uncertain effect. The configuration is validated here, before any
-/// call.
+/// an uncertain effect. Saga checks the configuration when a call starts
+/// the workflow: a configuration it refuses fails that call definitely,
+/// naming every violation, and runs no step.
 pub fn tool(
   definition: tool.Definition(input, output),
   workflow: saga.Workflow(input, output, error, undo_error),
   config: execution.Config,
   explain explain: fn(error) -> String,
   rollback_within rollback_within: Int,
-) -> Result(tool.Tool(context), List(execution.ConfigError)) {
-  use config <- result.map(execution.validate(config))
+) -> tool.Tool(context) {
   let judge = fn(delivery) { outcome(delivery, explain) }
   tool.bind_settling(
     definition,
@@ -135,9 +138,12 @@ fn run(
   let receiver_monitor = process.monitor(receiver)
   let assert Ok(#(report, start)) = process.receive(ready, 5000)
   case execution.start_reporting(workflow, input, config, to: report) {
-    Error(execution.InvalidConfig(_)) -> {
+    Error(execution.InvalidConfig(errors)) -> {
       process.send(start, NotStarted)
-      Error(Definitely("the workflow is misconfigured"))
+      Error(Definitely(
+        "the workflow is misconfigured: "
+        <> string.join(list.map(errors, execution.describe_config_error), "; "),
+      ))
     }
     Error(execution.ExecutionLost(crash)) -> {
       process.send(start, NotStarted)

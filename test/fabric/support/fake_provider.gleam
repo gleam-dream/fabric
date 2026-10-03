@@ -21,14 +21,8 @@ pub type Fake {
 
 /// HTTP Gun's default policy rejects loopback; tests admit only loopback.
 pub fn loopback() -> http_config.Config {
-  http_config.Config(
-    ..http_config.default(),
-    destination: destination.Policy(
-      ..destination.default(),
-      allow_public: False,
-      allow_loopback: True,
-    ),
-  )
+  http_config.default()
+  |> http_config.with_destination(destination.loopback_only())
 }
 
 pub fn start(replies: List(testing.Reply)) -> Fake {
@@ -38,7 +32,7 @@ pub fn start(replies: List(testing.Reply)) -> Fake {
 }
 
 pub fn stop(fake: Fake) -> Nil {
-  let _ = http_gun.stop(fake.client)
+  http_gun.stop(fake.client)
   stop_server(fake.server)
 }
 
