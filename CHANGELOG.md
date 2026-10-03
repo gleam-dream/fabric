@@ -11,6 +11,63 @@ Wave 5 is described with before/after snippets in
 [docs/migration-wave-5.md](docs/migration-wave-5.md), round 5 in
 [docs/migration-round-5.md](docs/migration-round-5.md).
 
+### Wave 5, failures and configuration (slice F2)
+
+#### Added
+
+- `fabric.Error`, `fabric.ErrorKind` (`NotFound`, `Refused`, `Retry`,
+  `Unavailable`, `Incompatible`), `fabric.error_kind` and
+  `fabric.describe_error`.
+- `fabric/reviewer`: `Reviewer`, `reviewer.new(subject)`,
+  `reviewer.with_issuer`, `reviewer.subject`, `reviewer.issuer`.
+- Approval expiry: `agent.with_approval_expiry(spec, run.Timeout)`, 7 days
+  by default. The deadline is stored with the request
+  (`run.AwaitingApproval.expires`, `run.PendingApproval.expires`); an
+  expired request rejects its action (`run.Expired`, `telemetry.Expired`),
+  and a late answer is `fabric.ApprovalExpired`. `await`, an answer,
+  `recover` and the sweeper reject it; `store/discovery` (version 11)
+  projects its deadline. Requests stored without a deadline never expire.
+- `tool.with_replay(tool, max_attempts)`: a body that crashed, ran past
+  its timeout or lost its runner is started again instead of becoming
+  uncertain; `run.ActionRecord.replays`.
+- `tool.name`, `tool.description`, `tool.input_codec`, `tool.output_codec`,
+  `tool.action(settlement)` and `tool.reconciliation(definition, result)`.
+- `model.error(kind, detail)`, `model.with_retry_after`, `model.ErrorKind`,
+  `model.error_kind`, `model.is_retryable`, `model.retry_after`,
+  `model.error_detail`, `model.describe_error`; the runner waits a
+  provider's delay (up to 10 minutes) before a retry, and `fabric/llm` maps
+  llm_wire's failure and `Retry-After` into them.
+- `model.tool_call` and `model.with_provider_replay`.
+- Agent setters: `with_max_turns`, `with_max_concurrency`,
+  `with_token_budget`, `with_max_children`, `with_max_depth`,
+  `with_policy_timeout`, `with_model_retry_delay`, `with_command_timeout`,
+  `with_model_timeout`, `with_tool_timeout`, `with_max_result_bytes`,
+  `with_family_budget`; `agent.Limit`, `agent.describe_config_error`.
+- `budget.limits(work:)`, `budget.with_children`, `budget.with_depth`.
+- `run.id_from_parts(prefix, parts)`: a total id from known parts.
+- `fabric.AlreadyStarted.same_input`.
+
+#### Changed
+
+- **Breaking:** `fabric.StartError`, `RecordError` and `CommandError` are
+  one `fabric.Error`; `Unreadable` and `StartRefused` are gone.
+- **Breaking:** `model.ModelError` and `model.ToolCall` are opaque;
+  `budget.Limits` is opaque.
+- **Breaking:** `agent.Limits`, `agent.default_limits` and
+  `agent.with_limits` are gone; `ConfigError`'s per-field variants are
+  `InvalidLimit(limit:, value:, minimum:, maximum:)` and `InvalidToolLimit`.
+- **Breaking:** `fabric.approve` and `fabric.reject` take a
+  `reviewer.Reviewer`, not an `Option(String)`; `run.Approval.reviewer` is
+  an `Option(Reviewer)`.
+- **Breaking:** `fabric.start_with_budget` is gone: the family budget is on
+  the agent (`agent.with_family_budget`).
+- **Breaking:** `run.AwaitingApproval` and `run.PendingApproval` gain
+  `expires`; `run.ActionRecord` gains `replays`; `run.Answer` gains
+  `Expired`; `telemetry.Answered` gains `Expired`.
+- Records stay compatible: a string reviewer, a missing deadline, a missing
+  replay count and a model failure without a kind all read (fixtures in
+  `test/fixtures/records`). New keys are written only when they apply.
+
 ### Wave 5, structure (slice F1)
 
 #### Added
