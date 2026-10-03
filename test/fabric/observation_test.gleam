@@ -17,8 +17,7 @@ import fabric/support/restart
 import fabric/support/scripted
 import fabric/testing
 import fabric/tool
-import gleam/dynamic.{type Dynamic}
-import gleam/erlang/atom
+import gleam/dynamic
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
@@ -27,6 +26,7 @@ import gleam/string
 import gleeunit/should
 import json/blueprint/codec
 import sinal
+import sinal/fields
 import sinal/forwarder
 
 // --- capture --------------------------------------------------------------------
@@ -127,30 +127,6 @@ fn attach_line(
     process.send(subject, line(measurements, metadata))
   })
 }
-
-/// The native measurement map a plain `:telemetry` handler receives when
-/// `event` is emitted.
-fn native_measurements(
-  event: sinal.Event(m, d),
-  measurements: m,
-  metadata: d,
-) -> Dynamic {
-  let name = list.map(sinal.name(event), atom.create)
-  let id = native_attach(name)
-  sinal.emit(event, measurements, metadata)
-  let assert Ok(raw) = native_received(name, 1000)
-  native_detach(id)
-  raw
-}
-
-@external(erlang, "fabric_test_ffi", "native_attach")
-fn native_attach(name: List(atom.Atom)) -> Dynamic
-
-@external(erlang, "fabric_test_ffi", "native_received")
-fn native_received(name: List(atom.Atom), timeout: Int) -> Result(Dynamic, Nil)
-
-@external(erlang, "fabric_test_ffi", "native_detach")
-fn native_detach(id: Dynamic) -> Nil
 
 fn release(attachments: List(sinal.Attachment)) -> Nil {
   list.each(attachments, fn(attachment) {
@@ -301,9 +277,8 @@ pub fn unreported_usage_is_observed_as_unknown_not_zero_test() {
   ])
   // An unreported attempt carries no token keys at all, so a plain
   // `:telemetry` handler cannot mistake it for a reported zero.
-  let raw =
-    native_measurements(o.model_turn(), None, o.ModelTurn("r", 1, o.Retry))
-  raw |> should.equal(dynamic.properties([]))
+  fields.encode(sinal.measurement_fields(o.model_turn()), None)
+  |> should.equal(dynamic.properties([]))
 }
 
 /// A handler that returns an error and one that crashes are detached by

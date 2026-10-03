@@ -90,7 +90,7 @@ pub fn main() -> Nil {
   let assert Ok(handle) =
     graph.start(runtime(runs, client, settings, model), id, "2 + 2 = 4")
   let assert Ok(done) = graph.await(handle, 30_000)
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   let assert graph.Completed("approved") = done.status
   let assert [review, terminal] = done.receipts
   terminal.node |> io.println

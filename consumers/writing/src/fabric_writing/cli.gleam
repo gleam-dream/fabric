@@ -82,7 +82,7 @@ pub fn main() -> Nil {
     }
     _ -> panic as "reviewer must be llm or typesafe"
   }
-  let _ = http_gun.stop(http)
+  http_gun.stop(http)
   Nil
 }
 

@@ -38,12 +38,15 @@ pub fn replacing_decision_production_preserves_typed_graph_routes_test() {
         demo.decision_codec(),
       )
     let assert Ok(client) =
-      http_testing.start(http_config.default(), [
-        testing.structured_exchange(
-          expected,
-          testing.text(raw) |> testing.with_usage(usage),
-        ),
-      ])
+      http_testing.playback(
+        http_testing.script([
+          testing.structured_exchange(
+            expected,
+            testing.text(raw) |> testing.with_usage(usage),
+          ),
+        ]),
+        http_config.default(),
+      )
     let runs = store.in_memory(process.new_name("decision-consumer"))
     let assert Ok(Nil) = store.start(runs)
     let runtime = demo.runtime(runs, client, testing.config(), model)
@@ -61,6 +64,6 @@ pub fn replacing_decision_production_preserves_typed_graph_routes_test() {
     receipt.usage |> should.equal(Some(usage))
     let assert llm.Answer(_, original) = receipt.outcome
     original |> should.equal(raw)
-    let assert Ok(Nil) = http_gun.stop(client)
+    http_gun.stop(client)
   })
 }

@@ -268,7 +268,8 @@ pub fn tool_catalog_is_rejected_before_network_io_test() {
 
 pub fn preparation_and_proven_unsent_failures_are_definite_test() {
   // Offline playback with no exchanges proves the second request unsent.
-  let assert Ok(client) = http_testing.start(http_config.default(), [])
+  let assert Ok(client) =
+    http_testing.playback(http_testing.script([]), http_config.default())
   let invalid =
     config.with_deadlines(testing.config(), types.Deadlines(0, 1, 1))
   [invalid, testing.config()]
@@ -283,7 +284,7 @@ pub fn preparation_and_proven_unsent_failures_are_definite_test() {
     let assert graph.Failed(graph.OperationFailed(_)) = done.status
     done.receipts |> should.equal([])
   })
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
 }
 
 pub fn receipt_codec_rejects_changed_contracts_corruption_and_mismatched_native_values_test() {

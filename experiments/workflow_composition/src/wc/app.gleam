@@ -117,8 +117,8 @@ pub fn book_trip(probe: Probe) -> Tool {
       probe.record(probe, "flight:reserve:" <> city)
       Ok("FL-" <> city)
     })
-    |> saga.undo(fn(_, flight) {
-      probe.record(probe, "flight:release:" <> flight)
+    |> saga.undo(fn(undo) {
+      probe.record(probe, "flight:release:" <> undo.output)
       Ok(Nil)
     })
   let reserve_hotel =
@@ -135,8 +135,8 @@ pub fn book_trip(probe: Probe) -> Tool {
         }
       }
     })
-    |> saga.undo(fn(_, hotel) {
-      probe.record(probe, "hotel:release:" <> hotel)
+    |> saga.undo(fn(undo) {
+      probe.record(probe, "hotel:release:" <> undo.output)
       Ok(Nil)
     })
   let charge =
@@ -168,7 +168,7 @@ pub fn book_trip(probe: Probe) -> Tool {
       decode.failure(NoHotel(""), "unused"),
     ),
     workflow,
-    execution.Config(..execution.config(), max_concurrency: 1),
+    execution.config() |> execution.with_max_concurrency(1),
   )
 }
 

@@ -1,7 +1,6 @@
 -module(fabric_test_ffi).
 -export([temp_dir/0, remove_dir/1, list_dir/1, write_file/2, read_file/1, age_file/2, waits_on/2, waits_in/2,
-         suspend/1, resume/1, queued/1, leasing/0, set_leasing/1,
-         native_attach/1, native_received/2, native_detach/1]).
+         suspend/1, resume/1, queued/1, leasing/0, set_leasing/1]).
 
 %% A fresh, empty directory under the system temporary directory.
 temp_dir() ->
@@ -83,24 +82,4 @@ leasing() ->
 
 set_leasing(Leasing) ->
     put(fabric_test_leasing, Leasing),
-    nil.
-
-%% A plain `:telemetry` handler on Name that sends the measurement map it
-%% receives to the attaching process, as any native consumer would see it.
-native_attach(Name) ->
-    Id = {fabric_native_capture, make_ref()},
-    Self = self(),
-    ok = telemetry:attach(Id, Name, fun(Event, Measurements, _Metadata, _) ->
-        Self ! {fabric_native_event, Event, Measurements}
-    end, nil),
-    Id.
-
-native_received(Name, Timeout) ->
-    receive
-        {fabric_native_event, Name, Measurements} -> {ok, Measurements}
-    after Timeout -> {error, nil}
-    end.
-
-native_detach(Id) ->
-    _ = telemetry:detach(Id),
     nil.

@@ -8,7 +8,6 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{Some}
 import saga
 import saga/execution
 import wc/agent.{type ActionId}
@@ -116,12 +115,10 @@ fn start_batch(
         )
       })
     let config =
-      execution.Config(
-        ..execution.config(),
-        max_concurrency: hooks.max_in_flight,
-        step_timeout: Some(settings.step_timeout),
-        settle_timeout: settings.settle_timeout,
-      )
+      execution.config()
+      |> execution.with_max_concurrency(hooks.max_in_flight)
+      |> execution.with_step_timeout(settings.step_timeout)
+      |> execution.with_settle_timeout(settings.settle_timeout)
     let assert Ok(batch) = execution.start(workflow, Nil, config)
     process.send(parent, BatchStarted(number, batch))
     let reports = case await(batch) {
@@ -198,8 +195,8 @@ fn action_step(
   })
   // One crashing or timed-out tool must not fail its siblings' batch:
   // Saga's recovery decision turns it into an uncertain effect.
-  |> saga.compensate(max_attempts: 1, with: fn(_, failure, _) {
-    case failure {
+  |> saga.compensate(max_attempts: 1, with: fn(failed) {
+    case failed.failure {
       saga.Crashed(crash) ->
         saga.Continue(
           Ran(id, tool.Uncertain("tool crashed: " <> crash.reason)),

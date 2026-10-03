@@ -5,8 +5,12 @@
 //// attempt, recovery decision and undo that ended without a result (it
 //// crashed or its process exited, it was killed at its time bound, or it
 //// was killed when the settle window closed) as an `UnknownEffect`, when
-//// it ended, whatever was decided afterwards: `execution.unknown_effects`
-//// is `[]` exactly when every action returned `Ok` or a typed error. A
+//// it ended, whatever was decided afterwards. It records an attempt that
+//// returned a typed error its step marks with `saga.unknown_when` the same
+//// way (`ActionReturnedUnknown`): the error says the effect may have
+//// happened, such as a refund the provider may have taken, so the call is
+//// uncertain, never a definite failure. `execution.unknown_effects` is `[]`
+//// exactly when every action returned `Ok` or an unmarked typed error. A
 //// typed error of an undo or of a recovery decision's cleanup, a step with
 //// no undo, and a held step are known effects left in place, reported by
 //// the settlement.
@@ -154,6 +158,8 @@ fn describe_effect(effect: execution.UnknownEffect) -> String {
     execution.ActionCrashed(_) -> " crashed"
     execution.ActionTimedOut -> " timed out"
     execution.ActionInterrupted -> " was interrupted"
+    execution.ActionReturnedUnknown ->
+      " returned an error after which its effect is unknown"
   }
 }
 

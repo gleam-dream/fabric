@@ -79,7 +79,8 @@ fn book_trip(
       report(reports, "flight:reserve:" <> trip.city)
       Ok("FL-" <> trip.city)
     })
-    |> saga.undo(fn(trip: Trip, flight) {
+    |> saga.undo(fn(undo: saga.UndoRequest(Trip, String)) {
+      let saga.UndoRequest(input: trip, output: flight, ..) = undo
       report(reports, "flight:release:" <> flight)
       case trip.city {
         "Mordor" | "Latemordor" -> Error(ReleaseRefused(flight))
@@ -100,7 +101,8 @@ fn book_trip(
         }
       }
     })
-    |> saga.undo(fn(pair: #(Trip, String), hotel) {
+    |> saga.undo(fn(undo: saga.UndoRequest(#(Trip, String), String)) {
+      let saga.UndoRequest(input: pair, output: hotel, ..) = undo
       case pair.0.city {
         "Lateslow" -> report(reports, "gate:hotel:release:" <> hotel)
         _ -> report(reports, "hotel:release:" <> hotel)
@@ -121,8 +123,8 @@ fn book_trip(
         False -> Ok(Itinerary(flight, hotel, "CH-1"))
       }
     })
-    |> saga.compensate(max_attempts: 2, with: fn(pair, _, _) {
-      let #(#(trip, _), _) = pair
+    |> saga.compensate(max_attempts: 2, with: fn(failed) {
+      let #(#(trip, _), _) = failed.input
       case trip.city {
         "Retrytown" -> saga.Retry
         _ -> {
@@ -160,26 +162,22 @@ fn trip_definition() -> tool.Definition(Trip, Itinerary) {
 }
 
 fn trip_tool(reports: Subject(Report), rollback_within: Int) -> tool.Tool(Nil) {
-  let assert Ok(tool) =
-    fabric_saga.tool(
-      trip_definition(),
-      book_trip(reports),
-      // A cancelled run lets an in-flight step settle this long before
-      // killing it and undoing what completed.
-      execution.Config(
-        ..execution.config(),
-        max_concurrency: 1,
-        settle_timeout: 50,
-      ),
-      explain: fn(error) {
-        case error {
-          NoHotel(city) -> "no hotel in " <> city
-          CardDeclined -> "the card was declined"
-        }
-      },
-      rollback_within:,
-    )
-  tool
+  fabric_saga.tool(
+    trip_definition(),
+    book_trip(reports),
+    // A cancelled run lets an in-flight step settle this long before
+    // killing it and undoing what completed.
+    execution.config()
+      |> execution.with_max_concurrency(1)
+      |> execution.with_settle_timeout(50),
+    explain: fn(error) {
+      case error {
+        NoHotel(city) -> "no hotel in " <> city
+        CardDeclined -> "the card was declined"
+      }
+    },
+    rollback_within:,
+  )
 }
 
 /// Books `city` once, then answers with every tool result it saw.
@@ -412,14 +410,34 @@ pub fn an_outcome_after_the_run_ended_is_refused_test() {
   |> should.be_true
 }
 
-pub fn an_invalid_config_is_refused_before_anything_runs_test() {
+/// Saga checks the configuration when the call starts the workflow: a
+/// configuration it refuses is a definite failure that names the violation,
+/// and no step runs.
+pub fn an_invalid_config_fails_the_call_before_any_step_runs_test() {
   let reports = process.new_subject()
-  fabric_saga.tool(
-    trip_definition(),
-    book_trip(reports),
-    execution.Config(..execution.config(), max_concurrency: 0),
-    explain: fn(_) { "" },
-    rollback_within: 5000,
-  )
-  |> should.equal(Error([execution.MaxConcurrencyNotPositive(0)]))
+  let misconfigured =
+    fabric_saga.tool(
+      trip_definition(),
+      book_trip(reports),
+      execution.config() |> execution.with_max_concurrency(0),
+      explain: fn(_) { "" },
+      rollback_within: 5000,
+    )
+  let assert Ok(agent) =
+    agent.new(
+      "traveller",
+      traveller("Porto"),
+      [misconfigured],
+      policy.always_allow(),
+    )
+    |> agent.build
+  let assert Ok(run) = fabric.start(watched.memory(), agent, Nil, "book")
+  let message =
+    "{\"error\":\"the workflow is misconfigured: "
+    <> execution.describe_config_error(execution.MaxConcurrencyNotPositive(0))
+    <> "\"}"
+  fabric.await(run, 5000)
+  |> should.equal(Ok(run.Finished(run.Completed(message))))
+  action_state(run) |> should.equal(run.ToolFailed(message))
+  reported(reports) |> should.equal([])
 }

@@ -24,6 +24,7 @@ import gleeunit/should
 import http_gun
 import http_gun/cassette
 import http_gun/config as http_config
+import http_gun/testing as http_testing
 import json/blueprint/codec
 import llm_wire/config
 import llm_wire/provider/openai
@@ -398,13 +399,13 @@ pub fn blueprint_descriptions_reach_the_outgoing_provider_schema_test() -> Nil {
 pub fn a_disk_cassette_runs_through_the_public_fabric_flow_test() -> Nil {
   let assert Ok(tape) = cassette.load("test/fixtures/llm/hello.json", 10_000)
   // Offline playback: an unmatched or extra request fails; nothing is sent.
-  let assert Ok(client) = cassette.playback(tape, http_config.default())
+  let assert Ok(client) = http_testing.playback(tape, http_config.default())
   let assert Ok(key) = types.api_key("local-script-key")
   let settings = config.openai(openai.options(key))
   let assert Ok(started) =
     fabric.start(support.store(), text_agent(client, settings, 2), Nil, "Hello")
   fabric.await(started, 5000)
   |> should.equal(Ok(run.Finished(run.Completed("from disk cassette"))))
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   Nil
 }

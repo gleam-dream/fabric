@@ -1707,19 +1707,24 @@ adopted here:
 ## Tested sibling revisions
 
 Fabric resolves its siblings as `../` path dependencies, each checked out on
-its default branch. The follow-up builder migration gate on 2026-10-02
-(the Sinal record builder and the json_blueprint `get:` getters) passed
-against these local revisions, each with a clean working tree; the wave is
-pushed only after every package passes:
+its default branch. The wave 3 migration gate on 2026-10-02 (HTTP Gun's
+`testing.playback` and schema 2 cassettes, Saga's `unknown_when`, setters
+and callback records, json_blueprint's `codec.placeholder` and Sinal's
+`measurement_fields`) passed against these local revisions, each with a
+clean working tree; the wave is pushed only after every package passes:
 
 | Package        | Revision  | Relationship                                                                     |
 | -------------- | --------- | -------------------------------------------------------------------------------- |
-| llm_wire       | `ea7c90b` | Direct dependency (`fabric/llm`, `fabric/graph/llm`); first client API `1c0ad61` |
-| http_gun       | `056536b` | Direct dependency: the caller-owned client the LLM adapters run on               |
-| json_blueprint | `bb4da39` | Direct dependency (tool and output codecs); `get:` getters                       |
-| sinal          | `6de2b69` | Direct dependency (`fabric/observation`); `use`/`include` record builder         |
-| saga           | `d4eef94` | Dependency of `integrations/fabric_saga` and the consumer only; not of Fabric    |
+| llm_wire       | `576482e` | Direct dependency (`fabric/llm`, `fabric/graph/llm`); first client API `1c0ad61` |
+| http_gun       | `1a5f5ef` | Direct dependency: the caller-owned client the LLM adapters run on               |
+| json_blueprint | `74a9a7d` | Direct dependency (tool and output codecs); `codec.placeholder`                  |
+| sinal          | `44c5395` | Direct dependency (`fabric/observation`); `measurement_fields`                   |
+| saga           | `2ee5e0a` | Dependency of `integrations/fabric_saga` and the consumer only; not of Fabric    |
 
+The follow-up builder migration gate on 2026-10-02 (the Sinal record builder
+and the json_blueprint `get:` getters) passed against llm_wire `ea7c90b`,
+http_gun `056536b`, json_blueprint `bb4da39`, sinal `6de2b69` and saga
+`d4eef94`.
 The Sinal and Blueprint wave 2 migration gate on 2026-10-02 passed against
 llm_wire `bc5d626`, http_gun `1dc20a1`, json_blueprint `f55ec09`, sinal
 `5aef827` and saga `43ae141`.

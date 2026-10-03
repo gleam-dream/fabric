@@ -127,6 +127,46 @@ pub fn a_crash_followed_by_abort_is_uncertain_test() {
   |> uncertain("attempt 1 of step charge crashed")
 }
 
+/// A typed error that the step marks with `saga.unknown_when` says the
+/// effect may have happened: Saga names the attempt with
+/// `ActionReturnedUnknown`, so the typed error is not explained to the
+/// model as a definite failure (SD-1: a refund the provider may have taken).
+pub fn a_typed_error_marked_unknown_is_uncertain_test() {
+  let result =
+    failed(
+      execution.StepFailed(at("refund"), "payment outcome unknown"),
+      with_unknown([
+        effect(
+          "refund",
+          execution.StepAttempt(1),
+          execution.ActionReturnedUnknown,
+        ),
+      ]),
+    )
+  result
+  |> uncertain(
+    "attempt 1 of step refund returned an error after which its effect is unknown",
+  )
+  let assert Error(verdict.Unknown(evidence)) = result
+  string.contains(evidence, "payment outcome unknown") |> should.be_false
+}
+
+pub fn a_marked_error_retried_to_success_is_uncertain_test() {
+  verdict.classify(
+    execution.CompletedWithUnknownEffects("out", [
+      effect(
+        "refund",
+        execution.StepAttempt(1),
+        execution.ActionReturnedUnknown,
+      ),
+    ]),
+    explain,
+  )
+  |> uncertain(
+    "attempt 1 of step refund returned an error after which its effect is unknown",
+  )
+}
+
 pub fn a_sibling_crash_in_the_settle_window_is_uncertain_test() {
   let settlement =
     execution.Settlement(

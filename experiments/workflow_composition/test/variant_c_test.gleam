@@ -15,7 +15,7 @@ import wc/variant_c.{ApprovalRequest, HoldForApproval, WaitInStep}
 const lisbon = "{\"city\":\"Lisbon\",\"celsius\":21}"
 
 fn config() -> execution.Config {
-  execution.Config(..execution.config(), settle_timeout: 50)
+  execution.config() |> execution.with_settle_timeout(50)
 }
 
 fn workflow(probe: Probe, mode: variant_c.ApprovalMode, max_turns: Int) {

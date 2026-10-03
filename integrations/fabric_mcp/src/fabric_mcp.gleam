@@ -3,8 +3,6 @@
 import fabric/graph/operation
 import fabric/run
 import fabric_mcp/client
-import gleam/dynamic
-import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -453,20 +451,8 @@ pub fn receipt_codec(
       }
     },
     schema: None,
-    placeholder: Receipt("", "", placeholder(output), ""),
+    placeholder: Receipt("", "", codec.placeholder(output), ""),
   )
-}
-
-/// A value of `output`'s type for `codec.custom`, which needs one; no
-/// operation reads it. A codec's decoder fails with its placeholder, so
-/// dropping the errors exposes it.
-fn placeholder(output: codec.Codec(output)) -> output {
-  let assert Ok(value) =
-    decode.run(
-      dynamic.nil(),
-      codec.decoder(output) |> decode.map_errors(fn(_) { [] }),
-    )
-  value
 }
 
 fn restore_result(

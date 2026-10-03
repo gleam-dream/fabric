@@ -13,7 +13,6 @@ import gleeunit
 import gleeunit/should
 import http_gun
 import http_gun/config as http_config
-import http_gun/fixture
 import http_gun/testing as http_testing
 import json/blueprint/codec
 import llm_wire/session
@@ -70,7 +69,7 @@ pub fn approval_survives_restart_without_repeating_generation_or_review_test() {
   |> should.equal(Ok("The library opens on 12 May, with free admission.\n"))
   graph.approve(handle, first) |> should.be_error
   stop_store(owner, runs)
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   remove_dir(directory)
 }
 
@@ -142,7 +141,10 @@ fn review(decision: domain.Decision) -> Turn {
 fn script(brief: String, turns: List(Turn)) -> http_gun.Client {
   let start = domain.Draft(domain.Text(source_text, brief, ""), 0)
   let assert Ok(client) =
-    http_testing.start(http_config.default(), exchanges(start, turns, []))
+    http_testing.playback(
+      http_testing.script(exchanges(start, turns, [])),
+      http_config.default(),
+    )
   client
 }
 
@@ -151,8 +153,8 @@ fn script(brief: String, turns: List(Turn)) -> http_gun.Client {
 fn exchanges(
   current: domain.Draft,
   turns: List(Turn),
-  done: List(fixture.Exchange),
-) -> List(fixture.Exchange) {
+  done: List(http_testing.Exchange),
+) -> List(http_testing.Exchange) {
   case turns {
     [] -> list.reverse(done)
     [Generate(body), ..rest] -> {
@@ -217,7 +219,7 @@ fn fixture(
 
 fn close(fixture: Fixture) -> Nil {
   stop_store(fixture.owner, fixture.runs)
-  let assert Ok(Nil) = http_gun.stop(fixture.client)
+  http_gun.stop(fixture.client)
   remove_dir(fixture.directory)
 }
 
@@ -325,7 +327,7 @@ pub fn absent_source_stops_before_a_provider_call_test() {
   let assert graph.Failed(_) = done.status
   // The source activation failed, so no generation was ever started.
   done.receipts |> should.equal([])
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   stop_store(owner, runs)
   remove_dir(directory)
 }

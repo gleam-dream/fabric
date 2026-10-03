@@ -29,6 +29,21 @@ integration packages under `integrations/` keep their own changelogs.
 
 ### Changed
 
+- Fabric and its packages build on the wave 3 APIs of HTTP Gun and Saga.
+  The tests play cassettes with `http_gun/testing.playback`, and
+  `test/fixtures/llm/hello.json` is converted to HTTP Gun's cassette schema
+  2 with every header and byte unchanged.
+- **Breaking:** `fabric_saga.tool` returns the tool instead of a `Result`.
+  Saga no longer validates a configuration ahead of a run: a configuration
+  it refuses fails the call definitely, naming every violation, before any
+  step runs.
+- `fabric_saga` reports an attempt that returned an error its step marks
+  with `saga.unknown_when` (`ActionReturnedUnknown`) as an uncertain effect,
+  never a definite failure: a refund the provider may have taken waits for
+  reconciliation instead of reaching the model as a failure it could retry.
+- `fabric/graph/llm` and `fabric_mcp` derive their codec placeholders with
+  json_blueprint's `codec.placeholder`; `fabric_mcp` no longer decodes `nil`
+  to obtain one. Stored receipts are unchanged.
 - Fabric builds on the wave 2 APIs of Sinal and json_blueprint. Events are
   emitted with `sinal.emit`, which follows the application's forwarder
   routes as `forwarder.emit_routed` did; the event names and metadata keys

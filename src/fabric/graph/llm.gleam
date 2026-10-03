@@ -138,12 +138,12 @@ pub fn receipt_codec(
       }
     },
     schema: None,
-    placeholder: Receipt("", Refusal(""), None),
+    placeholder: codec.placeholder(receipt_fields(output)),
   )
 }
 
 fn receipt_fields(output: codec.Codec(output)) -> codec.Codec(Receipt(output)) {
-  {
+  let fields = {
     use Nil <- codec.field(
       "format",
       codec.string_enum([#("fabric.graph.llm.v2", Nil)]),
@@ -158,10 +158,11 @@ fn receipt_fields(output: codec.Codec(output)) -> codec.Codec(Receipt(output)) {
     })
     codec.success(Receipt(model:, outcome:, usage:))
   }
-  |> codec.try_map(
+  codec.try_map(
+    fields,
     decode: checked_receipt,
     encode: checked_receipt,
-    placeholder: Receipt("", Refusal(""), None),
+    placeholder: codec.placeholder(fields),
   )
 }
 
@@ -291,7 +292,7 @@ fn legacy_receipt_fields(
       checked_receipt(Receipt(model, outcome, usage))
     },
     encode: fn(_) { Error("fabric.graph.llm.v1 receipts are read only") },
-    placeholder: Receipt("", Refusal(""), None),
+    placeholder: codec.placeholder(receipt_fields(output)),
   )
 }
 
