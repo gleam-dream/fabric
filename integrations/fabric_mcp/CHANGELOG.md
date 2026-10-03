@@ -6,6 +6,12 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Changed
+
+- The frame admission of the stdio port moves to
+  `fabric_mcp/internal/frame`; `client.Frame` and `client.admit_frame` are no
+  longer public.
+
 ### Added
 
 - A bounded, application-owned MCP `2026-07-28` stdio client
@@ -17,8 +23,6 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `fabric_mcp.bind` turns a discovered tool into a policy-gated graph
   operation whose `Receipt` keeps the native value and the original RPC
   response, and restores without another call.
-
-### Changed
 
 - **Breaking:** `client.Options.timeout` and
   `client.request_with_timeout`'s timeout are `Duration`s (default 10 s).

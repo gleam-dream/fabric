@@ -141,9 +141,12 @@ pub type Status(answer) {
   Expired(due: Int, disposition: Cancellation)
 }
 
+/// Where an activation's accepted result led.
 pub type Route {
   Next(node: String)
   Finished
+  /// The run was stopping (cancelled, or past a deadline) when the result
+  /// arrived: it was kept, and routed nowhere.
   Stopped
 }
 

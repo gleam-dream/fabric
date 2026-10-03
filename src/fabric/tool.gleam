@@ -189,7 +189,7 @@ pub fn bind_settling(
 /// Blocks until the run has recorded or refused it. A refusal is observed
 /// (`settlement_refused`) with `summary`: what a person needs to reconcile
 /// the action when the run did not record the settlement. The summary goes
-/// to observation handlers, so it must not carry secrets.
+/// to telemetry handlers, so it must not carry secrets.
 pub fn settle(
   settlement: Settlement(output),
   result: Result(output, Failure),

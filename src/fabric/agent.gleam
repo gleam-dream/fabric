@@ -79,7 +79,7 @@ pub type Limits {
     model_retry_delay: Duration,
     /// How long a command (`approve`, `reject`, `cancel`, `reconcile`)
     /// waits for the run's live runner to take it. A runner busy for longer
-    /// (for example held by a synchronous observation handler) refuses the
+    /// (for example held by a synchronous telemetry handler) refuses the
     /// command with `fabric.RunnerBusy`, and never applies it later. At most
     /// 2^32 - 1 ms.
     command_timeout: Duration,

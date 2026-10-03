@@ -4,8 +4,8 @@ A PostgreSQL store for [Fabric](../../README.md) runs, for one node or
 several nodes that share one database. Each run is one row of the table
 `fabric_runs`: its latest record as text (the exact bytes Fabric wrote), its
 revision, and its lease (an owner and an expiry). The package implements
-Fabric's leased backend contract (`fabric/store`, Leases) and passes its
-conformance checks (`fabric/testing.leased_backend_checks`).
+Fabric's leased backend contract (`fabric/store/backend`, Leases) and passes
+its conformance checks (`fabric/store/conformance.checks`).
 
 It depends on `fabric` and `pog` (4.1, over `pgo` 0.20), not on Grind. It is
 developed and tested against PostgreSQL 16.
@@ -50,24 +50,25 @@ The store is then used like any Fabric store: `fabric.start(runs, ...)`,
 
 ## Automatic recovery
 
-Build one recovery registration per root definition. An agent
-registration receives the root run id, including when an expired child
-triggered the scan:
+Build one root registration per root definition. An agent root receives
+the root run id, including when an expired child triggered the scan:
 
 ```gleam
-let recoveries = [fabric.recovery(root_agent, context_for_run)]
-let assert Ok(sweeper) = fabric.sweeper(runs, recoveries, every: duration.seconds(1))
+let roots = [sweeper.agent(root_agent, context: context_for_run)]
+let assert Ok(subtree) =
+  sweeper.supervised(runs, roots, every: duration.seconds(1))
 ```
 
-For graph roots, add `graph.recovery(identity, build_runtime)` to the same
-list. The factory receives the pinned store and must rebuild the complete
+For graph roots, add `sweeper.graph(identity, build: build_runtime)` to the
+same list. The factory receives the pinned store and must rebuild the complete
 graph, including managed child runtimes, against it. Agent and graph
 registrations may share a name/version; duplicates within one runtime kind
 are rejected. Saved reciprocal attachments determine which root to recover.
 A graph-owned agent is recovered through its graph registration.
 
-Add `sweeper` after `store.supervised(runs)` in the rest-for-one supervisor.
-The order is pool, optional Sinal forwarder, store, sweeper. Shutdown stops
+Add `subtree` to the application's supervisor in place of
+`store.supervised(runs)`: it supervises the store's subtree and then the
+sweeper. The order is pool, optional Sinal forwarder, then `subtree`. Shutdown stops
 the sweeper before runners drain and keeps the pool available until their
 handoffs are committed. Apply migrations before enabling recovery; a scan
 against an unmigrated database reports a failure and retries next interval.
@@ -78,7 +79,7 @@ and never overlaps the next scan. Each root's recovery has 30 seconds,
 including at most 5 seconds to rebuild context. Invalid intervals, duplicate
 registrations, and unleased stores are rejected before startup. Unknown
 identities and failed recoveries leave their claims to expire; observe
-`fabric/observation.sweep()` for counts. No run context is stored by Fabric.
+`fabric/telemetry.sweep()` for counts. No run context is stored by Fabric.
 
 Free managed waits remain discoverable after losing local wakeups, including
 blocked children and unresolved child cancellation. An unchanged wait does
@@ -257,7 +258,7 @@ unreadable records, mismatched attachments and unacknowledged children retain
 the whole family. A new settlement starts its member's retention interval
 again. A child is never pruned alone.
 
-Fabric's `fabric/retention` projection uses the actual agent and graph record
+Fabric's `fabric/store/retention` projection uses the actual agent and graph record
 decoders. It includes each parent/child attachment and whether the run settled.
 Attachment keys are escaped JSON text, so a provider call ID containing NUL
 does not become a NUL in PostgreSQL's index. The original record remains

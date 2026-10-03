@@ -1946,7 +1946,7 @@ pub fn command(
 pub type LiveError {
   LiveRefused(controller.Rejection)
   /// The runner did not take the command within the timeout, or the
-  /// caller is the runner itself (a synchronous observation handler): the
+  /// caller is the runner itself (a synchronous telemetry handler): the
   /// command was not and will not be applied.
   LiveBusy
   /// The runner exited or lost the run before answering: read the record
