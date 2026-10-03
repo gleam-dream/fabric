@@ -139,6 +139,26 @@ pub fn application_with(
   application
 }
 
+/// An application whose top supervisor (one for one) has `children` only,
+/// for a child that brings its store's subtree (`sweeper.supervised`).
+pub fn application_of(
+  children: List(supervision.ChildSpecification(Nil)),
+) -> Application {
+  let reply = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let assert Ok(started) =
+      static_supervisor.new(static_supervisor.OneForOne)
+      |> add_children(children)
+      |> static_supervisor.start
+    let stop = process.new_subject()
+    process.send(reply, Application(started.pid, stop))
+    let assert Ok(Nil) = process.receive(stop, 60_000)
+    exit_shutdown()
+  })
+  let assert Ok(application) = process.receive(reply, 5000)
+  application
+}
+
 fn add_children(supervisor, children) {
   list.fold(children, supervisor, static_supervisor.add)
 }

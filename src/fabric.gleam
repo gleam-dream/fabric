@@ -75,7 +75,6 @@ import fabric/internal/run_id
 import fabric/internal/runner
 import fabric/internal/settlement
 import fabric/internal/store as store_core
-import fabric/internal/sweeper
 import fabric/run.{
   type ActionRef, type Answer, type ApprovalRef, type Incompatibility,
   type PendingApproval, type RunId, type Snapshot, type Status, id_to_string,
@@ -86,7 +85,6 @@ import gleam/erlang/process.{type Pid}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/supervision
 import gleam/result
 import gleam/time/duration.{type Duration}
 import sinal/correlation.{type Correlation}
@@ -791,6 +789,48 @@ pub fn cancel(run: Run(context)) -> Result(Status, CommandError) {
   |> result.map_error(command_error)
 }
 
+/// Cancels the run when `owner` stops, for a run that must not outlive the
+/// process that asked for it: a request handler, a connection, a Relay
+/// tool call. A watcher process monitors `owner` and `cancel`s the run as
+/// soon as `owner` exits, for any reason (also when it had already exited);
+/// it then stops. It also stops, cancelling nothing, once the run has
+/// finished. A suspended run is checked for its end every 5 seconds.
+///
+/// The watcher is not linked to the caller and is not supervised: a VM that
+/// stops takes it with it, and the run is then recovered like any other.
+/// Call it once per owner; each call adds one watcher.
+pub fn cancel_when_down(run: Run(context), owner owner: Pid) -> Nil {
+  let _ =
+    process.spawn_unlinked(fn() {
+      let monitor = process.monitor(owner)
+      let down =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(_) { Nil })
+      guard(run, down)
+    })
+  Nil
+}
+
+fn guard(run: Run(context), down: process.Selector(Nil)) -> Nil {
+  case await_with(run, within: duration.minutes(1), or: down) {
+    Ok(Interrupted(Nil)) -> {
+      let _ = cancel(run)
+      Nil
+    }
+    Ok(Reached(run.Finished(_))) -> Nil
+    // Suspended, unattended, or the store could not be read: nothing wakes
+    // the wait, so the run is read again a little later.
+    Ok(Reached(_)) | Error(_) ->
+      case process.selector_receive(down, 5000) {
+        Ok(Nil) -> {
+          let _ = cancel(run)
+          Nil
+        }
+        Error(Nil) -> guard(run, down)
+      }
+  }
+}
+
 /// Cancels the stored run `id` with no agent: for a run that cannot be
 /// recovered because its agent changed (another identity, or a pending tool
 /// that no longer exists). Cancelling a sub-agent run this way does not apply
@@ -1001,59 +1041,3 @@ fn describe_store(error: backend.StoreError) -> String {
 
 @external(erlang, "fabric_ffi", "now_ms")
 fn now() -> Int
-
-/// A registered root and its deployed recovery code. Construct with
-/// `fabric.recovery` for agents or `fabric/graph.recovery` for graphs.
-pub type Recovery =
-  sweeper.Recovery
-
-pub fn recovery(
-  agent: Agent(context),
-  context: fn(RunId) -> context,
-) -> Recovery {
-  sweeper.recovery(agent, context)
-}
-
-pub type SweeperError {
-  /// Shorter than 1 ms.
-  EveryNotPositive(Duration)
-  /// Longer than the longest timer the runtime can set (`limit`, 2^32 - 1
-  /// ms).
-  EveryTooLarge(value: Duration, limit: Duration)
-  DuplicateRecovery(run.DefinitionId)
-  StoreNotLeased
-}
-
-/// A supervised recovery driver for a leased store. Add it after the store
-/// in a rest-for-one supervisor: it stops before runners drain. It scans
-/// at boot, then waits `every` after each bounded batch of at
-/// most 50 expired leases and 50 changed idle dependencies. No scans overlap.
-/// Each candidate is recovered
-/// through its registered agent or graph root; a crashed running effect
-/// becomes uncertain according to its recovery contract.
-///
-/// Context construction has 5 seconds; each root recovery has 30 seconds.
-/// A failure or unknown identity leaves its claim to expire and does not
-/// prevent the next root's recovery. `telemetry.sweep` reports each scan;
-/// synchronous sweep handlers have 1 second before their emitter is stopped.
-/// Held work waits for lease expiry; explicit `recover` can take an earlier
-/// local lease at once. Free managed waits remain discoverable after losing
-/// local wakeups. Signal waits without a deadline require explicit delivery.
-pub fn sweeper(
-  store: Store,
-  recoveries: List(Recovery),
-  every every: Duration,
-) -> Result(supervision.ChildSpecification(Nil), List(SweeperError)) {
-  sweeper.new(store, recoveries, duration.to_milliseconds(every))
-  |> result.map_error(fn(errors) {
-    list.map(errors, fn(error) {
-      case error {
-        sweeper.EveryNotPositive(_) -> EveryNotPositive(every)
-        sweeper.EveryTooLarge(_) ->
-          EveryTooLarge(every, duration.milliseconds(longest_timer))
-        sweeper.DuplicateRecovery(identity) -> DuplicateRecovery(identity)
-        sweeper.StoreNotLeased -> StoreNotLeased
-      }
-    })
-  })
-}

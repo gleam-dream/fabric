@@ -15,6 +15,7 @@ import fabric/policy
 import fabric/run
 import fabric/store
 import fabric/store/backend
+import fabric/sweeper
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -355,18 +356,17 @@ pub fn owned_job_cancellation_survives_postgres_restart_and_sweeps_before_prunin
     job.RequestAccepted,
     operation.CancellationRequested,
   ))
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(sweeper_pid) =
+    sweeper.start(
       runs,
-      [graph.recovery(run.DefinitionId("pg-owned-job", 1), build)],
+      [sweeper.graph(run.DefinitionId("pg-owned-job", 1), build)],
       every: duration.milliseconds(20),
     )
-  let assert Ok(sweeper) = spec.start()
   let done = await_owned_settlement(handle, 300)
   done.status |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
   released(settings, id, 200) |> should.be_true
-  process.unlink(sweeper.pid)
-  agents.kill(sweeper.pid)
+  process.unlink(sweeper_pid)
+  agents.kill(sweeper_pid)
   // The root and its shared-capacity ledger settle and prune together.
   fabric_postgres.prune(
     settings,
@@ -417,13 +417,12 @@ pub fn a_postgres_sweeper_retains_the_next_poll_across_store_loss_test() {
       let assert Ok(waiting) =
         graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.AwaitingJob(reference) = waiting.status
-      let assert Ok(spec) =
-        fabric.sweeper(
+      let assert Ok(_) =
+        sweeper.start(
           runs,
-          [graph.recovery(run.DefinitionId("pg-scheduled-job", 1), build)],
+          [sweeper.graph(run.DefinitionId("pg-scheduled-job", 1), build)],
           every: duration.milliseconds(20),
         )
-      let assert Ok(_) = spec.start()
       #(runs, reference)
     })
   process.receive(observed, 5000) |> should.equal(Ok(Nil))
@@ -441,18 +440,17 @@ pub fn a_postgres_sweeper_retains_the_next_poll_across_store_loss_test() {
   let handle = graph.attach(build(runs), id)
   let assert Ok(waiting) = graph.read(handle)
   waiting.status |> should.equal(graph.AwaitingJob(reference))
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(sweeper_pid) =
+    sweeper.start(
       runs,
-      [graph.recovery(run.DefinitionId("pg-scheduled-job", 1), build)],
+      [sweeper.graph(run.DefinitionId("pg-scheduled-job", 1), build)],
       every: duration.milliseconds(20),
     )
-  let assert Ok(sweeper) = spec.start()
   let done = await_idle_completion(handle, 300)
   done.status |> should.equal(graph.Completed(42))
   released(settings, id, 200) |> should.be_true
-  process.unlink(sweeper.pid)
-  agents.kill(sweeper.pid)
+  process.unlink(sweeper_pid)
+  agents.kill(sweeper_pid)
 }
 
 pub fn managed_pair(
@@ -497,20 +495,19 @@ pub fn an_idle_parent_discovers_a_completed_child_after_losing_its_wakeup_test()
   done.status |> should.equal(graph.Completed(42))
   released(settings, id, 200) |> should.be_true
   released(settings, reference.child, 200) |> should.be_true
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(sweeper_pid) =
+    sweeper.start(
       runs,
       [
-        graph.recovery(run.DefinitionId("pg-parent", 1), fn(pinned) {
+        sweeper.graph(run.DefinitionId("pg-parent", 1), fn(pinned) {
           managed_pair(pinned).0
         }),
       ],
       every: duration.milliseconds(20),
     )
-  let assert Ok(sweeper) = spec.start()
   await_idle_completion(handle, 150).status |> should.equal(graph.Completed(42))
-  process.unlink(sweeper.pid)
-  agents.kill(sweeper.pid)
+  process.unlink(sweeper_pid)
+  agents.kill(sweeper_pid)
 }
 
 fn await_idle_completion(handle, tries) {
@@ -664,11 +661,11 @@ pub fn child_cancellation_settlement_survives_postgres_restart_test() {
   let handle = graph.attach(parent, id)
   let assert Ok(child_handle) = graph.child(handle, reference.activation, child)
   let assert Ok(_) = graph.reconcile(child_handle, reconciliation, "42")
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(sweeper_pid) =
+    sweeper.start(
       runs,
       [
-        graph.recovery(run.DefinitionId("pg-parent", 1), fn(pinned) {
+        sweeper.graph(run.DefinitionId("pg-parent", 1), fn(pinned) {
           managed_pair_with(pinned, perform, fn(_, _) {
             panic as "settlement must not admit work"
           }).0
@@ -676,10 +673,9 @@ pub fn child_cancellation_settlement_survives_postgres_restart_test() {
       ],
       every: duration.milliseconds(20),
     )
-  let assert Ok(sweeper) = spec.start()
   let settled = await_settlement(handle, 150)
-  process.unlink(sweeper.pid)
-  agents.kill(sweeper.pid)
+  process.unlink(sweeper_pid)
+  agents.kill(sweeper_pid)
   settled.status |> should.equal(graph.Cancelled(graph.ChildSettled(reference)))
   settled.value |> should.equal(41)
   settled.receipts |> should.equal([])
@@ -882,17 +878,16 @@ pub fn a_registered_graph_recovers_its_agent_after_postgres_store_loss_test() {
   let assert Ok(runs) =
     fabric_postgres.store(process.new_name("sweep-restored"), settings)
   let assert Ok(Nil) = store.start(runs)
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(sweeper_pid) =
+    sweeper.start(
       runs,
       [
-        graph.recovery(run.DefinitionId("pg-agent-graph", 1), fn(pinned) {
+        sweeper.graph(run.DefinitionId("pg-agent-graph", 1), fn(pinned) {
           managed_agent(pinned, gate).0
         }),
       ],
       every: duration.milliseconds(20),
     )
-  let assert Ok(sweeper) = spec.start()
   let #(runtime, worker) = managed_agent(runs, gate)
   let handle = graph.attach(runtime, graph.id(handle))
   let effect = swept_uncertainty(handle, 150)
@@ -901,8 +896,8 @@ pub fn a_registered_graph_recovers_its_agent_after_postgres_store_loss_test() {
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed("done: effect confirmed"))
   agents.another(gate, 0) |> should.be_false
-  process.unlink(sweeper.pid)
-  agents.kill(sweeper.pid)
+  process.unlink(sweeper_pid)
+  agents.kill(sweeper_pid)
 }
 
 fn swept_uncertainty(handle, tries) {

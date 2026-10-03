@@ -22,6 +22,7 @@ import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
+import fabric/sweeper
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/time/duration
@@ -374,16 +375,15 @@ pub fn a_sweeper_settles_nested_cleanup_after_expiration_without_a_working_clock
   let assert graph.Expired(_, graph.ChildUnresolved(_, _)) = before.status
   probe.record(clock, "offline")
   probe.record(terminal, "completed")
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(started) =
+    sweeper.start(
       runs,
-      [graph.recovery(run.DefinitionId("child-deadline", 1), build)],
+      [sweeper.graph(run.DefinitionId("child-deadline", 1), build)],
       every: duration.milliseconds(10),
     )
-  let assert Ok(started) = spec.start()
   let done = settled(handle, 300)
-  process.unlink(started.pid)
-  restart.kill(started.pid)
+  process.unlink(started)
+  restart.kill(started)
   done.status |> should.equal(graph.Expired(due, graph.ChildSettled(reference)))
   done.receipts |> should.equal([])
 }

@@ -5,6 +5,7 @@ import fabric
 import fabric/run
 import fabric/store
 import fabric/store/backend
+import fabric/sweeper
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -84,16 +85,15 @@ pub fn a_killed_peer_is_recovered_once_without_replaying_its_tool_test() {
     |> fabric_postgres.with_lease(duration.milliseconds(lease))
   let assert Ok(runs) =
     fabric_postgres.store(process.new_name("fabric_survivor_runs"), settings)
-  let assert Ok(sweeper) =
-    fabric.sweeper(
+  let assert Ok(subtree) =
+    sweeper.supervised(
       runs,
-      [fabric.recovery(agent, fn(_) { Nil })],
+      [sweeper.agent(agent, fn(_) { Nil })],
       every: duration.milliseconds(25),
     )
   let assert Ok(_) =
-    static_supervisor.new(static_supervisor.RestForOne)
-    |> static_supervisor.add(store.supervised(runs))
-    |> static_supervisor.add(sweeper)
+    static_supervisor.new(static_supervisor.OneForOne)
+    |> static_supervisor.add(subtree)
     |> static_supervisor.start
   let assert Ok(seen) = fabric.open(runs, agent, Nil, id)
 

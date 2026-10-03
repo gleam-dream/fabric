@@ -1,6 +1,5 @@
 //// D9–D13: database time arbitrates job deadlines and cleanup poll intervals.
 
-import fabric
 import fabric/budget
 import fabric/graph
 import fabric/graph/definition
@@ -10,6 +9,7 @@ import fabric/policy
 import fabric/run
 import fabric/store
 import fabric/store/backend
+import fabric/sweeper
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -61,13 +61,12 @@ fn store(settings) {
 }
 
 fn sweep(runs, build) {
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(started) =
+    sweeper.start(
       runs,
-      [graph.recovery(run.DefinitionId("pg-job-deadline", 1), build)],
+      [sweeper.graph(run.DefinitionId("pg-job-deadline", 1), build)],
       every: duration.milliseconds(20),
     )
-  let assert Ok(started) = spec.start()
   started
 }
 
@@ -176,8 +175,8 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
   let done = expired(graph.attach(build(runs), id), 300)
   done.status |> should.equal(graph.Expired(due, graph.JobStopped(reference)))
   process.receive(requested, 0) |> should.equal(Error(Nil))
-  process.unlink(started.pid)
-  agents.kill(started.pid)
+  process.unlink(started)
+  agents.kill(started)
   released(backend, 300)
   fabric_postgres.prune(
     settings,

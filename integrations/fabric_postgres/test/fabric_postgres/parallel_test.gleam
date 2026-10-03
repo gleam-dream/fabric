@@ -1,6 +1,5 @@
 //// G9, F8: parallel dependencies survive store loss in the real database.
 
-import fabric
 import fabric/graph
 import fabric/graph/definition
 import fabric/graph/operation
@@ -9,6 +8,7 @@ import fabric/policy
 import fabric/run
 import fabric/store
 import fabric/store/backend
+import fabric/sweeper
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -164,18 +164,17 @@ pub fn all_branch_revisions_are_claimed_once_and_swept_after_store_loss_test() {
   let assert Ok(waiting) = graph.read(first)
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Ok(_) = graph.deliver(first, reference, response(), 10)
-  let assert Ok(spec) =
-    fabric.sweeper(
+  let assert Ok(sweeper_pid) =
+    sweeper.start(
       runs,
-      [graph.recovery(run.DefinitionId("pg-parallel", 1), mapped)],
+      [sweeper.graph(run.DefinitionId("pg-parallel", 1), mapped)],
       every: duration.milliseconds(20),
     )
-  let assert Ok(sweeper) = spec.start()
   let done = await_done(root, 300)
   done.status |> should.equal(graph.Completed([10, 20, 30]))
   idle(backend, "pg-parallel", 200)
-  process.unlink(sweeper.pid)
-  agents.kill(sweeper.pid)
+  process.unlink(sweeper_pid)
+  agents.kill(sweeper_pid)
   fabric_postgres.prune(
     settings,
     ended_for: duration.milliseconds(0),
