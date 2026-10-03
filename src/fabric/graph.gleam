@@ -16,13 +16,19 @@ import fabric/graph/signal
 import fabric/internal/bounded
 import fabric/internal/budget/model as reservations
 import fabric/internal/graph/agent_child
+import fabric/internal/graph/attachment
 import fabric/internal/graph/child_driver
+import fabric/internal/graph/compiled
+import fabric/internal/graph/contract
 import fabric/internal/graph/controller as control
 import fabric/internal/graph/fork as scope
 import fabric/internal/graph/fork_driver
+import fabric/internal/graph/handle as graph_handle
 import fabric/internal/graph/live
+import fabric/internal/graph/managed
 import fabric/internal/graph/record
 import fabric/internal/graph/runner
+import fabric/internal/graph/signal as signal_contract
 import fabric/internal/run_id
 import fabric/internal/store as store_core
 import fabric/internal/sweeper
@@ -63,9 +69,10 @@ pub opaque type Runtime(context, state, answer) {
   )
 }
 
-pub opaque type Handle(context, state, answer) {
-  Handle(runtime: Runtime(context, state, answer), id: run.RunId)
-}
+/// A handle on one graph run, for the runtime it was started or opened
+/// with. It holds no process.
+pub type Handle(context, state, answer) =
+  graph_handle.Handle(Runtime(context, state, answer))
 
 /// Register a root graph for `fabric.sweeper`. The bounded factory rebuilds
 /// its complete runtime and children against the supplied pinned store.
@@ -81,7 +88,7 @@ pub fn recovery(
     )
     use Nil <- result.try(
       case
-        definition.identity(runtime.definition).identity == identity,
+        compiled.identity(runtime.definition).identity == identity,
         store_core.pid(runtime.store),
         store_core.pid(runs)
       {
@@ -225,7 +232,8 @@ pub fn new(
 ) -> Runtime(context, state, answer) {
   // Keep child runtimes in one deployed callback. The ordinary callbacks
   // capture the parent's codecs and routes, without copying descendant trees.
-  let #(definition, child, fork) = definition.detach_children(definition)
+  let compiled.Detached(definition, child, fork) =
+    compiled.detach_children(definition)
   let work =
     live.Work(
       admit: fn(id, activation) {
@@ -250,29 +258,29 @@ pub fn new(
         ))
         Ok(
           live.Admission(decision, fn() {
-            definition.invoke(definition, context, invocation, prepared)
+            compiled.invoke(definition, context, invocation, prepared)
           }),
         )
       },
       accept: fn(state, activation, output) {
-        use _ <- result.try(definition.check_join(
+        use _ <- result.try(compiled.check_join(
           definition,
           state,
           activation,
           output,
         ))
-        definition.accept(definition, state.value, activation.prepared, output)
+        compiled.accept(definition, state.value, activation.prepared, output)
       },
       check_output: fn(activation, output) {
-        definition.check_output(definition, activation.prepared, output)
+        compiled.check_output(definition, activation.prepared, output)
       },
       observe_job: fn(activation) {
-        definition.observe_job(definition, context(), activation.prepared)
+        compiled.observe_job(definition, context(), activation.prepared)
       },
       cancel_job: fn(id, activation) {
         let context = context()
         fn() {
-          definition.cancel_job(
+          compiled.cancel_job(
             definition,
             context,
             operation.Invocation(
@@ -285,7 +293,7 @@ pub fn new(
           |> result.replace("null")
         }
       },
-      validate: fn(state) { definition.validate(definition, state) },
+      validate: fn(state) { compiled.validate(definition, state) },
       child: fn(activation) { child(activation.prepared) },
       fork: fn(activation) { fork(activation.prepared) },
     )
@@ -336,16 +344,11 @@ pub fn attach(
   runtime: Runtime(context, state, answer),
   id: run.RunId,
 ) -> Handle(context, state, answer) {
-  Handle(runtime, id)
+  graph_handle.new(runtime, id, runtime.store)
 }
 
 pub fn id(handle: Handle(context, state, answer)) -> run.RunId {
-  handle.id
-}
-
-@internal
-pub fn backing_store(handle: Handle(context, state, answer)) -> store.Store {
-  handle.runtime.store
+  graph_handle.id(handle)
 }
 
 /// Bind a graph's native initial state and answer as one managed operation.
@@ -355,10 +358,10 @@ pub fn as_subgraph(
   runtime: Runtime(child_context, child_state, child_answer),
 ) -> operation.Operation(parent_context, child_state, child_answer) {
   let runs = runtime.store
-  operation.subgraph(
-    definition.identity(runtime.definition).identity,
-    definition.state_codec(runtime.definition),
-    definition.answer_codec(runtime.definition),
+  managed.subgraph(
+    compiled.identity(runtime.definition).identity,
+    compiled.state_codec(runtime.definition),
+    compiled.answer_codec(runtime.definition),
     child_driver.Driver(
       store: fn() { store_core.pid(runs) },
       reserve: fn(parent, id, input, reservation) {
@@ -386,22 +389,22 @@ pub fn both(
   ),
   Error,
 ) {
-  let left_input = definition.state_codec(left.definition)
-  let right_input = definition.state_codec(right.definition)
+  let left_input = compiled.state_codec(left.definition)
+  let right_input = compiled.state_codec(right.definition)
   let input = codec.pair(left_input, right_input)
-  let left_output = definition.answer_codec(left.definition)
-  let right_output = definition.answer_codec(right.definition)
+  let left_output = compiled.answer_codec(left.definition)
+  let right_output = compiled.answer_codec(right.definition)
   let output = fork.result_codec(codec.pair(left_output, right_output))
   use left_driver <- result.try(
-    operation.child_driver(as_subgraph(left))
+    contract.child_driver(as_subgraph(left))
     |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
   )
   use right_driver <- result.try(
-    operation.child_driver(as_subgraph(right))
+    contract.child_driver(as_subgraph(right))
     |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
   )
-  let left_definition = definition.identity(left.definition)
-  let right_definition = definition.identity(right.definition)
+  let left_definition = compiled.identity(left.definition)
+  let right_definition = compiled.identity(right.definition)
   let left_store = left.store
   let right_store = right.store
   let driver =
@@ -464,7 +467,7 @@ pub fn both(
       },
     )
   let signature = fork_signature([left_definition, right_definition])
-  Ok(operation.parallel(identity, input, output, 2, 2, signature, driver))
+  Ok(managed.parallel(identity, input, output, 2, 2, signature, driver))
 }
 
 /// Run a bounded list of managed children and join native answers in input order.
@@ -490,15 +493,15 @@ pub fn map(
         "map requires positive membership and concurrency bounds",
       ))
   })
-  let child_input = definition.state_codec(child.definition)
-  let child_output = definition.answer_codec(child.definition)
+  let child_input = compiled.state_codec(child.definition)
+  let child_output = compiled.answer_codec(child.definition)
   let input = codec.list(child_input)
   let output = fork.result_codec(codec.list(child_output))
   use binding <- result.try(
-    operation.child_driver(as_subgraph(child))
+    contract.child_driver(as_subgraph(child))
     |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
   )
-  let child_definition = definition.identity(child.definition)
+  let child_definition = compiled.identity(child.definition)
   let runs = child.store
   let driver =
     fork_driver.Driver(
@@ -547,7 +550,7 @@ pub fn map(
         codec.encode_json(output, answer) |> result.map_error(string.inspect)
       },
     )
-  Ok(operation.parallel(
+  Ok(managed.parallel(
     identity,
     input,
     output,
@@ -580,12 +583,13 @@ pub fn branch(
   member: Int,
   runtime: Runtime(child_context, child_state, child_answer),
 ) -> Result(Handle(child_context, child_state, child_answer), Error) {
-  let link = child.Branch(run.id_to_string(parent.id), activation, member)
+  let link =
+    child.Branch(run.id_to_string(graph_handle.id(parent)), activation, member)
   attached_child(
     parent,
     runtime,
     link,
-    child.branch_id(link.run, activation, member),
+    attachment.branch_id(link.run, activation, member),
   )
 }
 
@@ -596,8 +600,13 @@ pub fn child(
   activation: Int,
   runtime: Runtime(child_context, child_state, child_answer),
 ) -> Result(Handle(child_context, child_state, child_answer), Error) {
-  let link = child.Parent(run.id_to_string(parent.id), activation)
-  attached_child(parent, runtime, link, child.reserved_id(link.run, activation))
+  let link = child.Parent(run.id_to_string(graph_handle.id(parent)), activation)
+  attached_child(
+    parent,
+    runtime,
+    link,
+    attachment.reserved_id(link.run, activation),
+  )
 }
 
 fn attached_child(
@@ -607,7 +616,10 @@ fn attached_child(
   id: String,
 ) -> Result(Handle(child_context, child_state, child_answer), Error) {
   use _ <- result.try(
-    case store_core.pid(parent.runtime.store), store_core.pid(runtime.store) {
+    case
+      store_core.pid(graph_handle.runtime(parent).store),
+      store_core.pid(runtime.store)
+    {
       Ok(parent_store), Ok(child_store) if parent_store == child_store -> Ok(Nil)
       _, _ ->
         Error(CommandRefused("child runtime does not use the parent store"))
@@ -625,7 +637,7 @@ fn check_attachment(
   state: control.State,
   parent: child.Parent,
 ) -> Result(Nil, Error) {
-  case state.parent == Some(child.attachment(parent)) {
+  case state.parent == Some(attachment.parent(parent)) {
     True -> Ok(Nil)
     False ->
       Error(CommandRefused("child belongs to a different parent activation"))
@@ -674,18 +686,19 @@ fn reserved_child(
     -> Error(from_runner(runner.StoreFailed(backend.NotFound)))
     Error(runner.StoreFailed(backend.NotFound)) -> {
       use initial <- result.try(
-        definition.decode_state(runtime.definition, input)
+        compiled.decode_state(runtime.definition, input)
         |> result.map_error(DefinitionRejected),
       )
       use #(value, entry) <- result.try(
-        definition.prepare(runtime.definition, initial)
+        compiled.prepare(runtime.definition, initial)
         |> result.map_error(DefinitionRejected),
       )
       use #(state, effects) <- result.try(
-        control.start(id, definition.identity(runtime.definition), value, entry)
+        control.start(id, compiled.identity(runtime.definition), value, entry)
         |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
       )
-      let state = control.State(..state, parent: Some(child.attachment(parent)))
+      let state =
+        control.State(..state, parent: Some(attachment.parent(parent)))
       use #(state, effects) <- result.try(
         case reservation == child_driver.Cancel {
           True ->
@@ -810,7 +823,7 @@ fn nested_fork_progress(
         scope.member(members, ref)
         |> result.map_error(fn(error) { CommandRefused(string.inspect(error)) }),
       )
-      let id = child.branch_id(state.run, a.id, ref.member)
+      let id = attachment.branch_id(state.run, a.id, ref.member)
       // A parked scope has acknowledged children; absence is not fresh work.
       use _ <- result.try(
         store_core.get(runs, id) |> result.map_error(StoreFailed),
@@ -876,7 +889,7 @@ fn start_root(
 ) -> Result(Handle(context, state, answer), Error) {
   use prepared <- result.try(
     bounded.call(runtime.options.callback_timeout, fn() {
-      definition.prepare(runtime.definition, initial)
+      compiled.prepare(runtime.definition, initial)
     })
     |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
   )
@@ -886,7 +899,7 @@ fn start_root(
   use #(state, effects) <- result.try(
     control.start(
       run.id_to_string(id),
-      definition.identity(runtime.definition),
+      compiled.identity(runtime.definition),
       value,
       prepared,
     )
@@ -906,19 +919,19 @@ fn start_root(
     )
     |> result.map_error(from_runner),
   )
-  Ok(Handle(runtime, id))
+  Ok(graph_handle.new(runtime, id, runtime.store))
 }
 
 pub fn read(
   handle: Handle(context, state, answer),
 ) -> Result(Snapshot(state, answer), Error) {
-  let runtime = handle.runtime
+  let runtime = graph_handle.runtime(handle)
   use #(entry, state) <- result.try(
     runner.load(
       runtime.store,
       runtime.work,
       runtime.options,
-      run.id_to_string(handle.id),
+      run.id_to_string(graph_handle.id(handle)),
     )
     |> result.map_error(from_runner),
   )
@@ -941,13 +954,13 @@ pub fn await(
 ) -> Result(Snapshot(state, answer), Error) {
   let within = int.max(0, duration.to_milliseconds(within))
   let watcher = process.new_subject()
-  let id = run.id_to_string(handle.id)
+  let id = run.id_to_string(graph_handle.id(handle))
   use _ <- result.try(
-    store_core.watch(handle.runtime.store, id, watcher)
+    store_core.watch(graph_handle.runtime(handle).store, id, watcher)
     |> result.map_error(StoreFailed),
   )
   let outcome = attend(handle, watcher, now() + within)
-  store_core.unwatch(handle.runtime.store, id, watcher)
+  store_core.unwatch(graph_handle.runtime(handle).store, id, watcher)
   outcome
 }
 
@@ -989,13 +1002,13 @@ fn now() -> Int
 pub fn recover(
   handle: Handle(context, state, answer),
 ) -> Result(Snapshot(state, answer), Error) {
-  let runtime = handle.runtime
+  let runtime = graph_handle.runtime(handle)
   use _ <- result.try(
     runner.recover(
       runtime.store,
       runtime.work,
       runtime.options,
-      run.id_to_string(handle.id),
+      run.id_to_string(graph_handle.id(handle)),
       3,
     )
     |> result.map_error(from_runner),
@@ -1012,11 +1025,11 @@ pub fn poll_job(
   handle: Handle(context, state, answer),
   reference: job.Reference,
 ) -> Result(Snapshot(state, answer), Error) {
-  use _ <- result.try(case reference.run == handle.id {
+  use _ <- result.try(case reference.run == graph_handle.id(handle) {
     True -> Ok(Nil)
     False -> Error(CommandRefused("job reference belongs to another run"))
   })
-  let runtime = handle.runtime
+  let runtime = graph_handle.runtime(handle)
   use _ <- result.try(
     runner.observe_job(
       runtime.store,
@@ -1037,12 +1050,12 @@ pub fn poll_job(
 /// stopped. Its request runs only with compatible code and a committed fence;
 /// manual or scheduled observation must confirm the terminal outcome.
 pub fn cancel(handle: Handle(context, state, answer)) -> Result(Nil, Error) {
-  let runtime = handle.runtime
+  let runtime = graph_handle.runtime(handle)
   runner.cancel(
     runtime.store,
     runtime.work,
     runtime.options,
-    run.id_to_string(handle.id),
+    run.id_to_string(graph_handle.id(handle)),
     3,
   )
   |> result.map_error(from_runner)
@@ -1081,8 +1094,8 @@ pub fn deliver(
       Error(CommandRefused("signal contract does not match the reference"))
   })
   use encoded <- result.try(
-    bounded.call(handle.runtime.options.callback_timeout, fn() {
-      signal.encode(contract, value)
+    bounded.call(graph_handle.runtime(handle).options.callback_timeout, fn() {
+      signal_contract.encode(contract, value)
     })
     |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
   )
@@ -1118,17 +1131,17 @@ fn deliver_with(
   output: String,
   tries: Int,
 ) -> Result(Snapshot(state, answer), Error) {
-  use _ <- result.try(case reference.run == handle.id {
+  use _ <- result.try(case reference.run == graph_handle.id(handle) {
     True -> Ok(Nil)
     False -> Error(CommandRefused("signal belongs to another run"))
   })
-  let runtime = handle.runtime
+  let runtime = graph_handle.runtime(handle)
   use #(entry, state) <- result.try(
     runner.load(
       runtime.store,
       runtime.work,
       runtime.options,
-      run.id_to_string(handle.id),
+      run.id_to_string(graph_handle.id(handle)),
     )
     |> result.map_error(from_runner),
   )
@@ -1224,8 +1237,8 @@ fn answer_approval(
   rejection: option.Option(String),
   tries: Int,
 ) -> Result(Snapshot(state, answer), Error) {
-  let runtime = handle.runtime
-  let id = run.id_to_string(handle.id)
+  let runtime = graph_handle.runtime(handle)
+  let id = run.id_to_string(graph_handle.id(handle))
   let reference =
     control.Approval(
       approval.activation,
@@ -1233,7 +1246,7 @@ fn answer_approval(
       approval.revision,
       approval.requirement,
     )
-  use _ <- result.try(case approval.run == handle.id {
+  use _ <- result.try(case approval.run == graph_handle.id(handle) {
     True -> Ok(Nil)
     False -> Error(CommandRefused("approval belongs to another run"))
   })
@@ -1314,9 +1327,9 @@ fn reconcile_with(
   output: String,
   tries: Int,
 ) -> Result(Snapshot(state, answer), Error) {
-  let runtime = handle.runtime
-  let id = run.id_to_string(handle.id)
-  use _ <- result.try(case reference.run == handle.id {
+  let runtime = graph_handle.runtime(handle)
+  let id = run.id_to_string(graph_handle.id(handle))
+  use _ <- result.try(case reference.run == graph_handle.id(handle) {
     True -> Ok(Nil)
     False -> Error(CommandRefused("reconciliation belongs to another run"))
   })
@@ -1442,7 +1455,7 @@ fn snapshot(
 ) -> Result(Snapshot(state, answer), Error) {
   let definition = runtime.definition
   use value <- result.try(
-    definition.decode_state(definition, state.value)
+    compiled.decode_state(definition, state.value)
     |> result.map_error(DefinitionRejected),
   )
   use status <- result.try(case state.phase {
@@ -1594,7 +1607,7 @@ fn snapshot(
         public_problem(problem),
       ))
     control.Ended(control.Completed(answer)) ->
-      definition.decode_answer(definition, answer)
+      compiled.decode_answer(definition, answer)
       |> result.map(Completed)
       |> result.map_error(DefinitionRejected)
     control.Ended(control.Exhausted(_)) -> Ok(Exhausted)
@@ -1673,7 +1686,7 @@ fn public_cancellation(
         child.Reference(
           run_id.from_string(state.run),
           a.id,
-          run_id.from_string(child.reserved_id(state.run, a.id)),
+          run_id.from_string(attachment.reserved_id(state.run, a.id)),
         ),
         public_problem(problem),
       )

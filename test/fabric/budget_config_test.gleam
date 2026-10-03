@@ -1,9 +1,9 @@
 import fabric/budget as quota
-import fabric/graph/child
 import fabric/graph/operation
 import fabric/internal/budget/model as budget
 import fabric/internal/budget/record as budget_record
 import fabric/internal/controller as agent
+import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
 import fabric/internal/record
@@ -106,7 +106,7 @@ pub fn graph_roots_retain_limits_without_reinterpreting_version_five_test() {
 
 pub fn children_cannot_declare_replacement_family_limits_test() {
   let parent = support.id("parent")
-  let id = child.reserved_id("parent", 1)
+  let id = attachment.reserved_id("parent", 1)
   let agent =
     agent.State(
       ..agent_root(),

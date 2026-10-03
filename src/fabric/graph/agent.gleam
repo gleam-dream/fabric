@@ -10,7 +10,10 @@ import fabric/internal/checked_agent
 import fabric/internal/controller
 import fabric/internal/family
 import fabric/internal/graph/agent_child
+import fabric/internal/graph/attachment
 import fabric/internal/graph/child_driver
+import fabric/internal/graph/handle as graph_handle
+import fabric/internal/graph/managed
 import fabric/internal/run_id
 import fabric/internal/runner
 import fabric/internal/store as store_core
@@ -61,7 +64,7 @@ pub fn new(
 ) -> Result(Runtime(context, input, output), ConfigurationError) {
   let admitted = checked_agent.admitted(definition.agent)
   let maximum =
-    string.length(child.reserved_id("parent", 1))
+    string.length(attachment.reserved_id("parent", 1))
     + suffix_length(admitted, admitted.max_depth)
   case maximum <= 128 {
     True -> Ok(Runtime(definition, runs, context))
@@ -95,7 +98,7 @@ pub fn as_operation(
   let runs = runtime.store
   let answer = runtime.definition.answer
   let output = runtime.definition.output
-  operation.agent(
+  managed.agent(
     runtime.definition.identity,
     runtime.definition.input,
     output,
@@ -140,7 +143,7 @@ pub fn child(
 ) -> Result(fabric.Run(context), OpenError) {
   use _ <- result.try(
     case
-      store_core.pid(graph.backing_store(parent)),
+      store_core.pid(graph_handle.store(parent)),
       store_core.pid(runtime.store)
     {
       Ok(parent_store), Ok(child_store) if parent_store == child_store -> Ok(Nil)
@@ -148,7 +151,7 @@ pub fn child(
     },
   )
   let parent = child.Parent(run.id_to_string(graph.id(parent)), activation)
-  let id = child.reserved_id(parent.run, activation)
+  let id = attachment.reserved_id(parent.run, activation)
   use handle <- result.try(
     fabric.open(
       runtime.store,
@@ -161,7 +164,7 @@ pub fn child(
   use snapshot <- result.try(
     fabric.snapshot(handle) |> result.map_error(Unreadable),
   )
-  case snapshot.parent == Some(child.attachment(parent)) {
+  case snapshot.parent == Some(attachment.parent(parent)) {
     True -> Ok(handle)
     False -> Error(InvalidAttachment)
   }
@@ -216,7 +219,7 @@ fn cancel(
           run: id,
           agent: agent.identity,
           incarnation: 1,
-          parent: Some(child.attachment(parent)),
+          parent: Some(attachment.parent(parent)),
           depth: 0,
           limits: controller.Limits(
             agent.max_turns,
@@ -293,7 +296,7 @@ fn start(
       let #(initial, effects) =
         runner.root_state(setup, id, prompt, correlation.from_key(id))
       let initial =
-        controller.State(..initial, parent: Some(child.attachment(parent)))
+        controller.State(..initial, parent: Some(attachment.parent(parent)))
       use _ <- result.try(
         case runner.ancestors_open(runtime.store, id, initial.parent) {
           True -> Ok(Nil)

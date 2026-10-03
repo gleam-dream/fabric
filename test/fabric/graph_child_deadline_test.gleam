@@ -9,6 +9,7 @@ import fabric/graph/definition
 import fabric/graph/job
 import fabric/graph/operation
 import fabric/graph/signal
+import fabric/internal/graph/attachment
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
@@ -234,7 +235,7 @@ pub fn a_clock_failure_before_arming_starts_no_child_test() {
   graph.cancel(handle) |> should.equal(Ok(Nil))
   let assert Ok(done) = graph.read(handle)
   done.status |> should.equal(graph.Cancelled(graph.BeforeStart))
-  store_core.get(runs, child.reserved_id("unarmed-child", 1))
+  store_core.get(runs, attachment.reserved_id("unarmed-child", 1))
   |> should.equal(Error(backend.NotFound))
 }
 

@@ -1,10 +1,10 @@
 //// G7: a validated idle dependency can be indexed without deployed callbacks.
 
 import fabric/budget as quota
-import fabric/graph/child
 import fabric/graph/operation
 import fabric/internal/budget/model as budget
 import fabric/internal/budget/record as budget_record
+import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record
 import fabric/policy
@@ -41,7 +41,7 @@ fn waiting(kind) {
   let assert graph.Ready(a) = state.phase
   graph.State(
     ..state,
-    phase: graph.WaitingChild(a, child.reserved_id("root", a.id)),
+    phase: graph.WaitingChild(a, attachment.reserved_id("root", a.id)),
   )
 }
 
@@ -58,7 +58,7 @@ pub fn idle_graph_and_agent_attachments_have_stable_discovery_keys_test() {
     wait.run |> should.equal(support.id("root"))
     wait.trigger
     |> should.equal(discovery.Changed(
-      [support.id(child.reserved_id("root", 1))],
+      [support.id(attachment.reserved_id("root", 1))],
       None,
     ))
     project(graph.State(..state, incarnation: 8)) |> should.equal(wait)
@@ -146,7 +146,7 @@ pub fn unknown_corrupt_and_misfiled_records_have_no_usable_discovery_index_test(
     indexed,
     decode.at(["wait", "dependencies"], decode.list(decode.string)),
   )
-  |> should.equal(Ok([child.reserved_id("root", 1)]))
+  |> should.equal(Ok([attachment.reserved_id("root", 1)]))
   list.each(
     ["invalid", string.replace(encoded, "\"version\":14", "\"version\":1199")],
     fn(encoded) {

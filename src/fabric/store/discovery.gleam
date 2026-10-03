@@ -3,9 +3,9 @@
 //// scheduling hint, never permission to execute. Recovery must revalidate the
 //// stored attachment and deployed definition through the registered root.
 
-import fabric/graph/child
 import fabric/graph/job
 import fabric/graph/operation
+import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/fork as scope
 import fabric/internal/graph/record
@@ -56,7 +56,7 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
                   state,
                   a,
                   list.map(scope.unsettled(members), fn(ref) {
-                    child.branch_id(state.run, a.id, ref.member)
+                    attachment.branch_id(state.run, a.id, ref.member)
                   }),
                   case mode {
                     graph.JoiningFork -> "observe_fork"
@@ -158,7 +158,7 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
               Some(dependency(
                 state,
                 a,
-                [child.reserved_id(state.run, a.id)],
+                [attachment.reserved_id(state.run, a.id)],
                 "observe",
                 a.deadline,
               ))
@@ -171,7 +171,7 @@ fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
               Some(dependency(
                 state,
                 activation,
-                [child.reserved_id(state.run, activation.id)],
+                [attachment.reserved_id(state.run, activation.id)],
                 "settle",
                 None,
               ))

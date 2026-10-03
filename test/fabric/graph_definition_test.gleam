@@ -1,5 +1,6 @@
 import fabric/graph/definition as graph
 import fabric/graph/operation
+import fabric/internal/graph/compiled
 import fabric/internal/graph/controller
 import fabric/internal/graph/record
 import fabric/policy
@@ -66,11 +67,11 @@ fn loop() -> graph.Definition(Nil, Int, Int) {
 }
 
 fn started(definition: graph.Definition(Nil, Int, Int)) -> controller.State {
-  let assert Ok(#(value, prepared)) = graph.prepare(definition, 0)
+  let assert Ok(#(value, prepared)) = compiled.prepare(definition, 0)
   let assert Ok(#(state, _)) =
     controller.start(
       "native-graph",
-      graph.identity(definition),
+      compiled.identity(definition),
       value,
       prepared,
     )
@@ -89,14 +90,14 @@ fn completed_visit(
     controller.step(state, controller.BodyStarted(ref))
   let assert Ok(run) = run.parse_id(state.run)
   let assert Ok(output) =
-    graph.invoke(
+    compiled.invoke(
       definition,
       Nil,
       operation.Invocation(run, a.id, a.attempt),
       a.prepared,
     )
   let assert Ok(decision) =
-    graph.accept(definition, state.value, a.prepared, output)
+    compiled.accept(definition, state.value, a.prepared, output)
   let assert Ok(#(state, _)) =
     controller.step(state, controller.Returned(ref, output, decision))
   state
@@ -132,11 +133,11 @@ pub fn native_boolean_decision_routes_alongside_integer_generation_test() {
     |> completed_visit(definition, _)
     |> completed_visit(definition, _)
   done.phase |> should.equal(controller.Ended(controller.Completed("1")))
-  graph.validate(definition, done) |> should.equal(Ok(Nil))
+  compiled.validate(definition, done) |> should.equal(Ok(Nil))
   let assert Ok(json) = record.encode(done)
   let assert Ok(restored) = record.decode(json)
-  graph.validate(definition, restored) |> should.equal(Ok(Nil))
-  graph.decode_answer(definition, "1") |> should.equal(Ok(1))
+  compiled.validate(definition, restored) |> should.equal(Ok(Nil))
+  compiled.decode_answer(definition, "1") |> should.equal(Ok(1))
   list.map(restored.receipts, fn(receipt) { receipt.output })
   |> should.equal(["1", "true"])
 }
@@ -160,7 +161,7 @@ pub fn validation_never_repeats_selection_operations_or_routing_test() {
       [id("counter")],
     )
   let assert Ok(definition) = graph.build(spec([node]))
-  graph.validate(definition, state) |> should.equal(Ok(Nil))
+  compiled.validate(definition, state) |> should.equal(Ok(Nil))
 }
 
 pub fn construction_rejects_invalid_bounds_identity_and_destinations_test() {
@@ -200,7 +201,7 @@ pub fn manifest_is_order_independent_and_detects_declared_contract_changes_test(
     )
   let assert Ok(first) = graph.build(spec([a, b]))
   let assert Ok(reordered) = graph.build(spec([b, a]))
-  graph.identity(first) |> should.equal(graph.identity(reordered))
+  compiled.identity(first) |> should.equal(compiled.identity(reordered))
   let assert Ok(replay) = operation.with_replay(increment(), 2)
   let changed =
     graph.node(
@@ -211,7 +212,7 @@ pub fn manifest_is_order_independent_and_detects_declared_contract_changes_test(
       [id("b"), id("counter")],
     )
   let assert Ok(changed) = graph.build(spec([changed, b]))
-  graph.validate(changed, started(first))
+  compiled.validate(changed, started(first))
   |> should.equal(Error(graph.DefinitionChanged))
 }
 
@@ -224,7 +225,7 @@ pub fn saved_payloads_must_decode_under_the_current_native_contract_test() {
       controller.Receipt(..receipt, output: "true"),
     ])
   let assert Error(graph.OperationRejected(operation.OutputDecodingFailed(_))) =
-    graph.validate(definition, malformed)
+    compiled.validate(definition, malformed)
   let assert controller.Ready(a) = state.phase
   let wrong_input = controller.Prepared(..a.prepared, input: "true")
   let malformed =
@@ -233,13 +234,13 @@ pub fn saved_payloads_must_decode_under_the_current_native_contract_test() {
       phase: controller.Ready(controller.Activation(..a, prepared: wrong_input)),
     )
   let assert Error(graph.OperationRejected(operation.InputDecodingFailed(_))) =
-    graph.validate(definition, malformed)
+    compiled.validate(definition, malformed)
   let wrong_version =
     controller.Prepared(
       ..a.prepared,
       operation: run.DefinitionId("increment", 99),
     )
-  graph.validate(
+  compiled.validate(
     definition,
     controller.State(
       ..state,
@@ -255,8 +256,8 @@ pub fn runtime_routes_must_be_declared_even_if_the_destination_exists_test() {
   let node =
     counter(fn(_, value) { Ok(graph.Continue(value, id("counter"))) }, [])
   let assert Ok(definition) = graph.build(spec([node]))
-  let assert Ok(#(state, prepared)) = graph.prepare(definition, 0)
-  graph.accept(definition, state, prepared, "1")
+  let assert Ok(#(state, prepared)) = compiled.prepare(definition, 0)
+  compiled.accept(definition, state, prepared, "1")
   |> should.equal(Error(graph.DestinationNotAllowed(id("counter"))))
 }
 
@@ -287,7 +288,10 @@ pub fn codecs_without_provider_schema_are_sufficient_for_durable_values_test() {
     )
   let assert Ok(definition) =
     graph.build(graph.Spec(..spec([node]), state: native, answer: native))
-  graph.validate(definition, completed_visit(definition, started(definition)))
+  compiled.validate(
+    definition,
+    completed_visit(definition, started(definition)),
+  )
   |> should.equal(Ok(Nil))
 }
 
@@ -301,17 +305,17 @@ pub fn selection_transition_and_codec_failures_remain_distinct_test() {
       [],
     )
   let assert Ok(definition) = graph.build(spec([selecting]))
-  graph.prepare(definition, 0)
+  compiled.prepare(definition, 0)
   |> should.equal(Error(graph.InputSelectionFailed("wrong phase")))
   let accepting = counter(fn(_, _) { Error("decision rejected") }, [])
   let assert Ok(definition) = graph.build(spec([accepting]))
-  let assert Ok(#(state, prepared)) = graph.prepare(definition, 0)
-  graph.accept(definition, state, prepared, "1")
+  let assert Ok(#(state, prepared)) = compiled.prepare(definition, 0)
+  compiled.accept(definition, state, prepared, "1")
   |> should.equal(Error(graph.TransitionFailed("decision rejected")))
   let assert Error(graph.OperationRejected(operation.OutputDecodingFailed(_))) =
-    graph.accept(definition, state, prepared, "true")
+    compiled.accept(definition, state, prepared, "true")
   let assert Error(graph.StateDecodingFailed(_)) =
-    graph.accept(definition, "true", prepared, "1")
+    compiled.accept(definition, "true", prepared, "1")
 }
 
 pub fn a_successor_whose_input_cannot_be_selected_releases_no_decision_test() {
@@ -326,7 +330,7 @@ pub fn a_successor_whose_input_cannot_be_selected_releases_no_decision_test() {
       [],
     )
   let assert Ok(definition) = graph.build(spec([first, other]))
-  let assert Ok(#(state, prepared)) = graph.prepare(definition, 0)
-  graph.accept(definition, state, prepared, "1")
+  let assert Ok(#(state, prepared)) = compiled.prepare(definition, 0)
+  compiled.accept(definition, state, prepared, "1")
   |> should.equal(Error(graph.InputSelectionFailed("cannot select successor")))
 }

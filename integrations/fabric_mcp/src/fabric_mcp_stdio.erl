@@ -63,7 +63,7 @@ loop(Port, Owner, NextId, MaxBytes, MaxNotifications, IdleNotes) ->
         stop -> ok;
         {Port, {exit_status, _}} -> ok;
         {Port, {data, {eol, Line}}} when byte_size(Line) =< MaxBytes, IdleNotes > 0 ->
-            case 'fabric_mcp@client':admit_frame(Line) of
+            case 'fabric_mcp@internal@frame':admit_frame(Line) of
                 notification -> loop(Port, Owner, NextId, MaxBytes, MaxNotifications, IdleNotes-1);
                 {reply, Old, _} when Old < NextId -> loop(Port, Owner, NextId, MaxBytes, MaxNotifications, IdleNotes-1);
                 _ -> ok
@@ -106,7 +106,7 @@ wait(Port, Owner, CallerMon, Caller, Ref, Id, Deadline, MaxBytes, LeftNotes) ->
             stop -> cancel(Port, Id), stop;
             {Port, {exit_status, _}} -> {broken, {after_send, <<"MCP server exited before its response">>}};
             {Port, {data, {eol, Line}}} when byte_size(Line) =< MaxBytes ->
-                Frame = 'fabric_mcp@client':admit_frame(Line),
+                Frame = 'fabric_mcp@internal@frame':admit_frame(Line),
                 case left(Deadline) > 0 of
                     false -> expire(Port, Id);
                     true -> case Frame of

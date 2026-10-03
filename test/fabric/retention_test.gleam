@@ -1,6 +1,6 @@
-import fabric/graph/child
 import fabric/graph/operation
 import fabric/internal/controller as agent
+import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
 import fabric/internal/record
@@ -123,7 +123,7 @@ pub fn graph_retention_tracks_reserved_children_receipts_and_canceled_uncertaint
     describe(ready).settled |> should.be_false
     let assert graph.Ready(activation) = ready.phase
     let ref = graph.reference(ready, activation)
-    let child_id = child.reserved_id(ready.run, activation.id)
+    let child_id = attachment.reserved_id(ready.run, activation.id)
     let joined = next(ready, graph.Inspected(ref, Ok(policy.Allow)))
     let assert [link] = describe(joined).children
     link.run |> should.equal(support.id(child_id))

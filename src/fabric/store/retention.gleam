@@ -4,9 +4,9 @@
 //// atomically before deleting anything; `settled` alone is not permission.
 
 import fabric/budget as quota
+import fabric/internal/graph/attachment
 import fabric/internal/run_id
 
-import fabric/graph/child
 import fabric/graph/fork
 import fabric/graph/operation
 import fabric/internal/budget/model as budget
@@ -184,7 +184,7 @@ fn graph_child(state: graph.State, activation: graph.Activation) -> List(Link) {
   case activation.prepared.kind {
     operation.Subgraph | operation.Agent -> [
       Link(
-        run_id.from_string(child.reserved_id(state.run, activation.id)),
+        run_id.from_string(attachment.reserved_id(state.run, activation.id)),
         key(run.GraphParent(run_id.from_string(state.run), activation.id)),
       ),
     ]
@@ -248,7 +248,7 @@ fn graph_metadata(state: graph.State) -> Metadata {
           case item.0.status {
             fork.Reserved | fork.Admitted(_) ->
               Ok(Link(
-                run_id.from_string(child.branch_id(
+                run_id.from_string(attachment.branch_id(
                   state.run,
                   saved.occurrence.activation,
                   item.1,

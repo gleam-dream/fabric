@@ -505,5 +505,5 @@ pub fn the_workflow_gets_the_call_and_the_runs_correlation_test() {
     fabric.await(handle, within: duration.seconds(5))
   let _ = sinal.detach(attachment)
   string.contains(text, "FL-Porto-c1") |> should.be_true
-  process.receive(seen, 1000) |> should.equal(Ok(Some(ticket)))
+  process.receive(seen, 1000) |> should.equal(Ok(ticket))
 }

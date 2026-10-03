@@ -2,22 +2,11 @@
 //// to answer its approvals or signals; the child owns its own progress.
 
 import fabric/graph/fork
-import fabric/internal/run_id
 import fabric/run
 
 pub type Parent {
   Parent(run: String, activation: Int)
   Branch(run: String, activation: Int, member: Int)
-}
-
-@internal
-pub fn attachment(parent: Parent) -> run.Parent {
-  case parent {
-    Parent(id, activation) ->
-      run.GraphParent(run_id.from_string(id), activation)
-    Branch(id, activation, member) ->
-      run.GraphBranch(run_id.from_string(id), activation, member)
-  }
 }
 
 pub type Reference {
@@ -44,11 +33,3 @@ pub type Progress {
   Failed(String)
   Cancelled(uncertain: Bool)
 }
-
-@external(erlang, "fabric_ffi", "graph_child_id")
-@internal
-pub fn reserved_id(parent: String, activation: Int) -> String
-
-@external(erlang, "fabric_ffi", "graph_branch_id")
-@internal
-pub fn branch_id(parent: String, activation: Int, member: Int) -> String

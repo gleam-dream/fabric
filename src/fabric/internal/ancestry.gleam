@@ -2,8 +2,8 @@
 //// exact child reservation; an open but unrelated run cannot admit work.
 
 import fabric/budget as quota
+import fabric/internal/graph/attachment
 
-import fabric/graph/child
 import fabric/graph/fork
 import fabric/internal/budget/config
 import fabric/internal/budget/model as budget
@@ -102,7 +102,8 @@ fn walk(
               let snapshot = scope.snapshot(members)
               let ref = fork.Reference(snapshot.occurrence, ordinal)
               snapshot.stop == None
-              && descendant == child.branch_id(state.run, activation, ordinal)
+              && descendant
+              == attachment.branch_id(state.run, activation, ordinal)
               && case scope.member(members, ref) {
                 Ok(fork.Member(_, fork.Reserved))
                 | Ok(fork.Member(_, fork.Admitted(fork.Active)))

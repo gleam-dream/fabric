@@ -13,6 +13,7 @@ import fabric/internal/budget/ledger
 import fabric/internal/budget/model as budget
 import fabric/internal/budget/record as budget_record
 import fabric/internal/controller
+import fabric/internal/graph/compiled
 import fabric/internal/graph/controller as graph_control
 import fabric/internal/graph/record as graph_record
 import fabric/internal/record
@@ -157,9 +158,9 @@ fn fixture(runs, kind, initialized, calls) {
           codec.int(),
           2,
         ))
-      let assert Ok(#(value, entry)) = definition.prepare(spec, 0)
+      let assert Ok(#(value, entry)) = compiled.prepare(spec, 0)
       let assert Ok(#(state, _)) =
-        graph_control.start("root", definition.identity(spec), value, entry)
+        graph_control.start("root", compiled.identity(spec), value, entry)
       let state = graph_control.State(..state, family_budget: declaration)
       let assert Ok(encoded) = graph_record.encode(state)
       let assert Ok(_) =

@@ -1,6 +1,6 @@
-import fabric/graph/child
 import fabric/graph/fork
 import fabric/graph/operation
+import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record
 import fabric/internal/run_id
@@ -120,7 +120,7 @@ pub fn version_thirteen_retains_fork_scopes_and_rejects_legacy_downgrades_test()
 // G7, F8: branch attachments have their own identity domain and format gate.
 pub fn branch_records_require_matching_attachments_and_version_thirteen_test() {
   let parent = run_id.from_string("parent")
-  let id = child.branch_id("parent", 1, 2)
+  let id = attachment.branch_id("parent", 1, 2)
   let initial = initial()
   let assert graph.Ready(a) = initial.phase
   let ordinary =
@@ -143,7 +143,7 @@ pub fn branch_records_require_matching_attachments_and_version_thirteen_test() {
     graph.State(..state, parent: Some(run.GraphBranch(parent, 1, 1))),
   )
   |> should.be_error
-  record.encode(graph.State(..state, run: child.reserved_id("parent", 1)))
+  record.encode(graph.State(..state, run: attachment.reserved_id("parent", 1)))
   |> should.be_error
 }
 

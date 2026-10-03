@@ -1,12 +1,12 @@
 //// S7 O6/O7/O10: diagnostic classification uses supported saved records.
 
 import fabric/budget as quota
-import fabric/graph/child
 import fabric/graph/job
 import fabric/graph/operation
 import fabric/internal/budget/model as budget
 import fabric/internal/budget/record as budget_record
 import fabric/internal/controller as agent
+import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
 import fabric/internal/record
@@ -231,7 +231,7 @@ pub fn idle_signals_children_and_job_observation_are_waiting_test() {
   |> should.equal(expected)
   list.each([operation.Subgraph, operation.Agent], fn(kind) {
     let #(state, a) = graph_state(kind)
-    let child = child.reserved_id(state.run, a.id)
+    let child = attachment.reserved_id(state.run, a.id)
     projected(graph.State(..state, phase: graph.WaitingChild(a, child)))
     |> should.equal(expected)
     projected(

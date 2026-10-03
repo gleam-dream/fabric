@@ -61,9 +61,9 @@
 //// confirmed, which refuses late settlements until recovery completes the
 //// stop.
 
-import fabric/graph/child
 import fabric/internal/budget/config as budget_config
 import fabric/internal/controller.{type Phase, type State, State}
+import fabric/internal/graph/attachment
 import fabric/internal/registry.{type Registry}
 import fabric/internal/run_id
 import fabric/model.{type Message, type ToolCall}
@@ -585,7 +585,8 @@ fn linked(state: State) -> Result(State, DecodeError) {
     Some(run.GraphParent(parent, activation)) ->
       activation > 0
       && result.is_ok(run.parse_id(run.id_to_string(parent)))
-      && state.run == child.reserved_id(run.id_to_string(parent), activation)
+      && state.run
+      == attachment.reserved_id(run.id_to_string(parent), activation)
     None -> True
   }
   let actions = state_actions(state)
