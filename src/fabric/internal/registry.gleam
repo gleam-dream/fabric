@@ -2,10 +2,11 @@
 //// derived from the same definitions.
 
 import fabric/internal/invocation.{type Outcome}
+import fabric/internal/tool
 import fabric/model
 import fabric/policy
 import fabric/run
-import fabric/tool.{type Tool}
+import fabric/tool as fabric_tool
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -14,7 +15,7 @@ import gleam/time/duration.{type Duration}
 import llm_wire/tool as wire_tool
 
 pub opaque type Registry(context) {
-  Registry(order: List(String), tools: Dict(String, Tool(context)))
+  Registry(order: List(String), tools: Dict(String, fabric_tool.Tool(context)))
 }
 
 pub type RegistryError {
@@ -42,7 +43,7 @@ pub type AdmissionError {
 
 /// Collects every problem, in tool order, before any process starts.
 pub fn new(
-  tools: List(Tool(context)),
+  tools: List(fabric_tool.Tool(context)),
 ) -> Result(Registry(context), List(RegistryError)) {
   let #(registry, errors) =
     list.fold(tools, #(Registry([], dict.new()), []), fn(acc, tool) {
@@ -130,10 +131,10 @@ pub fn admit(
 pub fn invoke(
   registry: Registry(context),
   context: context,
-  call: tool.Call,
+  call: fabric_tool.Call,
   name: String,
   arguments: String,
-  late: tool.Late,
+  late: tool.Late(fabric_tool.SettleError),
 ) -> Outcome {
   case dict.get(registry.tools, name) {
     Error(Nil) -> invocation.ArgumentsRejected("tool is not registered")

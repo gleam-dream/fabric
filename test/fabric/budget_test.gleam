@@ -6,8 +6,9 @@ import fabric/budget as quota
 import fabric/internal/budget/ledger
 import fabric/internal/budget/model as budget
 import fabric/internal/budget/record
+import fabric/internal/store as store_core
 import fabric/run
-import fabric/store
+import fabric/store/backend
 import fabric/support
 import fabric/support/flaky
 import fabric/support/restart
@@ -151,7 +152,7 @@ pub fn a_late_grant_is_adopted_when_its_reservation_is_retried_test() {
   let claim = budget.GraphAttempt("root", 1, 1)
   let assert Ok(_) = ledger.ensure(runs, "root", limits)
   flaky.arm(backend, [flaky.FailLate])
-  let assert Error(ledger.Storage(store.Unavailable(_))) =
+  let assert Error(ledger.Storage(backend.Unavailable(_))) =
     ledger.reserve(runs, "root", limits, claim)
   let assert Ok(state) = ledger.reserve(runs, "root", limits, claim)
   budget.usage(state) |> should.equal(quota.Usage(1, 0))
@@ -164,13 +165,13 @@ pub fn failed_writes_and_missing_ledgers_never_grant_capacity_test() {
   let limits = quota.Limits(2, 0, 0)
   let claim = budget.GraphAttempt("root", 1, 1)
   ledger.reserve(runs, "root", limits, claim)
-  |> should.equal(Error(ledger.Storage(store.NotFound)))
+  |> should.equal(Error(ledger.Storage(backend.NotFound)))
   flaky.arm(backend, [flaky.FailBefore])
-  let assert Error(ledger.Storage(store.Unavailable(_))) =
+  let assert Error(ledger.Storage(backend.Unavailable(_))) =
     ledger.ensure(runs, "root", limits)
   let assert Ok(initial) = ledger.ensure(runs, "root", limits)
   flaky.arm(backend, [flaky.FailBefore])
-  let assert Error(ledger.Storage(store.Unavailable(_))) =
+  let assert Error(ledger.Storage(backend.Unavailable(_))) =
     ledger.reserve(runs, "root", limits, claim)
   ledger.read(runs, "root") |> should.equal(Ok(#(1, initial)))
 }
@@ -254,12 +255,13 @@ pub fn reopening_the_directory_recovers_usage_and_duplicate_grants_test() {
 pub fn unreadable_ledgers_are_never_replaced_with_fresh_capacity_test() {
   let runs = support.store()
   let limits = quota.Limits(2, 0, 0)
-  let assert Ok(_) = store.insert(runs, record.id("root"), "{}", store.Keep)
+  let assert Ok(_) =
+    store_core.insert(runs, record.id("root"), "{}", store_core.Keep)
   let assert Error(ledger.Unreadable(_)) = ledger.ensure(runs, "root", limits)
   let assert Error(ledger.Unreadable(_)) =
     ledger.reserve(runs, "root", limits, budget.GraphAttempt("root", 1, 1))
-  let assert Ok(store.Entry(revision: 1, record: "{}", ..)) =
-    store.get(runs, record.id("root"))
+  let assert Ok(store_core.Entry(revision: 1, record: "{}", ..)) =
+    store_core.get(runs, record.id("root"))
   ledger.ensure(runs, "../root", limits)
   |> should.equal(Error(ledger.InvalidRoot))
 }

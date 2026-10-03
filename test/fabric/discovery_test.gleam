@@ -1,7 +1,6 @@
 //// G7: a validated idle dependency can be indexed without deployed callbacks.
 
 import fabric/budget as quota
-import fabric/discovery
 import fabric/graph/child
 import fabric/graph/operation
 import fabric/internal/budget/model as budget
@@ -10,6 +9,7 @@ import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record
 import fabric/policy
 import fabric/run
+import fabric/store/discovery
 import fabric/support
 import gleam/dynamic/decode
 import gleam/json
@@ -22,11 +22,11 @@ fn initial(kind) {
   let assert Ok(#(state, _)) =
     graph.start(
       "root",
-      graph.Definition(run.Identity("root", 1), "v1", 4),
+      graph.Definition(run.DefinitionId("root", 1), "v1", 4),
       "0",
       graph.Prepared(
         "child",
-        run.Identity("child", 1),
+        run.DefinitionId("child", 1),
         "0",
         operation.RequireReconciliation,
         kind,

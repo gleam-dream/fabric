@@ -3,6 +3,7 @@
 //// then use their ordinary runner and public handles.
 
 import fabric/budget as quota
+import fabric/internal/checked_agent
 
 import fabric
 import fabric/agent
@@ -14,10 +15,12 @@ import fabric/internal/controller
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
 import fabric/internal/runner
+import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
 import fabric/support
 import fabric/support/probe
 import fabric/support/scripted
@@ -31,11 +34,11 @@ fn graph_parent(runs: store.Store) -> #(graph.State, String) {
   let assert Ok(#(state, _)) =
     graph.start(
       "graph-parent",
-      graph.Definition(run.Identity("parent", 1), "parent-v1", 2),
+      graph.Definition(run.DefinitionId("parent", 1), "parent-v1", 2),
       "0",
       graph.Prepared(
         "delegate",
-        run.Identity("child", 1),
+        run.DefinitionId("child", 1),
         "0",
         operation.RequireReconciliation,
         operation.Subgraph,
@@ -50,11 +53,11 @@ fn graph_parent(runs: store.Store) -> #(graph.State, String) {
     )
   let assert Ok(encoded) = graph_record.encode(state)
   let assert Ok(_) =
-    store.insert(
+    store_core.insert(
       runs,
       state.run,
       encoded,
-      store.Detached(in_flight: False, seize: False),
+      store_core.Detached(in_flight: False, seize: False),
     )
   #(state, child.reserved_id(state.run, a.id))
 }
@@ -62,14 +65,14 @@ fn graph_parent(runs: store.Store) -> #(graph.State, String) {
 fn stop_parent(runs: store.Store, state: graph.State) {
   let assert Ok(#(stopping, _)) = graph.step(state, graph.Cancel)
   let assert Ok(encoded) = graph_record.encode(stopping)
-  let assert Ok(entry) = store.get(runs, state.run)
+  let assert Ok(entry) = store_core.get(runs, state.run)
   let assert Ok(_) =
-    store.commit(
+    store_core.commit(
       runs,
       state.run,
       entry.revision,
       encoded,
-      store.Detached(in_flight: False, seize: False),
+      store_core.Detached(in_flight: False, seize: False),
     )
   Nil
 }
@@ -79,7 +82,7 @@ fn worker(model: model.Model) -> agent.Agent(Nil) {
 }
 
 fn child_state(runs, worker, id) {
-  let setup = runner.setup(runs, agent.admitted(worker), Nil, None)
+  let setup = runner.setup(runs, checked_agent.admitted(worker), Nil, None)
   let #(state, effects) =
     runner.root_state(setup, id, "go", correlation.from_key(id))
   #(
@@ -112,13 +115,13 @@ pub fn ancestry_follows_mixed_parents_and_checks_both_sides_of_each_link_test() 
         ),
       ]),
     )
-  let assert Ok(encoded) = store.encode(runs, state)
+  let assert Ok(encoded) = store_core.encode(runs, state)
   let assert Ok(_) =
-    store.insert(
+    store_core.insert(
       runs,
       id,
       encoded,
-      store.Detached(in_flight: False, seize: False),
+      store_core.Detached(in_flight: False, seize: False),
     )
   let link = Some(run.AgentParent(support.id(id), action))
   ancestry.read(runs, descendant, link, 64) |> should.equal(Ok(True))
@@ -130,9 +133,15 @@ pub fn ancestry_follows_mixed_parents_and_checks_both_sides_of_each_link_test() 
   let parent =
     graph.State(..parent, family_budget: Some(budget.Declaration(limits, True)))
   let assert Ok(encoded) = graph_record.encode(parent)
-  let assert Ok(entry) = store.get(runs, parent.run)
+  let assert Ok(entry) = store_core.get(runs, parent.run)
   let assert Ok(_) =
-    store.commit(runs, parent.run, entry.revision, encoded, store.Keep)
+    store_core.commit(
+      runs,
+      parent.run,
+      entry.revision,
+      encoded,
+      store_core.Keep,
+    )
   ancestry.family(runs, descendant, link, None, 64)
   |> should.equal(Ok(Some(ancestry.Family(parent.run, 2, Some(limits)))))
   ancestry.family(
@@ -236,7 +245,7 @@ pub fn legacy_writer_refuses_a_graph_attachment_before_inserting_or_calling_test
     let assert Ok(legacy) = store.with_record_version(runs, version)
     let #(setup, state, effects) = child_state(legacy, worker, id)
     runner.launch_new(setup, state, effects) |> should.be_error
-    store.get(runs, id) |> should.equal(Error(store.NotFound))
+    store_core.get(runs, id) |> should.equal(Error(backend.NotFound))
   })
   probe.entries(calls) |> should.equal([])
 }

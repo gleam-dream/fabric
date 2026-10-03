@@ -15,7 +15,7 @@ pub type Reference {
 }
 
 pub type Request {
-  Request(definition: run.Identity, input: String)
+  Request(definition: run.DefinitionId, input: String)
 }
 
 pub type Progress {

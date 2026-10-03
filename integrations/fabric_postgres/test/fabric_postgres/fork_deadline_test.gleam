@@ -9,6 +9,7 @@ import fabric/graph/operation
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -25,7 +26,7 @@ fn wrap(runs, name, op, values, accept) {
   let node = definition.node(id, op, fn(value) { Ok(value) }, accept, [])
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity(name, 1),
+      run.DefinitionId(name, 1),
       id,
       [node],
       values,
@@ -40,7 +41,7 @@ fn leaf(runs, arrivals) {
     runs,
     "pg-fork-effect",
     operation.new(
-      run.Identity("uncertain-effect", 1),
+      run.DefinitionId("uncertain-effect", 1),
       codec.int(),
       codec.int(),
       fn(_, _, _) {
@@ -60,7 +61,7 @@ fn leaf(runs, arrivals) {
 
 fn inner(runs, arrivals) {
   let assert Ok(op) =
-    graph.map(run.Identity("inner-map", 1), leaf(runs, arrivals), 1, 1)
+    graph.map(run.DefinitionId("inner-map", 1), leaf(runs, arrivals), 1, 1)
   wrap(runs, "pg-inner-fork", op, codec.list(codec.int()), fn(state, output) {
     case output {
       Ok(values) -> Ok(definition.Finish(state, values))
@@ -71,7 +72,7 @@ fn inner(runs, arrivals) {
 
 fn parent(runs, arrivals) {
   let assert Ok(op) =
-    graph.map(run.Identity("outer-map", 1), inner(runs, arrivals), 3, 2)
+    graph.map(run.DefinitionId("outer-map", 1), inner(runs, arrivals), 3, 2)
   let assert Ok(op) = operation.with_deadline(op, duration.milliseconds(5000))
   wrap(
     runs,
@@ -94,7 +95,7 @@ fn sweep(runs, arrivals) {
     fabric.sweeper(
       runs,
       [
-        graph.recovery(run.Identity("pg-fork-deadline", 1), fn(runs) {
+        graph.recovery(run.DefinitionId("pg-fork-deadline", 1), fn(runs) {
           parent(runs, arrivals)
         }),
       ],
@@ -104,11 +105,15 @@ fn sweep(runs, arrivals) {
   started
 }
 
-fn idle(backend: store.LeasedBackend, ids: List(run.RunId), left: Int) -> Nil {
+fn idle(
+  backend: backend.LeasedBackend,
+  ids: List(run.RunId),
+  left: Int,
+) -> Nil {
   let free =
     list.all(ids, fn(id) {
       let assert Ok(row) = backend.get(run.id_to_string(id))
-      row.holder == store.Free
+      row.holder == backend.Free
     })
   case free, left {
     True, _ -> Nil
@@ -188,7 +193,7 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
     let assert Ok(claimed) = backend.claim_ready("baseline", 60_000, 10)
     list.each(claimed, fn(id) {
       let assert Ok(row) = backend.get(id)
-      backend.compare_and_set(id, row.revision, row.record, store.Release)
+      backend.compare_and_set(id, row.revision, row.record, backend.Release)
       |> should.be_ok
     })
   })
@@ -213,7 +218,7 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
   list.last(saved.members)
   |> should.equal(
     Ok(fork.Member(
-      fork.Request(run.Identity("pg-inner-fork", 1), "[3]"),
+      fork.Request(run.DefinitionId("pg-inner-fork", 1), "[3]"),
       fork.Withdrawn,
     )),
   )

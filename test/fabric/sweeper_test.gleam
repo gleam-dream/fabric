@@ -4,16 +4,18 @@
 import fabric
 import fabric/agent
 import fabric/internal/bounded
-import fabric/observation as o
+import fabric/internal/store as store_core
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
+import fabric/store/conformance
 import fabric/support
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
-import fabric/testing
+import fabric/telemetry as o
 import gleam/erlang/process
 import gleam/list
 import gleeunit/should
@@ -33,7 +35,7 @@ fn worker(name: String, body: probe.Probe) -> agent.Agent(Nil) {
 
 fn dead(
   node: store.Store,
-  backend: store.LeasedBackend,
+  backend: backend.LeasedBackend,
   agent: agent.Agent(Nil),
   body: probe.Probe,
 ) -> run.RunId {
@@ -51,10 +53,10 @@ fn dead(
   fabric.id(run)
 }
 
-fn expire(node: store.Store, backend: store.LeasedBackend, id: run.RunId) {
+fn expire(node: store.Store, backend: backend.LeasedBackend, id: run.RunId) {
   let assert Ok(runner) = restart.runner(node, id)
   restart.kill(runner)
-  let assert store.Held(owner, True) = nodes.holder(backend, id)
+  let assert backend.Held(owner, True) = nodes.holder(backend, id)
   backend.renew(owner, [run.id_to_string(id)], 0)
   |> should.equal(Ok([run.id_to_string(id)]))
 }
@@ -105,7 +107,7 @@ import gleam/string
 import gleam/time/duration
 
 pub fn invalid_configuration_is_reported_before_starting_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let node = nodes.node(memory.backend, "a", nodes.long)
   let agent = worker("worker", probe.new())
   let recovery = fabric.recovery(agent, fn(_) { Nil })
@@ -113,7 +115,7 @@ pub fn invalid_configuration_is_reported_before_starting_test() {
   |> should.equal(
     Error([
       fabric.EveryNotPositive(duration.milliseconds(0)),
-      fabric.DuplicateRecovery(run.Identity("worker", 1)),
+      fabric.DuplicateRecovery(run.DefinitionId("worker", 1)),
     ]),
   )
   fabric.sweeper(node, [], every: duration.milliseconds(4_294_967_296))
@@ -130,7 +132,7 @@ pub fn invalid_configuration_is_reported_before_starting_test() {
 }
 
 pub fn boot_and_periodic_scans_recover_only_expired_work_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let body = probe.new()
@@ -166,7 +168,7 @@ pub fn boot_and_periodic_scans_recover_only_expired_work_test() {
 }
 
 pub fn concurrent_sweepers_recover_each_run_once_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let body = probe.new()
   let agent = worker("worker", body)
@@ -192,7 +194,7 @@ pub fn concurrent_sweepers_recover_each_run_once_test() {
 }
 
 pub fn unknown_corrupt_and_failed_contexts_do_not_block_other_roots_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let body = probe.new()
@@ -205,7 +207,7 @@ pub fn unknown_corrupt_and_failed_contexts_do_not_block_other_roots_test() {
   let _ = dead(a, memory.backend, hanging, body)
   let good_id = dead(a, memory.backend, good, body)
   let assert Ok(Nil) =
-    memory.backend.insert("broken", "invalid", store.Claim("dead", 0))
+    memory.backend.insert("broken", "invalid", backend.Claim("dead", 0))
   let #(events, attachment) = capture()
   let context_ids = process.new_subject()
   let sweeper =
@@ -229,7 +231,7 @@ pub fn unknown_corrupt_and_failed_contexts_do_not_block_other_roots_test() {
 }
 
 pub fn supervisor_shutdown_stops_a_blocked_context_before_store_drain_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let body = probe.new()
   let agent = worker("worker", body)
@@ -282,7 +284,7 @@ pub fn a_bounded_call_kills_its_work_on_timeout_test() {
 }
 
 pub fn a_restarted_store_replaces_the_sweeper_and_its_pending_context_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let body = probe.new()
   let contexts = probe.new()
@@ -315,7 +317,7 @@ pub fn a_restarted_store_replaces_the_sweeper_and_its_pending_context_test() {
     )
   let app = restart.application_with(b, [spec])
   let assert Ok(context) = process.receive(entered, 1000)
-  let assert Ok(old_store) = store.pid(b)
+  let assert Ok(old_store) = store_core.pid(b)
   restart.kill(old_store)
   let monitor = process.monitor(context)
   process.new_selector()
@@ -325,7 +327,7 @@ pub fn a_restarted_store_replaces_the_sweeper_and_its_pending_context_test() {
   await_restarted(b, old_store, 200)
   process.sleep(30)
   probe.count(contexts, "called") |> should.equal(1)
-  let assert store.Held(owner, True) = nodes.holder(memory.backend, id)
+  let assert backend.Held(owner, True) = nodes.holder(memory.backend, id)
   memory.backend.renew(owner, [run.id_to_string(id)], 0)
   |> should.equal(Ok([run.id_to_string(id)]))
   let assert Ok(seen) = fabric.open(b, agent, Nil, id)
@@ -335,7 +337,7 @@ pub fn a_restarted_store_replaces_the_sweeper_and_its_pending_context_test() {
 }
 
 fn await_restarted(node, previous, tries) {
-  case store.pid(node), store.runners(node) {
+  case store_core.pid(node), store_core.runners(node) {
     Ok(pid), Ok(_) if pid != previous -> Nil
     _, _ if tries > 0 -> {
       process.sleep(10)
@@ -346,19 +348,22 @@ fn await_restarted(node, previous, tries) {
 }
 
 pub fn a_slow_claim_does_not_overlap_the_next_scan_or_block_the_store_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let calls = probe.new()
   let backend =
-    store.LeasedBackend(..memory.backend, claim_expired: fn(owner, ttl, limit) {
-      probe.record(calls, "scan")
-      probe.gate(calls, "claim")
-      memory.backend.claim_expired(owner, ttl, limit)
-    })
+    backend.LeasedBackend(
+      ..memory.backend,
+      claim_expired: fn(owner, ttl, limit) {
+        probe.record(calls, "scan")
+        probe.gate(calls, "claim")
+        memory.backend.claim_expired(owner, ttl, limit)
+      },
+    )
   let node = nodes.node(backend, "a", nodes.long)
   let sweeper = start(node, [], 1)
   let first = probe.arrival(calls)
   // The actor remains responsive while its backend claim is blocked.
-  let assert Ok(_) = store.runners(node)
+  let assert Ok(_) = store_core.runners(node)
   process.sleep(30)
   probe.count(calls, "scan") |> should.equal(1)
   probe.release(first)
@@ -369,7 +374,7 @@ pub fn a_slow_claim_does_not_overlap_the_next_scan_or_block_the_store_test() {
 }
 
 pub fn a_record_under_the_wrong_run_id_is_rejected_before_recovery_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let body = probe.new()
@@ -387,7 +392,7 @@ pub fn a_record_under_the_wrong_run_id_is_rejected_before_recovery_test() {
   let assert Ok(record) =
     memory.backend.get(run.id_to_string(fabric.id(original)))
   let assert Ok(Nil) =
-    memory.backend.insert("misfiled", record.record, store.Claim("dead", 0))
+    memory.backend.insert("misfiled", record.record, backend.Claim("dead", 0))
   let contexts = probe.new()
   let #(events, attachment) = capture()
   let sweeper =

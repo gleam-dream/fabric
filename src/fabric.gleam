@@ -68,17 +68,20 @@
 import fabric/agent.{type Agent}
 import fabric/budget
 import fabric/internal/budget/model as reservations
+import fabric/internal/checked_agent
 import fabric/internal/controller.{type State}
 import fabric/internal/family
+import fabric/internal/run_id
 import fabric/internal/runner
 import fabric/internal/settlement
+import fabric/internal/store as store_core
 import fabric/internal/sweeper
 import fabric/run.{
   type ActionRef, type Answer, type ApprovalRef, type Incompatibility,
   type PendingApproval, type RunId, type Snapshot, type Status, id_to_string,
-  issued,
 }
 import fabric/store.{type Store}
+import fabric/store/backend
 import gleam/erlang/process.{type Pid}
 import gleam/int
 import gleam/list
@@ -159,7 +162,7 @@ pub type CommandError {
   /// handler holds it, or the command was sent from such a handler running
   /// in the run's own runner. Nothing was changed, and the command will not
   /// be applied later. Try again, or route Fabric's events through a
-  /// forwarder (see `fabric/observation`). `cancel` and `cancel_stored`
+  /// forwarder (see `fabric/telemetry`). `cancel` and `cancel_stored`
   /// never return it: they commit the cancellation to the record instead.
   RunnerBusy
   /// The command lost every retry against concurrent commits.
@@ -211,7 +214,7 @@ pub fn start_with_budget(
     reservations.new(limits)
     |> result.replace_error(StartRefused("invalid family budget limits")),
   )
-  use Nil <- result.try(case store.supports_family_budget(store) {
+  use Nil <- result.try(case store_core.supports_family_budget(store) {
     True -> Ok(Nil)
     False -> Error(StartRefused("family budgets require agent record writer 7"))
   })
@@ -235,7 +238,7 @@ fn start_root(
   correlation: Option(Correlation),
   declaration: Option(reservations.Declaration),
 ) -> Result(Run(context), StartError) {
-  let setup = runner.setup(store, agent.admitted(agent), context, None)
+  let setup = runner.setup(store, checked_agent.admitted(agent), context, None)
   let text = id_to_string(id)
   let correlation =
     option.lazy_unwrap(correlation, fn() { correlation.from_key(text) })
@@ -243,7 +246,7 @@ fn start_root(
   let state = controller.State(..state, family_budget: declaration)
   case runner.launch_new(setup, state, effects) {
     Ok(_) -> Ok(Run(id: text, setup:))
-    Error(store.AlreadyExists) -> Error(AlreadyStarted(id))
+    Error(backend.AlreadyExists) -> Error(AlreadyStarted(id))
     Error(error) -> Error(StartUnconfirmed(id, describe_store(error)))
   }
 }
@@ -297,7 +300,7 @@ pub fn recover(
   id: RunId,
 ) -> Result(Run(context), CommandError) {
   let id = id_to_string(id)
-  let setup = runner.setup(store, agent.admitted(agent), context, None)
+  let setup = runner.setup(store, checked_agent.admitted(agent), context, None)
   case family.take_over(setup, id, retries) {
     Ok(Nil) -> Ok(Run(id:, setup:))
     Error(family.TakeOverContended) -> Error(Contended)
@@ -328,14 +331,14 @@ pub fn open(
   id: RunId,
 ) -> Result(Run(context), RecordError) {
   let id = id_to_string(id)
-  let setup = runner.setup(store, agent.admitted(agent), context, None)
+  let setup = runner.setup(store, checked_agent.admitted(agent), context, None)
   runner.load_checked(setup, id)
   |> result.replace(Run(id:, setup:))
   |> result.map_error(record_error)
 }
 
 pub fn id(run: Run(context)) -> RunId {
-  issued(run.id)
+  run_id.from_string(run.id)
 }
 
 /// Opens the sub-agent run `id`, a descendant of `run`, with `run`'s agent
@@ -473,7 +476,7 @@ fn store_process(
   stopped: Option(Pid),
   deadline: Int,
 ) -> Result(Result(Pid, message), Nil) {
-  case store.pid(store), stopped {
+  case store_core.pid(store), stopped {
     Ok(pid), Some(old) if pid != old -> Ok(Ok(pid))
     Ok(pid), None -> Ok(Ok(pid))
     Error(Nil), None -> Error(Nil)
@@ -499,7 +502,7 @@ fn wait(
   deadline: Int,
 ) -> Waited(message) {
   let done = fn(outcome) {
-    list.each(watched, store.unwatch(run.setup.store, _, watcher))
+    list.each(watched, store_core.unwatch(run.setup.store, _, watcher))
     Waited(outcome)
   }
   let reached = fn(status) { done(Ok(Reached(status))) }
@@ -521,7 +524,7 @@ fn wait(
         list.filter(family.ids(node), fn(id) { !list.contains(watched, id) })
       let watching =
         list.try_each(fresh, fn(id) {
-          store.watch(run.setup.store, id, watcher)
+          store_core.watch(run.setup.store, id, watcher)
         })
       case watching, fresh, family.view(node) {
         Error(error), _, _ -> failed(store_error(error))
@@ -544,7 +547,7 @@ fn wait(
         Ok(Nil), [], family.View(run.Working, True) -> {
           // Commits made through another node's store wake no watcher here:
           // a leased store reads the family again at least every poll.
-          let wake = case store.poll_interval(run.setup.store) {
+          let wake = case store_core.poll_interval(run.setup.store) {
             Some(poll) -> int.min(deadline, now() + poll)
             None -> deadline
           }
@@ -633,7 +636,7 @@ pub fn pending(
 /// stored record with compare-and-set, so of concurrent answers exactly one
 /// wins and the others get `AlreadyAnswered` (or `RunEnded` after a cancel).
 /// The caller then emits the commit's events before `approve` returns (see
-/// `fabric/observation`); the approved work has already started.
+/// `fabric/telemetry`); the approved work has already started.
 ///
 /// An answer to a sub-agent run whose ancestor is stopping or has ended is
 /// refused with `RunEnded`, even if the sub-agent's own cancellation has
@@ -923,7 +926,7 @@ fn status_after(run: Run(context), state: State) -> Status {
 /// with its children and its runner read now. A family that reads
 /// `Unattended` is read again, as `snapshot` does.
 fn committed_status(store: Store, id: String, state: State) -> Status {
-  case store.get(store, id) {
+  case store_core.get(store, id) {
     Ok(entry) ->
       family.with_children(store, id, entry, state)
       |> family.settle(store, _, 3)
@@ -938,7 +941,7 @@ fn command_error(failure: runner.Failure) -> CommandError {
     runner.CommandRefused(rejection) -> refusal(rejection)
     runner.OwnerUnknown -> RunUnattended
     runner.Contended
-    | runner.Unreadable(runner.StoreFailed(store.Conflict(_))) -> Contended
+    | runner.Unreadable(runner.StoreFailed(backend.Conflict(_))) -> Contended
     runner.Busy -> RunnerBusy
     runner.Unreadable(problem) -> Unreadable(record_error(problem))
   }
@@ -974,25 +977,25 @@ fn record_error(problem: runner.ReadError) -> RecordError {
 /// practice: a conflict is retried (and reported `Contended`), and a read
 /// reports a missing record as not found. A backend that breaks its
 /// contract is reported unavailable with what it said.
-fn store_error(error: store.StoreError) -> RecordError {
+fn store_error(error: backend.StoreError) -> RecordError {
   case error {
-    store.NotFound -> RunNotFound
-    store.Unavailable(reason) -> StoreUnavailable(reason)
-    store.AlreadyExists | store.Conflict(_) | store.LeaseRefused(_) ->
+    backend.NotFound -> RunNotFound
+    backend.Unavailable(reason) -> StoreUnavailable(reason)
+    backend.AlreadyExists | backend.Conflict(_) | backend.LeaseRefused(_) ->
       StoreUnavailable(describe_store(error))
   }
 }
 
-fn describe_store(error: store.StoreError) -> String {
+fn describe_store(error: backend.StoreError) -> String {
   case error {
-    store.Unavailable(reason) -> reason
-    store.NotFound -> "the run does not exist"
-    store.AlreadyExists -> "the run already exists"
-    store.Conflict(current) ->
+    backend.Unavailable(reason) -> reason
+    backend.NotFound -> "the run does not exist"
+    backend.AlreadyExists -> "the run already exists"
+    backend.Conflict(current) ->
       "the run moved on to revision " <> int.to_string(current)
-    store.LeaseRefused(store.Held(owner:, ..)) ->
+    backend.LeaseRefused(backend.Held(owner:, ..)) ->
       "the run's lease is held by " <> owner
-    store.LeaseRefused(store.Free) -> "the run's lease is not held"
+    backend.LeaseRefused(backend.Free) -> "the run's lease is not held"
   }
 }
 
@@ -1017,7 +1020,7 @@ pub type SweeperError {
   /// Longer than the longest timer the runtime can set (`limit`, 2^32 - 1
   /// ms).
   EveryTooLarge(value: Duration, limit: Duration)
-  DuplicateRecovery(run.Identity)
+  DuplicateRecovery(run.DefinitionId)
   StoreNotLeased
 }
 
@@ -1031,7 +1034,7 @@ pub type SweeperError {
 ///
 /// Context construction has 5 seconds; each root recovery has 30 seconds.
 /// A failure or unknown identity leaves its claim to expire and does not
-/// prevent the next root's recovery. `observation.sweep` reports each scan;
+/// prevent the next root's recovery. `telemetry.sweep` reports each scan;
 /// synchronous sweep handlers have 1 second before their emitter is stopped.
 /// Held work waits for lease expiry; explicit `recover` can take an earlier
 /// local lease at once. Free managed waits remain discoverable after losing

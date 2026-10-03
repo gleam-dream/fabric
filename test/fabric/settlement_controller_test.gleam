@@ -20,7 +20,7 @@ fn settling(name: String) -> tool.Tool(Nil) {
   |> tool.bind_settling(
     fn(_, _call, _, _) { Ok(Forecast("sunny")) },
     fn(_: Nil) { tool.Explain("failed") },
-    within: duration.milliseconds(50),
+    settle_within: duration.milliseconds(50),
   )
 }
 
@@ -50,7 +50,7 @@ fn cancelled() -> State {
     controller.start(
       env(),
       "run-1",
-      run.Identity("agent", 1),
+      run.DefinitionId("agent", 1),
       controller.Limits(5, None, 0, 0),
       "go",
       None,

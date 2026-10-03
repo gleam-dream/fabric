@@ -5,9 +5,11 @@ import fabric/graph
 import fabric/graph/definition
 import fabric/graph/operation
 import fabric/graph/signal
+import fabric/internal/store as store_core
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -23,12 +25,12 @@ fn runtime(runs) {
   let assert Ok(wait) =
     operation.await_signal(
       codec.int(),
-      signal.new(run.Identity("answer", 1), codec.bool()),
+      signal.new(run.DefinitionId("answer", 1), codec.bool()),
     )
     |> operation.with_deadline(duration.milliseconds(2000))
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("pg-deadline", 1),
+      run.DefinitionId("pg-deadline", 1),
       node,
       [
         definition.node(
@@ -60,7 +62,7 @@ pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
       let assert Ok(waiting) =
         graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.AwaitingSignal(_) = waiting.status
-      let assert Ok(row) = store.get(runs, run.id_to_string(id))
+      let assert Ok(row) = store_core.get(runs, run.id_to_string(id))
       row.live |> should.equal(None)
       waiting
     })
@@ -83,7 +85,7 @@ pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
   let assert Ok(spec) =
     fabric.sweeper(
       runs,
-      [graph.recovery(run.Identity("pg-deadline", 1), runtime)],
+      [graph.recovery(run.DefinitionId("pg-deadline", 1), runtime)],
       every: duration.milliseconds(60_000),
     )
   let assert Ok(started) = spec.start()
@@ -93,7 +95,7 @@ pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
   expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
   expired.receipts |> should.equal([])
   let assert Ok(row) = backend.get(run.id_to_string(id))
-  row.holder |> should.equal(store.Free)
+  row.holder |> should.equal(backend.Free)
   backend.claim_ready("after", 60_000, 5) |> should.equal(Ok([]))
   fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
   |> should.equal(Ok(1))

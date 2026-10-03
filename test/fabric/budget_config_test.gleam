@@ -8,8 +8,8 @@ import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
 import fabric/internal/record
 import fabric/model
-import fabric/retention
 import fabric/run
+import fabric/store/retention
 import fabric/support
 import gleam/list
 import gleam/option.{None, Some}
@@ -24,7 +24,7 @@ fn limits() {
 fn agent_root() {
   agent.State(
     "root",
-    run.Identity("agent", 1),
+    run.DefinitionId("agent", 1),
     1,
     None,
     0,
@@ -44,11 +44,11 @@ fn graph_root() {
   let assert Ok(#(state, _)) =
     graph.start(
       "root",
-      graph.Definition(run.Identity("graph", 1), "graph-v1", 3),
+      graph.Definition(run.DefinitionId("graph", 1), "graph-v1", 3),
       "0",
       graph.Prepared(
         "step",
-        run.Identity("step", 1),
+        run.DefinitionId("step", 1),
         "0",
         operation.RequireReconciliation,
         operation.Activity,

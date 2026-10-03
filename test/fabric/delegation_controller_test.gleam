@@ -8,6 +8,7 @@ import fabric/internal/controller.{
 }
 import fabric/internal/invocation
 import fabric/internal/registry
+import fabric/internal/tool as core_tool
 import fabric/model.{ToolCall, ToolRequest}
 import fabric/policy
 import fabric/run.{ActionId}
@@ -21,9 +22,9 @@ import gleeunit/should
 import json/blueprint/codec
 
 fn ask() -> tool.Tool(Nil) {
-  tool.delegation(
+  core_tool.delegation(
     tool.define("ask", "Ask a helper.", codec.string(), codec.string()),
-    run.Identity("helper", 1),
+    run.DefinitionId("helper", 1),
     fn(question) { question },
     output: fn(text) {
       case text {
@@ -72,7 +73,7 @@ fn acting(
     controller.start(
       env(),
       "run-p",
-      run.Identity("parent", 1),
+      run.DefinitionId("parent", 1),
       controller.Limits(
         max_turns: 4,
         token_budget: None,
@@ -267,7 +268,7 @@ fn offered(max_children: Int, max_depth: Int, depth: Int) -> List(String) {
     controller.start(
       env(),
       "run-p",
-      run.Identity("parent", 1),
+      run.DefinitionId("parent", 1),
       controller.Limits(
         max_turns: 4,
         token_budget: None,

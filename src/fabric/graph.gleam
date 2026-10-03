@@ -23,10 +23,13 @@ import fabric/internal/graph/fork_driver
 import fabric/internal/graph/live
 import fabric/internal/graph/record
 import fabric/internal/graph/runner
+import fabric/internal/run_id
+import fabric/internal/store as store_core
 import fabric/internal/sweeper
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
 import gleam/erlang/process
 import gleam/int
 import gleam/json
@@ -41,7 +44,7 @@ pub type Action {
   Action(
     invocation: operation.Invocation,
     node: String,
-    operation: run.Identity,
+    operation: run.DefinitionId,
     input_json: String,
     recovery: operation.Recovery,
     kind: operation.Kind,
@@ -69,7 +72,7 @@ pub opaque type Handle(context, state, answer) {
 /// Registration discovers expired leases and changed idle dependencies,
 /// including waits whose local wakeup was lost.
 pub fn recovery(
-  identity: run.Identity,
+  identity: run.DefinitionId,
   build: fn(store.Store) -> Runtime(context, state, answer),
 ) -> sweeper.Recovery {
   sweeper.graph_recovery(identity, fn(runs, id) {
@@ -79,8 +82,8 @@ pub fn recovery(
     use Nil <- result.try(
       case
         definition.identity(runtime.definition).identity == identity,
-        store.pid(runtime.store),
-        store.pid(runs)
+        store_core.pid(runtime.store),
+        store_core.pid(runs)
       {
         True, Ok(actual), Ok(expected) if actual == expected -> Ok(Nil)
         _, _, _ -> Error(Nil)
@@ -92,8 +95,8 @@ pub fn recovery(
   })
 }
 
-pub type Approval {
-  Approval(
+pub type ApprovalRef {
+  ApprovalRef(
     run: run.RunId,
     activation: Int,
     attempt: Int,
@@ -113,7 +116,7 @@ pub type SignalReference {
     run: run.RunId,
     activation: Int,
     attempt: Int,
-    contract: run.Identity,
+    contract: run.DefinitionId,
   )
 }
 
@@ -147,7 +150,7 @@ pub type Status(answer) {
   Working
   /// Work exists but this store knows no owner and no live foreign lease.
   Unattended
-  AwaitingApproval(Approval)
+  AwaitingApproval(ApprovalRef)
   AwaitingSignal(SignalReference)
   AwaitingJob(job.Reference)
   CancellingJob(job.Reference, job.CancellationProgress, operation.StopReason)
@@ -166,7 +169,7 @@ pub type Status(answer) {
 pub type Route {
   Next(node: String)
   Finished
-  Canceled
+  Stopped
 }
 
 pub type Receipt {
@@ -174,7 +177,7 @@ pub type Receipt {
     activation: Int,
     attempt: Int,
     node: String,
-    operation: run.Identity,
+    operation: run.DefinitionId,
     input_json: String,
     output_json: String,
     state_json: String,
@@ -196,7 +199,7 @@ pub type Snapshot(state, answer) {
 }
 
 pub type Error {
-  StoreFailed(store.StoreError)
+  StoreFailed(backend.StoreError)
   CorruptRecord(String)
   UnsupportedRecordVersion(Int)
   DefinitionRejected(definition.Error)
@@ -228,7 +231,7 @@ pub fn new(
       admit: fn(id, activation) {
         let invocation =
           operation.Invocation(
-            run.issued(id),
+            run_id.from_string(id),
             activation.id,
             activation.attempt,
           )
@@ -273,7 +276,7 @@ pub fn new(
             definition,
             context,
             operation.Invocation(
-              run.issued(id),
+              run_id.from_string(id),
               activation.id,
               activation.attempt,
             ),
@@ -357,7 +360,7 @@ pub fn as_subgraph(
     definition.state_codec(runtime.definition),
     definition.answer_codec(runtime.definition),
     child_driver.Driver(
-      store: fn() { store.pid(runs) },
+      store: fn() { store_core.pid(runs) },
       reserve: fn(parent, id, input, reservation) {
         reserved_child(runtime, parent, id, input, reservation, 3)
         |> result.map_error(string.inspect)
@@ -372,7 +375,7 @@ pub fn as_subgraph(
 /// Compose two managed graphs with independent native inputs and answers.
 /// A settled member failure is available to the parent as a typed alternative.
 pub fn both(
-  identity: run.Identity,
+  identity: run.DefinitionId,
   left: Runtime(left_context, left_state, left_answer),
   right: Runtime(right_context, right_state, right_answer),
 ) -> Result(
@@ -403,7 +406,7 @@ pub fn both(
   let right_store = right.store
   let driver =
     fork_driver.Driver(
-      stores: fn() { [store.pid(left_store), store.pid(right_store)] },
+      stores: fn() { [store_core.pid(left_store), store_core.pid(right_store)] },
       prepare: fn(encoded) {
         use values <- result.try(
           codec.decode_json(input, encoded) |> result.map_error(string.inspect),
@@ -468,7 +471,7 @@ pub fn both(
 /// Empty input succeeds; oversized input is refused before any child reservation.
 /// Waiting and uncertain members keep their concurrency slots.
 pub fn map(
-  identity: run.Identity,
+  identity: run.DefinitionId,
   child: Runtime(child_context, child_state, child_answer),
   max_members maximum: Int,
   concurrency concurrency: Int,
@@ -499,7 +502,7 @@ pub fn map(
   let runs = child.store
   let driver =
     fork_driver.Driver(
-      stores: fn() { [store.pid(runs)] },
+      stores: fn() { [store_core.pid(runs)] },
       prepare: fn(encoded) {
         use values <- result.try(
           codec.decode_json(input, encoded) |> result.map_error(string.inspect),
@@ -604,7 +607,7 @@ fn attached_child(
   id: String,
 ) -> Result(Handle(child_context, child_state, child_answer), Error) {
   use _ <- result.try(
-    case store.pid(parent.runtime.store), store.pid(runtime.store) {
+    case store_core.pid(parent.runtime.store), store_core.pid(runtime.store) {
       Ok(parent_store), Ok(child_store) if parent_store == child_store -> Ok(Nil)
       _, _ ->
         Error(CommandRefused("child runtime does not use the parent store"))
@@ -615,7 +618,7 @@ fn attached_child(
     |> result.map_error(from_runner),
   )
   use _ <- result.try(check_attachment(state, link))
-  Ok(attach(runtime, run.issued(id)))
+  Ok(attach(runtime, run_id.from_string(id)))
 }
 
 fn check_attachment(
@@ -666,10 +669,10 @@ fn reserved_child(
           |> result.map_error(from_runner)
       }
     }
-    Error(runner.StoreFailed(store.NotFound))
+    Error(runner.StoreFailed(backend.NotFound))
       if reservation == child_driver.Discover
-    -> Error(from_runner(runner.StoreFailed(store.NotFound)))
-    Error(runner.StoreFailed(store.NotFound)) -> {
+    -> Error(from_runner(runner.StoreFailed(backend.NotFound)))
+    Error(runner.StoreFailed(backend.NotFound)) -> {
       use initial <- result.try(
         definition.decode_state(runtime.definition, input)
         |> result.map_error(DefinitionRejected),
@@ -712,7 +715,7 @@ fn reserved_child(
         )
       {
         Ok(_) -> Ok(Nil)
-        Error(runner.StoreFailed(store.AlreadyExists)) if tries > 1 ->
+        Error(runner.StoreFailed(backend.AlreadyExists)) if tries > 1 ->
           reserved_child(runtime, parent, id, input, reservation, tries - 1)
         Error(error) -> Error(from_runner(error))
       }
@@ -732,7 +735,7 @@ fn child_progress(
     False -> Error(CommandRefused("child nesting limit reached"))
   })
   case runner.load_raw(runs, id) {
-    Error(runner.StoreFailed(store.NotFound)) -> Ok(child.Working)
+    Error(runner.StoreFailed(backend.NotFound)) -> Ok(child.Working)
     Error(error) -> Error(from_runner(error))
     Ok(#(_, state)) -> {
       use _ <- result.try(check_attachment(state, parent))
@@ -809,7 +812,9 @@ fn nested_fork_progress(
       )
       let id = child.branch_id(state.run, a.id, ref.member)
       // A parked scope has acknowledged children; absence is not fresh work.
-      use _ <- result.try(store.get(runs, id) |> result.map_error(StoreFailed))
+      use _ <- result.try(
+        store_core.get(runs, id) |> result.map_error(StoreFailed),
+      )
       use progress <- result.map(child_progress(
         runs,
         child.Branch(state.run, a.id, ref.member),
@@ -824,10 +829,6 @@ fn nested_fork_progress(
     True -> Ok(child.Working)
     False -> Ok(child.Fork(scope.snapshot(members)))
   }
-}
-
-pub fn approval_requirement(approval: Approval) -> run.Requirement {
-  approval.requirement
 }
 
 /// A successful return means the initial record was confirmed. Execution
@@ -854,7 +855,7 @@ pub fn start_with_budget(
     reservations.new(limits)
     |> result.replace_error(CommandRefused("invalid family budget limits")),
   )
-  use Nil <- result.try(case store.supports_family_budget(runtime.store) {
+  use Nil <- result.try(case store_core.supports_family_budget(runtime.store) {
     True -> Ok(Nil)
     False ->
       Error(CommandRefused("family budgets require agent record writer 7"))
@@ -942,11 +943,11 @@ pub fn await(
   let watcher = process.new_subject()
   let id = run.id_to_string(handle.id)
   use _ <- result.try(
-    store.watch(handle.runtime.store, id, watcher)
+    store_core.watch(handle.runtime.store, id, watcher)
     |> result.map_error(StoreFailed),
   )
   let outcome = attend(handle, watcher, now() + within)
-  store.unwatch(handle.runtime.store, id, watcher)
+  store_core.unwatch(handle.runtime.store, id, watcher)
   outcome
 }
 
@@ -1050,14 +1051,14 @@ pub fn cancel(handle: Handle(context, state, answer)) -> Result(Nil, Error) {
 
 pub fn approve(
   handle: Handle(context, state, answer),
-  approval: Approval,
+  approval: ApprovalRef,
 ) -> Result(Snapshot(state, answer), Error) {
   answer_approval(handle, approval, None, 3)
 }
 
 pub fn reject(
   handle: Handle(context, state, answer),
-  approval: Approval,
+  approval: ApprovalRef,
   reason: String,
 ) -> Result(Snapshot(state, answer), Error) {
   answer_approval(handle, approval, Some(reason), 3)
@@ -1140,7 +1141,7 @@ fn deliver_with(
       case
         signal_matches(reference, receipt.activation)
         && receipt.output == output
-        && receipt.route != control.Canceled
+        && receipt.route != control.StoppedRoute
       {
         True -> read(handle)
         False ->
@@ -1185,7 +1186,7 @@ fn deliver_with(
         )
       {
         Ok(_) -> read(handle)
-        Error(runner.StoreFailed(store.Conflict(_))) if tries > 1 ->
+        Error(runner.StoreFailed(backend.Conflict(_))) if tries > 1 ->
           deliver_with(handle, reference, output, tries - 1)
         Error(error) -> Error(from_runner(error))
       }
@@ -1219,7 +1220,7 @@ fn signal_event(
 
 fn answer_approval(
   handle: Handle(context, state, answer),
-  approval: Approval,
+  approval: ApprovalRef,
   rejection: option.Option(String),
   tries: Int,
 ) -> Result(Snapshot(state, answer), Error) {
@@ -1270,7 +1271,7 @@ fn answer_approval(
             None,
           ))
         Error(runner.BudgetUnavailable(reason)) ->
-          Error(StoreFailed(store.Unavailable(reason)))
+          Error(StoreFailed(backend.Unavailable(reason)))
       }
   })
   use #(next, effects) <- result.try(
@@ -1290,7 +1291,7 @@ fn answer_approval(
     )
   {
     Ok(_) -> read(handle)
-    Error(runner.StoreFailed(store.Conflict(_))) if tries > 1 ->
+    Error(runner.StoreFailed(backend.Conflict(_))) if tries > 1 ->
       answer_approval(handle, approval, rejection, tries - 1)
     Error(error) -> Error(from_runner(error))
   }
@@ -1428,7 +1429,7 @@ fn reconcile_with(
     )
   {
     Ok(_) -> read(handle)
-    Error(runner.StoreFailed(store.Conflict(_))) if tries > 1 ->
+    Error(runner.StoreFailed(backend.Conflict(_))) if tries > 1 ->
       reconcile_with(handle, reference, output, tries - 1)
     Error(error) -> Error(from_runner(error))
   }
@@ -1436,7 +1437,7 @@ fn reconcile_with(
 
 fn snapshot(
   runtime: Runtime(context, state, answer),
-  entry: store.Entry,
+  entry: store_core.Entry,
   state: control.State,
 ) -> Result(Snapshot(state, answer), Error) {
   let definition = runtime.definition
@@ -1465,7 +1466,11 @@ fn snapshot(
     }
     control.ChildBlocked(a, id, reason) ->
       Ok(Child(
-        child.Reference(run.issued(state.run), a.id, run.issued(id)),
+        child.Reference(
+          run_id.from_string(state.run),
+          a.id,
+          run_id.from_string(id),
+        ),
         child.Uncertain(reason),
       ))
     control.WaitingChild(a, id) -> {
@@ -1478,7 +1483,11 @@ fn snapshot(
         |> result.map_error(CallbackFailed),
       )
       Ok(Child(
-        child.Reference(run.issued(state.run), a.id, run.issued(id)),
+        child.Reference(
+          run_id.from_string(state.run),
+          a.id,
+          run_id.from_string(id),
+        ),
         progress,
       ))
     }
@@ -1487,7 +1496,11 @@ fn snapshot(
         False -> Unattended
         True ->
           CancellingChild(
-            child.Reference(run.issued(state.run), a.id, run.issued(id)),
+            child.Reference(
+              run_id.from_string(state.run),
+              a.id,
+              run_id.from_string(id),
+            ),
             cause,
           )
       })
@@ -1512,7 +1525,11 @@ fn snapshot(
               }
           }
           Child(
-            child.Reference(run.issued(state.run), a.id, run.issued(id)),
+            child.Reference(
+              run_id.from_string(state.run),
+              a.id,
+              run_id.from_string(id),
+            ),
             progress,
           )
         }
@@ -1530,8 +1547,8 @@ fn snapshot(
       })
     control.AwaitingApproval(_, reference) ->
       Ok(
-        AwaitingApproval(Approval(
-          run.issued(state.run),
+        AwaitingApproval(ApprovalRef(
+          run_id.from_string(state.run),
           reference.activation,
           reference.attempt,
           reference.revision,
@@ -1541,7 +1558,7 @@ fn snapshot(
     control.WaitingJob(a) ->
       Ok(
         AwaitingJob(job.Reference(
-          run.issued(state.run),
+          run_id.from_string(state.run),
           a.id,
           a.attempt,
           a.prepared.operation,
@@ -1553,7 +1570,7 @@ fn snapshot(
         False ->
           CancellingJob(
             job.Reference(
-              run.issued(state.run),
+              run_id.from_string(state.run),
               a.id,
               a.attempt,
               a.prepared.operation,
@@ -1565,7 +1582,7 @@ fn snapshot(
     control.WaitingSignal(a) ->
       Ok(
         AwaitingSignal(SignalReference(
-          run.issued(state.run),
+          run_id.from_string(state.run),
           a.id,
           a.attempt,
           a.prepared.operation,
@@ -1573,7 +1590,7 @@ fn snapshot(
       )
     control.Blocked(a, problem) ->
       Ok(Blocked(
-        Reconciliation(run.issued(state.run), a.id, a.attempt),
+        Reconciliation(run_id.from_string(state.run), a.id, a.attempt),
         public_problem(problem),
       ))
     control.Ended(control.Completed(answer)) ->
@@ -1626,14 +1643,14 @@ fn public_cancellation(
     control.BeforeStart -> BeforeStart
     control.JobDetached ->
       JobDetached(job.Reference(
-        run.issued(state.run),
+        run_id.from_string(state.run),
         a.id,
         a.attempt,
         a.prepared.operation,
       ))
     control.JobStopped ->
       JobStopped(job.Reference(
-        run.issued(state.run),
+        run_id.from_string(state.run),
         a.id,
         a.attempt,
         a.prepared.operation,
@@ -1641,7 +1658,11 @@ fn public_cancellation(
     control.AfterResult -> AfterResult
     control.AfterFailure(fault) -> AfterFailure(failure(fault))
     control.AfterChild(id) ->
-      ChildSettled(child.Reference(run.issued(state.run), a.id, run.issued(id)))
+      ChildSettled(child.Reference(
+        run_id.from_string(state.run),
+        a.id,
+        run_id.from_string(id),
+      ))
     control.UnresolvedCancellation(problem)
       if {
         a.prepared.kind == operation.Subgraph
@@ -1650,15 +1671,15 @@ fn public_cancellation(
     ->
       ChildUnresolved(
         child.Reference(
-          run.issued(state.run),
+          run_id.from_string(state.run),
           a.id,
-          run.issued(child.reserved_id(state.run, a.id)),
+          run_id.from_string(child.reserved_id(state.run, a.id)),
         ),
         public_problem(problem),
       )
     control.UnresolvedCancellation(problem) ->
       Unresolved(
-        Reconciliation(run.issued(state.run), a.id, a.attempt),
+        Reconciliation(run_id.from_string(state.run), a.id, a.attempt),
         public_problem(problem),
       )
   }
@@ -1687,7 +1708,7 @@ fn current_action(state: control.State) -> option.Option(Action) {
     | control.Ended(control.Expired(a, _))
     | control.Ended(control.Cancelled(a, _)) ->
       Some(Action(
-        operation.Invocation(run.issued(state.run), a.id, a.attempt),
+        operation.Invocation(run_id.from_string(state.run), a.id, a.attempt),
         a.prepared.node,
         a.prepared.operation,
         a.prepared.input,
@@ -1713,7 +1734,7 @@ fn public_receipts(state: control.State) -> List(Receipt) {
       case receipt.route {
         control.Next(node) -> Next(node)
         control.Finished -> Finished
-        control.Canceled -> Canceled
+        control.StoppedRoute -> Stopped
       },
     )
   })

@@ -5,8 +5,8 @@
 
 import fabric
 import fabric/agent
+import fabric/internal/store as store_core
 import fabric/model
-import fabric/observation as o
 import fabric/policy
 import fabric/run.{Requirement}
 import fabric/store
@@ -15,6 +15,7 @@ import fabric/support/apps
 import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
+import fabric/telemetry as o
 import fabric/testing
 import fabric/tool
 import gleam/dynamic
@@ -143,7 +144,7 @@ fn option_text(value: option.Option(String)) -> String {
   }
 }
 
-fn action_text(action: o.ActionRef) -> String {
+fn action_text(action: o.Action) -> String {
   action.run
   <> " "
   <> int.to_string(action.turn)
@@ -607,8 +608,8 @@ pub fn an_unrouted_handler_runs_in_the_runner_test() {
       correlation: None,
     )
   let #(handler, gate) = entered_by(entered, support.text(fabric.id(run)))
-  let assert Ok(store.Entry(live: Some(store.Live(_, mailbox)), ..)) =
-    store.get(memory, support.text(fabric.id(run)))
+  let assert Ok(store_core.Entry(live: Some(store_core.Live(_, mailbox)), ..)) =
+    store_core.get(memory, support.text(fabric.id(run)))
   let runner = process.subject_owner(mailbox)
   let waiting = fabric.await(run, within: duration.milliseconds(0))
   process.send(gate, Nil)

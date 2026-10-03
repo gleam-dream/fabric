@@ -10,17 +10,19 @@ import fabric/graph/operation
 import fabric/graph/signal
 import fabric/internal/graph/controller as control
 import fabric/internal/graph/record
+import fabric/internal/store as store_core
 import fabric/model
-import fabric/observation as o
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
+import fabric/store/conformance
 import fabric/support
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
-import fabric/testing
+import fabric/telemetry as o
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -32,13 +34,13 @@ import json/blueprint/codec
 import sinal
 
 fn identity() {
-  run.Identity("swept-graph", 1)
+  run.DefinitionId("swept-graph", 1)
 }
 
 fn runtime(runs, calls) {
   let op =
     operation.new(
-      run.Identity("effect", 1),
+      run.DefinitionId("effect", 1),
       codec.int(),
       codec.int(),
       fn(_, _, n) {
@@ -70,10 +72,10 @@ fn wrap_native(runs, op, values) {
   graph.new(spec, runs, fn() { Nil }, fn(_, _) { Ok(policy.Allow) })
 }
 
-fn expire(runs, backend: store.LeasedBackend, id) {
+fn expire(runs, backend: backend.LeasedBackend, id) {
   let assert Ok(pid) = restart.runner(runs, id)
   restart.kill(pid)
-  let assert store.Held(owner, True) = nodes.holder(backend, id)
+  let assert backend.Held(owner, True) = nodes.holder(backend, id)
   backend.renew(owner, [run.id_to_string(id)], 0)
   |> should.equal(Ok([run.id_to_string(id)]))
 }
@@ -117,7 +119,7 @@ fn managed(runs, calls) {
   let assert Ok(node) =
     agent_node.new(
       agent_node.Definition(
-        run.Identity("agent-node", 1),
+        run.DefinitionId("agent-node", 1),
         worker(calls),
         codec.int(),
         codec.int(),
@@ -131,7 +133,7 @@ fn managed(runs, calls) {
 }
 
 pub fn mixed_family_scanning_keeps_the_foreign_parent_lease_and_uses_its_graph_registration_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let calls = probe.new()
@@ -166,10 +168,10 @@ pub fn mixed_family_scanning_keeps_the_foreign_parent_lease_and_uses_its_graph_r
   nodes.holder(memory.backend, graph.id(parent)) |> should.equal(parent_holder)
   probe.entries(contexts) |> should.equal(["graph-root"])
   stop(sweeper, attachment)
-  let assert store.Held(owner, _) = parent_holder
+  let assert backend.Held(owner, _) = parent_holder
   memory.backend.renew(owner, ["mixed-root"], 0)
   |> should.equal(Ok(["mixed-root"]))
-  nodes.holder(memory.backend, child) |> should.equal(store.Free)
+  nodes.holder(memory.backend, child) |> should.equal(backend.Free)
   let #(events, attachment) = capture()
   let sweeper = start_all(b, registrations)
   let assert Ok(summary) = process.receive(events, 5000)
@@ -183,7 +185,7 @@ pub fn mixed_family_scanning_keeps_the_foreign_parent_lease_and_uses_its_graph_r
 }
 
 pub fn invalid_graph_registrations_do_not_change_the_claimed_execution_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let calls = probe.new()
@@ -210,7 +212,7 @@ pub fn invalid_graph_registrations_do_not_change_the_claimed_execution_test() {
 }
 
 pub fn competing_graph_scans_claim_each_expired_run_once_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let c = nodes.node(memory.backend, "c", nodes.long)
@@ -248,7 +250,7 @@ pub fn competing_graph_scans_claim_each_expired_run_once_test() {
 }
 
 pub fn unknown_and_misfiled_graphs_do_not_invoke_a_registration_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let calls = probe.new()
@@ -257,13 +259,13 @@ pub fn unknown_and_misfiled_graphs_do_not_invoke_a_registration_test() {
   let _ = probe.arrival(calls)
   expire(a, memory.backend, graph.id(handle))
   let assert Ok(row) = memory.backend.get("unknown-graph")
-  memory.backend.insert("wrong-key", row.record, store.Claim("dead", 0))
+  memory.backend.insert("wrong-key", row.record, backend.Claim("dead", 0))
   |> should.be_ok
   let #(events, attachment) = capture()
   let sweeper =
     start(
       b,
-      graph.recovery(run.Identity("other", 1), fn(runs) {
+      graph.recovery(run.DefinitionId("other", 1), fn(runs) {
         probe.record(calls, "wrong-factory")
         runtime(runs, calls)
       }),
@@ -275,7 +277,7 @@ pub fn unknown_and_misfiled_graphs_do_not_invoke_a_registration_test() {
 }
 
 pub fn a_child_without_a_reciprocal_parent_reservation_cannot_trigger_root_recovery_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let calls = probe.new()
@@ -288,17 +290,17 @@ pub fn a_child_without_a_reciprocal_parent_reservation_cannot_trigger_root_recov
   let child = support.id(child.reserved_id("damaged-family", 1))
   expire(a, memory.backend, child)
   // Inject a decodable parent record that no longer names this child.
-  let assert Ok(row) = store.get(a, "damaged-family")
+  let assert Ok(row) = store_core.get(a, "damaged-family")
   let assert Ok(state) = record.decode(row.record)
   let assert control.Joining(activation, _) = state.phase
   let assert Ok(encoded) =
     record.encode(control.State(..state, phase: control.Ready(activation)))
-  store.commit(
+  store_core.commit(
     a,
     "damaged-family",
     row.revision,
     encoded,
-    store.Detached(False, False),
+    store_core.Detached(False, False),
   )
   |> should.be_ok
   let #(events, attachment) = capture()
@@ -324,7 +326,7 @@ fn stop(pid, attachment) {
 }
 
 pub fn expired_graph_work_recovers_without_repeating_its_started_effect_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let calls = probe.new()
@@ -342,7 +344,7 @@ pub fn expired_graph_work_recovers_without_repeating_its_started_effect_test() {
   let assert graph.Blocked(_, graph.EffectUncertain(_)) = snapshot.status
   snapshot.receipts |> should.equal([])
   probe.count(calls, "effect") |> should.equal(1)
-  nodes.holder(memory.backend, graph.id(handle)) |> should.equal(store.Free)
+  nodes.holder(memory.backend, graph.id(handle)) |> should.equal(backend.Free)
   stop(sweeper, attachment)
 }
 
@@ -351,7 +353,7 @@ fn signal_leaf(runs) {
 }
 
 fn response() {
-  signal.new(run.Identity("sweep-response", 1), codec.int())
+  signal.new(run.DefinitionId("sweep-response", 1), codec.int())
 }
 
 fn nested(runs) {
@@ -386,7 +388,7 @@ fn map_children(
 ) -> graph.Runtime(Nil, List(value), List(value)) {
   let assert Ok(op) =
     graph.map(
-      run.Identity("mapped-signals", 1),
+      run.DefinitionId("mapped-signals", 1),
       child,
       max_members: 3,
       concurrency: 3,
@@ -429,7 +431,7 @@ fn barrier_uncertain_leaf(
   wrap(
     runs,
     operation.new(
-      run.Identity("barrier-uncertain", 1),
+      run.DefinitionId("barrier-uncertain", 1),
       codec.int(),
       codec.int(),
       fn(_, _, _) {
@@ -453,7 +455,7 @@ fn uncertain_fork(
 
 // F6–F8: nested cleanup follows authoritative leaf evidence after restart.
 pub fn cancelled_nested_fork_settles_without_routing_or_repeating_effects_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let calls = probe.new()
   let build = fn(runs) { uncertain_fork(runs, calls) }
   let id = support.id("cancelled-fork")
@@ -518,7 +520,7 @@ pub fn cancelled_nested_fork_settles_without_routing_or_repeating_effects_test()
 
 // G7, F8: a live foreign parent lease cannot hide an independently expired branch.
 pub fn expired_fork_branch_recovers_without_taking_the_foreign_parent_lease_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let calls = probe.new()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
@@ -539,13 +541,13 @@ pub fn expired_fork_branch_recovers_without_taking_the_foreign_parent_lease_test
   |> should.equal(parent_revision)
   nodes.holding(memory.backend, graph.id(root))
   |> should.equal(Ok(#("a", True)))
-  nodes.holder(memory.backend, graph.id(branch)) |> should.equal(store.Free)
+  nodes.holder(memory.backend, graph.id(branch)) |> should.equal(backend.Free)
   probe.count(calls, "effect") |> should.equal(1)
 }
 
 // G9, F8: serial and parallel ancestors park and discover nested branch changes.
 pub fn nested_forks_release_leases_and_converge_after_lost_notifications_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let id = support.id("nested-forks")
   let #(owner, #(original, ids, leaves)) =
     restart.owned(fn() {
@@ -608,7 +610,7 @@ pub fn nested_forks_release_leases_and_converge_after_lost_notifications_test() 
 
 // G7, G9: any unfinished member can wake a parent without its local watches.
 pub fn fork_discovery_survives_lost_watches_and_does_not_repeat_unchanged_waits_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let id = support.id("fork-discovery")
   let #(owner, original) =
     restart.owned(fn() {
@@ -667,7 +669,7 @@ pub fn fork_discovery_survives_lost_watches_and_does_not_repeat_unchanged_waits_
 }
 
 fn await_free(backend, ids, tries) {
-  case list.all(ids, fn(id) { nodes.holder(backend, id) == store.Free }) {
+  case list.all(ids, fn(id) { nodes.holder(backend, id) == backend.Free }) {
     True -> Nil
     False if tries > 0 -> {
       process.sleep(10)
@@ -678,7 +680,7 @@ fn await_free(backend, ids, tries) {
 }
 
 pub fn nested_idle_discovery_converges_and_later_observes_an_external_signal_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let #(owner, original) =
     restart.owned(fn() {
       let original = nodes.node(memory.backend, "original", nodes.long)
@@ -723,7 +725,7 @@ fn uncertain_leaf(runs, calls) {
   wrap(
     runs,
     operation.new(
-      run.Identity("uncertain", 1),
+      run.DefinitionId("uncertain", 1),
       codec.int(),
       codec.int(),
       fn(_, _, _) {
@@ -743,7 +745,7 @@ fn nested_uncertain(runs, calls) {
 }
 
 pub fn nested_blocked_discovery_converges_without_replaying_uncertain_effects_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let calls = probe.new()

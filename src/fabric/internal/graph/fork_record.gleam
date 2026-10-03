@@ -2,6 +2,7 @@
 //// graph record validation restores each scope before accepting the record.
 
 import fabric/graph/fork
+import fabric/internal/run_id
 import fabric/run
 import gleam/dynamic/decode
 import gleam/json
@@ -73,7 +74,7 @@ fn tagged(name: String, fields: List(#(String, json.Json))) -> json.Json {
 fn occurrence() -> decode.Decoder(fork.Occurrence) {
   use run <- decode.field("run", decode.string)
   use activation <- decode.field("activation", decode.int)
-  decode.success(fork.Occurrence(run.issued(run), activation))
+  decode.success(fork.Occurrence(run_id.from_string(run), activation))
 }
 
 fn cause() -> decode.Decoder(fork.Cause) {
@@ -142,7 +143,7 @@ pub fn decoder() -> decode.Decoder(fork.Snapshot) {
       use identity <- decode.field("definition", {
         use name <- decode.field("name", decode.string)
         use version <- decode.field("version", decode.int)
-        decode.success(run.Identity(name, version))
+        decode.success(run.DefinitionId(name, version))
       })
       use input <- decode.field("input", decode.string)
       use status <- decode.field("status", status())

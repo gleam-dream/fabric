@@ -6,7 +6,8 @@ import fabric/agent
 import fabric/model
 import fabric/policy
 import fabric/run
-import fabric/store
+import fabric/store/backend
+import fabric/store/conformance
 import fabric/support
 import fabric/support/codecs
 import fabric/support/nodes
@@ -23,7 +24,7 @@ import gleeunit/should
 import json/blueprint/codec
 
 pub fn a_child_is_recovered_beneath_a_live_foreign_parent_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let body = probe.new()
@@ -88,7 +89,7 @@ pub fn a_child_is_recovered_beneath_a_live_foreign_parent_test() {
   let assert Ok(child_runner) = restart.runner(a, child)
   restart.kill(child_runner)
   let assert Ok(current) = memory.backend.get(run.id_to_string(child))
-  let assert store.Held(owner, True) = current.holder
+  let assert backend.Held(owner, True) = current.holder
   memory.backend.renew(owner, [run.id_to_string(child)], 0)
   |> should.equal(Ok([run.id_to_string(child)]))
 
@@ -107,7 +108,7 @@ pub fn a_child_is_recovered_beneath_a_live_foreign_parent_test() {
   probe.count(calls, "call") |> should.equal(2)
   // The ended child's retained lease is a retry cue, cleared only once
   // the live parent has acknowledged its result.
-  let assert store.Held(owner, True) = nodes.holder(memory.backend, child)
+  let assert backend.Held(owner, True) = nodes.holder(memory.backend, child)
   memory.backend.renew(owner, [run.id_to_string(child)], 0)
   |> should.equal(Ok([run.id_to_string(child)]))
   await_free(memory.backend, child, 200)
@@ -120,7 +121,7 @@ pub fn a_child_is_recovered_beneath_a_live_foreign_parent_test() {
 
 fn await_free(backend, id, tries) {
   case nodes.holder(backend, id) {
-    store.Free -> Nil
+    backend.Free -> Nil
     _ if tries > 0 -> {
       process.sleep(10)
       await_free(backend, id, tries - 1)
@@ -148,7 +149,7 @@ fn child_completed(root: fabric.Run(Nil), tries: Int) -> Nil {
 /// The root waits for a child's stopped tool to settle. If that child's
 /// runner dies, recovery on another node must complete the cancellation.
 pub fn a_stopping_child_is_recovered_beneath_a_live_cancelling_parent_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let entered = process.new_subject()
@@ -168,7 +169,7 @@ pub fn a_stopping_child_is_recovered_beneath_a_live_cancelling_parent_test() {
         Ok("done")
       },
       fn(_: Nil) { tool.Explain("failed") },
-      within: duration.milliseconds(60_000),
+      settle_within: duration.milliseconds(60_000),
     )
   let researcher =
     agent.new(
@@ -205,7 +206,7 @@ pub fn a_stopping_child_is_recovered_beneath_a_live_cancelling_parent_test() {
   await_stopping(a, child, 200)
   let assert Ok(child_runner) = restart.runner(a, child)
   restart.kill(child_runner)
-  let assert store.Held(owner, True) = nodes.holder(memory.backend, child)
+  let assert backend.Held(owner, True) = nodes.holder(memory.backend, child)
   memory.backend.renew(owner, [run.id_to_string(child)], 0)
   |> should.equal(Ok([run.id_to_string(child)]))
   let assert Ok(spec) =

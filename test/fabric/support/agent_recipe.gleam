@@ -6,10 +6,13 @@ import fabric/agent
 import fabric/graph
 import fabric/graph/definition
 import fabric/graph/operation
+import fabric/internal/checked_agent
 import fabric/internal/controller
 import fabric/internal/invocation
+import fabric/internal/model_port
 import fabric/internal/record
 import fabric/internal/registry
+import fabric/internal/run_id
 import fabric/model
 import fabric/policy
 import fabric/run
@@ -26,7 +29,7 @@ pub fn initial(
   context: context,
   prompt: String,
 ) -> String {
-  let config = agent.admitted(worker)
+  let config = checked_agent.admitted(worker)
   let #(state, _) =
     controller.start(
       env(config, context),
@@ -50,7 +53,7 @@ pub fn runtime(
   worker: agent.Agent(context),
   context: fn() -> context,
 ) -> graph.Runtime(context, String, String) {
-  let config = agent.admitted(worker)
+  let config = checked_agent.admitted(worker)
   let model_node =
     node("model", fn(context, raw) {
       use state <- result.try(load(raw, config))
@@ -67,7 +70,7 @@ pub fn runtime(
           ))
           let request =
             model.Request(
-              run: run.issued(state.run),
+              run: run_id.from_string(state.run),
               turn:,
               correlation: state.correlation,
               system: env.system,
@@ -75,7 +78,7 @@ pub fn runtime(
               tools: registry.declarations(env.registry),
             )
           use reply <- result.try(
-            model.call(config.model, request)
+            model_port.call(config.model, request)
             |> result.map_error(fn(error) {
               operation.UncertainEffect(
                 "recipe probe does not implement model retry/backoff: "
@@ -122,7 +125,7 @@ pub fn runtime(
                       env.registry,
                       context,
                       tool.Call(
-                        run: run.issued(state.run),
+                        run: run_id.from_string(state.run),
                         action: action.id,
                         correlation: state.correlation,
                       ),
@@ -153,7 +156,7 @@ pub fn runtime(
     })
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("agent-recipe-evaluation", 1),
+      run.DefinitionId("agent-recipe-evaluation", 1),
       id("model"),
       [model_node, batch_node],
       codec.string(),
@@ -166,7 +169,7 @@ pub fn runtime(
 fn node(name, body) {
   let op =
     operation.new(
-      run.Identity(name, 1),
+      run.DefinitionId(name, 1),
       codec.string(),
       codec.string(),
       fn(context, _, raw) { body(context, raw) },
@@ -192,7 +195,7 @@ fn node(name, body) {
 }
 
 fn env(
-  config: agent.Admitted(context),
+  config: checked_agent.Admitted(context),
   context: context,
 ) -> controller.Env(context) {
   controller.Env(config.registry, config.policy, context, config.system_prompt)
@@ -200,7 +203,7 @@ fn env(
 
 fn load(
   raw: String,
-  config: agent.Admitted(context),
+  config: checked_agent.Admitted(context),
 ) -> Result(controller.State, operation.Failure) {
   use state <- result.try(
     record.decode(raw)

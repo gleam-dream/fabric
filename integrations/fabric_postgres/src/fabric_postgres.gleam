@@ -24,7 +24,8 @@
 //// to serialise under REPEATABLE READ or SERIALIZABLE is read back or
 //// retried (see `fabric_postgres/internal/backend`).
 
-import fabric/store.{type LeaseConfigError, type LeasedBackend, type Store}
+import fabric/store.{type LeaseConfigError, type Store}
+import fabric/store/backend.{type LeasedBackend} as _
 import fabric_postgres/internal/backend
 import fabric_postgres/internal/discovery
 import fabric_postgres/internal/migrations

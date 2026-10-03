@@ -12,7 +12,7 @@ import fabric/internal/graph/record as graph_record
 import fabric/internal/record
 import fabric/model
 import fabric/run
-import fabric/statistics
+import fabric/store/statistics
 import fabric/support
 import gleam/list
 import gleam/option.{None, Some}
@@ -23,7 +23,7 @@ import sinal/correlation
 fn state(phase: agent.Phase) -> agent.State {
   agent.State(
     "stats-agent",
-    run.Identity("worker", 1),
+    run.DefinitionId("worker", 1),
     1,
     None,
     0,
@@ -122,11 +122,11 @@ fn graph_state(kind: operation.Kind) -> #(graph.State, graph.Activation) {
   let assert Ok(#(state, _)) =
     graph.start(
       "stats-graph",
-      graph.Definition(run.Identity("stats", 1), "signature", 2),
+      graph.Definition(run.DefinitionId("stats", 1), "signature", 2),
       "0",
       graph.Prepared(
         "node",
-        run.Identity("operation", 1),
+        run.DefinitionId("operation", 1),
         "0",
         operation.RequireReconciliation,
         kind,

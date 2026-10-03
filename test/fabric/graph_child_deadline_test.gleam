@@ -9,17 +9,18 @@ import fabric/graph/definition
 import fabric/graph/job
 import fabric/graph/operation
 import fabric/graph/signal
+import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
-import fabric/retention
 import fabric/run
-import fabric/store
+import fabric/store/backend
+import fabric/store/conformance
+import fabric/store/retention
 import fabric/support
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
-import fabric/testing
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/time/duration
@@ -30,7 +31,7 @@ fn runtime(runs, identity, op, accept) {
   let assert Ok(id) = definition.node_id("work")
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity(identity, 1),
+      run.DefinitionId(identity, 1),
       id,
       [definition.node(id, op, fn(n) { Ok(n) }, accept, [])],
       codec.int(),
@@ -55,14 +56,14 @@ fn waiting_child(runs) {
     "signal-child",
     operation.await_signal(
       codec.int(),
-      signal.new(run.Identity("answer", 1), codec.int()),
+      signal.new(run.DefinitionId("answer", 1), codec.int()),
     ),
     finish,
   )
 }
 
 pub fn expiration_after_restart_cancels_the_same_signal_child_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let #(owner, runs) =
     restart.owned(fn() { nodes.node(memory.backend, "before", 300_000) })
   let leaf = waiting_child(runs)
@@ -95,7 +96,7 @@ pub fn expiration_after_restart_cancels_the_same_signal_child_test() {
   let assert Ok(child_handle) = graph.child(handle, reference.activation, leaf)
   let assert Ok(stopped) = graph.read(child_handle)
   stopped.status |> should.equal(graph.Cancelled(graph.BeforeStart))
-  let assert Ok(row) = store.get(runs, "expiring-child")
+  let assert Ok(row) = store_core.get(runs, "expiring-child")
   let assert Ok(metadata) = retention.inspect(row.record)
   metadata.settled |> should.be_true
   let assert [link] = metadata.children
@@ -103,14 +104,14 @@ pub fn expiration_after_restart_cancels_the_same_signal_child_test() {
 }
 
 pub fn result_mapping_cannot_cross_the_child_deadline_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "mapping", 300_000)
   let leaf =
     runtime(
       runs,
       "answer-child",
       operation.new(
-        run.Identity("answer", 1),
+        run.DefinitionId("answer", 1),
         codec.int(),
         codec.int(),
         fn(_, _, n) { Ok(n + 1) },
@@ -137,7 +138,7 @@ pub fn result_mapping_cannot_cross_the_child_deadline_test() {
 }
 
 pub fn an_expired_agent_keeps_uncertain_effects_until_the_child_is_reconciled_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "agent-deadline", 300_000)
   let effects = probe.new()
   let worker =
@@ -160,7 +161,7 @@ pub fn an_expired_agent_keeps_uncertain_effects_until_the_child_is_reconciled_te
   let assert Ok(child_runtime) =
     agent_node.new(
       agent_node.Definition(
-        run.Identity("deadline-agent", 1),
+        run.DefinitionId("deadline-agent", 1),
         worker,
         codec.int(),
         codec.int(),
@@ -189,7 +190,7 @@ pub fn an_expired_agent_keeps_uncertain_effects_until_the_child_is_reconciled_te
     expired.status
   saved_due |> should.equal(due)
   saved_ref |> should.equal(reference)
-  let assert Ok(row) = store.get(runs, "expired-agent-effect")
+  let assert Ok(row) = store_core.get(runs, "expired-agent-effect")
   let assert Ok(metadata) = retention.inspect(row.record)
   metadata.settled |> should.be_false
   let assert Ok(_) =
@@ -214,10 +215,10 @@ fn expired(handle, remaining) {
 }
 
 pub fn a_clock_failure_before_arming_starts_no_child_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let backend =
-    store.LeasedBackend(..memory.backend, now: fn() {
-      Error(store.Unavailable("clock offline"))
+    backend.LeasedBackend(..memory.backend, now: fn() {
+      Error(backend.Unavailable("clock offline"))
     })
   let runs = nodes.node(backend, "unarmed-child", 300_000)
   let leaf = waiting_child(runs)
@@ -233,14 +234,14 @@ pub fn a_clock_failure_before_arming_starts_no_child_test() {
   graph.cancel(handle) |> should.equal(Ok(Nil))
   let assert Ok(done) = graph.read(handle)
   done.status |> should.equal(graph.Cancelled(graph.BeforeStart))
-  store.get(runs, child.reserved_id("unarmed-child", 1))
-  |> should.equal(Error(store.NotFound))
+  store_core.get(runs, child.reserved_id("unarmed-child", 1))
+  |> should.equal(Error(backend.NotFound))
 }
 
 pub fn expiration_before_child_creation_records_a_never_started_child_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let backend =
-    store.LeasedBackend(..memory.backend, now: fn() {
+    backend.LeasedBackend(..memory.backend, now: fn() {
       memory.advance(60_001)
       memory.backend.now()
     })
@@ -250,7 +251,7 @@ pub fn expiration_before_child_creation_records_a_never_started_child_test() {
       runs,
       "never-started",
       operation.new(
-        run.Identity("effect", 1),
+        run.DefinitionId("effect", 1),
         codec.int(),
         codec.int(),
         fn(_, _, _) { panic as "expired child must not start" },
@@ -273,14 +274,14 @@ pub fn expiration_before_child_creation_records_a_never_started_child_test() {
 }
 
 pub fn expired_reconciliation_keeps_the_child_result_without_calling_parent_mapping_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "blocked-mapping", 300_000)
   let leaf =
     runtime(
       runs,
       "answer-child",
       operation.new(
-        run.Identity("answer", 1),
+        run.DefinitionId("answer", 1),
         codec.int(),
         codec.int(),
         fn(_, _, n) { Ok(n + 1) },
@@ -318,13 +319,13 @@ pub fn expired_reconciliation_keeps_the_child_result_without_calling_parent_mapp
 }
 
 pub fn a_sweeper_settles_nested_cleanup_after_expiration_without_a_working_clock_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let clock = probe.new()
   let backend =
-    store.LeasedBackend(..memory.backend, now: fn() {
+    backend.LeasedBackend(..memory.backend, now: fn() {
       case probe.entries(clock) {
         [] -> memory.backend.now()
-        _ -> Error(store.Unavailable("clock offline during cleanup"))
+        _ -> Error(backend.Unavailable("clock offline during cleanup"))
       }
     })
   let runs = nodes.node(backend, "nested-deadline", 300_000)
@@ -332,7 +333,7 @@ pub fn a_sweeper_settles_nested_cleanup_after_expiration_without_a_working_clock
   let build = fn(runs) {
     let observer =
       job.observe(
-        run.Identity("nested-job", 1),
+        run.DefinitionId("nested-job", 1),
         codec.int(),
         codec.int(),
         fn(_, _) {
@@ -375,7 +376,7 @@ pub fn a_sweeper_settles_nested_cleanup_after_expiration_without_a_working_clock
   let assert Ok(spec) =
     fabric.sweeper(
       runs,
-      [graph.recovery(run.Identity("child-deadline", 1), build)],
+      [graph.recovery(run.DefinitionId("child-deadline", 1), build)],
       every: duration.milliseconds(10),
     )
   let assert Ok(started) = spec.start()
@@ -399,7 +400,7 @@ fn settled(handle, remaining) {
 }
 
 pub fn an_overdue_retained_wait_cannot_replace_a_missing_child_with_a_tombstone_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let #(owner, runs) =
     restart.owned(fn() {
       nodes.node(memory.backend, "lost-child-before", 300_000)
@@ -418,22 +419,22 @@ pub fn an_overdue_retained_wait_cannot_replace_a_missing_child_with_a_tombstone_
   let assert Ok(before) = memory.backend.get(root)
   let missing = run.id_to_string(reference.child)
   let backend =
-    store.LeasedBackend(..memory.backend, get: fn(id) {
+    backend.LeasedBackend(..memory.backend, get: fn(id) {
       case id == missing {
-        True -> Error(store.NotFound)
+        True -> Error(backend.NotFound)
         False -> memory.backend.get(id)
       }
     })
   let runs = nodes.node(backend, "lost-child-after", 300_000)
   let handle = graph.attach(build(runs), support.id(root))
   graph.recover(handle)
-  |> should.equal(Error(graph.StoreFailed(store.NotFound)))
+  |> should.equal(Error(graph.StoreFailed(backend.NotFound)))
   let assert Ok(after) = memory.backend.get(root)
   after.record |> should.equal(before.record)
 }
 
 fn parked(runs, id, remaining) {
-  let assert Ok(row) = store.get(runs, run.id_to_string(id))
+  let assert Ok(row) = store_core.get(runs, run.id_to_string(id))
   case row.live, remaining {
     None, _ -> Nil
     _, n if n > 0 -> {

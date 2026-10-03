@@ -9,6 +9,7 @@ import fabric/graph/operation
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -22,7 +23,7 @@ import pog
 fn runtime(runs, read, request) {
   let assert Ok(observer) =
     job.observe(
-      run.Identity("pg-expiring-job", 1),
+      run.DefinitionId("pg-expiring-job", 1),
       codec.string(),
       codec.int(),
       fn(_, _) { read() },
@@ -34,7 +35,7 @@ fn runtime(runs, read, request) {
   let assert Ok(node) = definition.node_id("job")
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("pg-job-deadline", 1),
+      run.DefinitionId("pg-job-deadline", 1),
       node,
       [
         definition.node(
@@ -63,17 +64,17 @@ fn sweep(runs, build) {
   let assert Ok(spec) =
     fabric.sweeper(
       runs,
-      [graph.recovery(run.Identity("pg-job-deadline", 1), build)],
+      [graph.recovery(run.DefinitionId("pg-job-deadline", 1), build)],
       every: duration.milliseconds(20),
     )
   let assert Ok(started) = spec.start()
   started
 }
 
-fn released(backend: store.LeasedBackend, left: Int) {
+fn released(backend: backend.LeasedBackend, left: Int) {
   let assert Ok(row) = backend.get("pg-job-deadline")
   case row.holder, left {
-    store.Free, _ -> Nil
+    backend.Free, _ -> Nil
     _, n if n > 0 -> {
       process.sleep(10)
       released(backend, n - 1)

@@ -33,7 +33,7 @@ pub fn execute(limit: Int) -> graph.Snapshot(Int, Int) {
 
 fn scripted_reviewer() -> operation.Operation(Nil, Int, Bool) {
   operation.new(
-    run.Identity("scripted-reviewer", 1),
+    run.DefinitionId("scripted-reviewer", 1),
     codec.int(),
     codec.bool(),
     fn(_, _, revision) { Ok(revision >= 3) },
@@ -51,7 +51,7 @@ pub fn execute_batch(
   let child = review_runtime(runs, 6, scripted_reviewer())
   let assert Ok(review) =
     graph.map(
-      run.Identity("batch-review", 1),
+      run.DefinitionId("batch-review", 1),
       child,
       max_members: 16,
       concurrency: 3,
@@ -79,7 +79,7 @@ pub fn execute_batch(
   let values = codec.list(codec.int())
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("review-batch", 1),
+      run.DefinitionId("review-batch", 1),
       batch,
       [node],
       values,
@@ -99,7 +99,7 @@ pub fn execute_batch(
 pub fn start_manual(
   limit: Int,
 ) -> #(graph.Handle(Nil, Int, Int), signal.Signal(Bool)) {
-  let decision = signal.new(run.Identity("human-review", 1), codec.bool())
+  let decision = signal.new(run.DefinitionId("human-review", 1), codec.bool())
   #(
     start_with_reviewer(limit, operation.await_signal(codec.int(), decision)),
     decision,
@@ -128,7 +128,7 @@ pub fn execute_agent(limit: Int) -> graph.Snapshot(Int, Int) {
   let assert Ok(reviewer) =
     agent_node.new(
       agent_node.Definition(
-        run.Identity("agent-reviewer", 1),
+        run.DefinitionId("agent-reviewer", 1),
         agent,
         codec.int(),
         codec.bool(),
@@ -178,7 +178,7 @@ fn review_runtime(
   let assert Ok(review) = definition.node_id("review")
   let generator =
     operation.new(
-      run.Identity("scripted-generator", 1),
+      run.DefinitionId("scripted-generator", 1),
       codec.int(),
       codec.int(),
       fn(_, _, revision) { Ok(revision + 1) },
@@ -207,7 +207,7 @@ fn review_runtime(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("generation-review", 1),
+      run.DefinitionId("generation-review", 1),
       generate,
       [generate_node, review_node],
       codec.int(),

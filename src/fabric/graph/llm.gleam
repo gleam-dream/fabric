@@ -38,7 +38,7 @@ pub type Receipt(output) {
 /// definite; potentially sent failures require reconciliation. No implicit
 /// retry is made, even when llm_wire reports a transient error.
 pub fn new(
-  identity: run.Identity,
+  identity: run.DefinitionId,
   input: codec.Codec(input),
   output: codec.Codec(output),
   output_name: String,

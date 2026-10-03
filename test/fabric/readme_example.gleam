@@ -249,7 +249,7 @@ pub fn front_desk(
 
 /// A tool whose effect outlives its task settles its result late: its
 /// handler gets a `tool.Settlement`, and a stopped run waits up to
-/// `within` for `tool.settle(settlement, result, summary:)`.
+/// `settle_within` for `tool.settle(settlement, result, summary:)`.
 /// The summary is observed if the settlement is refused, so it must not
 /// carry secrets.
 pub fn settling_transfer(
@@ -259,6 +259,6 @@ pub fn settling_transfer(
     transfer_definition(),
     fn(_context, _call, transfer, settlement) { pay(transfer, settlement) },
     fn(_error) { tool.Uncertain("the transfer did not report") },
-    within: duration.seconds(5),
+    settle_within: duration.seconds(5),
   )
 }

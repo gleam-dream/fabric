@@ -5,8 +5,9 @@
 import fabric/internal/budget/config
 import fabric/internal/budget/ledger
 import fabric/internal/budget/model as budget
+import fabric/internal/store
 import fabric/run
-import fabric/store
+import fabric/store/backend
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -23,10 +24,10 @@ pub fn prepare(
   root: String,
   parent: Option(run.Parent),
   declaration: Option(budget.Declaration),
-) -> Result(Option(budget.Declaration), store.StoreError) {
+) -> Result(Option(budget.Declaration), backend.StoreError) {
   use Nil <- result.try(
     config.validate(parent == None, declaration)
-    |> result.map_error(store.Unavailable),
+    |> result.map_error(backend.Unavailable),
   )
   case declaration {
     None -> Ok(None)
@@ -38,14 +39,14 @@ pub fn prepare(
       use state <- result.try(
         saved
         |> result.map_error(fn(error) {
-          store.Unavailable(
+          backend.Unavailable(
             "family budget initialization: " <> string.inspect(error),
           )
         }),
       )
       case budget.limits(state) == declaration.limits {
         True -> Ok(Some(budget.Declaration(declaration.limits, True)))
-        False -> Error(store.Unavailable("the family budget limits changed"))
+        False -> Error(backend.Unavailable("the family budget limits changed"))
       }
     }
   }

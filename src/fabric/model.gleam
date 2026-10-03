@@ -6,6 +6,7 @@
 //// complete, deterministic model, and `fabric/llm` adapts an llm_wire
 //// provider to the same port.
 
+import fabric/internal/model_port
 import fabric/internal/run_id.{type RunId}
 import gleam/option.{type Option}
 import json/blueprint/codec
@@ -54,7 +55,7 @@ pub type ToolSpec {
 /// One model call. Read it by label: Fabric may add fields.
 ///
 /// `run` and `turn` name the call: `turn` is the run's model attempt,
-/// counting every retry, the same number `fabric/observation` reports.
+/// counting every retry, the same number `fabric/telemetry` reports.
 /// `correlation` is the run's (see `fabric.start`): a model that makes
 /// requests of its own tags them with it, as `fabric/llm` does, so one agent
 /// serves every run and each call joins its run's events.
@@ -90,17 +91,13 @@ pub type ModelError {
   ModelError(reason: String, retryable: Bool)
 }
 
-pub opaque type Model {
-  Model(call: fn(Request) -> Result(Reply, ModelError))
-}
+/// A model: build one with `new`, or with `fabric/llm.model` for an
+/// llm_wire provider.
+pub type Model =
+  model_port.Port(Request, Reply, ModelError)
 
 /// Wraps a model function. The function runs in a task owned by the run; a
 /// crash is contained and reported as a non-retryable `ModelError`.
 pub fn new(call: fn(Request) -> Result(Reply, ModelError)) -> Model {
-  Model(call)
-}
-
-@internal
-pub fn call(model: Model, request: Request) -> Result(Reply, ModelError) {
-  model.call(request)
+  model_port.new(call)
 }

@@ -2,6 +2,7 @@ import fabric/graph
 import fabric/graph/definition
 import fabric/graph/operation
 import fabric/graph/signal
+import fabric/internal/store as store_core
 import fabric/policy
 import fabric/run
 import fabric/store
@@ -28,7 +29,7 @@ fn node_id() -> definition.NodeId {
 }
 
 fn review() -> signal.Signal(Bool) {
-  signal.new(run.Identity("human-review", 1), codec.bool())
+  signal.new(run.DefinitionId("human-review", 1), codec.bool())
 }
 
 fn spec(
@@ -44,7 +45,7 @@ fn spec(
     )
   let assert Ok(definition) =
     definition.build(definition.Spec(
-      run.Identity("human-loop", 1),
+      run.DefinitionId("human-loop", 1),
       node_id(),
       [node],
       codec.int(),
@@ -83,7 +84,7 @@ pub fn a_typed_signal_survives_store_loss_without_holding_a_runner_test() {
   let assert Some(action) = waiting.current
   action.kind |> should.equal(operation.Signal)
   action.input_json |> should.equal("7")
-  let assert Ok(entry) = store.get(runs, "signal-restart")
+  let assert Ok(entry) = store_core.get(runs, "signal-restart")
   entry.live |> should.equal(None)
   restart.crash(owner, runs)
   let handle =
@@ -143,7 +144,8 @@ pub fn a_signal_is_available_only_after_policy_admission_test() {
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingApproval(approval) = waiting.status
-  let guessed = graph.SignalReference(id, 1, 1, run.Identity("human-review", 1))
+  let guessed =
+    graph.SignalReference(id, 1, 1, run.DefinitionId("human-review", 1))
   let assert Error(graph.CommandRefused(_)) =
     graph.deliver(handle, guessed, review(), True)
   let assert Ok(approved) = graph.approve(handle, approval)
@@ -160,7 +162,7 @@ pub fn malformed_or_wrongly_correlated_delivery_does_not_consume_the_wait_test()
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Error(graph.DefinitionRejected(_)) =
     graph.deliver_json(handle, reference, "123")
-  let wrong = signal.new(run.Identity("human-review", 2), codec.bool())
+  let wrong = signal.new(run.DefinitionId("human-review", 2), codec.bool())
   let assert Error(graph.CommandRefused(_)) =
     graph.deliver(handle, reference, wrong, True)
   let wrong_ref = graph.SignalReference(..reference, run: run_id("other"))
@@ -285,7 +287,7 @@ fn with_successor(
     definition.node(
       last,
       operation.new(
-        run.Identity("effect", 1),
+        run.DefinitionId("effect", 1),
         codec.int(),
         codec.int(),
         fn(_, _, n) {
@@ -300,7 +302,7 @@ fn with_successor(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("signal-effect", 1),
+      run.DefinitionId("signal-effect", 1),
       node_id(),
       [waiting, successor],
       codec.int(),
@@ -382,7 +384,7 @@ pub fn recovery_refuses_a_signal_contract_replaced_by_an_activity_test() {
     definition.node(
       node_id(),
       operation.new(
-        run.Identity("human-review", 1),
+        run.DefinitionId("human-review", 1),
         codec.int(),
         codec.bool(),
         fn(_, _, _) { panic as "never execute a changed contract" },
@@ -394,7 +396,7 @@ pub fn recovery_refuses_a_signal_contract_replaced_by_an_activity_test() {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("human-loop", 1),
+      run.DefinitionId("human-loop", 1),
       node_id(),
       [node],
       codec.int(),

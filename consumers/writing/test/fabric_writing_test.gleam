@@ -87,12 +87,9 @@ fn start_store(runs: store.Store) -> process.Pid {
 }
 
 fn stop_store(owner: process.Pid, runs: store.Store) -> Nil {
-  let assert Ok(pid) = store.pid(runs)
-  let down = process.monitor(pid)
   process.kill(owner)
-  process.new_selector()
-  |> process.select_specific_monitor(down, fn(_) { Nil })
-  |> process.selector_receive_forever
+  let assert Ok(Nil) = store.stop(runs)
+  Nil
 }
 
 @external(erlang, "fabric_writing_test_ffi", "temp_dir")
@@ -345,7 +342,7 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
   let publisher = fn(directory) {
     let op =
       operation.new(
-        run.Identity("artifact-publish", 1),
+        run.DefinitionId("artifact-publish", 1),
         domain.draft_codec(),
         domain.artifact_codec(),
         fn(_, invocation, draft) {

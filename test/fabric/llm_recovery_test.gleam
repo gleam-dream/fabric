@@ -3,6 +3,7 @@
 
 import fabric
 import fabric/agent
+import fabric/internal/store as store_core
 import fabric/llm
 import fabric/policy
 import fabric/run
@@ -194,7 +195,7 @@ pub fn google_signed_parts_survive_approval_and_directory_restart_test() -> Nil 
     )
   let runs = store.directory(process.new_name("signed-restart"), directory)
   let #(owner, Nil) = restart.owned(fn() { store.start(runs) |> should.be_ok })
-  let assert Ok(first_store_process) = store.pid(runs)
+  let assert Ok(first_store_process) = store_core.pid(runs)
   let assert Ok(started) =
     fabric.start(
       runs,
@@ -212,7 +213,7 @@ pub fn google_signed_parts_survive_approval_and_directory_restart_test() -> Nil 
   // The owner really exits; only disk state and the test transport survive.
   restart.crash(owner, runs)
   let #(owner, Nil) = restart.owned(fn() { store.start(runs) |> should.be_ok })
-  let assert Ok(second_store_process) = store.pid(runs)
+  let assert Ok(second_store_process) = store_core.pid(runs)
   { first_store_process == second_store_process } |> should.be_false
   let after =
     calculating_agent(

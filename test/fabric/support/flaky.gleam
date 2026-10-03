@@ -7,6 +7,7 @@
 import fabric/internal/record
 import fabric/run.{type RunId}
 import fabric/store.{type Store}
+import fabric/store/backend
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option, None, Some}
@@ -28,8 +29,8 @@ pub type Fault {
 }
 
 type Message {
-  Get(String, Subject(Result(store.Stored, store.StoreError)))
-  Write(String, Option(Int), String, Subject(Result(Nil, store.StoreError)))
+  Get(String, Subject(Result(backend.Stored, backend.StoreError)))
+  Write(String, Option(Int), String, Subject(Result(Nil, backend.StoreError)))
   Arm(List(Fault))
   ArmWhere(fn(String) -> Bool, List(Fault))
   Hold(fn(String) -> Bool, Subject(String))
@@ -43,7 +44,7 @@ type Held {
     run: String,
     expected: Option(Int),
     record: String,
-    reply: Subject(Result(Nil, store.StoreError)),
+    reply: Subject(Result(Nil, backend.StoreError)),
   )
   NotHolding
 }
@@ -129,12 +130,12 @@ pub fn store(flaky: Flaky) -> Store {
 
 type State {
   State(
-    records: Dict(String, store.Stored),
+    records: Dict(String, backend.Stored),
     faults: List(Fault),
     targeted: #(fn(String) -> Bool, List(Fault)),
     held: Held,
     /// Writes that land before the next write of their run.
-    late: Dict(String, store.Stored),
+    late: Dict(String, backend.Stored),
   )
 }
 
@@ -163,7 +164,7 @@ fn loop(subject: Subject(Message), state: State) -> Nil {
     DropHeld ->
       case state.held {
         HeldWrite(reply:, ..) -> {
-          process.send(reply, Error(store.Unavailable("the write was lost")))
+          process.send(reply, Error(backend.Unavailable("the write was lost")))
           loop(subject, State(..state, held: NotHolding))
         }
         _ -> loop(subject, state)
@@ -171,7 +172,7 @@ fn loop(subject: Subject(Message), state: State) -> Nil {
     Get(run, reply) -> {
       process.send(
         reply,
-        dict.get(state.records, run) |> result.replace_error(store.NotFound),
+        dict.get(state.records, run) |> result.replace_error(backend.NotFound),
       )
       loop(subject, state)
     }
@@ -213,7 +214,7 @@ fn write(
   run: String,
   expected: Option(Int),
   record: String,
-  reply: Subject(Result(Nil, store.StoreError)),
+  reply: Subject(Result(Nil, backend.StoreError)),
 ) -> State {
   let State(records:, faults:, targeted:, ..) = state
   let #(matches, aimed) = targeted
@@ -223,14 +224,14 @@ fn write(
     _, _, [fault, ..rest] -> #(fault, rest, targeted)
   }
   let outcome = case expected, dict.get(records, run) {
-    None, Ok(_) -> Error(store.AlreadyExists)
-    None, Error(Nil) -> Ok(store.Stored(1, record))
-    Some(_), Error(Nil) -> Error(store.NotFound)
+    None, Ok(_) -> Error(backend.AlreadyExists)
+    None, Error(Nil) -> Ok(backend.Stored(1, record))
+    Some(_), Error(Nil) -> Error(backend.NotFound)
     Some(expected), Ok(current) if current.revision == expected ->
-      Ok(store.Stored(expected + 1, record))
-    Some(_), Ok(current) -> Error(store.Conflict(current.revision))
+      Ok(backend.Stored(expected + 1, record))
+    Some(_), Ok(current) -> Error(backend.Conflict(current.revision))
   }
-  let unavailable = Error(store.Unavailable("the backend blinked"))
+  let unavailable = Error(backend.Unavailable("the backend blinked"))
   let #(reply_with, records, late) = case fault, outcome {
     FailBefore, _ -> #(unavailable, records, state.late)
     FailAfter, Ok(stored) -> #(
@@ -243,14 +244,14 @@ fn write(
       records,
       dict.insert(state.late, run, stored),
     )
-    StoredByAnother, Ok(store.Stored(revision, written)) -> {
+    StoredByAnother, Ok(backend.Stored(revision, written)) -> {
       let assert Ok(decoded) = record.decode(written)
       #(
-        Error(store.AlreadyExists),
+        Error(backend.AlreadyExists),
         dict.insert(
           records,
           run,
-          store.Stored(revision, record.encode(decoded)),
+          backend.Stored(revision, record.encode(decoded)),
         ),
         state.late,
       )

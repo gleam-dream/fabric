@@ -25,7 +25,7 @@ pub fn inspecting_an_llm_model_or_operation_never_prints_the_key_test() {
   hidden(llm.model(fake.client, settings, "inspect-model"))
   hidden(
     graph_llm.new(
-      run.Identity("inspect-decision", 1),
+      run.DefinitionId("inspect-decision", 1),
       codec.string(),
       codecs.one_field("approve", codec.bool()),
       "decision",

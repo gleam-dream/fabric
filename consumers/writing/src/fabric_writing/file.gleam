@@ -21,7 +21,7 @@ pub fn publish(
 pub fn loader() -> operation.Operation(Nil, domain.Brief, domain.Draft) {
   let op =
     operation.new(
-      run.Identity("source-read", 1),
+      run.DefinitionId("source-read", 1),
       domain.brief_codec(),
       domain.draft_codec(),
       fn(_, _, brief) {
@@ -43,7 +43,7 @@ pub fn publisher(
 ) -> operation.Operation(Nil, domain.Draft, domain.Artifact) {
   let op =
     operation.new(
-      run.Identity("artifact-publish", 1),
+      run.DefinitionId("artifact-publish", 1),
       domain.draft_codec(),
       domain.artifact_codec(),
       fn(_, invocation, draft) {

@@ -1,6 +1,7 @@
 //// D1–D3: persisted deadline time uses the actual database's UTC epoch.
 
 import fabric/store
+import fabric/store/backend
 import fabric_postgres
 import fabric_postgres/support
 import gleam/dynamic/decode
@@ -24,7 +25,7 @@ pub fn stores_read_database_time_without_changing_execution_records_test() {
   let settings = support.migrated(connection, "clock", support.schema())
   let backend = fabric_postgres.backend(settings)
   let assert Ok(Nil) =
-    backend.insert("clock-row", "unchanged", store.Claim("owner", 60_000))
+    backend.insert("clock-row", "unchanged", backend.Claim("owner", 60_000))
   let assert Ok(row) = backend.get("clock-row")
   let assert Ok(first) =
     fabric_postgres.store(process.new_name("first-clock"), settings)

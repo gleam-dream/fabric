@@ -53,7 +53,7 @@ fn runtime(
 ) -> graph.Runtime(client.Config, String, fabric_typesafe.Receipt(Answers)) {
   let op =
     fabric_typesafe.new(
-      run.Identity("classify", 1),
+      run.DefinitionId("classify", 1),
       codec.string(),
       questions(),
       fn(settings, input) {
@@ -71,7 +71,7 @@ fn runtime(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("classifier-graph", 1),
+      run.DefinitionId("classifier-graph", 1),
       node_id,
       [node],
       codec.string(),
@@ -199,12 +199,8 @@ pub fn recovery_after_store_loss_reuses_the_receipt_with_the_server_stopped_test
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(_) = before.status
   support.stats(url, "calls") |> should.equal(1)
-  let assert Ok(pid) = store.pid(runs)
-  let monitor = process.monitor(pid)
   process.kill(owner)
-  process.new_selector()
-  |> process.select_specific_monitor(monitor, fn(_) { Nil })
-  |> process.selector_receive_forever
+  let assert Ok(Nil) = store.stop(runs)
   support.stop(server)
   let handle =
     graph.attach(runtime(directory(path), config, allow), id("saved"))

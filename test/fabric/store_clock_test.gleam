@@ -1,21 +1,28 @@
 //// D1–D3: deadline time belongs to storage and cannot fall back silently.
 
+import fabric/internal/store as store_core
 import fabric/store
+import fabric/store/backend
+import fabric/store/conformance
 import fabric/support
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
-import fabric/testing
 import gleam/erlang/process
 import gleeunit/should
 
 pub fn stores_share_backend_time_across_restart_without_changing_records_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let #(owner, runs) =
     restart.owned(fn() { nodes.node(memory.backend, "clock-a", nodes.long) })
   let other = nodes.node(memory.backend, "clock-b", nodes.long)
   let assert Ok(_) =
-    store.insert(runs, "clock-record", "retained", store.Detached(False, False))
+    store_core.insert(
+      runs,
+      "clock-record",
+      "retained",
+      store_core.Detached(False, False),
+    )
   let assert Ok(before) = memory.backend.get("clock-record")
   let assert Ok(start) = store.now(runs)
   memory.advance(60_000)
@@ -29,34 +36,42 @@ pub fn stores_share_backend_time_across_restart_without_changing_records_test() 
 }
 
 pub fn an_unavailable_clock_never_uses_local_time_and_does_not_block_run_reads_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let held = probe.new()
   let backend =
-    store.LeasedBackend(..memory.backend, now: fn() {
+    backend.LeasedBackend(..memory.backend, now: fn() {
       probe.gate(held, "clock")
       Ok(1)
     })
   let runs =
-    nodes.node(backend, "clock", nodes.long) |> store.with_backend_timeout(500)
+    nodes.node(backend, "clock", nodes.long)
+    |> store_core.with_backend_timeout(500)
   let assert Ok(_) =
-    store.insert(runs, "clock-record", "retained", store.Detached(False, False))
+    store_core.insert(
+      runs,
+      "clock-record",
+      "retained",
+      store_core.Detached(False, False),
+    )
   let reply = process.new_subject()
   process.spawn(fn() { process.send(reply, store.now(runs)) })
   let _ = probe.arrival(held)
   process.receive(reply, 0) |> should.equal(Error(Nil))
-  let assert Ok(row) = store.get(runs, "clock-record")
+  let assert Ok(row) = store_core.get(runs, "clock-record")
   row.record |> should.equal("retained")
   process.receive(reply, 0) |> should.equal(Error(Nil))
-  let assert Ok(Error(store.Unavailable(_))) = process.receive(reply, 5000)
+  let assert Ok(Error(backend.Unavailable(_))) = process.receive(reply, 5000)
   let failed =
-    store.LeasedBackend(..memory.backend, now: fn() {
-      Error(store.Unavailable("clock offline"))
+    backend.LeasedBackend(..memory.backend, now: fn() {
+      Error(backend.Unavailable("clock offline"))
     })
   store.now(nodes.node(failed, "offline", nodes.long))
-  |> should.equal(Error(store.Unavailable("clock offline")))
+  |> should.equal(Error(backend.Unavailable("clock offline")))
   let crashing =
-    store.LeasedBackend(..memory.backend, now: fn() { panic as "clock crashed" })
-  let assert Error(store.Unavailable(_)) =
+    backend.LeasedBackend(..memory.backend, now: fn() {
+      panic as "clock crashed"
+    })
+  let assert Error(backend.Unavailable(_)) =
     store.now(nodes.node(crashing, "crashed", nodes.long))
 }
 

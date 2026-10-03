@@ -21,10 +21,12 @@ import fabric/internal/graph/fork as scope
 import fabric/internal/graph/fork_driver
 import fabric/internal/graph/live
 import fabric/internal/graph/record
+import fabric/internal/run_id
 import fabric/internal/runner_host as host
+import fabric/internal/store
 import fabric/policy
 import fabric/run
-import fabric/store
+import fabric/store/backend
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
@@ -37,7 +39,7 @@ pub type Options {
 }
 
 pub type Error {
-  StoreFailed(store.StoreError)
+  StoreFailed(backend.StoreError)
   Unreadable(record.DecodeError)
   Incompatible(definition.Error)
   CallbackFailed(String)
@@ -303,7 +305,7 @@ fn write(
   expected: Option(Int),
   encoded: String,
   ownership: store.Ownership,
-) -> Result(Int, store.StoreError) {
+) -> Result(Int, backend.StoreError) {
   case expected {
     None -> store.insert(runs, id, encoded, ownership)
     Some(revision) -> store.commit(runs, id, revision, encoded, ownership)
@@ -499,7 +501,7 @@ fn perform(runner: Runner, effects: List(g.Effect)) -> Result(Runner, Error) {
                 None,
               ))
             Error(BudgetUnavailable(reason)) ->
-              Error(StoreFailed(store.Unavailable(reason)))
+              Error(StoreFailed(backend.Unavailable(reason)))
           },
         )
         apply(Runner(..runner, body:), event)
@@ -1350,7 +1352,7 @@ pub fn discover(
       }
   }
   case outcome {
-    Error(StoreFailed(store.Conflict(_))) if tries > 1 ->
+    Error(StoreFailed(backend.Conflict(_))) if tries > 1 ->
       discover(runs, work, options, id, tries - 1)
     other -> other
   }
@@ -1380,7 +1382,7 @@ fn discover_fork(
           use binding <- result.try(driver.member(ref.member))
           let id = child.branch_id(state.run, a.id, ref.member)
           case store.get(runs, id), member.status {
-            Error(store.NotFound), fork.Reserved -> Ok(Nil)
+            Error(backend.NotFound), fork.Reserved -> Ok(Nil)
             Error(error), _ -> Error(string.inspect(error))
             Ok(_), _ -> {
               let parent = child.Branch(state.run, a.id, ref.member)
@@ -1494,7 +1496,12 @@ fn observe_claimed_job(
     runs,
     work,
     options,
-    job.Reference(run.issued(state.run), a.id, a.attempt, a.prepared.operation),
+    job.Reference(
+      run_id.from_string(state.run),
+      a.id,
+      a.attempt,
+      a.prepared.operation,
+    ),
     1,
     ScheduledObservation,
   ))
@@ -1784,7 +1791,7 @@ fn commit_job(
     )
   {
     Ok(_) -> Ok(next)
-    Error(StoreFailed(store.Conflict(_))) if tries > 1 ->
+    Error(StoreFailed(backend.Conflict(_))) if tries > 1 ->
       observe_job(runs, work, options, ref, tries - 1)
     Error(error) -> Error(error)
   }
@@ -2196,9 +2203,9 @@ fn commit_recovery(
     )
   {
     Ok(_) -> Ok(next)
-    Error(StoreFailed(store.Conflict(_))) if tries > 1 ->
+    Error(StoreFailed(backend.Conflict(_))) if tries > 1 ->
       recover(runs, work, options, next.run, tries - 1)
-    Error(StoreFailed(store.LeaseRefused(_))) -> Error(OwnerUnknown)
+    Error(StoreFailed(backend.LeaseRefused(_))) -> Error(OwnerUnknown)
     Error(error) -> Error(error)
   }
 }
@@ -2240,7 +2247,7 @@ pub fn cancel(
         }
         Ok(next)
       }
-      Error(StoreFailed(store.Conflict(_))) if tries > 1 ->
+      Error(StoreFailed(backend.Conflict(_))) if tries > 1 ->
         cancel(runs, work, options, id, tries - 1)
       Error(error) -> Error(error)
     }

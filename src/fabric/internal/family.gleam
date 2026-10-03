@@ -11,9 +11,11 @@ import fabric/internal/budget/bootstrap
 import fabric/internal/controller.{type State}
 import fabric/internal/observe
 import fabric/internal/registry
+import fabric/internal/run_id
 import fabric/internal/runner.{type ReadError, type Setup}
+import fabric/internal/store
 import fabric/run.{type ActionId, type PendingApproval, type Status}
-import fabric/store
+import fabric/store/backend
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -178,7 +180,7 @@ pub fn own_pending(state: State) -> List(PendingApproval) {
           run.AwaitingApproval(requirement, revision) ->
             Ok(run.PendingApproval(
               run.ApprovalRef(
-                run.issued(state.run),
+                run_id.from_string(state.run),
                 action.id,
                 requirement,
                 revision,
@@ -338,9 +340,10 @@ pub fn take_over(
           Ok(Nil)
         }
         // Another node claimed the lease meanwhile: the run is left to it.
-        Error(store.LeaseRefused(_)) -> Ok(Nil)
-        Error(store.Conflict(_)) if tries > 1 -> take_over(setup, id, tries - 1)
-        Error(store.Conflict(_)) -> Error(TakeOverContended)
+        Error(backend.LeaseRefused(_)) -> Ok(Nil)
+        Error(backend.Conflict(_)) if tries > 1 ->
+          take_over(setup, id, tries - 1)
+        Error(backend.Conflict(_)) -> Error(TakeOverContended)
         Error(error) -> Error(TakeOverUnreadable(runner.StoreFailed(error)))
       }
     }

@@ -29,25 +29,28 @@
 //// state, giving the run up, and exits. A runner the factory kills at the
 //// end of its drain window leaves its record as a lost runner does.
 
-import fabric/agent
 import fabric/internal/ancestry
 import fabric/internal/bounded
 import fabric/internal/budget/admission as capacity
 import fabric/internal/budget/bootstrap
 import fabric/internal/budget/model as reservations
+import fabric/internal/checked_agent
 import fabric/internal/claim
 import fabric/internal/controller.{type Effect, type Event, type State}
 import fabric/internal/executor.{type Executor}
 import fabric/internal/invocation
 import fabric/internal/live.{type Message, type Work}
+import fabric/internal/model_port
 import fabric/internal/observe
 import fabric/internal/record
 import fabric/internal/registry
+import fabric/internal/run_id
 import fabric/internal/runner_host
+import fabric/internal/store.{type Store}
 import fabric/model.{type Model}
 import fabric/policy
 import fabric/run.{type ActionId}
-import fabric/store.{type Store}
+import fabric/store/backend
 import fabric/tool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
@@ -66,12 +69,12 @@ pub type Setup(context) {
     /// Milliseconds before the first retry of a retryable model failure.
     model_retry_delay: Int,
     store: Store,
-    identity: run.Identity,
+    identity: run.DefinitionId,
     /// The agent's own limits; a child's depth is further bounded by its
     /// parent's.
     limits: controller.Limits,
     /// The admitted sub-agent of each delegation, by delegation name.
-    children: Dict(String, agent.Admitted(context)),
+    children: Dict(String, checked_agent.Admitted(context)),
     policy_timeout: Int,
     /// How long a command waits for this run's live runner to take it.
     command_timeout: Int,
@@ -95,7 +98,7 @@ pub type Parent(context) {
 /// The runtime setup of an admitted agent with `context`.
 pub fn setup(
   store: Store,
-  admitted: agent.Admitted(context),
+  admitted: checked_agent.Admitted(context),
   context: context,
   parent: Option(Parent(context)),
 ) -> Setup(context) {
@@ -143,7 +146,7 @@ pub fn work(setup: Setup(context), context: context) -> Work {
       registry.invoke(
         setup.env.registry,
         context,
-        tool.Call(run: run.issued(run_id), action: id, correlation:),
+        tool.Call(run: run_id.from_string(run_id), action: id, correlation:),
         call.name,
         call.arguments_json,
         fn(outcome, summary) {
@@ -308,7 +311,7 @@ pub fn child_setup(
 
 fn self_setup(
   parent: Setup(context),
-  admitted: agent.Admitted(context),
+  admitted: checked_agent.Admitted(context),
   run: String,
   action: ActionId,
 ) -> Setup(context) {
@@ -377,7 +380,7 @@ pub fn child_state(
     setup.identity,
     controller.Limits(..setup.limits, max_depth:),
     prompt,
-    Some(run.AgentParent(run.issued(parent.run), action)),
+    Some(run.AgentParent(run_id.from_string(parent.run), action)),
     depth,
     parent.correlation,
   )
@@ -433,7 +436,7 @@ pub fn launch(
   before: Option(#(Int, State)),
   state: State,
   effects: List(Effect),
-) -> Result(Int, store.StoreError) {
+) -> Result(Int, backend.StoreError) {
   launch_with(
     setup,
     work(setup, setup.env.context),
@@ -455,7 +458,7 @@ fn launch_with(
   state: State,
   effects: List(Effect),
   seize: Bool,
-) -> Result(Int, store.StoreError) {
+) -> Result(Int, backend.StoreError) {
   use encoded <- result.try(store.encode(setup.store, state))
   launch_encoded(setup, work, before, state, encoded, effects, seize)
 }
@@ -469,11 +472,11 @@ pub fn launch_new(
   setup: Setup(context),
   state: State,
   effects: List(Effect),
-) -> Result(Int, store.StoreError) {
+) -> Result(Int, backend.StoreError) {
   let work = work(setup, setup.env.context)
   use encoded <- result.try(store.encode(setup.store, state))
   case launch_encoded(setup, work, None, state, encoded, effects, False) {
-    Error(store.AlreadyExists) ->
+    Error(backend.AlreadyExists) ->
       case store.get(setup.store, state.run) {
         Ok(store.Entry(revision: 1, record: stored, live: None, ..))
           if stored == encoded
@@ -490,7 +493,7 @@ pub fn launch_new(
             False,
           )
         }
-        _ -> Error(store.AlreadyExists)
+        _ -> Error(backend.AlreadyExists)
       }
     other -> other
   }
@@ -506,7 +509,7 @@ fn launch_encoded(
   encoded: String,
   effects: List(Effect),
   seize: Bool,
-) -> Result(Int, store.StoreError) {
+) -> Result(Int, backend.StoreError) {
   let expected = option.map(before, fn(before) { before.0 })
   let observed = option.map(before, fn(before) { before.1 })
   launch_over(setup, work, expected, observed, state, encoded, effects, seize)
@@ -524,7 +527,7 @@ fn launch_over(
   encoded: String,
   effects: List(Effect),
   seize: Bool,
-) -> Result(Int, store.StoreError) {
+) -> Result(Int, backend.StoreError) {
   case controller.needs_runner(state) {
     False -> {
       use #(revision, state) <- result.map(write_initialized(
@@ -581,7 +584,7 @@ fn write_initialized(
   expected: Option(Int),
   encoded: String,
   ownership: store.Ownership,
-) -> Result(#(Int, State), store.StoreError) {
+) -> Result(#(Int, State), backend.StoreError) {
   use revision <- result.try(write(
     runs,
     state.run,
@@ -618,7 +621,7 @@ fn write(
   expected: Option(Int),
   encoded: String,
   ownership: store.Ownership,
-) -> Result(Int, store.StoreError) {
+) -> Result(Int, backend.StoreError) {
   case expected {
     None -> store.insert(store, run, encoded, ownership)
     Some(revision) -> store.commit(store, run, revision, encoded, ownership)
@@ -1147,16 +1150,16 @@ fn persist(
   expected: Int,
   ownership: store.Ownership,
   attempt: Int,
-) -> Result(Int, store.StoreError) {
+) -> Result(Int, backend.StoreError) {
   case store.commit(store, run, expected, encoded, ownership) {
-    Error(store.Unavailable(_)) if attempt < unavailable_retries -> {
+    Error(backend.Unavailable(_)) if attempt < unavailable_retries -> {
       process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
       persist(store, run, encoded, expected, ownership, attempt + 1)
     }
     // An earlier attempt that was reported unavailable may have landed
     // after all: the conflict is then with this runner's own write, which
     // its write token identifies.
-    Error(store.Conflict(current)) as conflict
+    Error(backend.Conflict(current)) as conflict
       if attempt > 0 && current == expected + 1
     ->
       case store.get(store, run) {
@@ -1386,7 +1389,7 @@ fn store_started_child(
           }
           case stored {
             Ok(#(_, Ok(Nil))) -> controller.ChildStarted(id)
-            Ok(#(encoded, Error(store.AlreadyExists))) ->
+            Ok(#(encoded, Error(backend.AlreadyExists))) ->
               adopt_child(child_setup, id, #(state, encoded, effects), 3)
             Error(error) | Ok(#(_, Error(error))) ->
               controller.ChildEnded(
@@ -1411,11 +1414,11 @@ fn store_child(
   encoded: String,
   effects: List(Effect),
   attempt: Int,
-) -> Result(Nil, store.StoreError) {
+) -> Result(Nil, backend.StoreError) {
   let work = work(setup, setup.env.context)
   case launch_encoded(setup, work, None, state, encoded, effects, False) {
     Ok(_) -> Ok(Nil)
-    Error(store.Unavailable(_)) if attempt < unavailable_retries -> {
+    Error(backend.Unavailable(_)) if attempt < unavailable_retries -> {
       process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
       store_child(setup, state, encoded, effects, attempt + 1)
     }
@@ -1456,8 +1459,9 @@ fn adopt_child(
           }
           case launch(setup, Some(#(entry.revision, stored)), next, effects) {
             // Started, or another node's runner drives it.
-            Ok(_) | Error(store.LeaseRefused(_)) -> controller.ChildStarted(id)
-            Error(store.Conflict(_)) if tries > 1 ->
+            Ok(_) | Error(backend.LeaseRefused(_)) ->
+              controller.ChildStarted(id)
+            Error(backend.Conflict(_)) if tries > 1 ->
               adopt_child(setup, id, start, tries - 1)
             Error(error) ->
               lost("it could not be started: " <> string.inspect(error))
@@ -1574,8 +1578,8 @@ pub fn bury(
   parent: State,
   action: ActionId,
   child: String,
-  agent: run.Identity,
-) -> Result(Burial, store.StoreError) {
+  agent: run.DefinitionId,
+) -> Result(Burial, backend.StoreError) {
   let state = controller.never_started(parent, action, child, agent)
   use encoded <- result.try(store.encode(store, state))
   case
@@ -1587,7 +1591,7 @@ pub fn bury(
     )
   {
     Ok(_) -> Ok(Buried)
-    Error(store.AlreadyExists) -> Ok(Exists)
+    Error(backend.AlreadyExists) -> Ok(Exists)
     Error(error) -> Error(error)
   }
 }
@@ -1654,7 +1658,7 @@ pub fn cancel_unattended(
         observe.committed(Some(state), next)
         Ok(next)
       }
-      Error(store.Conflict(_)) -> retry()
+      Error(backend.Conflict(_)) -> retry()
       Error(error) -> Error(Unreadable(StoreFailed(error)))
     }
   }
@@ -1688,7 +1692,7 @@ pub fn end_child(
   let _ = cancel_unattended(store, child, within, tries)
   case load(store, child) {
     Error(NotFound) ->
-      case bury(store, parent, action, child, run.Identity("", 0)) {
+      case bury(store, parent, action, child, run.DefinitionId("", 0)) {
         Ok(Buried) -> controller.ChildMissing
         Ok(Exists) if tries > 1 ->
           end_child(store, parent, action, child, within, tries - 1)
@@ -1774,7 +1778,7 @@ pub fn read_ancestors(
   attempt: Int,
 ) -> Result(Bool, ReadError) {
   case ancestry.read(store, id, parent, links) {
-    Error(ancestry.StoreFailed(store.NotFound)) -> Error(NotFound)
+    Error(ancestry.StoreFailed(backend.NotFound)) -> Error(NotFound)
     Error(ancestry.StoreFailed(_)) if attempt < unavailable_retries -> {
       process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
       read_ancestors(store, id, parent, links, attempt + 1)
@@ -1792,7 +1796,7 @@ pub fn read_ancestors(
 /// Why a stored run could not be read or continued.
 pub type ReadError {
   NotFound
-  StoreFailed(store.StoreError)
+  StoreFailed(backend.StoreError)
   UnsupportedVersion(found: Int)
   Corrupt(detail: String)
   Incompatible(List(run.Incompatibility))
@@ -1885,9 +1889,9 @@ pub fn command(
         option.map(held, process.kill)
         Ok(next)
       }
-      Error(store.Conflict(_)) -> retry()
+      Error(backend.Conflict(_)) -> retry()
       // The work needs a lease that another node's runner holds.
-      Error(store.LeaseRefused(_)) -> Error(OwnerUnknown)
+      Error(backend.LeaseRefused(_)) -> Error(OwnerUnknown)
       Error(error) -> Error(Unreadable(StoreFailed(error)))
     }
   }
@@ -2006,7 +2010,7 @@ pub fn load(
     store.get(store, id)
     |> result.map_error(fn(error) {
       case error {
-        store.NotFound -> NotFound
+        backend.NotFound -> NotFound
         other -> StoreFailed(other)
       }
     }),
@@ -2080,12 +2084,12 @@ fn call_model(
   }
   case timeout {
     None ->
-      case executor.rescue(fn() { model.call(model, request) }) {
+      case executor.rescue(fn() { model_port.call(model, request) }) {
         Ok(result) -> result
         Error(crash) -> crashed(crash)
       }
     Some(ms) ->
-      case bounded.call(ms, fn() { model.call(model, request) }) {
+      case bounded.call(ms, fn() { model_port.call(model, request) }) {
         Ok(result) -> result
         Error(bounded.Crashed(crash)) -> crashed(crash)
         Error(bounded.TimedOut) ->
@@ -2175,7 +2179,10 @@ fn read_children(runner: Runner(context)) -> Runner(context) {
               )
               case
                 state.parent
-                == Some(run.AgentParent(run.issued(runner.state.run), action))
+                == Some(run.AgentParent(
+                  run_id.from_string(runner.state.run),
+                  action,
+                ))
               {
                 False -> Error(Nil)
                 True ->

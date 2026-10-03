@@ -75,7 +75,7 @@ fn every_action() -> List(run.ActionRecord) {
 fn base() -> State {
   controller.State(
     run: "run-01-3",
-    agent: run.Identity("desk", 3),
+    agent: run.DefinitionId("desk", 3),
     incarnation: 4,
     parent: Some(run.AgentParent(support.id("run-01"), ActionId(3, "delegate"))),
     depth: 1,
@@ -259,7 +259,7 @@ pub fn a_version_1_record_is_read_as_a_root_run_without_sub_agents_test() {
   let expected =
     controller.State(
       run: "run-old",
-      agent: run.Identity("desk", 1),
+      agent: run.DefinitionId("desk", 1),
       incarnation: 1,
       parent: None,
       depth: 0,
@@ -334,7 +334,7 @@ pub fn a_record_continues_only_under_its_agent_and_tools_test() {
   let waiting =
     controller.State(
       ..base(),
-      agent: run.Identity("desk", 3),
+      agent: run.DefinitionId("desk", 3),
       phase: controller.Acting(2, [
         action("w", run.Queued),
         run.ActionRecord(
@@ -356,20 +356,20 @@ pub fn a_record_continues_only_under_its_agent_and_tools_test() {
         ),
       ]),
     )
-  record.check(waiting, run.Identity("desk", 3), weather_only)
+  record.check(waiting, run.DefinitionId("desk", 3), weather_only)
   |> should.equal(
     Error([run.ToolNotRegistered(ActionId(2, "t"), "transfer_funds")]),
   )
-  record.check(waiting, run.Identity("desk", 4), weather_only)
+  record.check(waiting, run.DefinitionId("desk", 4), weather_only)
   |> should.equal(
     Error([
-      run.OtherAgent(run.Identity("desk", 3)),
+      run.OtherAgent(run.DefinitionId("desk", 3)),
       run.ToolNotRegistered(ActionId(2, "t"), "transfer_funds"),
     ]),
   )
   let assert Ok(both) =
     registry.new([apps.weather_tool(), apps.transfer_tool()])
-  record.check(waiting, run.Identity("desk", 3), both)
+  record.check(waiting, run.DefinitionId("desk", 3), both)
   |> should.equal(Ok(waiting))
 }
 

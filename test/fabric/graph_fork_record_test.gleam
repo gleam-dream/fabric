@@ -3,6 +3,7 @@ import fabric/graph/fork
 import fabric/graph/operation
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record
+import fabric/internal/run_id
 import fabric/policy
 import fabric/run
 import gleam/list
@@ -14,11 +15,11 @@ fn initial() -> graph.State {
   let assert Ok(#(state, _)) =
     graph.start(
       "fork-record",
-      graph.Definition(run.Identity("parent", 1), "parent-v1", 1),
+      graph.Definition(run.DefinitionId("parent", 1), "parent-v1", 1),
       "0",
       graph.Prepared(
         "pair",
-        run.Identity("pair", 1),
+        run.DefinitionId("pair", 1),
         "[1,2]",
         operation.RequireReconciliation,
         operation.Fork(2, 2, "pair-v1"),
@@ -45,12 +46,12 @@ pub fn version_thirteen_retains_fork_scopes_and_rejects_legacy_downgrades_test()
       graph.ForkPrepared(
         ref,
         Ok([
-          fork.Request(run.Identity("one", 1), "1"),
-          fork.Request(run.Identity("two", 1), "2"),
+          fork.Request(run.DefinitionId("one", 1), "1"),
+          fork.Request(run.DefinitionId("two", 1), "2"),
         ]),
       ),
     )
-  let occurrence = fork.Occurrence(run.issued(ready.run), a.id)
+  let occurrence = fork.Occurrence(run_id.from_string(ready.run), a.id)
   let first = fork.Reference(occurrence, 1)
   let second = fork.Reference(occurrence, 2)
   let reserved = next(fixed, graph.ForkAdmitted(ref, first))
@@ -118,7 +119,7 @@ pub fn version_thirteen_retains_fork_scopes_and_rejects_legacy_downgrades_test()
 
 // G7, F8: branch attachments have their own identity domain and format gate.
 pub fn branch_records_require_matching_attachments_and_version_thirteen_test() {
-  let parent = run.issued("parent")
+  let parent = run_id.from_string("parent")
   let id = child.branch_id("parent", 1, 2)
   let initial = initial()
   let assert graph.Ready(a) = initial.phase
@@ -169,12 +170,12 @@ pub fn fork_deadlines_require_version_fourteen_and_retain_expiration_test() {
       graph.ForkPrepared(
         ref,
         Ok([
-          fork.Request(run.Identity("one", 1), "1"),
-          fork.Request(run.Identity("two", 1), "2"),
+          fork.Request(run.DefinitionId("one", 1), "1"),
+          fork.Request(run.DefinitionId("two", 1), "2"),
         ]),
       ),
     )
-  let occurrence = fork.Occurrence(run.issued(ready.run), 1)
+  let occurrence = fork.Occurrence(run_id.from_string(ready.run), 1)
   let first = fork.Reference(occurrence, 1)
   let second = fork.Reference(occurrence, 2)
   let active =

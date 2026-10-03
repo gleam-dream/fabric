@@ -2,7 +2,7 @@
 //// Serializable deletion and parent foreign keys protect against concurrent
 //// metadata changes, lease renewal and delayed child creation.
 
-import fabric/retention
+import fabric/store/retention
 import fabric_postgres/internal/backend
 import gleam/dynamic/decode
 import gleam/int

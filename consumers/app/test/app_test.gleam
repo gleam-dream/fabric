@@ -1,9 +1,9 @@
 import app
 import fabric
 import fabric/agent.{type Agent}
-import fabric/observation
 import fabric/run
 import fabric/store
+import fabric/telemetry
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process
 import gleam/int
@@ -402,15 +402,15 @@ pub fn observations_show_what_a_run_did_test() {
   let assert Ok(observation) = app.start_observation()
   let events = process.new_subject()
   let started =
-    sinal.observe(observation.run_started(), fn(_, meta) {
+    sinal.observe(telemetry.run_started(), fn(_, meta) {
       process.send(events, "started " <> meta.agent)
     })
   let child =
-    sinal.observe(observation.child_started(), fn(_, meta) {
+    sinal.observe(telemetry.child_started(), fn(_, meta) {
       process.send(events, "delegated " <> meta.action.tool)
     })
   let finished =
-    sinal.observe(observation.run_finished(), fn(totals, meta) {
+    sinal.observe(telemetry.run_finished(), fn(totals, meta) {
       process.send(
         events,
         "finished "

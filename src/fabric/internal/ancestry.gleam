@@ -12,14 +12,15 @@ import fabric/internal/graph/controller as graph
 import fabric/internal/graph/fork as scope
 import fabric/internal/graph/record as graph_record
 import fabric/internal/record as agent_record
+import fabric/internal/store
 import fabric/run
-import fabric/store
+import fabric/store/backend
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
 pub type Error {
-  StoreFailed(store.StoreError)
+  StoreFailed(backend.StoreError)
   UnsupportedVersion(Int)
   Corrupt(String)
 }

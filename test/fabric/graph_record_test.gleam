@@ -3,9 +3,10 @@ import fabric/graph/job
 import fabric/graph/operation
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record
+import fabric/internal/store as store_core
 import fabric/policy
 import fabric/run
-import fabric/store
+import fabric/store/backend
 import fabric/support
 import fabric/support/flaky
 import fabric/support/restart
@@ -18,7 +19,7 @@ import gleeunit/should
 fn prepared(node: String) -> graph.Prepared {
   graph.Prepared(
     node,
-    run.Identity("operation-" <> node, 2),
+    run.DefinitionId("operation-" <> node, 2),
     "{\"input\":1}",
     operation.RequireReconciliation,
     operation.Activity,
@@ -30,7 +31,7 @@ fn initial() -> graph.State {
   let assert Ok(#(state, _)) =
     graph.start(
       "graph-record",
-      graph.Definition(run.Identity("review", 2), "sig-v2", 2),
+      graph.Definition(run.DefinitionId("review", 2), "sig-v2", 2),
       "0",
       prepared("generate"),
     )
@@ -644,19 +645,25 @@ pub fn a_graph_record_survives_store_process_loss_and_cas_refuses_a_stale_route_
   let #(owner, runs) =
     restart.owned(fn() {
       let runs = support.directory(dir)
-      store.insert(runs, started.run, encoded(started), store.Keep)
+      store_core.insert(runs, started.run, encoded(started), store_core.Keep)
       |> should.equal(Ok(1))
-      store.commit(runs, started.run, 1, encoded(advanced), store.Keep)
+      store_core.commit(
+        runs,
+        started.run,
+        1,
+        encoded(advanced),
+        store_core.Keep,
+      )
       |> should.equal(Ok(2))
       runs
     })
   restart.crash(owner, runs)
   let reopened = support.directory(dir)
-  let assert Ok(entry) = store.get(reopened, started.run)
+  let assert Ok(entry) = store_core.get(reopened, started.run)
   let assert Ok(restored) = record.decode(entry.record)
   restored |> should.equal(advanced)
-  store.commit(reopened, started.run, 1, encoded(started), store.Keep)
-  |> should.equal(Error(store.Conflict(2)))
+  store_core.commit(reopened, started.run, 1, encoded(started), store_core.Keep)
+  |> should.equal(Error(backend.Conflict(2)))
   let assert Ok(#(recovered, [graph.Inspect(pending)])) =
     graph.recover(restored)
   pending.prepared.node |> should.equal("review")
@@ -669,12 +676,12 @@ pub fn graph_writes_use_the_store_lost_acknowledgement_confirmation_test() {
   let runs = flaky.store(backend)
   let state = initial()
   flaky.arm(backend, [flaky.FailAfter, flaky.FailAfter])
-  store.insert(runs, state.run, encoded(state), store.Keep)
+  store_core.insert(runs, state.run, encoded(state), store_core.Keep)
   |> should.equal(Ok(1))
   let queued = queued(state)
-  store.commit(runs, state.run, 1, encoded(queued), store.Keep)
+  store_core.commit(runs, state.run, 1, encoded(queued), store_core.Keep)
   |> should.equal(Ok(2))
-  let assert Ok(entry) = store.get(runs, state.run)
+  let assert Ok(entry) = store_core.get(runs, state.run)
   record.decode(entry.record) |> should.equal(Ok(queued))
 }
 

@@ -6,6 +6,7 @@
 import fabric
 import fabric/run
 import fabric/store.{type Store}
+import fabric/store/backend
 import fabric_postgres.{type Settings}
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -50,11 +51,11 @@ fn holder(schema: String, id: run.RunId) -> Result(#(String, Bool), Nil) {
   let backend = fabric_postgres.backend(node_settings("probe", schema))
   let assert Ok(current) = backend.get(run.id_to_string(id))
   case current.holder {
-    store.Held(owner, live) -> {
+    backend.Held(owner, live) -> {
       let assert Ok(#(node, _)) = string.split_once(owner, "/")
       Ok(#(node, live))
     }
-    store.Free -> Error(Nil)
+    backend.Free -> Error(Nil)
   }
 }
 

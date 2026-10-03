@@ -1,11 +1,13 @@
 //// G7: migrated discovery is derived metadata; it never changes executions.
 
-import fabric/discovery
 import fabric/graph
 import fabric/graph/child
 import fabric/graph/job
+import fabric/internal/store as store_core
 import fabric/run
 import fabric/store
+import fabric/store/backend
+import fabric/store/discovery
 import fabric_postgres
 import fabric_postgres/graph_run_test
 import fabric_postgres/internal/migrations
@@ -34,7 +36,7 @@ fn waiting_family() {
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(reference, child.Approval(_)) = waiting.status
   let row = await_parked(runs, run.id_to_string(id), 200)
-  let assert Ok(child) = store.get(runs, run.id_to_string(reference.child))
+  let assert Ok(child) = store_core.get(runs, run.id_to_string(reference.child))
   [
     #(run.id_to_string(id), row.record),
     #(run.id_to_string(reference.child), child.record),
@@ -42,7 +44,7 @@ fn waiting_family() {
 }
 
 fn await_parked(runs, id, left) {
-  let assert Ok(row) = store.get(runs, id)
+  let assert Ok(row) = store_core.get(runs, id)
   case row.live, left {
     None, _ -> row
     _, n if n > 0 -> {
@@ -137,7 +139,7 @@ pub fn concurrent_refresh_batches_examine_each_stale_row_once_test() {
   let settings = support.migrated(connection, "refresh", schema)
   let backend = fabric_postgres.backend(settings)
   list.each([1, 2, 3, 4, 5, 6, 7, 8], fn(n) {
-    backend.insert("unknown-" <> int.to_string(n), "not json", store.Release)
+    backend.insert("unknown-" <> int.to_string(n), "not json", backend.Release)
     |> should.be_ok
   })
   let table = table(schema)
@@ -182,7 +184,7 @@ pub fn refreshing_a_scheduled_wait_preserves_its_last_claim_time_test() {
     "refresh-poll",
     row.revision,
     row.record,
-    store.Release,
+    backend.Release,
   )
   |> should.be_ok
   let table = table(schema)

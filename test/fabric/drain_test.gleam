@@ -6,6 +6,7 @@
 
 import fabric
 import fabric/agent.{type Agent}
+import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
 import fabric/run.{Requirement}
@@ -322,7 +323,7 @@ pub fn a_store_stops_after_its_draining_runners_test() {
       correlation: None,
     )
   let running = probe.arrival(probe)
-  let assert Ok(store_process) = store.pid(runs)
+  let assert Ok(store_process) = store_core.pid(runs)
   let assert Ok(runner) = restart.runner(runs, fabric.id(run))
   restart.begin_stop(app)
   restart.draining(runs)
@@ -780,7 +781,7 @@ pub fn a_tool_body_starting_a_run_during_the_stop_does_not_hold_up_the_drain_tes
       correlation: None,
     )
   let running = probe.arrival(probe)
-  let assert Ok(store_process) = store.pid(runs)
+  let assert Ok(store_process) = store_core.pid(runs)
   restart.suspend(store_process)
   probe.release(running)
   // The body waits for the store's answer; the stop begins meanwhile.

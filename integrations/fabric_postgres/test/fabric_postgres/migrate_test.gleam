@@ -2,7 +2,7 @@
 //// often and from however many nodes it is called; `with_schema` keeps
 //// stores apart; the cigogne files hold the same statements.
 
-import fabric/store
+import fabric/store/backend
 import fabric_postgres
 import fabric_postgres/internal/migrations
 import fabric_postgres/support
@@ -34,10 +34,11 @@ pub fn migrate_creates_the_schema_once_and_again_changes_nothing_test() {
   fabric_postgres.migrate(settings) |> should.equal(Ok(Nil))
   versions(connection, schema) |> should.equal([1, 2, 3, 4, 5, 6, 7])
   let backend = fabric_postgres.backend(settings)
-  backend.insert("run-a1", "{}", store.Release) |> should.equal(Ok(Nil))
+  backend.insert("run-a1", "{}", backend.Release) |> should.equal(Ok(Nil))
   fabric_postgres.migrate(settings) |> should.equal(Ok(Nil))
   versions(connection, schema) |> should.equal([1, 2, 3, 4, 5, 6, 7])
-  backend.get("run-a1") |> should.equal(Ok(store.Current(1, "{}", store.Free)))
+  backend.get("run-a1")
+  |> should.equal(Ok(backend.Current(1, "{}", backend.Free)))
 }
 
 /// Nodes starting together all migrate: one applies the migrations, the
@@ -87,7 +88,7 @@ pub fn migrate_reports_an_unreachable_database_test() {
   let settings = fabric_postgres.settings(connection, node: "a")
   let assert Error(fabric_postgres.MigrationFailed(_)) =
     fabric_postgres.migrate(settings)
-  let assert Error(store.Unavailable(_)) =
+  let assert Error(backend.Unavailable(_)) =
     fabric_postgres.backend(settings).get("run-a1")
 }
 
@@ -96,14 +97,14 @@ pub fn stores_in_separate_schemas_are_apart_test() {
   let connection = support.pool(2)
   let one = support.migrated(connection, "a", support.schema())
   let other = support.migrated(connection, "a", support.schema())
-  fabric_postgres.backend(one).insert("run-a1", "one", store.Release)
+  fabric_postgres.backend(one).insert("run-a1", "one", backend.Release)
   |> should.equal(Ok(Nil))
   fabric_postgres.backend(other).get("run-a1")
-  |> should.equal(Error(store.NotFound))
-  fabric_postgres.backend(other).insert("run-a1", "other", store.Release)
+  |> should.equal(Error(backend.NotFound))
+  fabric_postgres.backend(other).insert("run-a1", "other", backend.Release)
   |> should.equal(Ok(Nil))
   fabric_postgres.backend(one).get("run-a1")
-  |> should.equal(Ok(store.Current(1, "one", store.Free)))
+  |> should.equal(Ok(backend.Current(1, "one", backend.Free)))
 }
 
 pub fn a_schema_name_is_a_plain_lowercase_identifier_test() {

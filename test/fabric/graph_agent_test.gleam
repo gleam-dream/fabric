@@ -5,10 +5,11 @@ import fabric/graph
 import fabric/graph/agent as node
 import fabric/graph/child
 import fabric/graph/definition
+import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
 import fabric/run
-import fabric/store
+import fabric/store/backend
 import fabric/support
 import fabric/support/flaky
 import fabric/support/probe
@@ -28,7 +29,7 @@ fn runtime(runs, worker) {
   let assert Ok(runtime) =
     node.new(
       node.Definition(
-        run.Identity("integer-agent", 1),
+        run.DefinitionId("integer-agent", 1),
         worker,
         codec.int(),
         codec.int(),
@@ -55,7 +56,7 @@ fn parent(runs, runtime) {
     )
   let assert Ok(definition) =
     definition.build(definition.Spec(
-      run.Identity("parent", 1),
+      run.DefinitionId("parent", 1),
       id,
       [node],
       codec.int(),
@@ -123,8 +124,8 @@ pub fn a_zero_child_budget_refuses_a_managed_agent_before_creating_it_test() {
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status
   |> should.equal(graph.Failed(graph.FamilyBudget(budget.ChildLimit(0))))
-  store.get(runs, child.reserved_id("no-children", 1))
-  |> should.equal(Error(store.NotFound))
+  store_core.get(runs, child.reserved_id("no-children", 1))
+  |> should.equal(Error(backend.NotFound))
   probe.entries(calls) |> should.equal([])
 }
 
@@ -151,7 +152,7 @@ pub fn a_graph_owned_agents_delegation_cannot_reset_family_depth_test() {
   action.state |> should.equal(run.NotStarted)
   let assert Some(child_id) = action.child
   // Cancellation records definite never-started evidence for the refused child.
-  store.get(runs, run.id_to_string(child_id)) |> should.be_ok
+  store_core.get(runs, run.id_to_string(child_id)) |> should.be_ok
   probe.entries(calls) |> should.equal([])
 }
 
@@ -356,7 +357,7 @@ pub fn canceling_a_running_agent_retains_uncertain_tool_effects_test() {
   still_cancelled.status |> should.equal(done.status)
   // Inspect through the actual store as well: the parent's result is not a
   // manufactured success while the child owns an uncertain operation.
-  let assert Ok(_) = store.get(runs, run.id_to_string(reference.child))
+  let assert Ok(_) = store_core.get(runs, run.id_to_string(reference.child))
   let before = snapshot
   let assert Ok(_) =
     fabric.reconcile_stored(
@@ -525,7 +526,7 @@ fn wrap(runs, inner) {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("outer", 1),
+      run.DefinitionId("outer", 1),
       id,
       [node],
       codec.int(),
@@ -608,7 +609,7 @@ pub fn cancellation_buries_a_reserved_agent_without_calling_prompt_or_context_te
   let assert Ok(cancel_runtime) =
     node.new(
       node.Definition(
-        run.Identity("integer-agent", 1),
+        run.DefinitionId("integer-agent", 1),
         worker,
         codec.int(),
         codec.int(),
@@ -640,7 +641,7 @@ pub fn agent_descendants_must_fit_ids_below_a_graph_reservation_test() {
     })
   node.new(
     node.Definition(
-      run.Identity("deep", 1),
+      run.DefinitionId("deep", 1),
       deep,
       codec.int(),
       codec.int(),
@@ -657,7 +658,7 @@ pub fn agent_descendants_must_fit_ids_below_a_graph_reservation_test() {
     })
   node.new(
     node.Definition(
-      run.Identity("narrow", 1),
+      run.DefinitionId("narrow", 1),
       narrow,
       codec.int(),
       codec.int(),
@@ -683,7 +684,7 @@ pub fn canceled_agent_settlement_does_not_call_the_reply_adapter_test() {
   let assert Ok(cancel_runtime) =
     node.new(
       node.Definition(
-        run.Identity("integer-agent", 1),
+        run.DefinitionId("integer-agent", 1),
         worker,
         codec.int(),
         codec.int(),

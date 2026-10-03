@@ -3,7 +3,7 @@
 //// without deadlocking a parent that is itself one of the factory's runners.
 
 import fabric/internal/claim
-import fabric/store.{type Store}
+import fabric/internal/store.{type Store}
 import gleam/erlang/atom
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/result

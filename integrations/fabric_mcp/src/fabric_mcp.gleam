@@ -222,7 +222,7 @@ fn schema(raw: Value) -> Result(Contract, String) {
 /// from fresh context only after policy admission. Remote annotations never
 /// authorize an effect or opt it into replay.
 pub fn bind(
-  identity: run.Identity,
+  identity: run.DefinitionId,
   tool: Tool,
   input: codec.Codec(input),
   output: codec.Codec(output),

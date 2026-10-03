@@ -7,7 +7,7 @@ import fabric/cancellation_test
 import fabric/delegation_test
 import fabric/drain_test
 import fabric/durable_test
-import fabric/store
+import fabric/internal/store as store_core
 import fabric/support
 import gleam/option.{None, Some}
 import gleeunit/should
@@ -16,12 +16,12 @@ import gleeunit/should
 /// there.
 pub fn the_suite_runs_on_leased_stores_test() {
   support.leased(fn() {
-    store.poll_interval(support.store()) |> should.equal(Some(500))
-    store.poll_interval(support.restartable_store("unused"))
+    store_core.poll_interval(support.store()) |> should.equal(Some(500))
+    store_core.poll_interval(support.restartable_store("unused"))
     |> should.equal(Some(500))
   })
-  store.poll_interval(support.store()) |> should.equal(None)
-  store.poll_interval(support.restartable_store("unused"))
+  store_core.poll_interval(support.store()) |> should.equal(None)
+  store_core.poll_interval(support.restartable_store("unused"))
   |> should.equal(None)
 }
 

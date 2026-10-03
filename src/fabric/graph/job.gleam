@@ -38,13 +38,13 @@ pub type Reference {
     run: run.RunId,
     activation: Int,
     attempt: Int,
-    operation: run.Identity,
+    operation: run.DefinitionId,
   )
 }
 
 pub opaque type Observer(context, receipt, output) {
   Observer(
-    identity: run.Identity,
+    identity: run.DefinitionId,
     receipt: Codec(receipt),
     output: Codec(output),
     read: fn(context, receipt) -> Result(Progress(output), String),
@@ -56,7 +56,7 @@ pub opaque type Observer(context, receipt, output) {
 /// observation; `Failed` means the remote job has a definite failure outcome.
 /// Canceling this observation leaves the remote job independently owned.
 pub fn observe(
-  identity: run.Identity,
+  identity: run.DefinitionId,
   receipt: Codec(receipt),
   output: Codec(output),
   read: fn(context, receipt) -> Result(Progress(output), String),
@@ -94,7 +94,9 @@ pub fn polling(observer: Observer(context, receipt, output)) -> Polling {
 }
 
 @internal
-pub fn identity(observer: Observer(context, receipt, output)) -> run.Identity {
+pub fn identity(
+  observer: Observer(context, receipt, output),
+) -> run.DefinitionId {
   observer.identity
 }
 

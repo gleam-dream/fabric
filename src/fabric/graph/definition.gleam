@@ -36,7 +36,7 @@ pub type Command(state, answer) {
 pub opaque type Node(context, state, answer) {
   Node(
     id: NodeId,
-    operation: run.Identity,
+    operation: run.DefinitionId,
     kind: operation.Kind,
     recovery: operation.Recovery,
     deadline: Option(Int),
@@ -58,7 +58,7 @@ pub opaque type Node(context, state, answer) {
 
 pub type Spec(context, state, answer) {
   Spec(
-    identity: run.Identity,
+    identity: run.DefinitionId,
     entry: NodeId,
     nodes: List(Node(context, state, answer)),
     state: Codec(state),
@@ -79,7 +79,7 @@ pub opaque type Definition(context, state, answer) {
 
 pub type BuildError {
   InvalidNodeId
-  InvalidIdentity(run.Identity)
+  InvalidIdentity(run.DefinitionId)
   InvalidActivationLimit(Int)
   DuplicateNode(NodeId)
   MissingEntry(NodeId)
@@ -224,7 +224,7 @@ pub fn build(
   ))
 }
 
-fn check_identity(identity: run.Identity) -> Result(Nil, BuildError) {
+fn check_identity(identity: run.DefinitionId) -> Result(Nil, BuildError) {
   case string.trim(identity.name) != "" && identity.version >= 1 {
     True -> Ok(Nil)
     False -> Error(InvalidIdentity(identity))
@@ -550,7 +550,7 @@ pub fn validate(
       use _ <- result.try(decode_state(definition, receipt.state))
       case receipt.route {
         control.Next(destination) -> allowed(node, NodeId(destination))
-        control.Finished | control.Canceled -> Ok(Nil)
+        control.Finished | control.StoppedRoute -> Ok(Nil)
       }
     }),
   )

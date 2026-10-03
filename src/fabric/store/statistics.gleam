@@ -7,6 +7,7 @@ import fabric/internal/controller as agent
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
 import fabric/internal/record as agent_record
+import fabric/internal/run_id
 import fabric/run
 import gleam/json
 import gleam/list
@@ -41,7 +42,7 @@ pub fn inspect(encoded: String) -> Result(Metadata, Nil) {
         Error(_) ->
           budget_record.decode(encoded)
           |> result.map(fn(record) {
-            Budget(run.issued(budget_record.id(record.root)))
+            Budget(run_id.from_string(budget_record.id(record.root)))
           })
           |> result.replace_error(Nil)
       }
@@ -59,7 +60,7 @@ fn agent_metadata(state: agent.State) -> Metadata {
   }
   let actions = agent.snapshot(state).actions
   Run(
-    run.issued(state.run),
+    run_id.from_string(state.run),
     execution,
     list.any(actions, fn(action) {
       case action.state {
@@ -127,7 +128,7 @@ fn graph_metadata(state: graph.State) -> Metadata {
     | graph.Stopping(_)
     | graph.Ended(_) -> #(False, False)
   }
-  Run(run.issued(state.run), execution, approval, reconciliation)
+  Run(run_id.from_string(state.run), execution, approval, reconciliation)
 }
 
 /// Unknown or mismatched source records encode the version only. Backends

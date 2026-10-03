@@ -4,12 +4,14 @@
 
 import fabric/agent.{type Agent}
 import fabric/internal/bounded
+import fabric/internal/checked_agent
 import fabric/internal/family
 import fabric/internal/recovery_record as record
+import fabric/internal/run_id
 import fabric/internal/runner
-import fabric/observation as o
-import fabric/run.{type Identity, type RunId}
-import fabric/store.{type Store}
+import fabric/internal/store.{type Store}
+import fabric/run.{type DefinitionId, type RunId}
+import fabric/telemetry as o
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid}
 import gleam/list
@@ -24,10 +26,10 @@ pub opaque type Recovery {
 }
 
 pub fn recovery(agent: Agent(c), context: fn(RunId) -> c) -> Recovery {
-  let admitted = agent.admitted(agent)
+  let admitted = checked_agent.admitted(agent)
   Recovery(record.Key(record.Agent, admitted.identity), fn(store, root) {
     use context <- result.try(
-      bounded.call(5000, fn() { context(run.issued(root)) })
+      bounded.call(5000, fn() { context(run_id.from_string(root)) })
       |> result.map_error(fn(_) { Nil }),
     )
     family.take_over(runner.setup(store, admitted, context, None), root, 3)
@@ -36,7 +38,7 @@ pub fn recovery(agent: Agent(c), context: fn(RunId) -> c) -> Recovery {
 }
 
 pub fn graph_recovery(
-  identity: Identity,
+  identity: DefinitionId,
   restore: fn(Store, String) -> Result(Nil, Nil),
 ) -> Recovery {
   Recovery(record.Key(record.Graph, identity), restore)
@@ -45,7 +47,7 @@ pub fn graph_recovery(
 pub type ConfigError {
   EveryNotPositive(Int)
   EveryTooLarge(Int)
-  DuplicateRecovery(Identity)
+  DuplicateRecovery(DefinitionId)
   StoreNotLeased
 }
 

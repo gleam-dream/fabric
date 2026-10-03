@@ -6,6 +6,7 @@ import fabric/graph/signal
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
 import fabric/support
 import fabric/support/flaky
 import fabric/support/probe
@@ -40,7 +41,7 @@ fn child_with(
     definition.node(
       id("increment"),
       operation.new(
-        run.Identity("increment", 1),
+        run.DefinitionId("increment", 1),
         codec.int(),
         codec.int(),
         perform,
@@ -52,7 +53,7 @@ fn child_with(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("child", 1),
+      run.DefinitionId("child", 1),
       id("increment"),
       [node],
       codec.int(),
@@ -84,7 +85,7 @@ fn parent_with(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("parent", 1),
+      run.DefinitionId("parent", 1),
       id("child"),
       [node],
       codec.int(),
@@ -192,7 +193,7 @@ fn signal_child(
       id("answer"),
       operation.await_signal(
         codec.int(),
-        signal.new(run.Identity("answer", 1), codec.int()),
+        signal.new(run.DefinitionId("answer", 1), codec.int()),
       ),
       fn(n) { Ok(n) },
       fn(_, n) { Ok(definition.Finish(n, n)) },
@@ -200,7 +201,7 @@ fn signal_child(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("signal-child", 1),
+      run.DefinitionId("signal-child", 1),
       id("answer"),
       [node],
       codec.int(),
@@ -236,12 +237,12 @@ pub fn nested_approval_and_signal_waits_release_every_runner_and_keep_each_route
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Child(_, child.Signal(run.Identity("answer", 1))) =
+  let assert graph.Child(_, child.Signal(run.DefinitionId("answer", 1))) =
     waiting.status
   idle(runs, graph.id(handle), 100) |> should.be_true
   idle(runs, graph.id(middle_handle), 100) |> should.be_true
   idle(runs, graph.id(leaf_handle), 100) |> should.be_true
-  let response = signal.new(run.Identity("answer", 1), codec.int())
+  let response = signal.new(run.DefinitionId("answer", 1), codec.int())
   let assert Ok(_) = graph.deliver(leaf_handle, reference, response, 42)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   done.status |> should.equal(graph.Completed(152))
@@ -276,7 +277,7 @@ pub fn recovery_repairs_a_child_completion_notification_lost_with_the_store_test
     graph.deliver(
       leaf_handle,
       reference,
-      signal.new(run.Identity("answer", 1), codec.int()),
+      signal.new(run.DefinitionId("answer", 1), codec.int()),
       42,
     )
   let assert Ok(before) = graph.read(handle)
@@ -354,7 +355,7 @@ pub fn cancellation_wins_over_a_delayed_idle_parent_wakeup_test() {
     graph.deliver(
       leaf_handle,
       signal_reference,
-      signal.new(run.Identity("answer", 1), codec.int()),
+      signal.new(run.DefinitionId("answer", 1), codec.int()),
       42,
     )
   let assert Ok(_) = process.receive(held, 5000)
@@ -539,7 +540,7 @@ fn wait_for_child(
   left: Int,
 ) -> Result(graph.Handle(Nil, Int, Int), graph.Error) {
   case graph.child(handle, 1, runtime) {
-    Error(graph.StoreFailed(store.NotFound)) if left > 0 -> {
+    Error(graph.StoreFailed(backend.NotFound)) if left > 0 -> {
       process.sleep(10)
       wait_for_child(handle, runtime, left - 1)
     }

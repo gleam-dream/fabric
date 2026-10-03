@@ -2,6 +2,7 @@
 //// to answer its approvals or signals; the child owns its own progress.
 
 import fabric/graph/fork
+import fabric/internal/run_id
 import fabric/run
 
 pub type Parent {
@@ -12,9 +13,10 @@ pub type Parent {
 @internal
 pub fn attachment(parent: Parent) -> run.Parent {
   case parent {
-    Parent(id, activation) -> run.GraphParent(run.issued(id), activation)
+    Parent(id, activation) ->
+      run.GraphParent(run_id.from_string(id), activation)
     Branch(id, activation, member) ->
-      run.GraphBranch(run.issued(id), activation, member)
+      run.GraphBranch(run_id.from_string(id), activation, member)
   }
 }
 
@@ -31,8 +33,8 @@ pub type Progress {
     approvals: List(run.PendingApproval),
     uncertain: List(run.UncertainAction),
   )
-  Signal(run.Identity)
-  Job(run.Identity)
+  Signal(run.DefinitionId)
+  Job(run.DefinitionId)
   /// An idle structured scope. Open its graph and branches to resolve inputs.
   Fork(fork.Snapshot)
   Uncertain(String)

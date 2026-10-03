@@ -4,6 +4,7 @@
 //// atomically before deleting anything; `settled` alone is not permission.
 
 import fabric/budget as quota
+import fabric/internal/run_id
 
 import fabric/graph/child
 import fabric/graph/fork
@@ -54,9 +55,9 @@ pub fn inspect(encoded: String) -> Result(Metadata, Nil) {
           budget_record.decode(encoded)
           |> result.map(fn(record) {
             Metadata(
-              run.issued(budget_record.id(record.root)),
+              run_id.from_string(budget_record.id(record.root)),
               Some(Link(
-                run.issued(record.root),
+                run_id.from_string(record.root),
                 budget_key(budget.limits(record.state)),
               )),
               [],
@@ -85,7 +86,10 @@ fn budget_link(root: String, limits: Option(budget.Declaration)) -> List(Link) {
   case limits {
     None -> []
     Some(limits) -> [
-      Link(run.issued(budget_record.id(root)), budget_key(limits.limits)),
+      Link(
+        run_id.from_string(budget_record.id(root)),
+        budget_key(limits.limits),
+      ),
     ]
   }
 }
@@ -137,7 +141,10 @@ fn agent_metadata(state: agent.State) -> Metadata {
       case action.child {
         None -> Error(Nil)
         Some(child) ->
-          Ok(Link(child, key(run.AgentParent(run.issued(state.run), action.id))))
+          Ok(Link(
+            child,
+            key(run.AgentParent(run_id.from_string(state.run), action.id)),
+          ))
       }
     })
   let ended = case state.phase {
@@ -166,7 +173,7 @@ fn agent_metadata(state: agent.State) -> Metadata {
       }
     })
   Metadata(
-    run.issued(state.run),
+    run_id.from_string(state.run),
     option.map(state.parent, parent_link),
     list.append(children, budget_link(state.run, state.family_budget)),
     ended && definite,
@@ -177,8 +184,8 @@ fn graph_child(state: graph.State, activation: graph.Activation) -> List(Link) {
   case activation.prepared.kind {
     operation.Subgraph | operation.Agent -> [
       Link(
-        run.issued(child.reserved_id(state.run, activation.id)),
-        key(run.GraphParent(run.issued(state.run), activation.id)),
+        run_id.from_string(child.reserved_id(state.run, activation.id)),
+        key(run.GraphParent(run_id.from_string(state.run), activation.id)),
       ),
     ]
     operation.Activity
@@ -241,13 +248,13 @@ fn graph_metadata(state: graph.State) -> Metadata {
           case item.0.status {
             fork.Reserved | fork.Admitted(_) ->
               Ok(Link(
-                run.issued(child.branch_id(
+                run_id.from_string(child.branch_id(
                   state.run,
                   saved.occurrence.activation,
                   item.1,
                 )),
                 key(run.GraphBranch(
-                  run.issued(state.run),
+                  run_id.from_string(state.run),
                   saved.occurrence.activation,
                   item.1,
                 )),
@@ -290,7 +297,7 @@ fn graph_metadata(state: graph.State) -> Metadata {
     | graph.Stopping(_) -> False
   }
   Metadata(
-    run.issued(state.run),
+    run_id.from_string(state.run),
     option.map(state.parent, parent_link),
     list.append(children, budget_link(state.run, state.family_budget)),
     settled

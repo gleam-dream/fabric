@@ -21,7 +21,7 @@
 ////
 //// - **The run is stopping.** Once the executor has confirmed that the
 ////   action's task no longer runs, the run waits, up to the tool's bound
-////   (`within`), for the settlement before it ends, and records it as the
+////   (`settle_within`), for the settlement before it ends, and records it as the
 ////   action's result, definite or uncertain. A settlement offered before
 ////   that confirmation waits for it (the task may still be acting); one
 ////   offered after the bound is refused, and the action stays an uncertain
@@ -46,24 +46,19 @@
 //// store its invocation ran with.
 
 import fabric/internal/invocation.{type Outcome}
-import fabric/model.{type ToolCall}
+import fabric/internal/tool as core
 import fabric/policy
 import fabric/run.{type Timeout}
-import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/time/duration.{type Duration}
 import json/blueprint/codec.{type Codec}
 import sinal/correlation.{type Correlation}
 
-pub opaque type Definition(input, output) {
-  Definition(
-    name: String,
-    description: String,
-    input: Codec(input),
-    output: Codec(output),
-  )
-}
+/// A tool's name, description, and input and output codecs. Build one with
+/// `define`.
+pub type Definition(input, output) =
+  core.Definition(input, output)
 
 /// What a typed handler error means.
 pub type Failure {
@@ -85,34 +80,16 @@ pub type Call {
   Call(run: run.RunId, action: run.ActionId, correlation: Correlation)
 }
 
-pub opaque type Tool(context) {
-  Tool(
-    name: String,
-    description: String,
-    input_schema: Result(codec.Schema, codec.SchemaError),
-    check: fn(String) -> Result(Nil, String),
-    invoke: fn(context, Call, String, Late) -> Outcome,
-    kind: Kind,
-    /// For a tool bound with `bind_settling`: how long a stopped run waits
-    /// for its settlement.
-    settles_within: Option(Duration),
-    /// This tool's own body timeout (`with_timeout`); `None`: the agent's
-    /// `tool_timeout`.
-    timeout: Option(Timeout),
-  )
-}
-
-/// How the runtime receives one invocation's late settlement, with the
-/// summary a refusal is observed with.
-@internal
-pub type Late =
-  fn(Outcome, String) -> Result(Nil, SettleError)
+/// A tool bound to its handler, for an agent's tool list. Build one with
+/// `bind` or `bind_settling`.
+pub type Tool(context) =
+  core.Tool(context, Call, SettleError)
 
 /// A handle on one invocation of a tool bound with `bind_settling`, to
 /// settle its result after its task was stopped. Whoever holds it may
 /// settle; the first settlement the run accepts is the only one.
 pub opaque type Settlement(output) {
-  Settlement(output: Codec(output), deliver: Late)
+  Settlement(output: Codec(output), deliver: core.Late(SettleError))
 }
 
 /// Why a settlement was not recorded. Nothing changed in either case.
@@ -125,26 +102,12 @@ pub type SettleError {
   /// run ended with the action uncertain, or an uncertain settlement was
   /// offered for an action that is already uncertain. What the settlement
   /// knows reaches the run only through a person (`fabric.reconcile`); the
-  /// refusal is observed as `settlement_refused` (`fabric/observation`).
+  /// refusal is observed as `settlement_refused` (`fabric/telemetry`).
   NotAwaited
   /// The run could not be read or written, or its runner did not take the
   /// settlement: whether it was recorded is not confirmed. A write the
   /// store reported unavailable has an unknown outcome.
   SettleUnconfirmed(reason: String)
-}
-
-/// Whether a tool runs a handler or starts a sub-agent run (see
-/// `agent.with_sub_agent`).
-@internal
-pub type Kind {
-  Handler
-  Delegation(
-    agent: run.Identity,
-    /// Decodes the arguments and builds the sub-agent's prompt.
-    prompt: fn(String) -> Result(String, String),
-    /// The sub-agent's outcome as this call's result.
-    settle: fn(run.Outcome) -> Outcome,
-  )
 }
 
 pub fn define(
@@ -153,7 +116,7 @@ pub fn define(
   input: Codec(input),
   output: Codec(output),
 ) -> Definition(input, output) {
-  Definition(name, description, input, output)
+  core.define(name, description, input, output)
 }
 
 /// Binds a typed handler. `classify` decides, for every typed error, what
@@ -170,32 +133,28 @@ pub fn bind(
   handler: fn(context, Call, input) -> Result(output, error),
   classify: fn(error) -> Failure,
 ) -> Tool(context) {
-  let Definition(name:, description:, input:, output:) = definition
-  Tool(
-    name:,
-    description:,
-    input_schema: codec.schema(input),
-    check: checker(input),
-    kind: Handler,
-    settles_within: None,
-    timeout: None,
-    invoke: fn(context, call, arguments, _late) {
+  let input = core.definition_input(definition)
+  let output = core.definition_output(definition)
+  core.handler(
+    definition,
+    fn(context, call, arguments, _late) {
       case codec.decode_json(input, arguments) {
         Error(error) ->
           invocation.ArgumentsRejected(codec.describe_decode_error(error))
         Ok(value) ->
           case handler(context, call, value) {
-            Ok(value) -> encode(output, value)
+            Ok(value) -> core.encode(output, value)
             Error(error) -> failure(classify(error))
           }
       }
     },
+    None,
   )
 }
 
 /// Binds a typed handler that also receives its invocation's `Settlement` (see
-/// the module documentation), and whose stopped run waits up to `within`
-/// for that settlement before recording an uncertain effect. `within` must
+/// the module documentation), and whose stopped run waits up to `settle_within`
+/// for that settlement before recording an uncertain effect. `settle_within` must
 /// be at least 1 ms and at most 2^32 - 1 ms, the longest timer the runtime
 /// sets (`agent.build` checks it). The handler's own result is used when it
 /// returns; the settlement matters only once its task was stopped, also by
@@ -204,28 +163,24 @@ pub fn bind_settling(
   definition: Definition(input, output),
   handler: fn(context, Call, input, Settlement(output)) -> Result(output, error),
   classify: fn(error) -> Failure,
-  within within: Duration,
+  settle_within within: Duration,
 ) -> Tool(context) {
-  let Definition(name:, description:, input:, output:) = definition
-  Tool(
-    name:,
-    description:,
-    input_schema: codec.schema(input),
-    check: checker(input),
-    kind: Handler,
-    settles_within: Some(within),
-    timeout: None,
-    invoke: fn(context, call, arguments, late) {
+  let input = core.definition_input(definition)
+  let output = core.definition_output(definition)
+  core.handler(
+    definition,
+    fn(context, call, arguments, late) {
       case codec.decode_json(input, arguments) {
         Error(error) ->
           invocation.ArgumentsRejected(codec.describe_decode_error(error))
         Ok(value) ->
           case handler(context, call, value, Settlement(output, late)) {
-            Ok(value) -> encode(output, value)
+            Ok(value) -> core.encode(output, value)
             Error(error) -> failure(classify(error))
           }
       }
     },
+    Some(within),
   )
 }
 
@@ -242,19 +197,11 @@ pub fn settle(
 ) -> Result(Nil, SettleError) {
   settlement.deliver(
     case result {
-      Ok(value) -> encode(settlement.output, value)
+      Ok(value) -> core.encode(settlement.output, value)
       Error(error) -> failure(error)
     },
     summary,
   )
-}
-
-fn checker(input: Codec(input)) -> fn(String) -> Result(Nil, String) {
-  fn(arguments) {
-    codec.decode_json(input, arguments)
-    |> result.replace(Nil)
-    |> result.map_error(codec.describe_decode_error)
-  }
 }
 
 fn failure(failure: Failure) -> Outcome {
@@ -262,85 +209,6 @@ fn failure(failure: Failure) -> Outcome {
     Explain(message) ->
       invocation.FailedVisibly(invocation.error_content(message))
     Uncertain(evidence) -> invocation.EffectUncertain(evidence)
-  }
-}
-
-fn encode(output: Codec(output), value: output) -> Outcome {
-  case codec.encode_json(output, value) {
-    Ok(content) -> invocation.Returned(content)
-    Error(error) ->
-      invocation.OutputUnencodable(codec.describe_encode_error(error))
-  }
-}
-
-/// A tool whose call starts a sub-agent run of `agent` (see
-/// `agent.with_sub_agent`): `prompt` builds the sub-agent's prompt from the
-/// decoded input, and `output` parses a completed sub-agent's answer into
-/// this call's output (an `Error` is a definite failure the model sees).
-/// Any other outcome is a definite failure that names it.
-@internal
-pub fn delegation(
-  definition: Definition(input, output),
-  agent: run.Identity,
-  prompt: fn(input) -> String,
-  output parse: fn(String) -> Result(output, String),
-) -> Tool(context) {
-  let Definition(name:, description:, input:, output:) = definition
-  Tool(
-    name:,
-    description:,
-    input_schema: codec.schema(input),
-    check: checker(input),
-    settles_within: None,
-    timeout: None,
-    invoke: fn(_, _, _, _) {
-      invocation.ArgumentsRejected(
-        "a delegation starts a run; it is not invoked",
-      )
-    },
-    kind: Delegation(
-      agent:,
-      prompt: fn(arguments) {
-        codec.decode_json(input, arguments)
-        |> result.map(prompt)
-        |> result.map_error(codec.describe_decode_error)
-      },
-      settle: fn(outcome) { delegated(outcome, parse, output) },
-    ),
-  )
-}
-
-/// A sub-agent's end as its delegation's result: a completed answer parsed
-/// by `parse`, or a definite failure that names how the sub-agent ended.
-fn delegated(
-  outcome: run.Outcome,
-  parse: fn(String) -> Result(output, String),
-  output: Codec(output),
-) -> Outcome {
-  let explain = fn(message) { failure(Explain(message)) }
-  case outcome {
-    run.Completed(text) ->
-      case parse(text) {
-        Ok(value) -> encode(output, value)
-        Error(message) -> explain(message)
-      }
-    run.Refused(reason) -> explain("the sub-agent refused: " <> reason)
-    run.OutputLimited(_) ->
-      explain("the sub-agent's answer exceeded its output limit")
-    run.BudgetExhausted(run.TurnLimit(limit)) ->
-      explain(
-        "the sub-agent used its " <> int.to_string(limit) <> " model turns",
-      )
-    run.BudgetExhausted(run.TokenLimit(limit, _)) ->
-      explain(
-        "the sub-agent used its budget of " <> int.to_string(limit) <> " tokens",
-      )
-    run.BudgetExhausted(run.FamilyLimit(_)) ->
-      explain("the sub-agent reached its shared family budget")
-    run.BudgetUnverifiable(_) ->
-      explain("the sub-agent's token budget could not be enforced")
-    run.Cancelled -> explain("the sub-agent was cancelled")
-    run.Failed(_) -> explain("the sub-agent failed")
   }
 }
 
@@ -369,68 +237,22 @@ pub fn input(
   definition: Definition(input, output),
   action: policy.Action,
 ) -> Result(Option(input), String) {
-  case action.tool == definition.name {
+  let name = core.definition_name(definition)
+  case action.tool == name {
     False -> Ok(None)
     True ->
-      codec.decode_json(definition.input, action.arguments_json)
+      codec.decode_json(
+        core.definition_input(definition),
+        action.arguments_json,
+      )
       |> result.map(Some)
       |> result.map_error(fn(error) {
         "the arguments of "
-        <> definition.name
+        <> name
         <> " do not decode with the policy's definition: "
         <> codec.describe_decode_error(error)
       })
   }
-}
-
-/// A call to `definition` with `input` encoded by its input codec; the
-/// public form is `fabric/testing.call`.
-@internal
-pub fn call(
-  definition: Definition(input, output),
-  id: String,
-  input: input,
-) -> Result(ToolCall, codec.EncodeError) {
-  use arguments <- result.map(codec.encode_json(definition.input, input))
-  model.ToolCall(
-    id:,
-    name: definition.name,
-    arguments_json: arguments,
-    provider_id: None,
-    provider_state: None,
-  )
-}
-
-@internal
-pub fn name(tool: Tool(context)) -> String {
-  tool.name
-}
-
-@internal
-pub fn description(tool: Tool(context)) -> String {
-  tool.description
-}
-
-@internal
-pub fn input_schema(
-  tool: Tool(context),
-) -> Result(codec.Schema, codec.SchemaError) {
-  tool.input_schema
-}
-
-@internal
-pub fn check(tool: Tool(context), arguments: String) -> Result(Nil, String) {
-  tool.check(arguments)
-}
-
-@internal
-pub fn kind(tool: Tool(context)) -> Kind {
-  tool.kind
-}
-
-@internal
-pub fn settles_within(tool: Tool(context)) -> Option(Duration) {
-  tool.settles_within
 }
 
 /// Bounds this tool's body by `timeout` instead of the agent's
@@ -441,21 +263,5 @@ pub fn settles_within(tool: Tool(context)) -> Option(Duration) {
 /// (`InvalidToolTimeout`). A sub-agent delegation has no body: its child
 /// run's own limits bound it.
 pub fn with_timeout(tool: Tool(context), timeout: Timeout) -> Tool(context) {
-  Tool(..tool, timeout: Some(timeout))
-}
-
-@internal
-pub fn timeout(tool: Tool(context)) -> Option(Timeout) {
-  tool.timeout
-}
-
-@internal
-pub fn invoke(
-  tool: Tool(context),
-  context: context,
-  call: Call,
-  arguments: String,
-  late: Late,
-) -> Outcome {
-  tool.invoke(context, call, arguments, late)
+  core.with_timeout(tool, timeout)
 }

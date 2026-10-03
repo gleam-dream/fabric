@@ -1,6 +1,7 @@
 import fabric
 import fabric/internal/controller
 import fabric/internal/record
+import fabric/internal/store as store_core
 import fabric/model
 import fabric/run
 import fabric/store
@@ -25,7 +26,7 @@ fn action(child) {
 fn state(id, parent, actions) {
   controller.State(
     id,
-    run.Identity("removed-agent", 1),
+    run.DefinitionId("removed-agent", 1),
     1,
     parent,
     0,
@@ -43,17 +44,17 @@ fn state(id, parent, actions) {
 
 fn insert(runs, state: controller.State) {
   let assert Ok(_) =
-    store.insert(
+    store_core.insert(
       runs,
       state.run,
       record.encode(state),
-      store.Detached(False, False),
+      store_core.Detached(False, False),
     )
   Nil
 }
 
 fn read(runs, id) {
-  let assert Ok(entry) = store.get(runs, id)
+  let assert Ok(entry) = store_core.get(runs, id)
   let assert Ok(state) = record.decode(entry.record)
   #(entry, state)
 }

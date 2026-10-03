@@ -7,7 +7,7 @@ import fabric/graph/job
 import fabric/graph/operation
 import fabric/run
 import fabric/store
-import fabric/testing
+import fabric/store/conformance
 import fabric_jobs_demo as demo
 import fabric_jobs_demo/client
 import fabric_jobs_demo/support
@@ -47,7 +47,7 @@ fn settle(runs, build, id) {
   let assert Ok(spec) =
     fabric.sweeper(
       runs,
-      [graph.recovery(run.Identity("artifact-submit-and-wait", 1), build)],
+      [graph.recovery(run.DefinitionId("artifact-submit-and-wait", 1), build)],
       every: duration.milliseconds(20),
     )
   let assert Ok(started) = spec.start()
@@ -70,7 +70,7 @@ fn await_expired(handle, remaining) {
 }
 
 pub fn a_restarted_sweeper_expires_and_stops_a_real_owned_job_test() {
-  let storage = testing.leased_memory()
+  let storage = conformance.leased_memory()
   let #(owner, runs) = support.owned(fn() { leased(storage.backend) })
   let assert Ok(handle) =
     graph.start_with_budget(
@@ -105,7 +105,7 @@ pub fn a_restarted_sweeper_expires_and_stops_a_real_owned_job_test() {
 }
 
 pub fn a_lost_deadline_stop_acknowledgment_is_observed_without_repeating_the_request_test() {
-  let storage = testing.leased_memory()
+  let storage = conformance.leased_memory()
   let #(owner, runs) = support.owned(fn() { leased(storage.backend) })
   let accepted = process.new_subject()
   let request = fn(invocation, receipt) {

@@ -5,14 +5,16 @@ import fabric/graph
 import fabric/graph/definition
 import fabric/graph/operation
 import fabric/graph/signal
-import fabric/observation
+import fabric/internal/store as store_core
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
+import fabric/store/conformance
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
-import fabric/testing
+import fabric/telemetry
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/time/duration
@@ -26,7 +28,7 @@ fn id(name) {
 }
 
 fn answer() {
-  signal.new(run.Identity("deadline-answer", 1), codec.bool())
+  signal.new(run.DefinitionId("deadline-answer", 1), codec.bool())
 }
 
 fn runtime(runs, inspect) {
@@ -45,7 +47,7 @@ fn runtime_with(runs, inspect, within, accept) {
     |> operation.with_deadline(duration.milliseconds(within))
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("deadline-loop", 1),
+      run.DefinitionId("deadline-loop", 1),
       node,
       [
         definition.node(
@@ -73,7 +75,7 @@ pub fn deadline_configuration_is_bounded_and_part_of_definition_compatibility_te
   |> should.be_ok
   let activity =
     operation.new(
-      run.Identity("body", 1),
+      run.DefinitionId("body", 1),
       codec.int(),
       codec.int(),
       fn(_, _, n) { Ok(n) },
@@ -81,7 +83,7 @@ pub fn deadline_configuration_is_bounded_and_part_of_definition_compatibility_te
     )
   operation.with_deadline(activity, duration.milliseconds(1000))
   |> should.equal(Error(operation.DeadlineRequiresWait))
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "definition", nodes.long)
   let assert Ok(handle) =
     graph.start(
@@ -104,13 +106,13 @@ pub fn deadline_configuration_is_bounded_and_part_of_definition_compatibility_te
 }
 
 pub fn interrupted_arming_recovers_once_without_repeating_policy_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let calls = probe.new()
   let backend =
-    store.LeasedBackend(..memory.backend, now: fn() {
+    backend.LeasedBackend(..memory.backend, now: fn() {
       probe.record(calls, "clock")
       case probe.count(calls, "clock") {
-        1 -> Error(store.Unavailable("clock offline"))
+        1 -> Error(backend.Unavailable("clock offline"))
         _ -> memory.backend.now()
       }
     })
@@ -140,13 +142,13 @@ pub fn interrupted_arming_recovers_once_without_repeating_policy_test() {
 }
 
 pub fn a_clock_failure_refuses_delivery_but_allows_explicit_cancellation_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let calls = probe.new()
   let backend =
-    store.LeasedBackend(..memory.backend, now: fn() {
+    backend.LeasedBackend(..memory.backend, now: fn() {
       case probe.count(calls, "offline") {
         0 -> memory.backend.now()
-        _ -> Error(store.Unavailable("clock offline"))
+        _ -> Error(backend.Unavailable("clock offline"))
       }
     })
   let runs = nodes.node(backend, "clock-failure", nodes.long)
@@ -161,7 +163,9 @@ pub fn a_clock_failure_refuses_delivery_but_allows_explicit_cancellation_test() 
   let assert graph.AwaitingSignal(reference) = waiting.status
   probe.record(calls, "offline")
   graph.deliver(handle, reference, answer(), True)
-  |> should.equal(Error(graph.StoreFailed(store.Unavailable("clock offline"))))
+  |> should.equal(
+    Error(graph.StoreFailed(backend.Unavailable("clock offline"))),
+  )
   let assert Ok(unchanged) = graph.read(handle)
   unchanged.revision |> should.equal(waiting.revision)
   let assert Ok(_) = graph.cancel(handle)
@@ -170,7 +174,7 @@ pub fn a_clock_failure_refuses_delivery_but_allows_explicit_cancellation_test() 
 }
 
 pub fn a_delivery_that_crosses_the_deadline_during_acceptance_cannot_route_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "slow-route", nodes.long)
   let spec =
     runtime_with(runs, fn(_, _) { Ok(policy.Allow) }, 60_000, fn(n, _, _) {
@@ -190,14 +194,14 @@ pub fn a_delivery_that_crosses_the_deadline_during_acceptance_cannot_route_test(
 fn scan(runs) {
   let events = process.new_subject()
   let attached =
-    sinal.observe(observation.sweep(), fn(summary, _) {
+    sinal.observe(telemetry.sweep(), fn(summary, _) {
       process.send(events, summary)
     })
   let assert Ok(spec) =
     fabric.sweeper(
       runs,
       [
-        graph.recovery(run.Identity("deadline-loop", 1), fn(runs) {
+        graph.recovery(run.DefinitionId("deadline-loop", 1), fn(runs) {
           runtime(runs, fn(_, _) { Ok(policy.Allow) })
         }),
       ],
@@ -212,7 +216,7 @@ fn scan(runs) {
 }
 
 pub fn due_discovery_expires_a_wait_after_store_loss_without_manual_delivery_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let #(owner, runs) =
     restart.owned(fn() {
       nodes.node(memory.backend, "old-deadline", nodes.long)
@@ -238,12 +242,13 @@ pub fn due_discovery_expires_a_wait_after_store_loss_without_manual_delivery_tes
     )
   let assert Ok(expired) = graph.read(handle)
   expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
-  nodes.holder(memory.backend, id("deadline-scan")) |> should.equal(store.Free)
+  nodes.holder(memory.backend, id("deadline-scan"))
+  |> should.equal(backend.Free)
   scan(restored).claimed |> should.equal(0)
 }
 
 pub fn a_clock_correction_releases_the_claim_without_resetting_the_due_time_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "corrected-clock", nodes.long)
   let assert Ok(handle) =
     graph.start(
@@ -255,22 +260,22 @@ pub fn a_clock_correction_releases_the_claim_without_resetting_the_due_time_test
     graph.await(handle, within: duration.milliseconds(5000))
   let assert Some(due) = waiting.deadline
   memory.advance(60_001)
-  store.claim_ready(runs, 1) |> should.equal(Ok(["deadline-correction"]))
+  store_core.claim_ready(runs, 1) |> should.equal(Ok(["deadline-correction"]))
   memory.advance(-120_000)
   let assert Ok(early) = graph.recover(handle)
   early.status |> should.equal(waiting.status)
   early.deadline |> should.equal(waiting.deadline)
   nodes.holder(memory.backend, id("deadline-correction"))
-  |> should.equal(store.Free)
-  store.claim_ready(runs, 1) |> should.equal(Ok([]))
+  |> should.equal(backend.Free)
+  store_core.claim_ready(runs, 1) |> should.equal(Ok([]))
   memory.advance(120_001)
-  store.claim_ready(runs, 1) |> should.equal(Ok(["deadline-correction"]))
+  store_core.claim_ready(runs, 1) |> should.equal(Ok(["deadline-correction"]))
   let assert Ok(expired) = graph.recover(handle)
   expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
 }
 
 pub fn an_expiration_commit_wins_against_an_in_progress_delivery_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "deadline-race", nodes.long)
   let route = probe.new()
   let spec =
@@ -299,7 +304,7 @@ pub fn an_expiration_commit_wins_against_an_in_progress_delivery_test() {
 }
 
 pub fn overdue_waits_expire_after_restart_without_a_signal_or_runner_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let #(owner, runs) =
     restart.owned(fn() { nodes.node(memory.backend, "deadline", nodes.long) })
   let spec = runtime(runs, fn(_, _) { Ok(policy.Allow) })
@@ -308,7 +313,7 @@ pub fn overdue_waits_expire_after_restart_without_a_signal_or_runner_test() {
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Some(due) = waiting.deadline
-  let assert Ok(row) = store.get(runs, "deadline-restart")
+  let assert Ok(row) = store_core.get(runs, "deadline-restart")
   row.live |> should.equal(None)
   memory.advance(60_001)
   restart.crash(owner, runs)
@@ -326,7 +331,7 @@ pub fn overdue_waits_expire_after_restart_without_a_signal_or_runner_test() {
 }
 
 pub fn approval_does_not_start_the_clock_and_revisits_get_new_deadlines_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "deadline", nodes.long)
   let spec =
     runtime(runs, fn(_, _) {
@@ -362,7 +367,7 @@ pub fn approval_does_not_start_the_clock_and_revisits_get_new_deadlines_test() {
 }
 
 pub fn late_delivery_commits_expiration_without_accepting_the_result_test() {
-  let memory = testing.leased_memory()
+  let memory = conformance.leased_memory()
   let runs = nodes.node(memory.backend, "deadline", nodes.long)
   let assert Ok(handle) =
     graph.start(

@@ -1,7 +1,7 @@
 //// Database-wide diagnostic snapshots. Run ages measure time since the latest
 //// durable record write, not time in a phase. Intervention groups can overlap.
 
-import fabric/statistics as projection
+import fabric/store/statistics as projection
 import fabric_postgres/internal/backend
 import gleam/dynamic/decode
 import gleam/int

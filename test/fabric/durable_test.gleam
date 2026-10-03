@@ -8,10 +8,12 @@ import fabric/agent.{type Agent}
 import fabric/internal/controller
 import fabric/internal/family
 import fabric/internal/record
+import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
 import fabric/run.{type RunId, ActionId}
 import fabric/store.{type Store}
+import fabric/store/backend
 import fabric/support
 import fabric/support/apps
 import fabric/support/codecs
@@ -422,7 +424,7 @@ pub fn recovery_refuses_another_agent_definition_test() {
   |> should.equal(
     Error(
       fabric.Unreadable(
-        fabric.IncompatibleAgent([run.OtherAgent(run.Identity("agent", 1))]),
+        fabric.IncompatibleAgent([run.OtherAgent(run.DefinitionId("agent", 1))]),
       ),
     ),
   )
@@ -879,7 +881,7 @@ pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
   let stopping =
     controller.State(
       run: "run-stopping",
-      agent: run.Identity("agent", 1),
+      agent: run.DefinitionId("agent", 1),
       incarnation: 1,
       parent: None,
       depth: 0,
@@ -907,11 +909,16 @@ pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
       correlation: correlation.from_key("run-stopping"),
     )
   let assert Ok(1) =
-    store.insert(store, "run-stopping", record.encode(stopping), store.Keep)
+    store_core.insert(
+      store,
+      "run-stopping",
+      record.encode(stopping),
+      store_core.Keep,
+    )
   fabric.cancel_stored(store, support.id("run-stopping"))
   |> should.equal(Ok(run.Finished(run.Cancelled)))
-  let assert Ok(store.Entry(record: stored, ..)) =
-    store.get(store, "run-stopping")
+  let assert Ok(store_core.Entry(record: stored, ..)) =
+    store_core.get(store, "run-stopping")
   let assert Ok(controller.State(phase: controller.Ended(run.Cancelled), ..)) =
     record.decode(stored)
 }
@@ -925,24 +932,26 @@ fn taken_backend(memory: Store, stores: Bool) -> Store {
     process.new_name("taken-store"),
     get: fn(id) {
       case stores {
-        False -> Ok(store.Stored(1, "someone else's run"))
+        False -> Ok(backend.Stored(1, "someone else's run"))
         True ->
-          store.get(memory, id)
-          |> result.map(fn(entry) { store.Stored(entry.revision, entry.record) })
+          store_core.get(memory, id)
+          |> result.map(fn(entry) {
+            backend.Stored(entry.revision, entry.record)
+          })
       }
     },
     insert: fn(id, record) {
       case stores {
         True -> {
-          let _ = store.insert(memory, id, record, store.Keep)
+          let _ = store_core.insert(memory, id, record, store_core.Keep)
           Nil
         }
         False -> Nil
       }
-      Error(store.AlreadyExists)
+      Error(backend.AlreadyExists)
     },
     compare_and_set: fn(id, expected, record) {
-      store.commit(memory, id, expected, record, store.Keep)
+      store_core.commit(memory, id, expected, record, store_core.Keep)
       |> result.replace(Nil)
     },
   )
@@ -1007,8 +1016,8 @@ pub fn an_unconfirmed_start_names_its_run_test() {
   |> should.equal(Error(fabric.Unreadable(fabric.RunNotFound)))
 
   // The write lands late, before the next write of the run.
-  let assert Error(store.AlreadyExists) =
-    store.insert(runs, support.text(id), "{}", store.Keep)
+  let assert Error(backend.AlreadyExists) =
+    store_core.insert(runs, support.text(id), "{}", store_core.Keep)
   fabric.cancel_stored(runs, id)
   |> should.equal(Ok(run.Finished(run.Cancelled)))
 }

@@ -3,15 +3,16 @@
 
 import fabric
 import fabric/agent
+import fabric/internal/checked_agent
 import fabric/internal/controller
 import fabric/internal/record
 import fabric/model
-import fabric/observation as o
 import fabric/policy
 import fabric/run
 import fabric/support
 import fabric/support/codecs
 import fabric/support/scripted
+import fabric/telemetry as o
 import fabric/tool
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -319,13 +320,13 @@ pub fn the_record_keeps_only_a_chosen_correlation_test() {
   let #(state, _) =
     controller.start(
       controller.Env(
-        registry: agent.admitted(desk).registry,
+        registry: checked_agent.admitted(desk).registry,
         policy: policy.always_allow(),
         context: Nil,
         system: None,
       ),
       "plain-run",
-      run.Identity("desk", 1),
+      run.DefinitionId("desk", 1),
       controller.Limits(8, None, 0, 0),
       "go",
       None,

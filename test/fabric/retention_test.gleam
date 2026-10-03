@@ -6,8 +6,8 @@ import fabric/internal/graph/record as graph_record
 import fabric/internal/record
 import fabric/model
 import fabric/policy
-import fabric/retention
 import fabric/run
+import fabric/store/retention
 import fabric/support
 import gleam/list
 import gleam/option.{None, Some}
@@ -18,7 +18,7 @@ import sinal/correlation
 fn agent_state(id, parent, actions) {
   agent.State(
     id,
-    run.Identity("worker", 1),
+    run.DefinitionId("worker", 1),
     1,
     parent,
     0,
@@ -91,7 +91,7 @@ pub fn agent_retention_uses_saved_links_and_preserves_uncertainty_test() {
 fn prepared(kind) {
   graph.Prepared(
     "child",
-    run.Identity("child", 1),
+    run.DefinitionId("child", 1),
     "0",
     operation.RequireReconciliation,
     kind,
@@ -115,7 +115,7 @@ pub fn graph_retention_tracks_reserved_children_receipts_and_canceled_uncertaint
     let assert Ok(#(ready, _)) =
       graph.start(
         "custom-root",
-        graph.Definition(run.Identity("root", 1), "manifest", 3),
+        graph.Definition(run.DefinitionId("root", 1), "manifest", 3),
         "0",
         prepared(kind),
       )

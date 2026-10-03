@@ -6,9 +6,10 @@ import fabric/internal/controller as agent
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
 import fabric/internal/record as agent_record
-import fabric/retention
+import fabric/internal/store
 import fabric/run
-import fabric/store
+import fabric/store/backend
+import fabric/store/retention
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -19,7 +20,7 @@ pub type Kind {
 }
 
 pub type Key {
-  Key(kind: Kind, identity: run.Identity)
+  Key(kind: Kind, identity: run.DefinitionId)
 }
 
 type State {
@@ -162,7 +163,7 @@ pub fn release_acknowledged(runs: store.Store, record: Record) -> Bool {
             AgentState(state) -> store.encode(runs, state)
             GraphState(state) ->
               graph_record.encode(state)
-              |> result.replace_error(store.Unavailable("cannot encode graph"))
+              |> result.replace_error(backend.Unavailable("cannot encode graph"))
           }
           encoded
           |> result.try(fn(encoded) {

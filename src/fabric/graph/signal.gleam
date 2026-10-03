@@ -6,14 +6,14 @@ import fabric/run
 import json/blueprint/codec.{type Codec}
 
 pub opaque type Signal(value) {
-  Signal(identity: run.Identity, codec: Codec(value))
+  Signal(identity: run.DefinitionId, codec: Codec(value))
 }
 
-pub fn new(identity: run.Identity, codec: Codec(value)) -> Signal(value) {
+pub fn new(identity: run.DefinitionId, codec: Codec(value)) -> Signal(value) {
   Signal(identity, codec)
 }
 
-pub fn identity(signal: Signal(value)) -> run.Identity {
+pub fn identity(signal: Signal(value)) -> run.DefinitionId {
   signal.identity
 }
 

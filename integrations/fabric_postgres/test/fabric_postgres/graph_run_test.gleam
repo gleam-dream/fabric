@@ -10,9 +10,11 @@ import fabric/graph/definition
 import fabric/graph/job
 import fabric/graph/operation
 import fabric/graph/signal
+import fabric/internal/store as store_core
 import fabric/policy
 import fabric/run
 import fabric/store
+import fabric/store/backend
 import fabric_postgres
 import fabric_postgres/agents
 import fabric_postgres/support
@@ -30,7 +32,7 @@ pub fn a_graph_survives_store_restart_and_completes_on_postgres_test() {
   let assert Ok(node_id) = definition.node_id("increment")
   let op =
     operation.new(
-      run.Identity("increment", 1),
+      run.DefinitionId("increment", 1),
       codec.int(),
       codec.int(),
       fn(_, invocation, n) {
@@ -49,7 +51,7 @@ pub fn a_graph_survives_store_restart_and_completes_on_postgres_test() {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("postgres-graph", 1),
+      run.DefinitionId("postgres-graph", 1),
       node_id,
       [node],
       codec.int(),
@@ -89,13 +91,13 @@ pub fn a_graph_survives_store_restart_and_completes_on_postgres_test() {
   process.receive(effects, 0) |> should.equal(Error(Nil))
   let assert Ok(row) =
     fabric_postgres.backend(settings).get(run.id_to_string(id))
-  row.holder |> should.equal(store.Free)
+  row.holder |> should.equal(backend.Free)
   json.parse(row.record, decode.field("format", decode.string, decode.success))
   |> should.equal(Ok("fabric.graph"))
 }
 
 pub fn a_signal_wait_releases_its_lease_and_another_store_consumes_it_once_test() {
-  let response = signal.new(run.Identity("human-review", 1), codec.bool())
+  let response = signal.new(run.DefinitionId("human-review", 1), codec.bool())
   let assert Ok(node_id) = definition.node_id("review")
   let node =
     definition.node(
@@ -107,7 +109,7 @@ pub fn a_signal_wait_releases_its_lease_and_another_store_consumes_it_once_test(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("postgres-signal", 1),
+      run.DefinitionId("postgres-signal", 1),
       node_id,
       [node],
       codec.int(),
@@ -128,13 +130,13 @@ pub fn a_signal_wait_releases_its_lease_and_another_store_consumes_it_once_test(
       let assert Ok(waiting) =
         graph.await(handle, within: duration.milliseconds(5000))
       let assert graph.AwaitingSignal(reference) = waiting.status
-      let assert Ok(entry) = store.get(runs, run.id_to_string(id))
+      let assert Ok(entry) = store_core.get(runs, run.id_to_string(id))
       entry.live |> should.equal(None)
       reference
     })
   let assert Ok(row) =
     fabric_postgres.backend(settings).get(run.id_to_string(id))
-  row.holder |> should.equal(store.Free)
+  row.holder |> should.equal(backend.Free)
   agents.kill(owner)
   let assert Ok(runs) =
     fabric_postgres.store(process.new_name("signal-restored"), settings)
@@ -153,7 +155,7 @@ pub fn a_signal_wait_releases_its_lease_and_another_store_consumes_it_once_test(
 pub fn a_job_wait_survives_store_loss_without_holding_a_lease_test() {
   let observer =
     job.observe(
-      run.Identity("postgres-job", 1),
+      run.DefinitionId("postgres-job", 1),
       codec.string(),
       codec.int(),
       fn(_, receipt) {
@@ -172,7 +174,7 @@ pub fn a_job_wait_survives_store_loss_without_holding_a_lease_test() {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("postgres-job-flow", 1),
+      run.DefinitionId("postgres-job-flow", 1),
       node_id,
       [node],
       codec.string(),
@@ -197,7 +199,7 @@ pub fn a_job_wait_survives_store_loss_without_holding_a_lease_test() {
     })
   let backend = fabric_postgres.backend(settings)
   let assert Ok(row) = backend.get(run.id_to_string(id))
-  row.holder |> should.equal(store.Free)
+  row.holder |> should.equal(backend.Free)
   fabric_postgres.prune(
     settings,
     ended_for: duration.milliseconds(0),
@@ -219,7 +221,7 @@ pub fn a_job_wait_survives_store_loss_without_holding_a_lease_test() {
   done.status |> should.equal(graph.Completed(42))
   graph.poll_job(handle, reference) |> should.equal(Ok(done))
   let assert Ok(row) = backend.get(run.id_to_string(id))
-  row.holder |> should.equal(store.Free)
+  row.holder |> should.equal(backend.Free)
   fabric_postgres.prune(
     settings,
     ended_for: duration.milliseconds(0),
@@ -231,7 +233,7 @@ pub fn a_job_wait_survives_store_loss_without_holding_a_lease_test() {
 pub fn scheduled_job(runs, every, read) {
   let observer =
     job.observe(
-      run.Identity("pg-scheduled-observer", 1),
+      run.DefinitionId("pg-scheduled-observer", 1),
       codec.string(),
       codec.int(),
       fn(_, receipt) { read(receipt) },
@@ -249,7 +251,7 @@ pub fn scheduled_job(runs, every, read) {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("pg-scheduled-job", 1),
+      run.DefinitionId("pg-scheduled-job", 1),
       id,
       [node],
       codec.string(),
@@ -262,7 +264,7 @@ pub fn scheduled_job(runs, every, read) {
 fn owned_job(runs, read, request) {
   let observer =
     job.observe(
-      run.Identity("pg-owned-observer", 1),
+      run.DefinitionId("pg-owned-observer", 1),
       codec.string(),
       codec.int(),
       fn(_, receipt) { read(receipt) },
@@ -286,7 +288,7 @@ fn owned_job(runs, read, request) {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("pg-owned-job", 1),
+      run.DefinitionId("pg-owned-job", 1),
       id,
       [node],
       codec.string(),
@@ -356,7 +358,7 @@ pub fn owned_job_cancellation_survives_postgres_restart_and_sweeps_before_prunin
   let assert Ok(spec) =
     fabric.sweeper(
       runs,
-      [graph.recovery(run.Identity("pg-owned-job", 1), build)],
+      [graph.recovery(run.DefinitionId("pg-owned-job", 1), build)],
       every: duration.milliseconds(20),
     )
   let assert Ok(sweeper) = spec.start()
@@ -418,7 +420,7 @@ pub fn a_postgres_sweeper_retains_the_next_poll_across_store_loss_test() {
       let assert Ok(spec) =
         fabric.sweeper(
           runs,
-          [graph.recovery(run.Identity("pg-scheduled-job", 1), build)],
+          [graph.recovery(run.DefinitionId("pg-scheduled-job", 1), build)],
           every: duration.milliseconds(20),
         )
       let assert Ok(_) = spec.start()
@@ -442,7 +444,7 @@ pub fn a_postgres_sweeper_retains_the_next_poll_across_store_loss_test() {
   let assert Ok(spec) =
     fabric.sweeper(
       runs,
-      [graph.recovery(run.Identity("pg-scheduled-job", 1), build)],
+      [graph.recovery(run.DefinitionId("pg-scheduled-job", 1), build)],
       every: duration.milliseconds(20),
     )
   let assert Ok(sweeper) = spec.start()
@@ -499,7 +501,7 @@ pub fn an_idle_parent_discovers_a_completed_child_after_losing_its_wakeup_test()
     fabric.sweeper(
       runs,
       [
-        graph.recovery(run.Identity("pg-parent", 1), fn(pinned) {
+        graph.recovery(run.DefinitionId("pg-parent", 1), fn(pinned) {
           managed_pair(pinned).0
         }),
       ],
@@ -532,7 +534,7 @@ fn managed_pair_with(
   let assert Ok(node_id) = definition.node_id("increment")
   let op =
     operation.new(
-      run.Identity("increment", 1),
+      run.DefinitionId("increment", 1),
       codec.int(),
       codec.int(),
       perform,
@@ -548,7 +550,7 @@ fn managed_pair_with(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("pg-child", 1),
+      run.DefinitionId("pg-child", 1),
       node_id,
       [node],
       codec.int(),
@@ -566,7 +568,7 @@ fn managed_pair_with(
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("pg-parent", 1),
+      run.DefinitionId("pg-parent", 1),
       node_id,
       [node],
       codec.int(),
@@ -617,8 +619,8 @@ pub fn a_managed_subgraph_adopts_its_approved_child_after_postgres_restart_test(
     fabric_postgres.backend(settings).get(run.id_to_string(id))
   let assert Ok(child_row) =
     fabric_postgres.backend(settings).get(run.id_to_string(reference.child))
-  parent_row.holder |> should.equal(store.Free)
-  child_row.holder |> should.equal(store.Free)
+  parent_row.holder |> should.equal(backend.Free)
+  child_row.holder |> should.equal(backend.Free)
 }
 
 pub fn child_cancellation_settlement_survives_postgres_restart_test() {
@@ -666,7 +668,7 @@ pub fn child_cancellation_settlement_survives_postgres_restart_test() {
     fabric.sweeper(
       runs,
       [
-        graph.recovery(run.Identity("pg-parent", 1), fn(pinned) {
+        graph.recovery(run.DefinitionId("pg-parent", 1), fn(pinned) {
           managed_pair_with(pinned, perform, fn(_, _) {
             panic as "settlement must not admit work"
           }).0
@@ -686,8 +688,8 @@ pub fn child_cancellation_settlement_survives_postgres_restart_test() {
     fabric_postgres.backend(settings).get(run.id_to_string(id))
   let assert Ok(child_row) =
     fabric_postgres.backend(settings).get(run.id_to_string(reference.child))
-  parent_row.holder |> should.equal(store.Free)
-  child_row.holder |> should.equal(store.Free)
+  parent_row.holder |> should.equal(backend.Free)
+  child_row.holder |> should.equal(backend.Free)
   process.receive(effects, 1000) |> should.equal(Ok(Nil))
   process.receive(effects, 0) |> should.equal(Error(Nil))
   fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
@@ -714,8 +716,8 @@ fn released(
   let assert Ok(row) =
     fabric_postgres.backend(settings).get(run.id_to_string(id))
   case row.holder {
-    store.Free -> True
-    store.Held(_, _) if tries > 0 -> {
+    backend.Free -> True
+    backend.Held(_, _) if tries > 0 -> {
       process.sleep(10)
       released(settings, id, tries - 1)
     }
@@ -727,7 +729,7 @@ fn managed_agent(runs: store.Store, gate: agents.Gate) {
   let assert Ok(agent) =
     agent_node.new(
       agent_node.Definition(
-        run.Identity("pg-agent-node", 1),
+        run.DefinitionId("pg-agent-node", 1),
         agents.agent(gate, 120),
         codec.int(),
         codec.string(),
@@ -748,7 +750,7 @@ fn managed_agent(runs: store.Store, gate: agents.Gate) {
     )
   let assert Ok(spec) =
     definition.build(definition.Spec(
-      run.Identity("pg-agent-graph", 1),
+      run.DefinitionId("pg-agent-graph", 1),
       id,
       [node],
       codec.int(),
@@ -802,7 +804,7 @@ pub fn a_managed_agent_keeps_its_approval_and_identity_after_postgres_restart_te
   fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
   |> should.equal(Ok(3))
   fabric_postgres.backend(settings).get(run.id_to_string(reference.child))
-  |> should.equal(Error(store.NotFound))
+  |> should.equal(Error(backend.NotFound))
 }
 
 pub fn a_restarted_managed_agent_cannot_reset_its_family_work_budget_test() {
@@ -884,7 +886,7 @@ pub fn a_registered_graph_recovers_its_agent_after_postgres_store_loss_test() {
     fabric.sweeper(
       runs,
       [
-        graph.recovery(run.Identity("pg-agent-graph", 1), fn(pinned) {
+        graph.recovery(run.DefinitionId("pg-agent-graph", 1), fn(pinned) {
           managed_agent(pinned, gate).0
         }),
       ],
@@ -973,5 +975,5 @@ pub fn canceled_agent_evidence_settles_after_postgres_restart_test() {
   fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
   |> should.equal(Ok(2))
   fabric_postgres.backend(settings).get(run.id_to_string(reference.child))
-  |> should.equal(Error(store.NotFound))
+  |> should.equal(Error(backend.NotFound))
 }

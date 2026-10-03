@@ -39,7 +39,7 @@ pub fn generator(
   model: String,
 ) -> operation.Operation(Nil, domain.Draft, llm.Receipt(String)) {
   llm.new(
-    run.Identity("source-writer", 1),
+    run.DefinitionId("source-writer", 1),
     domain.draft_codec(),
     domain.body_codec(),
     "draft",
@@ -69,7 +69,7 @@ pub fn llm_reviewer(
 ) -> Reviewer(llm.Receipt(domain.Decision)) {
   let op =
     llm.new(
-      run.Identity("writing-review-llm", 1),
+      run.DefinitionId("writing-review-llm", 1),
       domain.draft_codec(),
       domain.decision_codec(),
       "review",
@@ -116,7 +116,7 @@ pub fn classifier(
 ) -> Reviewer(fabric_typesafe.Receipt(question.Choice(domain.Decision))) {
   Reviewer(
     fabric_typesafe.new(
-      run.Identity("writing-review-typesafe", 1),
+      run.DefinitionId("writing-review-typesafe", 1),
       domain.draft_codec(),
       questions(),
       fn(_, draft) {

@@ -65,11 +65,12 @@ import fabric/graph/child
 import fabric/internal/budget/config as budget_config
 import fabric/internal/controller.{type Phase, type State, State}
 import fabric/internal/registry.{type Registry}
+import fabric/internal/run_id
 import fabric/model.{type Message, type ToolCall}
 import fabric/run.{
   type ActionId, type ActionRecord, type ActionState, type Approval,
-  type HostFailure, type Identity, type Incompatibility, type Outcome,
-  type Requirement, ActionId, ActionRecord, Identity, Requirement,
+  type DefinitionId, type HostFailure, type Incompatibility, type Outcome,
+  type Requirement, ActionId, ActionRecord, DefinitionId, Requirement,
 }
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
@@ -323,7 +324,7 @@ fn tag(name: String, fields: List(#(String, Json))) -> Json {
   json.object([#("tag", json.string(name)), ..fields])
 }
 
-fn identity(identity: Identity) -> Json {
+fn identity(identity: DefinitionId) -> Json {
   json.object([
     #("name", json.string(identity.name)),
     #("version", json.int(identity.version)),
@@ -782,22 +783,22 @@ fn parent_decoder(found: Int) -> Decoder(run.Parent) {
   case found < 5 {
     True -> {
       use action <- decode.field("action", action_id_decoder())
-      decode.success(run.AgentParent(run.issued(id), action))
+      decode.success(run.AgentParent(run_id.from_string(id), action))
     }
     False -> {
       use tag <- decode.field("tag", decode.string)
       case tag {
         "agent" -> {
           use action <- decode.field("action", action_id_decoder())
-          decode.success(run.AgentParent(run.issued(id), action))
+          decode.success(run.AgentParent(run_id.from_string(id), action))
         }
         "graph" -> {
           use activation <- decode.field("activation", decode.int)
-          decode.success(run.GraphParent(run.issued(id), activation))
+          decode.success(run.GraphParent(run_id.from_string(id), activation))
         }
         _ ->
           decode.failure(
-            run.AgentParent(run.issued(id), run.ActionId(0, "")),
+            run.AgentParent(run_id.from_string(id), run.ActionId(0, "")),
             "a parent attachment",
           )
       }
@@ -817,10 +818,10 @@ fn string_field(name: String, build: fn(String) -> a) -> Decoder(a) {
   decode.field(name, decode.string, fn(value) { decode.success(build(value)) })
 }
 
-fn identity_decoder() -> Decoder(Identity) {
+fn identity_decoder() -> Decoder(DefinitionId) {
   use name <- decode.field("name", decode.string)
   use version <- decode.field("version", decode.int)
-  decode.success(Identity(name, version))
+  decode.success(DefinitionId(name, version))
 }
 
 fn message_decoder(version: Int) -> Decoder(Message) {
@@ -894,7 +895,7 @@ fn tool_call_decoder() -> Decoder(ToolCall) {
 }
 
 fn run_id_decoder() -> Decoder(run.RunId) {
-  decode.map(decode.string, run.issued)
+  decode.map(decode.string, run_id.from_string)
 }
 
 fn action_id_decoder() -> Decoder(ActionId) {
@@ -1162,7 +1163,7 @@ fn host_failure_decoder() -> Decoder(HostFailure) {
 /// another runner it becomes an uncertain effect and never runs again.
 pub fn check(
   state: State,
-  agent: Identity,
+  agent: DefinitionId,
   registry: Registry(context),
 ) -> Result(State, List(Incompatibility)) {
   let identity = case state.agent == agent {

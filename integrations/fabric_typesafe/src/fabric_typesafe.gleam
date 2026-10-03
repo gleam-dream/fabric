@@ -35,7 +35,7 @@ pub type Receipt(answer) {
 /// The builder describes one request after policy admission. It must be pure;
 /// credentials belong in the returned live configuration, never the state.
 pub fn new(
-  identity: run.Identity,
+  identity: run.DefinitionId,
   input: codec.Codec(input),
   questions: question.Batch(answer),
   request: fn(context, input) -> #(client.Config, Request),
