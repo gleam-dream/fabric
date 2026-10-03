@@ -450,12 +450,10 @@ pub fn loan_workflow() -> saga.Workflow(Loan, String, LoanError, Nil) {
         _ -> Ok(request <> "/COURIER")
       }
     })
-  let assert Ok(workflow) =
-    saga.define("interlibrary_loan", fn(loan) {
-      let requested = saga.perform(loan, request)
-      saga.perform(saga.both(loan, requested), courier)
-    })
-  workflow
+  saga.define("interlibrary_loan", fn(loan) {
+    let requested = saga.perform(loan, request)
+    saga.perform(saga.both(loan, requested), courier)
+  })
 }
 
 pub fn loan_tool() -> tool.Tool(Member) {

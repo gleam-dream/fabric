@@ -19,15 +19,13 @@ fn config() -> execution.Config {
 }
 
 fn workflow(probe: Probe, mode: variant_c.ApprovalMode, max_turns: Int) {
-  let assert Ok(workflow) =
-    variant_c.define(
-      app.scripted(probe),
-      app.all_tools(probe),
-      app.policy,
-      mode,
-      max_turns,
-    )
-  workflow
+  variant_c.define(
+    app.scripted(probe),
+    app.all_tools(probe),
+    app.policy,
+    mode,
+    max_turns,
+  )
 }
 
 fn model_calls(probe: Probe) -> List(String) {

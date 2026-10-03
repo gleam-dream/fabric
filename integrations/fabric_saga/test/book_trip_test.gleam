@@ -133,7 +133,7 @@ fn book_trip(
         }
       }
     })
-  let assert Ok(workflow) =
+  let workflow =
     saga.define("book_trip", fn(trip) {
       let flight = saga.perform(trip, reserve_flight)
       let hotel = saga.perform(saga.both(trip, flight), reserve_hotel)

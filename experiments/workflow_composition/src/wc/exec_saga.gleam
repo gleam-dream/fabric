@@ -107,7 +107,7 @@ fn start_batch(
   process.spawn(fn() {
     let assert [first, ..rest] =
       list.map(actions, fn(a) { action_step(hooks, a) })
-    let assert Ok(workflow) =
+    let workflow =
       saga.define("tool-batch-" <> int.to_string(number), fn(input) {
         saga.all(
           saga.perform(input, first),
