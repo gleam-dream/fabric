@@ -551,3 +551,12 @@ Dependents (additive): `oversight/apps/research_agent/src/research_agent/jobs.gl
 `oversight/apps/support_desk/src/support_desk/desk.gleam` (maps a
 `parse_id` failure to `StartRefused`, which is gone) can use
 `id_from_parts`.
+
+### `sweeper.start` stops with its caller
+
+A sweeper started with `sweeper.start` (outside a supervisor) now stops
+when the process that started it exits, also normally. It used to keep
+scanning after a script or a test ended. `sweeper.supervised` is
+unchanged.
+
+Dependents: none outside this repository (no app starts a sweeper).
