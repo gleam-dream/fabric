@@ -1,0 +1,42 @@
+{
+  "format": "fabric.graph",
+  "version": 14,
+  "write": "52c95995b5a1d82f4f10eea5b5fe44ee",
+  "run": "graph-completed",
+  "definition": {
+    "identity": { "name": "fixture-approval", "version": 1 },
+    "signature": "{\"entry\":\"review\",\"nodes\":[{\"node\":\"review\",\"operation\":\"fixture-review\",\"version\":1,\"kind\":\"activity\",\"recovery\":{\"tag\":\"reconcile\"},\"destinations\":[]}]}",
+    "max_activations": 3
+  },
+  "incarnation": 1,
+  "allocated": 1,
+  "approvals_issued": 0,
+  "value": "5",
+  "initial": "5",
+  "parent": null,
+  "receipts": [
+    {
+      "activation": {
+        "id": 1,
+        "attempt": 1,
+        "prepared": {
+          "node": "review",
+          "operation": { "name": "fixture-review", "version": 1 },
+          "input": "5",
+          "kind": "activity",
+          "recovery": { "tag": "reconcile" }
+        },
+        "deadline": null
+      },
+      "output": "10",
+      "state": "5",
+      "route": { "tag": "finished" }
+    }
+  ],
+  "phase": {
+    "tag": "ended",
+    "outcome": { "tag": "completed", "answer": "10" }
+  },
+  "forks": [],
+  "family_budget": null
+}
