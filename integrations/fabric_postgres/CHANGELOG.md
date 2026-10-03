@@ -8,6 +8,11 @@ package uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Breaking:** follows fabric wave 5: the backend port is
+  `fabric/store/backend`, the projections are under `fabric/store/`, and
+  recovery is registered through `fabric/sweeper`. The statistics SQL moves
+  to `fabric_postgres/internal/statistics`; `fabric_postgres/statistics`
+  keeps the snapshot types.
 - **Breaking:** `with_lease` takes a `Duration` (default 30 s) and `prune`'s
   `ended_for` is a `Duration`; `PruneAgeNegative` carries it.
 

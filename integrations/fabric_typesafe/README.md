@@ -16,7 +16,7 @@ let assert Ok(correct) =
   question.noul(value.String("Is the arithmetic statement correct?"), None)
 let assert Ok(questions) = question.ask("correct", correct)
 let classify = fabric_typesafe.new(
-  run.Identity("check-arithmetic", 1),
+  run.DefinitionId("check-arithmetic", 1),
   codec.string(),
   questions,
   fn(settings, input) {

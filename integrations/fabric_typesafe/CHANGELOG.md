@@ -6,6 +6,12 @@ package uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Changed
+
+- **Breaking:** `question.placeholder` is no longer public: the receipt
+  codec reads the batch's placeholder through
+  `fabric_typesafe/internal/batch`.
+
 ### Added
 
 - Non-generative TypeSafe System One questions (`fabric_typesafe/question`):
@@ -16,8 +22,6 @@ package uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   request and response JSON.
 - A bounded HTTPS client (`fabric_typesafe/client`) that never follows
   redirects and admits plain HTTP only on loopback.
-
-### Changed
 
 - **Breaking:** `client.Bounds.timeout` is a `Duration` (default 20 s).
 - Builds on json_blueprint wave 2: classifier JSON is parsed with

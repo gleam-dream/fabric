@@ -15,7 +15,7 @@ The wait holds neither a runner nor a lease. Canceling this read-only binding
 records `graph.JobDetached` and leaves the independently owned job running.
 
 `fabric_jobs_demo.scheduled_runtime` opts into a 100 ms observation interval.
-Register it with `graph.recovery` in `fabric.sweeper` on a leased store. Its
+Register it with `sweeper.graph` in `sweeper.supervised` on a leased store. Its
 first observation is immediately eligible; subsequent ready claims use the
 backend's saved claim time and clock. The restarted sweeper example waits for
 the real service artifact without calling `graph.poll_job`. Its test backend

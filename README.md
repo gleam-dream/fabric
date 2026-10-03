@@ -362,9 +362,10 @@ until `operation.with_deadline` bounds it.
 
 A run has one `sinal/correlation.Correlation`, chosen where the run starts
 (`fabric.start(.., correlation: Some(c))`) or derived from its id. It is
-stored with the run and carried in every `fabric/observation` event of the
+stored with the run and carried in every `fabric/telemetry` event of the
 run and its sub-agents, in every `model.Request` (with the run id and the
-turn), and in every tool's `tool.Call`. `fabric/llm` puts it on each
+turn), and in every tool's `tool.Call`. Every run event also names its
+family's root run (`root`), so a sub-agent's events join their root's. `fabric/llm` puts it on each
 turn's HTTP Gun client view, so one agent serves every run, and
 `fabric_saga` starts each Saga run with it.
 
@@ -375,6 +376,9 @@ its caller, such as Relay's `tool.cancelled` signal, waits for both in one
 receive with `fabric.await_with(handle, within:, or: selector)`: it returns
 `Reached(status)`, or `Interrupted(message)` when the selector fires first,
 and leaves the run as it is, so the handler decides whether to `cancel` it.
+A run that must stop with the process that asked for it (a connection, a
+request) is tied to it once: `fabric.cancel_when_down(handle, owner: pid)`
+cancels the run when `pid` exits.
 
 Stores: `store.in_memory` keeps records in its process (tests and
 scripts). `store.directory` keeps them in files, for development, tests and
@@ -384,13 +388,14 @@ missing and a tool whose start was among them could run again. In
 production, use [fabric_postgres](integrations/fabric_postgres/README.md),
 which supplies the leased backend, migrations and pruning of finished run
 families, or provide an application backend through `store.new` or
-`store.leased`.
+`store.leased`. A store started with `store.start` (scripts and tests) is
+stopped with `store.stop`, which drains its runners as a supervisor would.
 
 Several nodes that share one database coordinate through per-run leases:
 `store.leased(name, node: "app-1", lease: duration.seconds(30), backend:)` over a
-`store.LeasedBackend` (its contract is in the `fabric/store` docs, and
-`fabric/testing.leased_backend_checks` checks one; `testing.leased_memory()`
-is one in memory, for tests). Every commit that keeps work in flight
+`backend.LeasedBackend` (its contract is in the `fabric/store/backend` docs;
+`fabric/store/conformance.checks` checks one, and
+`conformance.leased_memory()` is one in memory, for tests). Every commit that keeps work in flight
 requires the runner's store to hold the lease; a final commit releases it
 with the revision check alone. Another node reads the run `Working`,
 answers an idle run itself, gets `RunUnattended` for a command that needs the other node's
@@ -407,10 +412,11 @@ system time. Clock failures propagate without a local-time fallback. Signal
 deadlines use this time domain; clock corrections can advance or delay expiry.
 
 Automatic recovery: register agent roots with
-`fabric.recovery(agent, context_for_run)` and graph roots with `graph.recovery`
-(described below), then add
-`fabric.sweeper(runs, recoveries, every: duration.seconds(1))` after the store in a
-rest-for-one supervisor. It scans expired leases and changed idle dependencies
+`sweeper.agent(agent, context: context_for_run)` and graph roots with
+`sweeper.graph` (described below), then put
+`sweeper.supervised(runs, roots, every: duration.seconds(1))` under the
+application's supervisor in place of `store.supervised(runs)`: it starts the
+store's subtree and then its sweeper, so the order cannot be wrong. It scans expired leases and changed idle dependencies
 at boot and periodically,
 rebuilds context from the root run id, and recovers each eligible family
 member under its own lease. A live parent learns a child’s stored outcome
@@ -452,8 +458,8 @@ Quota exhaustion is a typed `FamilyLimit` agent outcome or `FamilyBudget` graph
 failure, with started effects preserved for reconciliation. See the
 [reservation contract](docs/implementation/graph-flow/managed-composition.md#shared-family-reservations).
 
-Add `graph.recovery(identity, fn(pinned_store) { build_runtime(pinned_store) })`
-alongside ordinary `fabric.recovery` registrations in `fabric.sweeper`. Rebuild
+Add `sweeper.graph(identity, build: fn(pinned_store) { build_runtime(pinned_store) })`
+alongside `sweeper.agent` roots in `sweeper.supervised`. Rebuild
 all child runtimes against the supplied store. The sweeper follows saved
 attachments to the correct agent or graph root and recovers expired work
 without taking a live parent's lease. An interrupted effect keeps its recovery
@@ -479,7 +485,7 @@ The same option bounds a job wait. Read-only jobs finish with
 `Expired(due, JobDetached(reference))`. Owned jobs retain
 `CancellingJob(reference, progress, DeadlineReached(due))` until observation
 confirms remote cancellation, completion or failure. A completed output is
-retained with a canceled route. Explicit cancellation uses the separate
+retained with a stopped route (`graph.Stopped`). Explicit cancellation uses the separate
 `CancellationRequested` cause; whichever cause commits first remains saved.
 The deadline bounds Fabric's observation and acceptance, not the remote
 service's completion timestamp. Scheduled jobs are discovered when either their
@@ -517,7 +523,7 @@ call waits up to `rollback_within` for Saga's rollback: every completed step
 undone is a definite failure, anything left in place an uncertain effect.
 `consumers/app` uses it.
 
-Observations: attach Sinal handlers to the events of `fabric/observation`.
+Telemetry: attach Sinal handlers to the events of `fabric/telemetry`.
 They run in the committing process unless the application routes `[fabric]`
 through a `sinal/forwarder` (`forwarder.route` at start, `forwarder.unroute`
 at shutdown), which keeps a slow handler from holding up a run; handlers that

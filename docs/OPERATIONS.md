@@ -33,8 +33,9 @@ execution; they never authorize recovery or prove an external effect happened.
    A rest-for-one arrangement restarts dependents when an earlier component
    fails. The migration barrier must complete before the sweeper's immediate
    boot scan. Keep the pool and forwarder alive until the store finishes stopping.
-6. Register every root's deployed recovery code with `fabric.recovery` or
-   `graph.recovery`, then construct `fabric.sweeper(runs, recoveries, every: duration.seconds(1))`.
+6. Register every root's deployed recovery code with `sweeper.agent` or
+   `sweeper.graph`, then supervise `sweeper.supervised(runs, roots, every: duration.seconds(1))`
+   in place of `store.supervised(runs)`.
    Context is rebuilt from the root id; it is not stored. A graph factory must
    rebuild its children against the supplied pinned store. Reject configuration
    errors at startup. Expose admission only after `store.readiness(runs)` returns
@@ -104,7 +105,7 @@ compatible deployed definition. Explicit agent recovery can take an earlier
 local store incarnation's lease immediately; foreign live leases remain held.
 Do not repeatedly submit a new workflow to replace an unattended one.
 
-`observation.sweep()` reports `claimed`, `recovered`, `unmatched` and `failed`.
+`telemetry.sweep()` reports `claimed`, `recovered`, `unmatched` and `failed`.
 Unmatched roots need their exact agent or graph identity/version registered.
 Failed roots need their decoding, attachment, context, callback or backend error
 resolved. A graph-owned agent is restored through the root graph registration.
@@ -169,7 +170,7 @@ four additional seconds for admission/accounting/observation, and process,
 forwarder and pool cleanup. The factory stops runners concurrently. Abrupt VM or
 host loss cannot produce a reliable summary and follows lease/recovery rules.
 
-`observation.drain()` is emitted after the factory stops and before the store
+`telemetry.drain()` is emitted after the factory stops and before the store
 closes. Store-name metadata identifies the local subtree. Its measurements are:
 
 - `runners`: supervised processes present at admission close, including admitted

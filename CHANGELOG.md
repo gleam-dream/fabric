@@ -7,8 +7,64 @@ integration packages under `integrations/` keep their own changelogs.
 
 ## Unreleased
 
-Round 5 is described with before/after snippets in
+Wave 5 is described with before/after snippets in
+[docs/migration-wave-5.md](docs/migration-wave-5.md), round 5 in
 [docs/migration-round-5.md](docs/migration-round-5.md).
+
+### Wave 5, structure (slice F1)
+
+#### Added
+
+- `fabric/sweeper`: `sweeper.agent` and `sweeper.graph` build a `Root`;
+  `sweeper.supervised(store, roots, every:)` supervises the store's subtree
+  and then its sweeper, so the sweeper cannot be ordered wrongly;
+  `sweeper.start` runs one beside a store started with `store.start`;
+  `SweeperError` (with `DuplicateRoot` and `StoreNotRunning`) and
+  `describe_error`.
+- `fabric.cancel_when_down(run, owner:)`: the run is cancelled when the
+  owner process exits.
+- `store.stop`: stops a store started with `store.start`, draining its
+  runners.
+- `fabric/store/backend`: the backend port (`StoreError`, `Stored`,
+  `Current`, `Holder`, `Lease`, `LeasedBackend`) and its contract.
+- Every run event's metadata names its family's root run (`root`), so a
+  sub-agent's events join their root's; `lease_lost` carries the run's
+  `root` and `correlation`. A sub-agent record stores its root as
+  `"root"`; a root record's bytes are unchanged, and a sub-agent record
+  written before reads its parent as its root.
+- `operation.input_codec` and `operation.output_codec` are documented: they
+  read a `graph.Receipt`'s JSON.
+
+#### Changed
+
+- **Breaking:** `fabric/observation` is `fabric/telemetry`, and
+  `observation.ActionRef` is `telemetry.Action`.
+- **Breaking:** the backend port moves from `fabric/store` to
+  `fabric/store/backend` (`store.NotFound` is `backend.NotFound`, and so
+  on). `fabric/discovery`, `fabric/retention` and `fabric/statistics` move
+  to `fabric/store/discovery`, `retention` and `statistics`.
+  `testing.leased_backend_checks` and `testing.leased_memory` are
+  `fabric/store/conformance.checks` and `conformance.leased_memory`.
+- **Breaking:** `fabric.recovery`, `fabric.Recovery`, `fabric.sweeper`,
+  `fabric.SweeperError` and `graph.recovery` are replaced by
+  `fabric/sweeper` (`DuplicateRecovery` is `DuplicateRoot`).
+- **Breaking:** renames: `run.Identity` is `run.DefinitionId`,
+  `graph.Approval` is `graph.ApprovalRef`, `graph.Route.Canceled` is
+  `graph.Stopped` (a `Cancelled` variant would clash with
+  `graph.Cancelled`; the route also covers a deadline), and
+  `tool.bind_settling` takes `settle_within:`.
+- **Breaking:** no public module has an `@internal` item. `run.issued`,
+  `model.call`, `agent.admitted`, the tool, store, graph, job, signal,
+  operation and definition accessors, `graph.backing_store`,
+  `child.attachment`, `reserved_id` and `branch_id` move to
+  `fabric/internal/*`. Opaque types (`Model`, `Agent`, `Tool`,
+  `tool.Definition`, `Store`, `graph.Runtime`, `graph.Handle`,
+  `definition.Definition`, `operation.Operation`, `job.Observer`,
+  `signal.Signal`) are aliases of internal representations.
+
+#### Removed
+
+- **Breaking:** `graph.approval_requirement`; read `approval.requirement`.
 
 ### Added
 
