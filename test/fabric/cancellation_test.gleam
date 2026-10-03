@@ -459,6 +459,7 @@ fn store_stopping_root(store: store.Store, id: String) -> Nil {
       ),
       family_budget: None,
       correlation: correlation.from_key(id),
+      root: id,
     )
   let assert Ok(1) =
     store_core.insert(store, id, record.encode(root), store_core.Keep)
@@ -491,6 +492,7 @@ fn store_orphaned_child(
       phase:,
       family_budget: None,
       correlation: correlation.from_key(child),
+      root: id,
     )
   let assert Ok(1) =
     store_core.insert(store, child, record.encode(state), store_core.Keep)

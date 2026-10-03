@@ -28,6 +28,7 @@ import gleam/otp/static_supervisor
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
+import sinal/correlation.{type Correlation}
 
 /// A named store: the name of its process and the backend that process
 /// opens when it starts. A pinned store (`pin`) reaches one process of
@@ -496,8 +497,20 @@ fn describe_start(error: actor.StartError) -> String {
 
 /// The runner that currently drives a run in this VM.
 pub type Live {
-  Live(incarnation: Int, mailbox: Subject(live.Message))
-  GraphLive(incarnation: Int, mailbox: Subject(graph_live.Message))
+  /// `root` and `correlation` name the run's family in the events the
+  /// store emits about it (`lease_lost`).
+  Live(
+    incarnation: Int,
+    mailbox: Subject(live.Message),
+    root: String,
+    correlation: Correlation,
+  )
+  GraphLive(
+    incarnation: Int,
+    mailbox: Subject(graph_live.Message),
+    root: String,
+    correlation: Correlation,
+  )
 }
 
 pub type Entry {
@@ -1536,8 +1549,8 @@ fn renewed_leases(
                 int.max(option.unwrap(valid, 0), valid_until(lessee, sent))
               }),
             )
-          Ok(#(current, _)), False if current == pid ->
-            lose(state, lessee, run, pid, o.Revoked)
+          Ok(#(current, live)), False if current == pid ->
+            lose(state, lessee, run, pid, live, o.Revoked)
           _, _ -> state
         }
       })
@@ -1557,7 +1570,8 @@ fn fence(state: Loop) -> Loop {
       let now = now_ms()
       dict.fold(state.valid, state, fn(state, run, valid) {
         case valid <= now, dict.get(state.live, run) {
-          True, Ok(#(pid, _)) -> lose(state, lessee, run, pid, o.Unrenewed)
+          True, Ok(#(pid, live)) ->
+            lose(state, lessee, run, pid, live, o.Unrenewed)
           _, _ -> state
         }
       })
@@ -1588,6 +1602,7 @@ fn lose(
   lessee: Lessee,
   run: String,
   pid: Pid,
+  live: Live,
   reason: o.LeaseLoss,
 ) -> Loop {
   process.kill(pid)
@@ -1598,7 +1613,9 @@ fn lose(
       valid: dict.delete(state.valid, run),
     )
   notify(state, run)
-  emit_apart(fn() { observe.lease_lost(run, lessee.owner, reason) })
+  emit_apart(fn() {
+    observe.lease_lost(run, lessee.owner, reason, live.root, live.correlation)
+  })
   state
 }
 

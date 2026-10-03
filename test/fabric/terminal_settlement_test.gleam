@@ -39,6 +39,10 @@ fn state(id, parent, actions) {
     controller.Ended(run.Cancelled),
     None,
     correlation.from_key(id),
+    case parent {
+      Some(run.AgentParent(run: parent, ..)) -> run.id_to_string(parent)
+      _ -> id
+    },
   )
 }
 

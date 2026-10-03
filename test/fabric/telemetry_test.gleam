@@ -608,7 +608,7 @@ pub fn an_unrouted_handler_runs_in_the_runner_test() {
       correlation: None,
     )
   let #(handler, gate) = entered_by(entered, support.text(fabric.id(run)))
-  let assert Ok(store_core.Entry(live: Some(store_core.Live(_, mailbox)), ..)) =
+  let assert Ok(store_core.Entry(live: Some(store_core.Live(mailbox:, ..)), ..)) =
     store_core.get(memory, support.text(fabric.id(run)))
   let runner = process.subject_owner(mailbox)
   let waiting = fabric.await(run, within: duration.milliseconds(0))

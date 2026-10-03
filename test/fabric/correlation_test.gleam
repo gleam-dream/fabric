@@ -306,6 +306,135 @@ pub fn a_sub_agent_carries_its_parents_correlation_test() {
   request.run |> should.equal(support.child_id(fabric.id(handle), 1))
 }
 
+/// Every event of a family names its root run: a sub-agent's, and its
+/// own sub-agent's, join the root's.
+pub fn a_families_events_carry_its_root_test() {
+  let runs = support.store()
+  let research =
+    tool.define(
+      "research",
+      "Research a topic.",
+      codecs.one_field("topic", codec.string()),
+      codec.string(),
+    )
+  let delegating = fn(name, child) {
+    agent.new(
+      name,
+      scripted.plan([scripted.call("r1", "research", "{\"topic\":\"x\"}")]),
+      [],
+      policy.always_allow(),
+    )
+    |> agent.with_limits(agent.Limits(..agent.default_limits(), max_depth: 2))
+    |> agent.with_sub_agent(
+      research,
+      to: child,
+      prompt: fn(topic) { topic },
+      output: fn(answer) { Ok(answer) },
+    )
+    |> support.agent
+  }
+  let leaf =
+    agent.new(
+      "leaf",
+      scripted.model(fn(_) { model.FinalAnswer("found", None) }),
+      [],
+      policy.always_allow(),
+    )
+    |> support.agent
+  let root_agent = delegating("front", delegating("middle", leaf))
+  let seen = process.new_subject()
+  let attachments = [
+    sinal.observe(o.run_started(), fn(_, m: o.RunStarted) {
+      process.send(seen, #("run_started", m.run, m.root))
+    }),
+    sinal.observe(o.child_started(), fn(_, m: o.ChildStarted) {
+      process.send(seen, #("child_started", m.action.run, m.root))
+    }),
+    sinal.observe(o.run_finished(), fn(_, m: o.RunFinished) {
+      process.send(seen, #("run_finished", m.run, m.root))
+    }),
+  ]
+  let id = support.id("family-root")
+  let assert Ok(handle) =
+    fabric.start(
+      runs,
+      root_agent,
+      id:,
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(handle, within: duration.seconds(5))
+  let events = collect_roots(seen, [])
+  list.each(attachments, fn(attachment) {
+    let _ = sinal.detach(attachment)
+    Nil
+  })
+  let child = support.text(support.child_id(id, 1))
+  let grandchild = support.text(support.child_id(support.child_id(id, 1), 1))
+  let family =
+    list.filter(events, fn(event) {
+      event.1 == "family-root" || event.1 == child || event.1 == grandchild
+    })
+  list.count(family, fn(event) { event.0 == "run_started" }) |> should.equal(3)
+  list.count(family, fn(event) { event.0 == "run_finished" }) |> should.equal(3)
+  list.all(family, fn(event) { event.2 == "family-root" }) |> should.be_true
+}
+
+fn collect_roots(
+  seen: Subject(#(String, String, String)),
+  acc: List(#(String, String, String)),
+) -> List(#(String, String, String)) {
+  case process.receive(seen, 100) {
+    Ok(event) -> collect_roots(seen, [event, ..acc])
+    Error(Nil) -> list.reverse(acc)
+  }
+}
+
+/// A sub-agent's record stores its root; a root's does not, so its bytes
+/// are as before. A sub-agent record written before roots were stored
+/// reads its parent as its root.
+pub fn a_sub_agents_record_keeps_its_root_test() {
+  let desk =
+    agent.new(
+      "desk",
+      scripted.model(fn(_) { model.FinalAnswer("done", None) }),
+      [],
+      policy.always_allow(),
+    )
+    |> support.agent
+  let env =
+    controller.Env(
+      registry: checked_agent.admitted(desk).registry,
+      policy: policy.always_allow(),
+      context: Nil,
+      system: None,
+    )
+  let #(root, _) =
+    controller.start(
+      env,
+      "root-run",
+      run.DefinitionId("desk", 1),
+      controller.Limits(8, None, 2, 2),
+      "go",
+      None,
+      0,
+    )
+  string.contains(record.encode(root), "\"root\"") |> should.be_false
+  let parent =
+    Some(run.AgentParent(support.id("middle-run"), run.ActionId(1, "c")))
+  let child =
+    controller.State(..root, run: "middle-run-1", parent:, root: "root-run")
+  let encoded = record.encode(child)
+  string.contains(encoded, "\"root\":\"root-run\"") |> should.be_true
+  let assert Ok(decoded) = record.decode(encoded)
+  decoded.root |> should.equal("root-run")
+  let without = string.replace(encoded, ",\"root\":\"root-run\"", "")
+  let assert Ok(old) = record.decode(without)
+  old.root |> should.equal("middle-run")
+}
+
 /// A caller's correlation is stored with the run: a later reader decodes it.
 /// The default one is not written, so such records keep their bytes.
 pub fn the_record_keeps_only_a_chosen_correlation_test() {

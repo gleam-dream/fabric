@@ -34,6 +34,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import sinal/correlation
 
 pub type Options {
   Options(callback_timeout: Int, operation_timeout: Int, command_timeout: Int)
@@ -164,7 +165,7 @@ pub fn owner(
   state: g.State,
 ) -> Option(Subject(live.Message)) {
   case entry.live {
-    Some(store.GraphLive(incarnation, mailbox))
+    Some(store.GraphLive(incarnation:, mailbox:, ..))
       if incarnation == state.incarnation
     -> Some(mailbox)
     _ -> None
@@ -249,7 +250,14 @@ pub fn launch(
           let ownership =
             store.Launch(
               pid,
-              store.GraphLive(state.incarnation, mailbox),
+              // Graph runs carry no correlation yet: their events derive
+              // one from the run id, and a graph is its own root.
+              store.GraphLive(
+                state.incarnation,
+                mailbox,
+                state.run,
+                correlation.from_key(state.run),
+              ),
               seize,
             )
           case write_initialized(runs, state, expected, encoded, ownership) {

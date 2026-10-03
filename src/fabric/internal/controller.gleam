@@ -137,6 +137,9 @@ pub type State {
     /// record stores it only when it differs from the default derived from
     /// the run id (`correlation.from_key(run)`).
     correlation: Correlation,
+    /// The id of the family's root run: the run itself for a root, its
+    /// root's for a sub-agent run. A record stores it only for a sub-agent.
+    root: String,
   )
 }
 
@@ -240,6 +243,7 @@ pub fn start(
     parent,
     depth,
     correlation.from_key(run),
+    run,
   )
 }
 
@@ -253,6 +257,7 @@ pub fn start_correlated(
   parent: Option(run.Parent),
   depth: Int,
   correlation: Correlation,
+  root: String,
 ) -> #(State, List(Effect)) {
   let state =
     State(
@@ -270,6 +275,7 @@ pub fn start_correlated(
       phase: AwaitingModel(0),
       family_budget: None,
       correlation:,
+      root:,
     )
   call_model(env, state)
 }
@@ -1605,6 +1611,7 @@ pub fn never_started(
     phase: NeverStarted,
     family_budget: None,
     correlation: parent.correlation,
+    root: parent.root,
   )
 }
 

@@ -1,6 +1,6 @@
 //// Fabric's Sinal events: what a run did, for logs, metrics, and traces.
 ////
-//// Observation is diagnostic, never a source of truth: the run's record is.
+//// Telemetry is diagnostic, never a source of truth: the run's record is.
 //// Every event is emitted after the commit of the transition it describes, by
 //// the process that made the commit (a runner, or the caller of `start`,
 //// `approve`, `reject`, `cancel`, `reconcile`, `recover`, or `cancel_stored`),
@@ -105,12 +105,17 @@
 //// refused. `NotAwaited` and `NotReached` mean what the settlement knew is
 //// not in the record and needs a person.
 ////
-//// Every event of a run (all but `lease_lost`, `renewal_failed`, `sweep`,
-//// `drain` and `drain_unavailable`) carries the run's `correlation`, under
-//// the `correlation` key that every gleam-dream package uses: the one given
-//// to `fabric.start`, or one derived from the run id. A sub-agent run's
-//// events carry its root's. The same value reaches the model's requests
-//// and the tools' calls, so their own events join the run's.
+//// Every event of a run (all but `renewal_failed`, `sweep`, `drain` and
+//// `drain_unavailable`) carries the run's `correlation`, under the
+//// `correlation` key that every gleam-dream package uses: the one given to
+//// `fabric.start`, or one derived from the run id. It also carries `root`,
+//// the id of the family's root run: the run itself for a root, its root's
+//// for a sub-agent run, so a sub-agent's events join its root's. A
+//// sub-agent run's events carry its root's correlation too. The same
+//// correlation reaches the model's requests and the tools' calls, so their
+//// own events join the run's. A graph run's `lease_lost` derives its
+//// correlation from its run id and names the graph run as its root; graph
+//// events are planned for wave 5.
 ////
 //// Metadata carries identifiers and closed kinds only, never arguments,
 //// tool results, or model text, with one exception: `settlement_refused`
@@ -126,8 +131,8 @@ import sinal.{type Event}
 import sinal/correlation.{type Correlation}
 import sinal/fields.{type Fields}
 
-/// An action of a run: model turn, provider call id, and tool or
-/// delegation name.
+/// An action of a run, in event metadata: its run, model turn, provider
+/// call id, and tool or delegation name.
 pub type Action {
   Action(run: String, turn: Int, call_id: String, tool: String)
 }
@@ -138,18 +143,29 @@ pub type RunStarted {
     agent: String,
     agent_version: Int,
     parent: Option(String),
+    root: String,
     correlation: Correlation,
   )
 }
 
 pub type RunRecovered {
-  RunRecovered(run: String, incarnation: Int, correlation: Correlation)
+  RunRecovered(
+    run: String,
+    incarnation: Int,
+    root: String,
+    correlation: Correlation,
+  )
 }
 
 /// The incarnation whose runner handed the run off; `fabric.recover` goes
 /// on with the next.
 pub type RunHandedOff {
-  RunHandedOff(run: String, incarnation: Int, correlation: Correlation)
+  RunHandedOff(
+    run: String,
+    incarnation: Int,
+    root: String,
+    correlation: Correlation,
+  )
 }
 
 /// A recovery took over a run whose lease another owner held (expired, or
@@ -159,6 +175,7 @@ pub type RunTakenOver {
     run: String,
     incarnation: Int,
     previous_owner: String,
+    root: String,
     correlation: Correlation,
   )
 }
@@ -176,7 +193,13 @@ pub type LeaseLoss {
 /// A leased store (`owner`) killed the runner of `run`, with its model call
 /// and tool bodies.
 pub type LeaseLost {
-  LeaseLost(run: String, owner: String, reason: LeaseLoss)
+  LeaseLost(
+    run: String,
+    owner: String,
+    reason: LeaseLoss,
+    root: String,
+    correlation: Correlation,
+  )
 }
 
 /// A leased store's renewal of the leases of its `runs` runners failed.
@@ -205,6 +228,7 @@ pub type ModelTurn {
     run: String,
     turn: Int,
     result: TurnResult,
+    root: String,
     correlation: Correlation,
   )
 }
@@ -220,6 +244,7 @@ pub type ApprovalRequested {
     requirement: String,
     requirement_version: Int,
     revision: Int,
+    root: String,
     correlation: Correlation,
   )
 }
@@ -229,12 +254,13 @@ pub type ApprovalAnswered {
     action: Action,
     revision: Int,
     answer: Answered,
+    root: String,
     correlation: Correlation,
   )
 }
 
 pub type ToolDispatched {
-  ToolDispatched(action: Action, correlation: Correlation)
+  ToolDispatched(action: Action, root: String, correlation: Correlation)
 }
 
 /// How an action's result reached the run.
@@ -254,12 +280,18 @@ pub type ToolSettled {
   ToolSettled(
     action: Action,
     disposition: Disposition,
+    root: String,
     correlation: Correlation,
   )
 }
 
 pub type ChildStarted {
-  ChildStarted(action: Action, child: String, correlation: Correlation)
+  ChildStarted(
+    action: Action,
+    child: String,
+    root: String,
+    correlation: Correlation,
+  )
 }
 
 pub type ChildSettled {
@@ -267,6 +299,7 @@ pub type ChildSettled {
     action: Action,
     child: String,
     disposition: Disposition,
+    root: String,
     correlation: Correlation,
   )
 }
@@ -290,12 +323,13 @@ pub type SettlementRefused {
     /// What a person needs to reconcile the action, as the tool gave it to
     /// `tool.settle`.
     summary: String,
+    root: String,
     correlation: Correlation,
   )
 }
 
 pub type RunCancelled {
-  RunCancelled(run: String, correlation: Correlation)
+  RunCancelled(run: String, root: String, correlation: Correlation)
 }
 
 pub type OutcomeKind {
@@ -309,7 +343,12 @@ pub type OutcomeKind {
 }
 
 pub type RunFinished {
-  RunFinished(run: String, outcome: OutcomeKind, correlation: Correlation)
+  RunFinished(
+    run: String,
+    outcome: OutcomeKind,
+    root: String,
+    correlation: Correlation,
+  )
 }
 
 /// Totals over the whole run. The token counts sum the replies that
@@ -343,6 +382,7 @@ pub fn run_started() -> Event(Nil, RunStarted) {
       fields.optional(fields.string("parent")),
       get: fn(started) { started.parent },
     )
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
     use correlation <- fields.include(correlation.required_field(), get: fn(m) {
       m.correlation
     })
@@ -351,6 +391,7 @@ pub fn run_started() -> Event(Nil, RunStarted) {
       agent:,
       agent_version:,
       parent:,
+      root:,
       correlation:,
     ))
   })
@@ -365,10 +406,11 @@ pub fn run_recovered() -> Event(Nil, RunRecovered) {
       fields.int("incarnation"),
       get: fn(recovered) { recovered.incarnation },
     )
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
     use correlation <- fields.include(correlation.required_field(), get: fn(m) {
       m.correlation
     })
-    fields.success(RunRecovered(run:, incarnation:, correlation:))
+    fields.success(RunRecovered(run:, incarnation:, root:, correlation:))
   })
 }
 
@@ -381,10 +423,11 @@ pub fn run_handed_off() -> Event(Nil, RunHandedOff) {
       fields.int("incarnation"),
       get: fn(handed) { handed.incarnation },
     )
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
     use correlation <- fields.include(correlation.required_field(), get: fn(m) {
       m.correlation
     })
-    fields.success(RunHandedOff(run:, incarnation:, correlation:))
+    fields.success(RunHandedOff(run:, incarnation:, root:, correlation:))
   })
 }
 
@@ -398,6 +441,7 @@ pub fn run_taken_over() -> Event(Nil, RunTakenOver) {
       fields.string("previous_owner"),
       get: fn(taken) { taken.previous_owner },
     )
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
     use correlation <- fields.include(correlation.required_field(), get: fn(m) {
       m.correlation
     })
@@ -405,6 +449,7 @@ pub fn run_taken_over() -> Event(Nil, RunTakenOver) {
       run:,
       incarnation:,
       previous_owner:,
+      root:,
       correlation:,
     ))
   })
@@ -420,7 +465,11 @@ pub fn lease_lost() -> Event(Nil, LeaseLost) {
       fields.enum("reason", [Revoked, Unrenewed], lease_loss_name),
       get: fn(lost) { lost.reason },
     )
-    fields.success(LeaseLost(run:, owner:, reason:))
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(LeaseLost(run:, owner:, reason:, root:, correlation:))
   })
 }
 
@@ -469,10 +518,11 @@ pub fn model_turn() -> Event(Option(Usage), ModelTurn) {
       ),
       get: fn(turn) { turn.result },
     )
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
     use correlation <- fields.include(correlation.required_field(), get: fn(m) {
       m.correlation
     })
-    fields.success(ModelTurn(run:, turn:, result:, correlation:))
+    fields.success(ModelTurn(run:, turn:, result:, root:, correlation:))
   })
 }
 
@@ -492,6 +542,7 @@ pub fn approval_requested() -> Event(Nil, ApprovalRequested) {
     use revision <- fields.include(fields.int("revision"), get: fn(requested) {
       requested.revision
     })
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
     use correlation <- fields.include(correlation.required_field(), get: fn(m) {
       m.correlation
     })
@@ -500,6 +551,7 @@ pub fn approval_requested() -> Event(Nil, ApprovalRequested) {
       requirement:,
       requirement_version:,
       revision:,
+      root:,
       correlation:,
     ))
   })
@@ -517,20 +569,28 @@ pub fn approval_answered() -> Event(Nil, ApprovalAnswered) {
       fields.enum("answer", [Approved, Rejected], answered_name),
       get: fn(answered) { answered.answer },
     )
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
     use correlation <- fields.include(correlation.required_field(), get: fn(m) {
       m.correlation
     })
-    fields.success(ApprovalAnswered(action:, revision:, answer:, correlation:))
+    fields.success(ApprovalAnswered(
+      action:,
+      revision:,
+      answer:,
+      root:,
+      correlation:,
+    ))
   })
 }
 
 pub fn tool_dispatched() -> Event(Nil, ToolDispatched) {
   event(["tool", "start"], fields.empty(), {
     use action <- fields.include(action_fields(), get: fn(tool) { tool.action })
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
     use correlation <- fields.include(correlation.required_field(), get: fn(m) {
       m.correlation
     })
-    fields.success(ToolDispatched(action:, correlation:))
+    fields.success(ToolDispatched(action:, root:, correlation:))
   })
 }
 
@@ -543,10 +603,11 @@ pub fn tool_settled() -> Event(Nil, ToolSettled) {
       disposition("disposition"),
       get: fn(settled) { settled.disposition },
     )
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
     use correlation <- fields.include(correlation.required_field(), get: fn(m) {
       m.correlation
     })
-    fields.success(ToolSettled(action:, disposition:, correlation:))
+    fields.success(ToolSettled(action:, disposition:, root:, correlation:))
   })
 }
 
@@ -558,10 +619,11 @@ pub fn child_started() -> Event(Nil, ChildStarted) {
     use child <- fields.include(fields.string("child"), get: fn(started) {
       started.child
     })
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
     use correlation <- fields.include(correlation.required_field(), get: fn(m) {
       m.correlation
     })
-    fields.success(ChildStarted(action:, child:, correlation:))
+    fields.success(ChildStarted(action:, child:, root:, correlation:))
   })
 }
 
@@ -577,10 +639,17 @@ pub fn child_settled() -> Event(Nil, ChildSettled) {
       disposition("disposition"),
       get: fn(settled) { settled.disposition },
     )
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
     use correlation <- fields.include(correlation.required_field(), get: fn(m) {
       m.correlation
     })
-    fields.success(ChildSettled(action:, child:, disposition:, correlation:))
+    fields.success(ChildSettled(
+      action:,
+      child:,
+      disposition:,
+      root:,
+      correlation:,
+    ))
   })
 }
 
@@ -603,6 +672,7 @@ pub fn settlement_refused() -> Event(Nil, SettlementRefused) {
     use summary <- fields.include(fields.string("summary"), get: fn(refused) {
       refused.summary
     })
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
     use correlation <- fields.include(correlation.required_field(), get: fn(m) {
       m.correlation
     })
@@ -611,6 +681,7 @@ pub fn settlement_refused() -> Event(Nil, SettlementRefused) {
       offered:,
       reason:,
       summary:,
+      root:,
       correlation:,
     ))
   })
@@ -621,10 +692,11 @@ pub fn run_cancelled() -> Event(Nil, RunCancelled) {
     use run <- fields.include(fields.string("run"), get: fn(cancelled) {
       cancelled.run
     })
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
     use correlation <- fields.include(correlation.required_field(), get: fn(m) {
       m.correlation
     })
-    fields.success(RunCancelled(run:, correlation:))
+    fields.success(RunCancelled(run:, root:, correlation:))
   })
 }
 
@@ -674,11 +746,12 @@ pub fn run_finished() -> Event(RunTotals, RunFinished) {
         ),
         get: fn(finished) { finished.outcome },
       )
+      use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
       use correlation <- fields.include(
         correlation.required_field(),
         get: fn(m) { m.correlation },
       )
-      fields.success(RunFinished(run:, outcome:, correlation:))
+      fields.success(RunFinished(run:, outcome:, root:, correlation:))
     },
   )
 }

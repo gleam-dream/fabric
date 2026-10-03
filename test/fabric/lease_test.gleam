@@ -22,11 +22,12 @@ import fabric/telemetry as o
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import gleam/time/duration
 import gleeunit/should
 import sinal
+import sinal/correlation
 
 fn one_slow(probe: Probe) -> Agent(Nil) {
   agent.new(
@@ -294,6 +295,38 @@ pub fn a_cancellation_from_another_node_wins_over_a_live_lease_test() {
     "lease_lost " <> support.text(fabric.id(run)) <> " a revoked",
   ])
   release(events)
+}
+
+/// `lease_lost` names the run's family root and carries its correlation.
+pub fn a_lost_lease_event_carries_the_runs_root_and_correlation_test() {
+  let probe = probe.new()
+  let memory = conformance.leased_memory()
+  let a = nodes.node(memory.backend, "a", nodes.long)
+  let b = nodes.node(memory.backend, "b", nodes.long)
+  let lost = process.new_subject()
+  let attachment =
+    sinal.observe(o.lease_lost(), fn(_, metadata) {
+      process.send(lost, metadata)
+    })
+  let ticket = correlation.from_key("ticket-lease")
+  let assert Ok(run) =
+    fabric.start(
+      a,
+      one_slow(probe),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: Some(ticket),
+    )
+  let _ = probe.arrival(probe)
+  let assert Ok(there) = fabric.open(b, one_slow(probe), Nil, fabric.id(run))
+  let assert Ok(_) = fabric.cancel(there)
+  store_core.renew_now(a)
+  let assert Ok(event) = process.receive(lost, 5000)
+  let _ = sinal.detach(attachment)
+  event.run |> should.equal(support.text(fabric.id(run)))
+  event.root |> should.equal(support.text(fabric.id(run)))
+  event.correlation |> should.equal(ticket)
 }
 
 /// A run whose lease expired is taken over by a recovery on another node.
