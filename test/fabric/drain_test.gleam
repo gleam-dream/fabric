@@ -9,7 +9,6 @@ import fabric/agent.{type Agent}
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
-import fabric/reviewer
 import fabric/run.{Requirement}
 import fabric/store
 import fabric/support
@@ -168,7 +167,7 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
     fabric.approve(
       run,
       first.reference,
-      reviewer: reviewer.new("alice"),
+      reviewer: support.reviewer("alice"),
       context: Nil,
     )
   let running = probe.arrival(probe)
@@ -176,7 +175,7 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
     fabric.approve(
       run,
       second.reference,
-      reviewer: reviewer.new("alice"),
+      reviewer: support.reviewer("alice"),
       context: Nil,
     )
   states(run) |> should.equal([run.Running, run.Queued])
@@ -194,7 +193,7 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
   fabric.approve(
     run,
     second.reference,
-    reviewer: reviewer.new("alice"),
+    reviewer: support.reviewer("alice"),
     context: Nil,
   )
   |> should.equal(Error(fabric.StaleReference))
@@ -202,7 +201,7 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
     fabric.approve(
       run,
       renewed.reference,
-      reviewer: reviewer.new("bob"),
+      reviewer: support.reviewer("bob"),
       context: Nil,
     )
   probe.release(probe.arrival(probe))
@@ -314,7 +313,7 @@ pub fn a_suspended_run_is_untouched_by_a_stop_test() {
     fabric.approve(
       run,
       pending.reference,
-      reviewer: reviewer.new("alice"),
+      reviewer: support.reviewer("alice"),
       context: Nil,
     )
   probe.release(probe.arrival(probe))
@@ -538,7 +537,7 @@ pub fn a_delegation_approved_ahead_of_the_stop_does_not_hold_up_the_drain_test()
       fabric.approve(
         run,
         pending.reference,
-        reviewer: reviewer.new("reviewer"),
+        reviewer: support.reviewer("reviewer"),
         context: Nil,
       ),
     )

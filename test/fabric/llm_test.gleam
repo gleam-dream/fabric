@@ -8,7 +8,6 @@ import fabric/agent
 import fabric/llm
 import fabric/model
 import fabric/policy
-import fabric/reviewer
 import fabric/run
 import fabric/support
 import fabric/support/apps
@@ -197,7 +196,7 @@ pub fn unsupported_or_corrupt_stored_adapter_data_stops_before_provider_io_test(
         fabric.approve(
           opened,
           pending.reference,
-          reviewer: reviewer.new("reviewer"),
+          reviewer: support.reviewer("reviewer"),
           context: Nil,
         )
       let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =

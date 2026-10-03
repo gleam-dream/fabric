@@ -68,8 +68,9 @@ import sinal/correlation.{type Correlation}
 // --- vocabulary ----------------------------------------------------------------
 
 /// `approval_expiry` (milliseconds; `None`: never) sets the deadline of
-/// each approval request the run issues, and `clock` reads the UTC time in
-/// Unix milliseconds that deadlines are judged by.
+/// each approval request the run issues, and `clock` reads the time in UTC
+/// Unix milliseconds that deadlines are judged by: the store's clock
+/// (`store.now`), never the stepping node's.
 pub type Env(context) {
   Env(
     registry: Registry(context),
@@ -295,6 +296,26 @@ pub fn start_correlated(
       root:,
     )
   call_model(env, state)
+}
+
+/// Whether stepping `event` may judge or issue an approval deadline, so
+/// that a caller reads the store's clock first (`env.clock`).
+pub fn reads_clock(event: Event) -> Bool {
+  case event {
+    Answer(..) | ExpireApprovals | ModelReplied(..) | ChildEnded(..) -> True
+    ModelFailed(..)
+    | ToolStarting(_)
+    | ToolReported(..)
+    | ToolLost(..)
+    | ToolInterrupted(..)
+    | ToolsStopped
+    | Reconcile(..)
+    | Cancel
+    | FamilyBudgetReached(_)
+    | ChildStarted(_)
+    | Settled(..)
+    | SettlementDue(_) -> False
+  }
 }
 
 pub fn step(

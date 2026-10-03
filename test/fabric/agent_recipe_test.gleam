@@ -7,7 +7,6 @@ import fabric/internal/controller
 import fabric/internal/record
 import fabric/model
 import fabric/policy
-import fabric/reviewer
 import fabric/run
 import fabric/support
 import fabric/support/agent_recipe as recipe
@@ -218,7 +217,12 @@ pub fn an_agent_approval_cannot_be_replaced_by_approval_of_the_batch_test() {
   let assert Ok(inner) = record.decode(done.value)
   let assert run.Suspended([_], []) = controller.status(inner)
   // The existing agent API can recheck the action with fresh caller context.
-  fabric.approve(ordinary, pending.reference, reviewer.new("reviewer"), True)
+  fabric.approve(
+    ordinary,
+    pending.reference,
+    support.reviewer("reviewer"),
+    True,
+  )
   |> should.be_ok
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(ordinary, within: duration.milliseconds(5000))

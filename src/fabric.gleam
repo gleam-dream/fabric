@@ -10,10 +10,11 @@
 //// let assert Ok(handle) =
 ////   fabric.start(runs, agent, id: run.new_id(), context:, prompt: "Pay Bob",
 ////     correlation: None)
+//// let assert Ok(reviewer) = reviewer.new(user.id)  // authenticated
 //// case fabric.await(handle, within: duration.seconds(5)) {
 ////   Ok(run.Suspended([pending, ..], _)) ->
-////     fabric.approve(handle, pending.reference,
-////       reviewer: reviewer.new(user.id), context: current_context)
+////     fabric.approve(handle, pending.reference, reviewer:,
+////       context: current_context)
 ////   ...
 //// }
 //// ```
@@ -680,7 +681,7 @@ fn wait(
         // An approval request whose deadline passed is expired once, and
         // the run read again: it goes on without the rejected action.
         Ok(Nil), [], family.View(run.Suspended(approvals, _) as status, _) ->
-          case expiring, due(approvals) {
+          case expiring, due(run.setup.store, approvals) {
             False, [_, ..] as due -> {
               expire(run, due)
               wait(
@@ -703,13 +704,16 @@ fn wait(
 }
 
 /// The runs of the family that have an approval request whose deadline has
-/// passed.
-fn due(approvals: List(PendingApproval)) -> List(RunId) {
-  let now = clock.now()
+/// passed by the store's clock (none when it cannot be read).
+fn due(store: Store, approvals: List(PendingApproval)) -> List(RunId) {
+  let now = case store_core.now(store) {
+    Ok(now) -> now
+    Error(_) -> -1
+  }
   list.filter_map(approvals, fn(pending) {
     case pending.expires {
       Some(at) ->
-        case clock.to_milliseconds(at) <= now {
+        case now >= 0 && clock.to_milliseconds(at) <= now {
           True -> Ok(pending.reference.run)
           False -> Error(Nil)
         }

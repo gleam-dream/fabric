@@ -4,7 +4,6 @@
 import fabric
 import fabric/agent
 import fabric/policy
-import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric/store/backend
@@ -89,7 +88,7 @@ pub fn configured_writes_remain_readable_by_the_version_2_decoder_test() {
     fabric.approve(
       started,
       pending.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: support.reviewer("reviewer"),
       context: Nil,
     )
   let running = probe.arrival(body)
@@ -127,7 +126,7 @@ pub fn the_write_target_does_not_restrict_what_can_be_read_test() {
         fabric.approve(
           opened,
           pending.reference,
-          reviewer: reviewer.new("reviewer"),
+          reviewer: support.reviewer("reviewer"),
           context: Nil,
         )
       let running = probe.arrival(body)

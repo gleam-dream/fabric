@@ -53,6 +53,12 @@ const ann = Context("ann")
 
 const tess = Context("tess")
 
+fn tess_reviewer() {
+  let assert Ok(reviewer) =
+    readme_example.reviewer_of("tess", "https://id.example")
+  reviewer
+}
+
 pub fn the_readme_example_runs_test() {
   let dir = restart.temp_dir()
   let assert Ok(runs) = readme_example.supervise(dir)
@@ -60,8 +66,9 @@ pub fn the_readme_example_runs_test() {
   // Approved in a later request.
   let small = desk("150")
   let assert Ok(id) = readme_example.start_payment(runs, small, ann, "Pay Bob")
-  let assert Ok(_) = readme_example.review(runs, small, tess, id, Approve)
-  readme_example.review(runs, small, tess, id, Approve)
+  let assert Ok(_) =
+    readme_example.review(runs, small, tess, tess_reviewer(), id, Approve)
+  readme_example.review(runs, small, tess, tess_reviewer(), id, Approve)
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"receipt\":\"r-bob\"}"))),
   )
@@ -69,24 +76,33 @@ pub fn the_readme_example_runs_test() {
   // Rejected.
   let assert Ok(id) = readme_example.start_payment(runs, small, ann, "Pay Bob")
   let assert Ok(_) =
-    readme_example.review(runs, small, tess, id, Reject("not today"))
+    readme_example.review(
+      runs,
+      small,
+      tess,
+      tess_reviewer(),
+      id,
+      Reject("not today"),
+    )
   let assert Ok(run.Finished(run.Completed(answer))) =
-    readme_example.review(runs, small, tess, id, Approve)
+    readme_example.review(runs, small, tess, tess_reviewer(), id, Approve)
   string.contains(answer, "not today") |> should.be_true
 
   // Approved, and the gateway timed out after sending: reconciled.
   let large = desk("5000")
   let assert Ok(id) = readme_example.start_payment(runs, large, ann, "Pay Bob")
-  let assert Ok(_) = readme_example.review(runs, large, tess, id, Approve)
+  let assert Ok(_) =
+    readme_example.review(runs, large, tess, tess_reviewer(), id, Approve)
   let assert Ok(_) =
     readme_example.review(
       runs,
       large,
       tess,
+      tess_reviewer(),
       id,
       Happened("{\"receipt\":\"r-1\"}"),
     )
-  readme_example.review(runs, large, tess, id, Approve)
+  readme_example.review(runs, large, tess, tess_reviewer(), id, Approve)
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"receipt\":\"r-1\"}"))),
   )

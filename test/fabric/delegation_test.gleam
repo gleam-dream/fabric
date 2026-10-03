@@ -11,7 +11,6 @@ import fabric/internal/record
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
-import fabric/reviewer
 import fabric/run.{ActionId, Requirement}
 import fabric/store.{type Store}
 import fabric/support
@@ -299,7 +298,7 @@ pub fn a_sub_agent_starts_only_after_approval_even_across_a_restart_test() {
     fabric.approve(
       run,
       pending.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: support.reviewer("reviewer"),
       context: Nil,
     )
   fabric.await(run, within: duration.milliseconds(5000))
@@ -350,7 +349,7 @@ pub fn a_rejected_sub_agent_never_starts_test() {
       run,
       pending.reference,
       reason: "not today",
-      reviewer: reviewer.new("ann"),
+      reviewer: support.reviewer("ann"),
     )
   fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
@@ -414,7 +413,7 @@ pub fn a_child_pause_surfaces_to_the_parent_and_is_answered_through_it_test() {
     fabric.approve(
       run,
       pending.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: support.reviewer("reviewer"),
       context: Nil,
     )
   fabric.await(run, within: duration.milliseconds(5000))
@@ -429,7 +428,7 @@ pub fn a_child_pause_surfaces_to_the_parent_and_is_answered_through_it_test() {
   fabric.approve(
     run,
     pending.reference,
-    reviewer: reviewer.new("reviewer"),
+    reviewer: support.reviewer("reviewer"),
     context: Nil,
   )
   |> should.equal(Error(fabric.AlreadyAnswered))
@@ -465,7 +464,7 @@ pub fn cancelling_the_parent_cancels_a_paused_child_test() {
   fabric.approve(
     run,
     pending.reference,
-    reviewer: reviewer.new("reviewer"),
+    reviewer: support.reviewer("reviewer"),
     context: Nil,
   )
   |> should.equal(Error(fabric.RunEnded))
@@ -872,7 +871,7 @@ pub fn cancel_stored_cancels_the_children_first_test() {
   fabric.approve(
     run,
     pending.reference,
-    reviewer: reviewer.new("reviewer"),
+    reviewer: support.reviewer("reviewer"),
     context: Nil,
   )
   |> should.equal(Error(fabric.RunEnded))
@@ -909,7 +908,7 @@ pub fn a_transient_store_failure_does_not_leave_a_child_uncancelled_test() {
   fabric.approve(
     run,
     pending.reference,
-    reviewer: reviewer.new("reviewer"),
+    reviewer: support.reviewer("reviewer"),
     context: Nil,
   )
   |> should.equal(Error(fabric.RunEnded))
@@ -946,14 +945,14 @@ pub fn a_child_that_cannot_be_cancelled_can_no_longer_act_test() {
   fabric.approve(
     run,
     pending.reference,
-    reviewer: reviewer.new("reviewer"),
+    reviewer: support.reviewer("reviewer"),
     context: Nil,
   )
   |> should.equal(Error(fabric.RunEnded))
   fabric.approve(
     child,
     pending.reference,
-    reviewer: reviewer.new("reviewer"),
+    reviewer: support.reviewer("reviewer"),
     context: Nil,
   )
   |> should.equal(Error(fabric.RunEnded))

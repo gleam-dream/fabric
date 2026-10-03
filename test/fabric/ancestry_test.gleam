@@ -18,7 +18,6 @@ import fabric/internal/runner
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
-import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric/store/backend
@@ -229,7 +228,7 @@ pub fn graph_cancellation_refuses_agent_approval_without_starting_its_tool_test(
   let assert Ok(run.Suspended([approval], [])) =
     fabric.await(handle, within: duration.milliseconds(5000))
   stop_parent(runs, parent)
-  fabric.approve(handle, approval.reference, reviewer.new("reviewer"), Nil)
+  fabric.approve(handle, approval.reference, support.reviewer("reviewer"), Nil)
   |> should.be_error
   probe.entries(body) |> should.equal([])
 }

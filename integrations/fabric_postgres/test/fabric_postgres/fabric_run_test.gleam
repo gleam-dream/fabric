@@ -55,7 +55,7 @@ pub fn a_suspended_run_is_approved_after_a_store_restart_and_finishes_test() {
     fabric.approve(
       opened,
       pending.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: as_reviewer("reviewer"),
       context: Nil,
     )
   let arrival = agents.arrival(gate)
@@ -167,7 +167,7 @@ pub fn the_postgres_adapter_supports_the_write_version_window_test() {
     fabric.approve(
       opened,
       pending.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: as_reviewer("reviewer"),
       context: Nil,
     )
   agents.release(agents.arrival(gate))
@@ -175,4 +175,9 @@ pub fn the_postgres_adapter_supports_the_write_version_window_test() {
   |> should.equal(Ok(run.Finished(run.Completed("done: {\"done\":500}"))))
   stored_version(backend, fabric.id(started)) |> should.equal(4)
   agents.another(gate, 100) |> should.be_false
+}
+
+fn as_reviewer(subject: String) -> reviewer.Reviewer {
+  let assert Ok(reviewer) = reviewer.new(subject)
+  reviewer
 }

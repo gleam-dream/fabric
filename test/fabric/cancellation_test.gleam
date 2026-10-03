@@ -12,7 +12,6 @@ import fabric/internal/record
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
-import fabric/reviewer
 import fabric/run.{type RunId, ActionId}
 import fabric/store
 import fabric/store/backend
@@ -583,7 +582,7 @@ pub fn an_answer_racing_the_parent_cancellation_starts_nothing_test() {
         fabric.approve(
           run,
           pending.reference,
-          reviewer: reviewer.new("reviewer"),
+          reviewer: support.reviewer("reviewer"),
           context: "recheck",
         ),
       )

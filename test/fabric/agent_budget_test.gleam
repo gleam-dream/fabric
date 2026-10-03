@@ -5,7 +5,6 @@ import fabric/internal/budget/ledger
 import fabric/internal/budget/model as reservations
 import fabric/model
 import fabric/policy
-import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric/support
@@ -188,7 +187,7 @@ pub fn budget_refusal_stops_running_effects_without_claiming_they_did_not_happen
     fabric.approve(
       handle,
       pending.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: support.reviewer("reviewer"),
       context: Nil,
     )
   fabric.await(handle, within: duration.milliseconds(5000))

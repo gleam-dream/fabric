@@ -8,7 +8,6 @@ import fabric/agent
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
-import fabric/reviewer
 import fabric/run.{Requirement}
 import fabric/store
 import fabric/support
@@ -227,7 +226,7 @@ pub fn a_run_is_observed_after_each_commit_test() {
     fabric.approve(
       run,
       pending.reference,
-      reviewer: reviewer.new("reviewer"),
+      reviewer: support.reviewer("reviewer"),
       context: Nil,
     )
   let rest = until(events, "run_finished")

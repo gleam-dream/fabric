@@ -13,7 +13,6 @@ import fabric
 import fabric/agent.{type Agent}
 import fabric/model
 import fabric/policy
-import fabric/reviewer
 import fabric/run.{Requirement}
 import fabric/support
 import fabric/support/apps
@@ -132,7 +131,7 @@ fn approve(
   fabric.approve(
     run,
     pending.reference,
-    reviewer: reviewer.new(who),
+    reviewer: support.reviewer(who),
     context: who,
   )
 }

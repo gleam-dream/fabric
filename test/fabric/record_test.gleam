@@ -5,7 +5,6 @@ import fabric/internal/graph/attachment
 import fabric/internal/record
 import fabric/internal/registry
 import fabric/model
-import fabric/reviewer
 import fabric/run.{ActionId, Requirement}
 import fabric/support
 import fabric/support/apps
@@ -65,7 +64,12 @@ fn every_action() -> List(run.ActionRecord) {
       call("a", "transfer_funds"),
       run.Queued,
       [
-        run.Approval(requirement, 1, run.Approve, Some(reviewer.new("alice"))),
+        run.Approval(
+          requirement,
+          1,
+          run.Approve,
+          Some(support.reviewer("alice")),
+        ),
         run.Approval(
           requirement,
           2,

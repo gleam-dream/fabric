@@ -83,6 +83,7 @@ import fabric/internal/clock
 import fabric/internal/controller.{type Phase, type State, State}
 import fabric/internal/graph/attachment
 import fabric/internal/registry.{type Registry}
+import fabric/internal/reviewer as stored_reviewer
 import fabric/internal/run_id
 import fabric/model.{type Message, type ToolCall}
 import fabric/reviewer
@@ -1054,12 +1055,7 @@ fn approval_decoder() -> Decoder(Approval) {
   )
   use expired <- decode.optional_field("expired", False, decode.bool)
   let reviewer =
-    option.map(subject, fn(subject) {
-      case issuer {
-        Some(issuer) -> reviewer.new(subject) |> reviewer.with_issuer(issuer)
-        None -> reviewer.new(subject)
-      }
-    })
+    option.map(subject, fn(subject) { stored_reviewer.restore(subject, issuer) })
   let answer = case expired {
     True -> run.Expired
     False -> answer

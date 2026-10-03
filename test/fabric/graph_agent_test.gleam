@@ -9,7 +9,6 @@ import fabric/internal/graph/attachment
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
-import fabric/reviewer
 import fabric/run
 import fabric/store/backend
 import fabric/support
@@ -231,7 +230,12 @@ pub fn every_agent_approval_is_visible_and_wakes_an_idle_graph_test() {
   fabric.id(agent) |> should.equal(reference.child)
   list.each(approvals, fn(approval) {
     let assert Ok(_) =
-      fabric.approve(agent, approval.reference, reviewer.new("reviewer"), Nil)
+      fabric.approve(
+        agent,
+        approval.reference,
+        support.reviewer("reviewer"),
+        Nil,
+      )
   })
   probe.release(probe.arrival(body))
   probe.release(probe.arrival(body))
@@ -265,7 +269,12 @@ pub fn agent_approval_and_attachment_survive_store_restart_test() {
   fabric.id(agent) |> should.equal(reference.child)
   list.each(approvals, fn(approval) {
     let assert Ok(_) =
-      fabric.approve(agent, approval.reference, reviewer.new("reviewer"), Nil)
+      fabric.approve(
+        agent,
+        approval.reference,
+        support.reviewer("reviewer"),
+        Nil,
+      )
   })
   probe.release(probe.arrival(body))
   probe.release(probe.arrival(body))
@@ -293,7 +302,7 @@ pub fn canceling_an_agent_approval_starts_no_tool_and_settles_the_graph_test() {
   fabric.await(agent, within: duration.milliseconds(1000))
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   list.each(approvals, fn(approval) {
-    fabric.approve(agent, approval.reference, reviewer.new("reviewer"), Nil)
+    fabric.approve(agent, approval.reference, support.reviewer("reviewer"), Nil)
     |> should.be_error
   })
   probe.entries(body) |> should.equal([])
@@ -554,7 +563,12 @@ pub fn nested_graphs_observe_an_agents_own_delegated_family_test() {
   list.each(approvals, fn(approval) {
     { approval.reference.run != fabric.id(agent) } |> should.be_true
     let assert Ok(_) =
-      fabric.approve(agent, approval.reference, reviewer.new("reviewer"), Nil)
+      fabric.approve(
+        agent,
+        approval.reference,
+        support.reviewer("reviewer"),
+        Nil,
+      )
   })
   probe.release(probe.arrival(body))
   probe.release(probe.arrival(body))
