@@ -11,6 +11,27 @@ Wave 5 is described with before/after snippets in
 [docs/migration-wave-5.md](docs/migration-wave-5.md), round 5 in
 [docs/migration-round-5.md](docs/migration-round-5.md).
 
+### Wave 5, round 6: llm_wire content filters are refusals
+
+#### Changed
+
+- Fabric builds on llm_wire's round 6, which reports a provider's content
+  filter as `error.ContentFiltered(stage: InPrompt | InOutput, reason)`
+  instead of `Refused`. `fabric/llm` turns that failure into a
+  `model.Refusal`, so a run that a Gemini or Anthropic safety stop ends is
+  still `run.Refused`, not `run.Failed(ModelFailed(..))`, and it is not
+  retried. `fabric/graph/llm.decision` records it as a `Refusal` receipt,
+  not an uncertain effect. The reason is `error.describe`'s line, which
+  keeps the stage and the provider's own reason:
+  `"Provider content filter blocked the prompt: SAFETY"` where it was
+  `"Prompt blocked by safety policy: SAFETY"`, and
+  `"Provider content filter stopped the output: refusal"` where Anthropic's
+  reason was the streamed text. OpenAI's `content_filter` stop, an
+  `OutputLimited` turn before, is now also a refusal. No public type changed.
+- The tests use llm_wire's opaque `testing.Reply` (`testing.events`,
+  `testing.tool_call`, `testing.http_status`, and `testing.status`,
+  `testing.chunks`, `testing.is_interrupted` in the loopback fake provider).
+
 ### Wave 5, round 6: bounds are checked by a build step
 
 #### Changed

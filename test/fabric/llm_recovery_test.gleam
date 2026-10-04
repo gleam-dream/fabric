@@ -83,7 +83,7 @@ fn reviewed() -> policy.Policy(Nil) {
 /// `testing.events_for` sends no `thoughtSignature`, so signed Gemini parts
 /// are written here.
 fn google_reply(parts: List(json.Json), response_id: String) -> testing.Reply {
-  testing.Events([
+  testing.events([
     "data: "
     <> json.to_string(
       json.object([
@@ -336,7 +336,7 @@ fn text_agent(
 pub fn http_501_stops_without_retrying_the_unchanged_request_test() -> Nil {
   let fake =
     fake_provider.start([
-      testing.Status(501, "not implemented"),
+      testing.http_status(message.Custom("scripted"), 501, "not implemented"),
       testing.text("unused"),
     ])
   let assert Ok(started) =
@@ -362,7 +362,7 @@ pub fn http_503_retries_only_within_the_existing_turn_budget_test() -> Nil {
   list.each([1, 2], fn(max_turns) {
     let fake =
       fake_provider.start([
-        testing.Status(503, "busy"),
+        testing.http_status(message.Custom("scripted"), 503, "busy"),
         testing.text("recovered"),
       ])
     let assert Ok(started) =

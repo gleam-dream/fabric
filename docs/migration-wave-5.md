@@ -1527,3 +1527,81 @@ Dependents: `oversight/apps/tool_hub/src/tool_hub/assistant.gleam`
 (`server.new([fabric_relay.serve(service)])`, with `with_wait` fed from its
 `budget` setting) breaks at compile time: `serve` returns a `Result`. Its
 surrounding function already returns a `Result`, so a `result.try` fits.
+
+## Round 6: llm_wire's content filters and opaque test replies
+
+llm_wire's round 6 (its `docs/migration-wave-5.md`, "Round 6") changed two
+things Fabric uses: a provider's content filter is a failure, and the
+scripted test replies are opaque.
+
+### llm_wire content filters end a run as `run.Refused`
+
+llm_wire's round 6 reports a provider's content filter as the failure
+`error.ContentFiltered(stage: InPrompt | InOutput, reason)`, where a Gemini
+or Anthropic safety stop was the outcome `Refused` before. Unhandled, the
+new failure fell through `fabric/llm`'s classification to the non-retryable
+`model.Other`, so such a run ended as `run.Failed(ModelFailed(..))`, and a
+graph decision blocked as `EffectUncertain`. Fabric keeps the earlier
+behaviour: a filter is the provider's refusal. No `model.ErrorKind` was
+added; the failure becomes the existing `model.Refusal` reply.
+
+```gleam
+// fabric/llm, inside `execute`
+Error(llm_wire.Failure(error: error.ContentFiltered(..) as filtered, usage:, ..)) ->
+  Ok(model.Refusal(error.describe(filtered), usage_of(usage)))
+
+// fabric/graph/llm, inside `perform`
+Error(llm_wire.Failure(error: error.ContentFiltered(..) as filtered, usage:, ..)) ->
+  Ok(Receipt(model, Refusal(error.describe(filtered)), usage))
+```
+
+| Provider signal                                    | Before (llm_wire round 5)                                      | After                                                                       |
+| -------------------------------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Gemini `promptFeedback.blockReason: SAFETY`        | `run.Refused("Prompt blocked by safety policy: SAFETY")`       | `run.Refused("Provider content filter blocked the prompt: SAFETY")`         |
+| Gemini `finishReason: SAFETY` (and `RECITATION`..) | `run.Refused("Google refused generation with reason: SAFETY")` | `run.Refused("Provider content filter stopped the output: SAFETY")`         |
+| Anthropic `stop_reason: "refusal"`                 | `run.Refused(<streamed text>)`                                 | `run.Refused("Provider content filter stopped the output: refusal")`        |
+| OpenAI `incomplete_details.reason: content_filter` | `run.OutputLimited(<partial text>)`                            | `run.Refused("Provider content filter stopped the output: content_filter")` |
+| OpenAI refusal content                             | `run.Refused(<model's words>)`                                 | unchanged                                                                   |
+
+The same reasons appear in a graph decision's `llm.Refusal(reason)` receipt.
+The run still records the reported usage, and the refusal is not retried.
+Tests: `llm_test.provider_content_filters_end_the_run_as_refused_test`
+(prompt blocked and output stopped on the scripted wire, Gemini, Anthropic
+and OpenAI) and `graph_llm_test.provider_content_filters_are_refusal_receipts_test`
+(both stages).
+
+Dependents: no public item changed, so nothing breaks at compile time.
+Code that matches the text of a `run.Refused` reason or a `llm.Refusal`
+receipt sees the new lines; none does in `/code/gleam-dream/*` or
+`oversight/apps` (`fabric/consumers/decision` and `fabric/consumers/writing`
+match the constructors only).
+
+### Tests use llm_wire's opaque `testing.Reply`
+
+llm_wire's `testing.Reply` and `ScriptedCall` are opaque. Only Fabric's
+tests built or matched them; the replacements are those listed in llm_wire's
+`docs/migration-wave-5.md` "Round 6" call sites:
+
+```gleam
+// Before: test/fabric/support/fake_provider.gleam
+fn wire(reply: testing.Reply) -> #(Int, List(String), Bool) {
+  case reply {
+    testing.Events(chunks) -> #(200, chunks, True)
+    testing.Interrupted(chunks) -> #(200, chunks, False)
+    testing.Status(code, body) -> #(code, [body], True)
+  }
+}
+
+// After
+fn wire(reply: testing.Reply) -> #(Int, List(String), Bool) {
+  #(testing.status(reply), testing.chunks(reply), !testing.is_interrupted(reply))
+}
+```
+
+`testing.ScriptedCall(..)` is `testing.tool_call(..)`, `testing.Status(code,
+body)` is `testing.http_status(message.Custom("scripted"), code, body)`,
+`testing.Events([..])` is `testing.events([..])` and `testing.Interrupted([])`
+is `testing.interrupted(testing.text(""))`, in `llm_test`, `graph_llm_test`,
+`llm_recovery_test` and `llm_turn_format_test`.
+
+Dependents: none; the change is internal to Fabric's tests.

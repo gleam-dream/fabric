@@ -40,7 +40,14 @@
 //// a `codec.union` at any depth, and Google a nullable value) fails the
 //// turn as `model.InvalidRequest`.
 ////
-//// A failed call becomes a `model.ModelError` whose kind follows
+//// A model that declines in its own words (`llm_wire.Refused`) and a
+//// provider's content filter (`error.ContentFiltered`, the prompt blocked or
+//// the output stopped) are both a `model.Refusal`, so the run ends as
+//// `run.Refused`. A filter's reason is `error.describe`'s line, which keeps
+//// the stage and the provider's own reason, such as
+//// `"Provider content filter stopped the output: SAFETY"`.
+////
+//// Any other failed call becomes a `model.ModelError` whose kind follows
 //// `llm_wire.advise`: a failure llm_wire says another attempt may help is
 //// `RateLimited` (HTTP 429 or a rate-limit code), `TimedOut` (a timer or
 //// HTTP 408), `Unreachable` (the connection) or `Overloaded`, and is
@@ -165,6 +172,13 @@ fn execute(
       Ok(model.Truncated(partial_text, usage_of(usage)))
     Ok(llm_wire.Refused(reason:, usage:)) ->
       Ok(model.Refusal(reason, usage_of(usage)))
+    // A provider's safety stop is a refusal too: the run ends as
+    // `run.Refused` with the provider's stage and reason.
+    Error(llm_wire.Failure(
+      error: error.ContentFiltered(..) as filtered,
+      usage:,
+      ..,
+    )) -> Ok(model.Refusal(error.describe(filtered), usage_of(usage)))
     // A final answer outside the schema is the model's answer all the
     // same: Fabric asks for a correction or ends the run with
     // `AnswerInvalid`, keeping the text.

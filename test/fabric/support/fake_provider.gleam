@@ -68,13 +68,14 @@ pub fn google(fake: Fake, key: String) -> llm_wire.Config {
   |> llm_wire.with_endpoint(fake.url <> "/v1beta")
 }
 
-/// `testing.http_reply` is private, so the server lowers each reply itself.
+/// Each reply as the server sends it: its status, one chunk per event, and
+/// whether the response ends (`False` drops the connection first).
 fn wire(reply: testing.Reply) -> #(Int, List(String), Bool) {
-  case reply {
-    testing.Events(chunks) -> #(200, chunks, True)
-    testing.Interrupted(chunks) -> #(200, chunks, False)
-    testing.Status(code, body) -> #(code, [body], True)
-  }
+  #(
+    testing.status(reply),
+    testing.chunks(reply),
+    !testing.is_interrupted(reply),
+  )
 }
 
 @external(erlang, "fabric_fake_provider_ffi", "start")

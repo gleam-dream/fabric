@@ -238,11 +238,59 @@ pub fn refusal_and_output_limit_are_distinct_from_a_valid_answer_test() {
   })
 }
 
+/// A provider's content filter is a `Refusal` receipt with the stage and the
+/// provider's reason, whether it blocks the prompt or stops the output: the
+/// decision completes and is not blocked as an uncertain effect.
+pub fn provider_content_filters_are_refusal_receipts_test() {
+  let usage = message.Usage(4, 0, 4)
+  [
+    #(
+      testing.prompt_blocked(),
+      "Provider content filter blocked the prompt: content_filter",
+    ),
+    #(
+      testing.content_filtered("{\"approve\":"),
+      "Provider content filter stopped the output: content_filter",
+    ),
+  ]
+  |> list.each(fn(example) {
+    let fake =
+      fake_provider.start([
+        testing.with_usage(example.0, usage),
+        testing.text("{\"approve\":true}"),
+      ])
+    let assert Ok(handle) =
+      graph.start(
+        runtime(support.store(), fake),
+        support.id("filtered"),
+        "draft",
+        correlation: None,
+      )
+    let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+    let assert Ok(done) = graph.snapshot(handle)
+    let expected =
+      llm.Receipt("review-model", llm.Refusal(example.1), Some(usage))
+    done.status |> should.equal(graph.Completed(expected))
+    let assert [saved] = done.receipts
+    codec.decode_json(llm.receipt_codec(decision_codec()), saved.output_json)
+    |> should.equal(Ok(expected))
+    fake_provider.remaining(fake) |> should.equal(1)
+    fake_provider.stop(fake)
+  })
+}
+
 pub fn invalid_output_interrupted_transport_and_http_failures_never_route_or_retry_test() {
   [
     #(testing.text("{\"approve\":\"yes\"}"), "Invalid structured output"),
-    #(testing.Interrupted([]), "HTTP failure: Request failed"),
-    #(testing.Status(429, "private response body"), "HTTP status 429"),
+    #(testing.interrupted(testing.text("")), "HTTP failure: Request failed"),
+    #(
+      testing.http_status(
+        message.Custom("scripted"),
+        429,
+        "private response body",
+      ),
+      "HTTP status 429",
+    ),
   ]
   |> list.each(fn(example) {
     let fake =

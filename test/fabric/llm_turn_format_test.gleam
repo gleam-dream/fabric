@@ -221,7 +221,7 @@ pub fn records_from_the_earlier_release_replay_unchanged_test() {
 
 fn signed_reply() -> testing.Reply {
   let part = fn(fields) { json.object(fields) }
-  testing.Events([
+  testing.events([
     "data: "
     <> json.to_string(
       json.object([
