@@ -14,6 +14,8 @@ import gleam/option.{None}
 import gleam/result
 import gleam/string
 import gleam/time/duration
+import http_gun
+import http_gun/config as http_config
 import json/blueprint/codec
 import json/blueprint/value
 
@@ -88,7 +90,12 @@ pub fn main() -> Nil {
     Error(Nil) ->
       panic as "TYPESAFE_API_KEY is missing or empty; no classifier request was sent"
   }
-  let assert Ok(settings) = client.new(key)
+  let assert Ok(http) = http_gun.start(http_config.default())
+  let assert Ok(settings) =
+    client.new(
+      http |> http_gun.with_timeout(http_config.After(duration.seconds(20))),
+      key:,
+    )
   let model =
     environment("FABRIC_CLASSIFIER_MODEL") |> result.unwrap("jev-latest")
   let runs = store.in_memory(process.new_name("classifier-decision-demo"))
@@ -115,4 +122,5 @@ pub fn main() -> Nil {
   io.println("resolved model: " <> receipt.resolved_model)
   io.println("typed answers: " <> string.inspect(receipt.answer))
   io.println("usage: " <> string.inspect(receipt.usage))
+  http_gun.stop(http)
 }

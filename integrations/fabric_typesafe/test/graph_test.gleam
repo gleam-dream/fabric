@@ -9,12 +9,16 @@ import fabric_typesafe/client
 import fabric_typesafe/question
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import gleam/time/duration
 import gleeunit/should
+import http_gun/config as http_config
+import http_gun/telemetry as http_telemetry
 import json/blueprint/codec
 import json/blueprint/value
+import sinal
+import sinal/correlation
 import support
 
 type Decision {
@@ -113,6 +117,37 @@ pub fn an_http_classifier_batch_retains_native_answers_models_usage_and_rubric_t
   |> should.equal(Ok(receipt))
 }
 
+/// The classifier request goes through the caller's HTTP Gun client and
+/// its events carry the graph run's correlation.
+pub fn the_request_carries_the_runs_correlation_test() {
+  use url <- support.fixture
+  let label = "typesafe-correlation-test"
+  let http =
+    support.http_with(http_config.default() |> http_config.with_label(label))
+  let seen = process.new_subject()
+  let attachment =
+    sinal.observe(http_telemetry.event(), fn(_, metadata) {
+      case metadata.client == Some(label) {
+        True -> process.send(seen, metadata.correlation)
+        False -> Nil
+      }
+    })
+  let ticket = correlation.from_key("classifier-ticket")
+  let assert Ok(handle) =
+    graph.start(
+      runtime(memory(), support.config_over(http, url, "/v1/systemone"), allow),
+      id("correlated"),
+      "2 + 2 = 4",
+      correlation: Some(ticket),
+    )
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let _ = sinal.detach(attachment)
+  let assert Ok(graph.Snapshot(status: graph.Completed(_), ..)) =
+    graph.snapshot(handle)
+  process.receive(seen, 1000) |> should.equal(Ok(Some(ticket)))
+  Nil
+}
+
 pub fn approval_precedes_request_construction_and_the_http_call_test() {
   use url <- support.fixture
   let assert Ok(handle) =
@@ -165,10 +200,13 @@ pub fn malformed_results_rate_limits_and_lost_replies_never_route_or_retry_test(
 
 pub fn an_unsent_request_is_a_definite_failure_test() {
   use url <- support.fixture
-  let assert Ok(config) =
-    client.with_bounds(
-      support.config(url, "/v1/systemone"),
-      client.Bounds(..client.bounds(), request_bytes: 16),
+  let config =
+    support.config_over(
+      support.http_with(
+        http_config.default() |> http_config.with_max_request_body_bytes(16),
+      ),
+      url,
+      "/v1/systemone",
     )
   let assert Ok(handle) =
     graph.start(

@@ -31,12 +31,28 @@ activations; questions within a batch share one state and are independent.
 See the [decision consumer](../../consumers/decision/README.md), where LLM and
 classifier producers use the same `publish`/`revise` routing definition.
 
-Create live configuration with `client.new(key)` and supply it through fresh
-graph context. Defaults are one 20-second request, 1 MiB request and response
-bounds and 16 KiB headers. `with_bounds` and `with_endpoint` configure explicit
-limits/endpoints. Remote endpoints require verified TLS; plaintext is allowed
-only for explicit loopback fixtures. Redirects and retries are never automatic.
-Cancellation closes local work but does not assert that inference stopped.
+Create live configuration with `client.new(http, key:)` over your own
+`http_gun.Client` and supply it through fresh graph context. The request goes
+through that client view, so its bounds are HTTP Gun's: the view's request
+timeout (`http_gun.with_timeout`; the client's default is 30 s), the
+client's request and response body and header limits
+(`config.with_max_request_body_bytes`, `with_max_response_body_bytes`,
+`with_max_header_bytes`, or `http_gun.with_body_limit` on the view), and its
+destination policy. Each request is tagged with the graph run's correlation
+(`http_gun.with_correlation`), so its HTTP Gun events join the run's.
+
+```gleam
+let classifier_http =
+  http |> http_gun.with_timeout(config.After(duration.seconds(20)))
+let assert Ok(settings) = client.new(classifier_http, key: api_key)
+```
+
+`with_endpoint` points the operation elsewhere. Remote endpoints require
+verified TLS; plaintext is allowed only for explicit loopback endpoints, and
+HTTP Gun admits it only when every resolved address is loopback (a client
+for a loopback fixture also needs `config.allow_loopback`). Redirects and
+retries are never automatic. Cancellation closes local work but does not
+assert that inference stopped.
 
 Local validation and proven unsent failures are definite. All failures after
 dispatch, including HTTP error statuses, remain uncertain. Diagnostics expose

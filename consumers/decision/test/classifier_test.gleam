@@ -9,6 +9,8 @@ import gleam/list
 import gleam/option.{None}
 import gleam/time/duration
 import gleeunit/should
+import http_gun
+import http_gun/config as http_config
 import json/blueprint/codec
 
 type Server
@@ -21,7 +23,9 @@ fn stop_server(server: Server) -> Nil
 
 pub fn non_generative_decisions_use_the_same_business_routes_test() {
   let #(server, url) = start_server()
-  let assert Ok(settings) = client.new("test-key")
+  let assert Ok(http) =
+    http_gun.start(http_config.default() |> http_config.allow_loopback)
+  let assert Ok(settings) = client.new(http, key: "test-key")
   let assert Ok(settings) =
     client.with_endpoint(settings, url <> "/v1/systemone")
   [#("approve", "approved", "publish"), #("revise", "needs revision", "revise")]

@@ -1,5 +1,9 @@
 import fabric_typesafe/client
+import fabric_typesafe/internal/transport
 import gleam/list
+import gleam/option.{None}
+import http_gun
+import http_gun/config as http_config
 import json/blueprint/codec
 import json/blueprint/value
 
@@ -17,10 +21,35 @@ pub fn temp_dir() -> String
 @external(erlang, "fabric_typesafe_test_ffi", "remove_dir")
 pub fn remove_dir(path: String) -> Nil
 
+/// A client for the loopback fixture, linked to the test process.
+pub fn http() -> http_gun.Client {
+  http_with(http_config.default())
+}
+
+pub fn http_with(settings: http_config.Config) -> http_gun.Client {
+  let assert Ok(http) = http_gun.start(settings |> http_config.allow_loopback)
+  http
+}
+
 pub fn config(url: String, path: String) -> client.Config {
-  let assert Ok(config) = client.new("test-key")
+  config_over(http(), url, path)
+}
+
+pub fn config_over(
+  http: http_gun.Client,
+  url: String,
+  path: String,
+) -> client.Config {
+  let assert Ok(config) = client.new(http, key: "test-key")
   let assert Ok(config) = client.with_endpoint(config, url <> path)
   config
+}
+
+pub fn post(
+  config: client.Config,
+  body: String,
+) -> Result(transport.Response, transport.Error) {
+  transport.post(config, body, None)
 }
 
 pub fn fixture(body: fn(String) -> Nil) -> Nil {
@@ -41,7 +70,7 @@ pub fn parse(raw: String) -> value.Value {
 }
 
 pub fn stats(url: String, key: String) -> Int {
-  let assert Ok(response) = client.post(config(url, "/stats"), "{}")
+  let assert Ok(response) = post(config(url, "/stats"), "{}")
   let assert Ok(n) = codec.decode(codec.int(), field(parse(response.body), key))
   n
 }

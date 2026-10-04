@@ -17,7 +17,8 @@ on 2026-09-30. The endpoint is `POST https://api.typesafe.ai/v1/systemone` with
 Bearer authentication and a model, state and question map. State and question
 instructions may be text, objects or arrays. The public SDK catalog has Python
 and JavaScript clients; the native Gleam integration uses the same HTTP
-contract and the repository's existing Gun dependency. SDK retry defaults are
+contract over the caller's `http_gun.Client` (wave 5; it opened Gun directly
+before), whose timeouts, limits and destination policy apply. SDK retry defaults are
 not adopted.
 
 A Noul preserves the yes probability. A Choice preserves its native selected
@@ -57,8 +58,10 @@ live connections are not persisted, and restoration performs no request.
 
 Configuration is fresh context. Request construction is pure and happens only
 after the ordinary graph policy admits the operation and commits its start.
-The client uses verified TLS, bounded request/response bodies and headers, one
-absolute deadline, no redirects and no automatic retry. Explicit loopback HTTP
+The request goes through the caller's HTTP Gun client view: its verified TLS,
+request/response body and header limits, request timeout and destination
+policy apply, it carries the graph run's correlation, and HTTP Gun follows no
+redirect and retries nothing. Explicit loopback HTTP
 supports protocol tests; remote endpoints require HTTPS. The request owner
 owns the connection, so graph cancellation closes local work without claiming
 that remote inference stopped or was never billed.
