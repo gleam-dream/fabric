@@ -1,5 +1,6 @@
 //// J14–J17: explicit cancellation crosses the real remote service boundary.
 
+import fabric/approvers
 import fabric/graph
 import fabric/graph/job
 import fabric/graph/operation
@@ -7,6 +8,7 @@ import fabric/policy
 import fabric/reviewer
 import fabric/run
 import fabric/store
+import fabric/testing as fabric_testing
 import fabric_jobs_demo as demo
 import fabric_jobs_demo/client
 import fabric_jobs_demo/support
@@ -45,9 +47,14 @@ fn request(_, receipt) {
 }
 
 fn runtime(runs, request, recovery) {
-  demo.cancellation_runtime(runs, request, support.url(), recovery, fn(_, _) {
-    Ok(policy.Allow)
-  })
+  demo.cancellation_runtime(
+    runs,
+    request,
+    support.url(),
+    recovery,
+    fn(_, _) { Ok(policy.Allow) },
+    fabric_testing.trusting_approvers(),
+  )
 }
 
 fn poll(handle, reference, left) {
@@ -78,6 +85,7 @@ pub fn cancellation_requires_approval_and_acknowledgment_is_not_confirmation_tes
           _ -> Ok(policy.Allow)
         }
       },
+      fabric_testing.trusting_approvers(),
     )
   let assert Ok(handle) =
     graph.start(runtime, id("gated-stop-flow"), receipt, correlation: None)
@@ -89,7 +97,7 @@ pub fn cancellation_requires_approval_and_acknowledgment_is_not_confirmation_tes
     graph.approve(
       handle,
       approval,
-      reviewer: as_reviewer("reviewer"),
+      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
@@ -112,6 +120,7 @@ pub fn cancellation_requires_approval_and_acknowledgment_is_not_confirmation_tes
       support.url(),
       operation.ReplayInterrupted(3),
       fn(_, _) { Ok(policy.Deny("not owned")) },
+      fabric_testing.trusting_approvers(),
     )
   let assert Ok(handle) =
     graph.start(
@@ -444,4 +453,15 @@ fn open_graph(
 fn as_reviewer(subject: String) -> reviewer.Reviewer {
   let assert Ok(reviewer) = reviewer.new(subject)
   reviewer
+}
+
+/// A proof that `reviewer` answers a request waiting for `requirement`,
+/// from the trusting approvers the test's agents and runtimes are given.
+fn proof_for(
+  requirement: run.Requirement,
+  reviewer: reviewer.Reviewer,
+) -> approvers.Proof {
+  let assert Ok(proof) =
+    approvers.check(fabric_testing.trusting_approvers(), reviewer, requirement)
+  proof
 }

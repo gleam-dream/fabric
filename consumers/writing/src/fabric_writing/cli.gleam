@@ -1,6 +1,7 @@
 //// Explicit live entry point. Configuration is read from the process environment;
 //// the offline suite never invokes this module or loads a dotenv file.
 
+import fabric/approvers
 import fabric/graph
 import fabric/graph/llm
 import fabric/graph/operation
@@ -190,12 +191,14 @@ fn workflow(
   let runs =
     store.directory(process.new_name("writing-example"), directory <> "/runs")
   let assert Ok(Nil) = store.start(runs)
+  let operators = operators()
   let runtime =
     fabric_writing.runtime(
       runs,
       provider.generator(http, llm_settings(), model()),
       reviewer,
       file.publisher(directory <> "/published"),
+      operators,
     )
   let assert Ok(id) = run.parse_id(required("FABRIC_WRITING_ID"))
   let handle = case mode {
@@ -228,7 +231,7 @@ fn workflow(
         graph.approve(
           handle,
           approval,
-          reviewer: as_reviewer("reviewer"),
+          proof: operator_proof(operators, approval.requirement),
           context: Nil,
         )
       Nil
@@ -238,8 +241,8 @@ fn workflow(
         graph.reject(
           handle,
           approval,
+          proof: operator_proof(operators, approval.requirement),
           reason: "operator rejected",
-          reviewer: as_reviewer("reviewer"),
         )
       Nil
     }
@@ -293,7 +296,23 @@ fn open_graph(
   handle
 }
 
-fn as_reviewer(subject: String) -> reviewer.Reviewer {
-  let assert Ok(reviewer) = reviewer.new(subject)
-  reviewer
+/// Whoever runs this command against the run's directory answers its
+/// approval, named by `FABRIC_WRITING_OPERATOR` (default `operator`): the
+/// terminal is the authentication.
+fn operators() -> approvers.Approvers(String) {
+  use operator, _requirement <- approvers.new("writing-cli-operator")
+  reviewer.new(operator)
+  |> result.map_error(fn(error) {
+    approvers.NotAuthenticated(reviewer.describe_error(error))
+  })
+}
+
+fn operator_proof(
+  operators: approvers.Approvers(String),
+  requirement: run.Requirement,
+) -> approvers.Proof {
+  let operator =
+    result.unwrap(environment("FABRIC_WRITING_OPERATOR"), "operator")
+  let assert Ok(proof) = approvers.check(operators, operator, requirement)
+  proof
 }

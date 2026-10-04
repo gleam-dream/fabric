@@ -2,6 +2,7 @@
 //// backend. Approval survives store loss and completion releases its lease.
 
 import fabric
+import fabric/approvers
 import fabric/budget
 import fabric/graph
 import fabric/graph/agent as agent_node
@@ -17,6 +18,7 @@ import fabric/run
 import fabric/store
 import fabric/store/backend
 import fabric/sweeper
+import fabric/testing as fabric_testing
 import fabric/tool
 import fabric_postgres
 import fabric_postgres/agents
@@ -74,6 +76,7 @@ pub fn a_graph_survives_store_restart_and_completes_on_postgres_test() {
         graph.new(spec, runs, fn(_) { Nil }, fn(_, _) {
           Ok(policy.RequireApproval(run.Requirement("increment", 1)))
         })
+        |> graph.with_approvers(fabric_testing.trusting_approvers())
         |> graph.build
         |> should.be_ok
       let assert Ok(handle) = graph.start(runtime, id, 41, correlation: None)
@@ -87,6 +90,7 @@ pub fn a_graph_survives_store_restart_and_completes_on_postgres_test() {
   let assert Ok(Nil) = store.start(runs)
   let runtime =
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.with_approvers(fabric_testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let handle = open_graph(runtime, id)
@@ -95,7 +99,7 @@ pub fn a_graph_survives_store_restart_and_completes_on_postgres_test() {
     graph.approve(
       handle,
       approval,
-      reviewer: as_reviewer("reviewer"),
+      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(_) = graph.await(handle, within: duration.seconds(30))
@@ -143,6 +147,7 @@ pub fn a_signal_wait_releases_its_lease_and_another_store_consumes_it_once_test(
       let assert Ok(Nil) = store.start(runs)
       let runtime =
         graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.with_approvers(fabric_testing.trusting_approvers())
         |> graph.build
         |> should.be_ok
       let assert Ok(handle) = graph.start(runtime, id, 41, correlation: None)
@@ -162,6 +167,7 @@ pub fn a_signal_wait_releases_its_lease_and_another_store_consumes_it_once_test(
   let handle =
     open_graph(
       graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.with_approvers(fabric_testing.trusting_approvers())
         |> graph.build
         |> should.be_ok,
       id,
@@ -215,6 +221,7 @@ pub fn a_job_wait_survives_store_loss_without_holding_a_lease_test() {
       let assert Ok(Nil) = store.start(runs)
       let runtime =
         graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.with_approvers(fabric_testing.trusting_approvers())
         |> graph.build
         |> should.be_ok
       let assert Ok(handle) =
@@ -239,6 +246,7 @@ pub fn a_job_wait_survives_store_loss_without_holding_a_lease_test() {
   let handle =
     open_graph(
       graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.with_approvers(fabric_testing.trusting_approvers())
         |> graph.build
         |> should.be_ok,
       id,
@@ -289,6 +297,7 @@ pub fn scheduled_job(runs, every, read) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.with_approvers(fabric_testing.trusting_approvers())
   |> graph.build
   |> should.be_ok
 }
@@ -329,6 +338,7 @@ fn owned_job(runs, read, request) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.with_approvers(fabric_testing.trusting_approvers())
   |> graph.build
   |> should.be_ok
 }
@@ -534,7 +544,7 @@ pub fn an_idle_parent_discovers_a_completed_child_after_losing_its_wakeup_test()
     graph.approve(
       child,
       approval,
-      reviewer: as_reviewer("reviewer"),
+      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(child, within: duration.seconds(30))
@@ -604,7 +614,10 @@ fn managed_pair_with(
       |> definition.with_max_activations(1),
     )
   let child =
-    graph.new(spec, runs, fn(_) { Nil }, policy) |> graph.build |> should.be_ok
+    graph.new(spec, runs, fn(_) { Nil }, policy)
+    |> graph.with_approvers(fabric_testing.trusting_approvers())
+    |> graph.build
+    |> should.be_ok
   let node =
     definition.node(
       node_id,
@@ -626,6 +639,7 @@ fn managed_pair_with(
     )
   #(
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+      |> graph.with_approvers(fabric_testing.trusting_approvers())
       |> graph.build
       |> should.be_ok,
     child,
@@ -669,7 +683,7 @@ pub fn a_managed_subgraph_adopts_its_approved_child_after_postgres_restart_test(
     graph.approve(
       child_handle,
       approval,
-      reviewer: as_reviewer("reviewer"),
+      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.seconds(30))
@@ -812,6 +826,7 @@ fn managed_agent(runs: store.Store, gate: agents.Gate) {
     )
   #(
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+      |> graph.with_approvers(fabric_testing.trusting_approvers())
       |> graph.build
       |> should.be_ok,
     agent,
@@ -859,7 +874,12 @@ pub fn a_managed_agent_keeps_its_approval_and_identity_after_postgres_restart_te
   let assert Ok(agent) = agent_node.child(handle, reference.activation, agent)
   fabric.id(agent) |> should.equal(reference.child)
   let assert Ok(_) =
-    fabric.approve(agent, approval.reference, as_reviewer("reviewer"), Nil)
+    fabric.approve(
+      agent,
+      approval.reference,
+      proof: proof_for(approval.reference.requirement, as_reviewer("reviewer")),
+      context: Nil,
+    )
   let arrival = agents.arrival(gate)
   arrival.amount |> should.equal(120)
   agents.release(arrival)
@@ -916,7 +936,12 @@ pub fn a_restarted_managed_agent_cannot_reset_its_family_work_budget_test() {
   let handle = open_graph(parent, id)
   graph.recover(handle) |> should.be_ok
   let assert Ok(worker) = agent_node.child(handle, reference.activation, worker)
-  fabric.approve(worker, approval.reference, as_reviewer("reviewer"), Nil)
+  fabric.approve(
+    worker,
+    approval.reference,
+    proof: proof_for(approval.reference.requirement, as_reviewer("reviewer")),
+    context: Nil,
+  )
   |> should.be_ok
   fabric.await(worker, within: duration.seconds(30))
   |> should.equal(
@@ -964,7 +989,12 @@ pub fn a_registered_graph_recovers_its_agent_after_postgres_store_loss_test() {
         agent_node.child(handle, reference.activation, worker)
       #(handle, worker, approval)
     })
-  fabric.approve(worker, approval.reference, as_reviewer("reviewer"), Nil)
+  fabric.approve(
+    worker,
+    approval.reference,
+    proof: proof_for(approval.reference.requirement, as_reviewer("reviewer")),
+    context: Nil,
+  )
   |> should.be_ok
   let _started = agents.arrival(gate)
   agents.kill(owner)
@@ -1026,7 +1056,12 @@ pub fn canceled_agent_evidence_settles_after_postgres_restart_test() {
   let assert graph.Child(reference, child.AgentInput([approval], [])) = waiting
   let assert Ok(worker) = agent_node.child(handle, reference.activation, worker)
   let assert Ok(_) =
-    fabric.approve(worker, approval.reference, as_reviewer("reviewer"), Nil)
+    fabric.approve(
+      worker,
+      approval.reference,
+      proof: proof_for(approval.reference.requirement, as_reviewer("reviewer")),
+      context: Nil,
+    )
   let _started = agents.arrival(gate)
   let assert Ok(_) = graph.cancel(handle)
   let assert Ok(done) = graph.await(handle, within: duration.seconds(30))
@@ -1078,4 +1113,15 @@ fn open_graph(
 ) -> graph.Handle(context, state, answer) {
   let assert Ok(handle) = graph.open(runtime, id)
   handle
+}
+
+/// A proof that `reviewer` answers a request waiting for `requirement`,
+/// from the trusting approvers the test's agents and runtimes are given.
+fn proof_for(
+  requirement: run.Requirement,
+  reviewer: reviewer.Reviewer,
+) -> approvers.Proof {
+  let assert Ok(proof) =
+    approvers.check(fabric_testing.trusting_approvers(), reviewer, requirement)
+  proof
 }

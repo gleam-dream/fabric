@@ -586,7 +586,10 @@ pub fn an_answer_racing_the_parent_cancellation_starts_nothing_test() {
         fabric.approve(
           run,
           pending.reference,
-          reviewer: support.reviewer("reviewer"),
+          proof: support.proof(
+            pending.reference.requirement,
+            support.reviewer("reviewer"),
+          ),
           context: "recheck",
         ),
       )

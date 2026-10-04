@@ -143,7 +143,10 @@ pub fn a_late_answer_is_approval_expired_test() {
   fabric.approve(
     handle,
     pending.reference,
-    reviewer: support.reviewer("alice"),
+    proof: support.proof(
+      pending.reference.requirement,
+      support.reviewer("alice"),
+    ),
     context: Nil,
   )
   |> should.equal(Error(fabric.ApprovalExpired))
@@ -152,8 +155,11 @@ pub fn a_late_answer_is_approval_expired_test() {
   fabric.reject(
     handle,
     pending.reference,
+    proof: support.proof(
+      pending.reference.requirement,
+      support.reviewer("alice"),
+    ),
     reason: "too late",
-    reviewer: support.reviewer("alice"),
   )
   |> should.equal(Error(fabric.ApprovalExpired))
   ended_unpaid(handle, probe)
@@ -167,7 +173,10 @@ pub fn an_answer_in_time_is_applied_test() {
     fabric.approve(
       handle,
       pending.reference,
-      reviewer: support.reviewer("alice"),
+      proof: support.proof(
+        pending.reference.requirement,
+        support.reviewer("alice"),
+      ),
       context: Nil,
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -244,7 +253,10 @@ pub fn deadlines_follow_the_store_clock_test() {
   fabric.approve(
     handle,
     pending.reference,
-    reviewer: support.reviewer("alice"),
+    proof: support.proof(
+      pending.reference.requirement,
+      support.reviewer("alice"),
+    ),
     context: Nil,
   )
   |> should.equal(Error(fabric.ApprovalExpired))

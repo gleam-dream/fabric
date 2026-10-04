@@ -134,7 +134,7 @@ fn approve(
   fabric.approve(
     run,
     pending.reference,
-    reviewer: support.reviewer(who),
+    proof: support.proof(pending.reference.requirement, support.reviewer(who)),
     context: who,
   )
 }

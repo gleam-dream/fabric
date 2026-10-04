@@ -182,13 +182,15 @@ pub type Event {
   CancelledResult(Reference, output: String)
   FailedBody(Reference, Fault)
   Unresolved(Reference, Problem)
+  /// `verifier` names the approvers that verified `reviewer`.
   Approved(
     Approval,
     Result(policy.Decision, String),
     reviewer: Reviewer,
+    verifier: String,
     expires: Option(Int),
   )
-  Rejected(Approval, reason: String, reviewer: Reviewer)
+  Rejected(Approval, reason: String, reviewer: Reviewer, verifier: String)
   /// The approval request's deadline passed at `now` (store clock).
   ExpireApproval(Approval, now: Int)
   Reconciled(activation: Int, attempt: Int, output: String, decision: Decision)
@@ -638,12 +640,12 @@ pub fn step(
       use _ <- result.try(matches(state, activation, ref))
       Ok(ended(state, Cancelled(activation, UnresolvedCancellation(problem))))
     }
-    Approved(answer, decision, reviewer, expires),
+    Approved(answer, decision, reviewer, verifier, expires),
       AwaitingApproval(activation, current)
     -> {
       use _ <- result.try(approval_matches(answer, current))
       let activation =
-        answered(activation, current, run.Approve, Some(reviewer))
+        answered(activation, current, run.Approve, Some(#(reviewer, verifier)))
       case decision {
         Ok(policy.Allow) -> Ok(queue(state, activation))
         Ok(policy.RequireApproval(requirement))
@@ -652,10 +654,17 @@ pub fn step(
         decision -> inspect(state, activation, decision, expires)
       }
     }
-    Rejected(answer, reason, reviewer), AwaitingApproval(activation, current) -> {
+    Rejected(answer, reason, reviewer, verifier),
+      AwaitingApproval(activation, current)
+    -> {
       use _ <- result.try(approval_matches(answer, current))
       let activation =
-        answered(activation, current, run.Reject(reason), Some(reviewer))
+        answered(
+          activation,
+          current,
+          run.Reject(reason),
+          Some(#(reviewer, verifier)),
+        )
       Ok(ended(state, Failed(activation, Denied(reason))))
     }
     ExpireApproval(answer, now), AwaitingApproval(activation, current) -> {
@@ -766,12 +775,18 @@ fn answered(
   activation: Activation,
   approval: Approval,
   answer: run.Answer,
-  reviewer: Option(Reviewer),
+  answerer: Option(#(Reviewer, String)),
 ) -> Activation {
   Activation(
     ..activation,
     approvals: list.append(activation.approvals, [
-      run.Approval(approval.requirement, approval.revision, answer, reviewer),
+      run.Approval(
+        approval.requirement,
+        approval.revision,
+        answer,
+        option.map(answerer, fn(answerer) { answerer.0 }),
+        option.map(answerer, fn(answerer) { answerer.1 }),
+      ),
     ]),
   )
 }

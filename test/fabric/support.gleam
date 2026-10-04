@@ -1,6 +1,7 @@
 //// Shorthands that keep the tests about behaviour rather than set-up.
 
 import fabric/agent.{type Agent, type Spec}
+import fabric/approvers.{type Proof}
 import fabric/budget
 import fabric/graph
 import fabric/graph/definition
@@ -9,9 +10,12 @@ import fabric/graph/operation
 import fabric/internal/graph/runtime as graph_runtime
 import fabric/policy
 import fabric/reviewer.{type Reviewer}
-import fabric/run.{type ActionId, type DefinitionId, type RunId}
+import fabric/run.{
+  type ActionId, type DefinitionId, type Requirement, type RunId,
+}
 import fabric/store.{type Store}
 import fabric/store/conformance
+import fabric/testing
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -27,6 +31,14 @@ pub fn id(text: String) -> RunId {
 pub fn reviewer(subject: String) -> Reviewer {
   let assert Ok(reviewer) = reviewer.new(subject)
   reviewer
+}
+
+/// A proof that `reviewer` answers a request waiting for `requirement`,
+/// from the trusting approvers (`testing.trusting_approvers`).
+pub fn proof(requirement: Requirement, reviewer: Reviewer) -> Proof {
+  let assert Ok(proof) =
+    approvers.check(testing.trusting_approvers(), reviewer, requirement)
+  proof
 }
 
 /// The graph run `id` opened under `runtime`, which must fit it.
@@ -123,9 +135,11 @@ pub fn child_id(parent: RunId, n: Int) -> RunId {
   id(run.id_to_string(parent) <> "-" <> int.to_string(n))
 }
 
-/// The agent `spec` describes, which must be valid.
+/// The agent `spec` describes, which must be valid, answered by the
+/// trusting approvers (`testing.trusting_approvers`).
 pub fn agent(spec: Spec(context, answer)) -> Agent(context, answer) {
-  let assert Ok(agent) = agent.build(spec)
+  let assert Ok(agent) =
+    spec |> agent.with_approvers(testing.trusting_approvers()) |> agent.build
   agent
 }
 

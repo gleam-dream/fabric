@@ -1,9 +1,11 @@
+import fabric/approvers
 import fabric/graph
 import fabric/graph/definition
 import fabric/policy
 import fabric/reviewer
 import fabric/run
 import fabric/store
+import fabric/testing as fabric_testing
 import fabric_typesafe
 import fabric_typesafe/client
 import fabric_typesafe/question
@@ -85,7 +87,10 @@ fn runtime(
       )
       |> definition.with_max_activations(1),
     )
-  graph.new(spec, runs, fn(_) { config }, policy) |> graph.build |> should.be_ok
+  graph.new(spec, runs, fn(_) { config }, policy)
+  |> graph.with_approvers(fabric_testing.trusting_approvers())
+  |> graph.build
+  |> should.be_ok
 }
 
 pub fn an_http_classifier_batch_retains_native_answers_models_usage_and_rubric_test() {
@@ -166,7 +171,7 @@ pub fn approval_precedes_request_construction_and_the_http_call_test() {
   graph.approve(
     handle,
     approval,
-    reviewer: as_reviewer("reviewer"),
+    proof: proof_for(approval.requirement, as_reviewer("reviewer")),
     context: support.config(url, "/v1/systemone"),
   )
   |> should.be_ok
@@ -382,4 +387,15 @@ fn open_graph(
 fn as_reviewer(subject: String) -> reviewer.Reviewer {
   let assert Ok(reviewer) = reviewer.new(subject)
   reviewer
+}
+
+/// A proof that `reviewer` answers a request waiting for `requirement`,
+/// from the trusting approvers the test's agents and runtimes are given.
+fn proof_for(
+  requirement: run.Requirement,
+  reviewer: reviewer.Reviewer,
+) -> approvers.Proof {
+  let assert Ok(proof) =
+    approvers.check(fabric_testing.trusting_approvers(), reviewer, requirement)
+  proof
 }

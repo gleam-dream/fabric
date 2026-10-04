@@ -10,6 +10,7 @@ import fabric/run
 import fabric/store
 import fabric/support
 import fabric/support/restart
+import fabric/testing
 import fabric/tool
 import gleam/erlang/process
 import gleam/list
@@ -70,6 +71,7 @@ fn member_with_policy(
       |> definition.with_max_activations(1),
     )
   graph.new(definition, runs, fn(_) { Nil }, policy)
+  |> graph.with_approvers(testing.trusting_approvers())
   |> graph.build
   |> should.be_ok
 }
@@ -111,6 +113,7 @@ fn paired_with(
       |> definition.with_max_activations(1),
     )
   graph.new(definition, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.with_approvers(testing.trusting_approvers())
   |> graph.build
   |> should.be_ok
 }
@@ -154,6 +157,7 @@ fn mapped(
       |> definition.with_max_activations(1),
     )
   graph.new(definition, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.with_approvers(testing.trusting_approvers())
   |> graph.build
   |> should.be_ok
 }
@@ -314,7 +318,7 @@ pub fn map_restart_keeps_completed_waiting_and_pending_members_distinct_test() {
     graph.approve(
       second,
       approval,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -595,7 +599,7 @@ pub fn partial_pair_survives_store_loss_and_joins_the_same_children_test() {
     graph.approve(
       right_handle,
       approval,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))

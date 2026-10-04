@@ -13,6 +13,7 @@ import fabric/support
 import fabric/support/flaky
 import fabric/support/probe
 import fabric/support/restart
+import fabric/testing
 import fabric/tool
 import gleam/erlang/process
 import gleam/list
@@ -22,7 +23,10 @@ import gleeunit/should
 import json/blueprint/codec
 
 fn runtime(runs, read) {
-  runtime_spec(runs, read) |> graph.build |> should.be_ok
+  runtime_spec(runs, read)
+  |> graph.with_approvers(testing.trusting_approvers())
+  |> graph.build
+  |> should.be_ok
 }
 
 fn runtime_spec(runs, read) {
@@ -35,7 +39,10 @@ fn runtime_spec(runs, read) {
 }
 
 fn runtime_with(runs, read, gate, accept) {
-  runtime_with_spec(runs, read, gate, accept) |> graph.build |> should.be_ok
+  runtime_with_spec(runs, read, gate, accept)
+  |> graph.with_approvers(testing.trusting_approvers())
+  |> graph.build
+  |> should.be_ok
 }
 
 fn runtime_with_spec(runs, read, gate, accept) {
@@ -137,7 +144,7 @@ pub fn job_observation_requires_admission_and_a_current_reference_test() {
     graph.approve(
       handle,
       approval,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(approved) =
@@ -218,6 +225,7 @@ pub fn an_observer_timeout_preserves_the_wait_and_reuses_its_work_grant_test() {
           |> budget.with_children(1)
           |> budget.with_depth(1),
         )
+        |> graph.with_approvers(testing.trusting_approvers())
         |> graph.build
         |> should.be_ok,
       id,
@@ -371,6 +379,7 @@ pub fn managed_parents_park_while_their_child_observes_a_job_test() {
     )
   let parent =
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -436,6 +445,7 @@ fn with_successor(runs, read, calls) {
       |> definition.with_max_activations(2),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.with_approvers(testing.trusting_approvers())
   |> graph.build
   |> should.be_ok
 }

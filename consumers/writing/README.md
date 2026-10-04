@@ -74,14 +74,15 @@ Billing is left unknown; the retained report explains any dated price estimate.
 For manual operation, run `gleam run -m fabric_writing/cli` inside this package
 with `FABRIC_WRITING_REVIEWER` set to `llm` or `typesafe` and:
 
-| Setting                            | Meaning                                                     |
-| ---------------------------------- | ----------------------------------------------------------- |
-| `FABRIC_WRITING_MODE`              | `start`, `inspect`, `approve` or `reject`                   |
-| `FABRIC_WRITING_DIRECTORY`         | Directory holding the run and output artifact               |
-| `FABRIC_WRITING_ID`                | Stable run ID, reused when reattaching                      |
-| `FABRIC_WRITING_SOURCE`            | Source file, required only for `start`                      |
-| `FABRIC_WRITING_BRIEF`             | Writing instructions, required only for `start`             |
-| `FABRIC_WRITING_EXPECTED_REVISION` | Revision returned by `inspect`, required for approve/reject |
+| Setting                            | Meaning                                                                                                                  |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `FABRIC_WRITING_MODE`              | `start`, `inspect`, `approve` or `reject`                                                                                |
+| `FABRIC_WRITING_DIRECTORY`         | Directory holding the run and output artifact                                                                            |
+| `FABRIC_WRITING_ID`                | Stable run ID, reused when reattaching                                                                                   |
+| `FABRIC_WRITING_SOURCE`            | Source file, required only for `start`                                                                                   |
+| `FABRIC_WRITING_BRIEF`             | Writing instructions, required only for `start`                                                                          |
+| `FABRIC_WRITING_EXPECTED_REVISION` | Revision returned by `inspect`, required for approve/reject                                                              |
+| `FABRIC_WRITING_OPERATOR`          | Who answers an approval (default `operator`); the terminal is the authentication, so the CLI's approvers accept any name |
 
 The manual entry point reads the process environment, not `.env.local`.
 Inspect the draft before sending its revision back with an approval. A changed

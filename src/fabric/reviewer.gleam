@@ -1,18 +1,21 @@
 //// The identity that answers an approval request.
 ////
-//// `fabric.approve`, `fabric.reject`, `graph.approve` and `graph.reject`
-//// require a `Reviewer`, and Fabric records it with the answer
-//// (`run.Approval.reviewer`). Fabric does not authenticate it: the
-//// application builds it from an identity it has already authenticated and
-//// authorized, such as the subject and issuer of a verified OpenID Connect
-//// ID token or session.
+//// An answer (`fabric.approve`, `fabric.reject`, `graph.approve`,
+//// `graph.reject`) does not take a reviewer: it takes an
+//// `approvers.Proof`, and the reviewer it records
+//// (`run.Approval.reviewer`) is the one the approvers' `verify` function
+//// returned. A reviewer is that function's building block: it names the
+//// identity a credential authenticated, such as the subject and issuer of
+//// a verified access token.
 ////
 //// ```gleam
-//// use reviewer <- result.try(
-////   reviewer.new(claims.subject)
-////   |> result.try(reviewer.with_issuer(_, claims.issuer)),
-//// )
-//// fabric.approve(handle, pending.reference, reviewer:, context:)
+//// use token, requirement <- approvers.new("sso")
+//// use claims <- result.try(verify_token(token, requirement))
+//// reviewer.new(claims.subject)
+//// |> result.try(reviewer.with_issuer(_, claims.issuer))
+//// |> result.map_error(fn(error) {
+////   approvers.NotAuthenticated(reviewer.describe_error(error))
+//// })
 //// ```
 ////
 //// A subject and an issuer come from a token, so they are checked: each is

@@ -1,6 +1,7 @@
 //// Submit-and-return graph: its answer is an acceptance receipt. The caller
 //// chooses safe interrupted replay only when the service deduplicates keys.
 
+import fabric/approvers.{type Approvers}
 import fabric/graph
 import fabric/graph/definition
 import fabric/graph/job
@@ -271,6 +272,7 @@ pub fn cancellation_runtime(
   url: String,
   recovery: operation.Recovery,
   gate: policy.Policy(Nil),
+  approvers: Approvers(credential),
 ) -> graph.Runtime(Nil, client.Receipt, client.CancellationOutcome) {
   let stop_id = definition.node_id("request-stop")
   let wait_id = definition.node_id("confirm-stop")
@@ -339,6 +341,8 @@ pub fn cancellation_runtime(
       |> definition.with_max_activations(2),
     )
   let assert Ok(runtime) =
-    graph.new(spec, runs, fn(_) { Nil }, gate) |> graph.build
+    graph.new(spec, runs, fn(_) { Nil }, gate)
+    |> graph.with_approvers(approvers)
+    |> graph.build
   runtime
 }

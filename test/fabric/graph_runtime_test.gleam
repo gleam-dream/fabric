@@ -13,6 +13,7 @@ import fabric/support/flaky
 import fabric/support/nodes
 import fabric/support/probe
 import fabric/support/restart
+import fabric/testing
 import fabric/tool
 import gleam/erlang/process
 import gleam/int
@@ -94,6 +95,7 @@ pub fn public_runtime_executes_a_typed_bounded_generation_review_loop_test() {
       fn(_) { Nil },
       fn(_, _) { Ok(policy.Allow) },
     )
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -128,6 +130,7 @@ pub fn a_shared_work_budget_bounds_graph_cycles_before_the_next_body_test() {
           |> budget.with_children(0)
           |> budget.with_depth(0),
         )
+        |> graph.with_approvers(testing.trusting_approvers())
         |> graph.build
         |> should.be_ok,
       run_id("bounded-loop"),
@@ -149,6 +152,7 @@ pub fn a_shared_work_budget_bounds_graph_cycles_before_the_next_body_test() {
           |> budget.with_children(0)
           |> budget.with_depth(0),
         )
+        |> graph.with_approvers(testing.trusting_approvers())
         |> graph.build
         |> should.be_ok,
       run_id("zero-work"),
@@ -185,6 +189,7 @@ pub fn graph_approval_after_restart_reuses_its_reserved_work_unit_test() {
               |> budget.with_children(0)
               |> budget.with_depth(0),
             )
+            |> graph.with_approvers(testing.trusting_approvers())
             |> graph.build
             |> should.be_ok,
           run_id("budget-approval"),
@@ -201,6 +206,7 @@ pub fn graph_approval_after_restart_reuses_its_reserved_work_unit_test() {
     graph.new(spec, support.directory(dir), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let handle = support.open_graph(runtime, run_id("budget-approval"))
@@ -209,7 +215,7 @@ pub fn graph_approval_after_restart_reuses_its_reserved_work_unit_test() {
     graph.approve(
       handle,
       approval,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -237,6 +243,7 @@ pub fn a_saved_decision_survives_process_loss_without_repeating_its_body_test() 
             _ -> Ok(policy.Allow)
           }
         })
+        |> graph.with_approvers(testing.trusting_approvers())
         |> graph.build
         |> should.be_ok
       let assert Ok(handle) =
@@ -255,6 +262,7 @@ pub fn a_saved_decision_survives_process_loss_without_repeating_its_body_test() 
     graph.new(spec, support.directory(dir), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let handle = support.open_graph(runtime, run_id("saved-decision"))
@@ -263,7 +271,7 @@ pub fn a_saved_decision_survives_process_loss_without_repeating_its_body_test() 
     graph.approve(
       handle,
       approval,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -286,6 +294,7 @@ pub fn an_interrupted_effect_blocks_recovery_until_reconciled_test() {
       let runs = support.directory(dir)
       let runtime =
         graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.with_approvers(testing.trusting_approvers())
         |> graph.build
         |> should.be_ok
       let assert Ok(handle) =
@@ -298,6 +307,7 @@ pub fn an_interrupted_effect_blocks_recovery_until_reconciled_test() {
     graph.new(spec, support.directory(dir), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let handle = support.open_graph(runtime, run_id("interrupted"))
@@ -356,6 +366,7 @@ pub fn approval_uses_fresh_context_and_passes_it_to_the_admitted_body_test() {
       },
       fn(_, _) { Ok(policy.RequireApproval(run.Requirement("publish", 1))) },
     )
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -368,7 +379,7 @@ pub fn approval_uses_fresh_context_and_passes_it_to_the_admitted_body_test() {
     graph.approve(
       handle,
       approval,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
       context: "publisher",
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -388,6 +399,7 @@ pub fn cancel_stops_a_started_body_and_preserves_uncertainty_test() {
     graph.new(spec, support.store(), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -446,6 +458,7 @@ pub fn denial_and_a_crashed_policy_never_enter_the_operation_test() {
     graph.new(effect(ledger), support.store(), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Deny("no permission"))
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -456,6 +469,7 @@ pub fn denial_and_a_crashed_policy_never_enter_the_operation_test() {
     graph.new(effect(ledger), support.store(), fn(_) { Nil }, fn(_, _) {
       panic as "policy crashed"
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -476,6 +490,7 @@ pub fn runtime_stops_cycles_at_the_saved_activation_bound_test() {
     graph.new(spec, support.store(), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -498,6 +513,7 @@ pub fn an_unconfirmed_start_fence_never_releases_the_body_test() {
     graph.new(effect(ledger), flaky.store(backend), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -520,6 +536,7 @@ pub fn lost_write_acknowledgements_do_not_repeat_an_effect_test() {
     graph.new(effect(ledger), flaky.store(backend), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -540,6 +557,7 @@ pub fn cancellation_during_a_held_policy_withdraws_the_pending_command_test() {
     |> graph.with_callback_timeout(duration.milliseconds(5000))
     |> graph.with_operation_timeout(run.After(duration.milliseconds(5000)))
     |> graph.with_command_timeout(duration.milliseconds(10))
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -573,6 +591,7 @@ pub fn operation_timeout_blocks_with_uncertainty_and_kills_the_body_test() {
     |> graph.with_callback_timeout(duration.milliseconds(1000))
     |> graph.with_operation_timeout(run.After(duration.milliseconds(20)))
     |> graph.with_command_timeout(duration.milliseconds(1000))
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -616,6 +635,7 @@ pub fn cancelled_reconciliation_retains_output_without_calling_a_broken_route_te
     graph.new(spec, support.store(), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -662,6 +682,7 @@ pub fn replay_after_process_loss_is_bounded_and_keeps_the_logical_identity_test(
       let runs = support.directory(dir)
       let runtime =
         graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.with_approvers(testing.trusting_approvers())
         |> graph.build
         |> should.be_ok
       let assert Ok(_) =
@@ -675,6 +696,7 @@ pub fn replay_after_process_loss_is_bounded_and_keeps_the_logical_identity_test(
       let runs = support.directory(dir)
       let runtime =
         graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.with_approvers(testing.trusting_approvers())
         |> graph.build
         |> should.be_ok
       let assert Ok(_) =
@@ -687,6 +709,7 @@ pub fn replay_after_process_loss_is_bounded_and_keeps_the_logical_identity_test(
     graph.new(spec, support.directory(dir), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(blocked) =
@@ -712,6 +735,7 @@ pub fn a_draining_graph_finishes_its_body_and_hands_off_the_saved_successor_test
   let application = restart.application(runs)
   let runtime =
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -725,6 +749,7 @@ pub fn a_draining_graph_finishes_its_body_and_hands_off_the_saved_successor_test
     graph.new(spec, support.directory(dir), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let handle = support.open_graph(runtime, graph.id(handle))
@@ -758,6 +783,7 @@ pub fn a_live_foreign_lease_is_not_taken_by_graph_recovery_test() {
     ))
   let runtime =
     graph.new(spec, first, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -767,6 +793,7 @@ pub fn a_live_foreign_lease_is_not_taken_by_graph_recovery_test() {
   let elsewhere =
     support.open_graph(
       graph.new(spec, second, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.with_approvers(testing.trusting_approvers())
         |> graph.build
         |> should.be_ok,
       graph.id(handle),
@@ -789,6 +816,7 @@ pub fn a_start_fence_that_lands_late_is_reconciled_without_running_the_body_test
     graph.new(effect(ledger), flaky.store(backend), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -813,6 +841,7 @@ pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
         Ok(policy.RequireApproval(run.Requirement("publish", version + 1)))
       },
     )
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -825,7 +854,7 @@ pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
     graph.approve(
       handle,
       first,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(first.requirement, support.reviewer("reviewer")),
       context: 1,
     )
   let assert Ok(changed) = graph.snapshot(handle)
@@ -836,7 +865,7 @@ pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
     graph.approve(
       handle,
       first,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(first.requirement, support.reviewer("reviewer")),
       context: 1,
     )
   probe.entries(ledger) |> should.equal([])
@@ -844,7 +873,7 @@ pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
     graph.approve(
       handle,
       second,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(second.requirement, support.reviewer("reviewer")),
       context: 1,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
@@ -859,6 +888,7 @@ pub fn incompatible_definitions_are_refused_but_do_not_prevent_cancellation_test
     graph.new(effect(ledger), runs, fn(_) { Nil }, fn(_, _) {
       Ok(policy.RequireApproval(run.Requirement("publish", 1)))
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -877,6 +907,7 @@ pub fn incompatible_definitions_are_refused_but_do_not_prevent_cancellation_test
     ))
   let changed =
     graph.new(changed, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   graph.open(changed, graph.id(handle))
@@ -907,6 +938,7 @@ pub fn losing_a_lease_kills_the_graph_body_before_recovery_test() {
     ))
   let runtime =
     graph.new(spec, first, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -927,6 +959,7 @@ pub fn losing_a_lease_kills_the_graph_body_before_recovery_test() {
   let handle =
     support.open_graph(
       graph.new(spec, second, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.with_approvers(testing.trusting_approvers())
         |> graph.build
         |> should.be_ok,
       graph.id(handle),
@@ -942,6 +975,7 @@ pub fn concurrent_starts_of_one_identity_release_one_body_test() {
     graph.new(effect(ledger), support.store(), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let answers = process.new_subject()
@@ -983,6 +1017,7 @@ pub fn an_uncommitted_routing_decision_does_not_admit_its_successor_test() {
       probe.record(admissions, support.node(action))
       Ok(policy.Allow)
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -1073,6 +1108,7 @@ pub fn restart_uses_the_saved_branch_even_when_the_decision_producer_changes_its
             _ -> Ok(policy.Allow)
           }
         })
+        |> graph.with_approvers(testing.trusting_approvers())
         |> graph.build
         |> should.be_ok
       let assert Ok(handle) =
@@ -1096,6 +1132,7 @@ pub fn restart_uses_the_saved_branch_even_when_the_decision_producer_changes_its
     graph.new(spec, support.directory(dir), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let handle = support.open_graph(runtime, graph.id(handle))
@@ -1103,7 +1140,7 @@ pub fn restart_uses_the_saved_branch_even_when_the_decision_producer_changes_its
     graph.approve(
       handle,
       approval,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))

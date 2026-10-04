@@ -11,6 +11,55 @@ Wave 5 is described with before/after snippets in
 [docs/migration-wave-5.md](docs/migration-wave-5.md), round 5 in
 [docs/migration-round-5.md](docs/migration-round-5.md).
 
+### Wave 5, round 8: approvers and proofs
+
+#### Changed
+
+- **Breaking:** `fabric.approve(run, ref, proof:, context:)`,
+  `fabric.reject(run, ref, proof:, reason:)`,
+  `graph.approve(handle, ref, proof:, context:)` and
+  `graph.reject(handle, ref, proof:, reason:)` take an `approvers.Proof`
+  instead of a `reviewer.Reviewer`; `reject`'s labelled arguments are now
+  `proof:` then `reason:`. A proof is made only by `approvers.check`, with
+  the approvers given to the agent (`agent.with_approvers`) or graph runtime
+  (`graph.with_approvers`), for the request's requirement. Fabric no longer
+  takes a bare reviewer that any code could build.
+- **Breaking:** an agent or graph runtime without approvers refuses every
+  answer: `fabric.ProofRefused(approvers.NoApprovers)`,
+  `graph.ProofRefused(approvers.NoApprovers)`. Its requests wait until they
+  expire or the run is cancelled; a run opened with an agent value that has
+  approvers is answered as usual.
+- **Breaking:** `run.Approval` gains `verifier: Option(String)`, the name of
+  the approvers that verified the answer. Positional construction of
+  `run.Approval` needs the fifth argument; reads by label are unchanged.
+- `fabric.Error` and `graph.Error` gain `ProofRefused(approvers.ProofError)`,
+  classified `Refused`.
+
+#### Added
+
+- `fabric/approvers`: `Approvers(credential)`, `new(name, verify)`,
+  `with_proof_lifetime` (default 60 s), `name`, `check`, `accept`, the
+  opaque `Proof` with `reviewer`, `verifier` and `requirement`, `Denial`
+  (`NotAuthenticated`, `NotAuthorized`, `Unavailable`) with
+  `describe_denial`, and `ProofError` (`NoApprovers`, `OtherApprovers`,
+  `OtherRequirement`, `ProofExpired`) with `describe_proof_error`. A proof is
+  accepted only by the approvers value that made it (each `new` mints its
+  own identity), for the requirement it was checked for, within the
+  lifetime of the receiving agent's approvers.
+- `agent.with_approvers`, `graph.with_approvers`. A sub-agent without
+  approvers of its own is answered with its parent's.
+- `testing.trusting_approvers()`: approvers whose credential is the
+  reviewer itself, for tests; every call returns the same approvers.
+- The answer's record stores `"verifier"`. Records written before it (a
+  string reviewer, a typed reviewer with an issuer, or none) read with no
+  verifier and stay answerable
+  (`test/fixtures/records/pre-round-8-suspended.json`).
+- The warden recipe: about 30 lines in the README and the module doc of
+  `fabric/approvers`, compiled and tested verbatim by
+  `consumers/approvers_warden` against warden's test provider. The gate step
+  `approvers-recipe` (`scripts/check.py recipe`) checks that the three
+  copies are identical. Fabric does not depend on warden.
+
 ### Wave 5, round 7: exact roots for records stored before roots
 
 #### Fixed

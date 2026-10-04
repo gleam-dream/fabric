@@ -19,6 +19,7 @@ import fabric/store/discovery
 import fabric/support
 import fabric/support/nodes
 import fabric/support/restart
+import fabric/testing
 import fabric/tool
 import gleam/int
 import gleam/list
@@ -77,7 +78,10 @@ fn activity(runs: store.Store, gate) -> graph.Runtime(Nil, Int, Int) {
       )
       |> definition.with_max_activations(3),
     )
-  graph.new(d, runs, fn(_) { Nil }, gate) |> graph.build |> should.be_ok
+  graph.new(d, runs, fn(_) { Nil }, gate)
+  |> graph.with_approvers(testing.trusting_approvers())
+  |> graph.build
+  |> should.be_ok
 }
 
 fn ready() -> signal.Signal(Bool) {
@@ -105,6 +109,7 @@ fn signal_runtime(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
       |> definition.with_max_activations(3),
     )
   graph.new(d, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.with_approvers(testing.trusting_approvers())
   |> graph.build
   |> should.be_ok
 }
@@ -143,17 +148,19 @@ pub fn a_stored_approval_without_a_deadline_is_answered_and_never_expires_test()
     graph.approve(
       handle,
       reference,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(reference.requirement, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(_) = graph.await(handle, within: duration.seconds(5))
   let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(42))
-  // The answer is stored with its reviewer in the new format.
+  // The answer is stored with its reviewer and verifier in the new format.
   let assert [receipt] = done.receipts
-  let assert [run.Approval(answer: run.Approve, reviewer: Some(who), ..)] =
-    receipt.approvals
+  let assert [
+    run.Approval(answer: run.Approve, reviewer: Some(who), verifier:, ..),
+  ] = receipt.approvals
   reviewer.subject(who) |> should.equal("reviewer")
+  verifier |> should.equal(Some("fabric/testing.trusting_approvers"))
 }
 
 pub fn a_stored_completed_run_reads_test() {
@@ -213,7 +220,10 @@ pub fn a_stored_child_wait_recovers_and_its_child_finishes_test() {
     )
   let parent =
     support.open_graph(
-      graph.new(d, runs, fn(_) { Nil }, allow) |> graph.build |> should.be_ok,
+      graph.new(d, runs, fn(_) { Nil }, allow)
+        |> graph.with_approvers(testing.trusting_approvers())
+        |> graph.build
+        |> should.be_ok,
       support.id("graph-parent"),
     )
   let assert Ok(_) = graph.recover(parent)
@@ -275,7 +285,10 @@ pub fn a_stored_job_wait_without_a_deadline_is_polled_to_completion_test() {
     )
   let handle =
     support.open_graph(
-      graph.new(d, runs, fn(_) { Nil }, allow) |> graph.build |> should.be_ok,
+      graph.new(d, runs, fn(_) { Nil }, allow)
+        |> graph.with_approvers(testing.trusting_approvers())
+        |> graph.build
+        |> should.be_ok,
       support.id("graph-job"),
     )
   let assert Ok(_) = graph.recover(handle)
@@ -317,7 +330,10 @@ pub fn a_stored_uncertain_effect_is_reconciled_test() {
     )
   let handle =
     support.open_graph(
-      graph.new(d, runs, fn(_) { Nil }, allow) |> graph.build |> should.be_ok,
+      graph.new(d, runs, fn(_) { Nil }, allow)
+        |> graph.with_approvers(testing.trusting_approvers())
+        |> graph.build
+        |> should.be_ok,
       support.id("graph-blocked"),
     )
   let assert Ok(blocked) = graph.snapshot(handle)

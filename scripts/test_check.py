@@ -54,6 +54,31 @@ class GateTest(unittest.TestCase):
             results = json.loads((root / "results.json").read_text())
             self.assertEqual(results[0]["exit_code"], 127)
 
+    def test_recipe_copies_must_match_the_consumer(self) -> None:
+        recipe = "import fabric/approvers\n\npub fn x() {\n  1\n}\n"
+        doc = "".join(
+            "////" + (" " + line if line else "") + "\n"
+            for line in recipe.splitlines()
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            consumer = root / check.RECIPE_CONSUMER
+            consumer.parent.mkdir(parents=True)
+            consumer.write_text(recipe)
+            module = root / check.RECIPE_MODULE
+            module.parent.mkdir(parents=True)
+            module.write_text(f"//// Doc.\n{check.RECIPE_HEADING}\n////\n//// ```gleam\n{doc}//// ```\n")
+            readme = root / check.RECIPE_README
+            readme.write_text(f"# x\n{check.RECIPE_MARKER}\n\n```gleam\n{recipe}```\n")
+            self.assertEqual(check.recipe_problems(root), [])
+            readme.write_text(f"{check.RECIPE_MARKER}\n```gleam\n{recipe.replace('1', '2')}```\n")
+            [problem] = check.recipe_problems(root)
+            self.assertIn("README.md differs", problem)
+            self.assertIn("+  2", problem)
+            readme.write_text("no marker\n")
+            with self.assertRaisesRegex(ValueError, "no gleam block"):
+                check.recipe_problems(root)
+
 
 if __name__ == "__main__":
     unittest.main()

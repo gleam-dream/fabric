@@ -228,7 +228,15 @@ pub fn graph_cancellation_refuses_agent_approval_without_starting_its_tool_test(
   let assert Ok(run.Suspended([approval], [])) =
     fabric.await(handle, within: duration.milliseconds(5000))
   stop_parent(runs, parent)
-  fabric.approve(handle, approval.reference, support.reviewer("reviewer"), Nil)
+  fabric.approve(
+    handle,
+    approval.reference,
+    proof: support.proof(
+      approval.reference.requirement,
+      support.reviewer("reviewer"),
+    ),
+    context: Nil,
+  )
   |> should.be_error
   probe.entries(body) |> should.equal([])
 }

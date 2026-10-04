@@ -129,7 +129,7 @@ fn answer(
   reference: run.ApprovalRef,
   answer: run.Answer,
 ) -> Result(#(State, List(Effect)), controller.Rejection) {
-  controller.step(env, state, controller.Answer(reference, answer, None))
+  controller.step(env, state, controller.Answer(reference, answer, None, None))
 }
 
 fn transfer_record(state: State) -> run.ActionRecord {
@@ -158,6 +158,7 @@ pub fn an_approval_queues_the_action_and_records_the_reviewer_test() {
         pending.reference,
         run.Approve,
         Some(support.reviewer("alice")),
+        Some("fabric/testing.trusting_approvers"),
       ),
     )
   effects |> should.equal([Dispatch([#(ActionId(1, "t"), transfer())])])
@@ -172,6 +173,7 @@ pub fn an_approval_queues_the_action_and_records_the_reviewer_test() {
         1,
         run.Approve,
         Some(support.reviewer("alice")),
+        Some("fabric/testing.trusting_approvers"),
       ),
     ],
     None,
@@ -232,7 +234,7 @@ pub fn a_changed_requirement_demands_a_new_answer_test() {
   // authorize the action.
   transfer_record(state).approvals
   |> should.equal([
-    run.Approval(Requirement("transfer", 1), 1, run.Approve, None),
+    run.Approval(Requirement("transfer", 1), 1, run.Approve, None, None),
   ])
   answer(env(now), state, pending.reference, run.Approve)
   |> should.equal(Error(controller.StaleReference))

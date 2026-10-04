@@ -20,9 +20,9 @@ reconcile it. The block is `test/fabric/readme_example.gleam` verbatim;
 ```gleam
 import fabric
 import fabric/agent.{type Agent}
+import fabric/approvers.{type Approvers}
 import fabric/model.{type Model}
 import fabric/policy
-import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric/tool
@@ -118,11 +118,20 @@ pub fn resolution_codec() -> codec.Codec(Resolution) {
 /// A provider's model comes from `fabric/llm.model(client, settings, model_id)`,
 /// given the application's started HTTP Gun client. Without `with_answer`
 /// the answer is the model's text (`Agent(Context, String)`).
+///
+/// `treasurers` decide who may answer the desk's approval requests: the
+/// application's own `approvers.new(name, verify)`, whose `verify`
+/// authenticates a credential (a token) and checks that it may answer the
+/// request's requirement. `fabric/approvers` shows one for warden tokens.
+/// Build them once, at boot, and give the same value to `review`: a proof
+/// from any other approvers is refused.
 pub fn desk(
   model: Model,
   pay: fn(Transfer) -> Result(Receipt, TransferError),
+  treasurers: Approvers(credential),
 ) -> Result(Agent(Context, Resolution), List(agent.ConfigError)) {
   agent.new("desk", model, [transfer_tool(pay)], desk_policy)
+  |> agent.with_approvers(treasurers)
   |> agent.with_answer(resolution_codec())
   |> agent.with_max_turns(6)
   |> agent.with_token_budget(20_000)
@@ -182,14 +191,12 @@ pub type Verdict {
   StillUnknown(note: String)
 }
 
-/// The application authenticates whoever answers an approval, then names
-/// them. A subject and an issuer come from a token, so `reviewer.new` and
-/// `reviewer.with_issuer` check them (1 to 256 bytes each).
-pub fn reviewer_of(
-  subject: String,
-  issuer: String,
-) -> Result(reviewer.Reviewer, reviewer.Error) {
-  reviewer.new(subject) |> result.try(reviewer.with_issuer(_, issuer))
+/// Why a review did nothing.
+pub type ReviewError {
+  /// The credential may not answer the request: not authenticated, not
+  /// authorized for its requirement, or the verifier is unavailable.
+  Denied(approvers.Denial)
+  Failed(fabric.Error)
 }
 
 /// A later request opens the run by the id it kept and acts on its status.
@@ -199,33 +206,57 @@ pub fn reviewer_of(
 /// default, `agent.with_approval_expiry`) is `fabric.ApprovalExpired`.
 /// Every command returns the run's status, as `await` does; a finished
 /// run's is `run.Finished(run.Completed(Resolution(..)))`.
+///
+/// An answer takes a proof: `approvers.check` verifies the reviewer's
+/// credential for the request's requirement with the desk's approvers, and
+/// the desk refuses a proof from any other approvers
+/// (`fabric.ProofRefused`). The reviewer the verifier returned and the
+/// approvers' name are recorded with the answer.
 pub fn review(
   runs: store.Store,
   desk: Agent(Context, Resolution),
+  treasurers: Approvers(credential),
   context: Context,
-  reviewer: reviewer.Reviewer,
+  credential: credential,
   stored_id: String,
   verdict: Verdict,
-) -> Result(run.Status(Resolution), fabric.Error) {
+) -> Result(run.Status(Resolution), ReviewError) {
   use id <- result.try(
     run.parse_id(stored_id)
-    |> result.replace_error(fabric.RunNotFound),
+    |> result.replace_error(Failed(fabric.RunNotFound)),
   )
-  use handle <- result.try(fabric.open(runs, desk, context, id))
-  use status <- result.try(fabric.await(handle, within: duration.seconds(5)))
+  use handle <- result.try(
+    fabric.open(runs, desk, context, id) |> result.map_error(Failed),
+  )
+  use status <- result.try(
+    fabric.await(handle, within: duration.seconds(5))
+    |> result.map_error(Failed),
+  )
+  let prove = fn(pending: run.PendingApproval) {
+    approvers.check(treasurers, credential, pending.reference.requirement)
+    |> result.map_error(Denied)
+  }
   case status, verdict {
-    run.Suspended([pending, ..], _), Approve ->
-      fabric.approve(handle, pending.reference, reviewer:, context:)
-    run.Suspended([pending, ..], _), Reject(reason) ->
-      fabric.reject(handle, pending.reference, reason:, reviewer:)
+    run.Suspended([pending, ..], _), Approve -> {
+      use proof <- result.try(prove(pending))
+      fabric.approve(handle, pending.reference, proof:, context:)
+      |> result.map_error(Failed)
+    }
+    run.Suspended([pending, ..], _), Reject(reason) -> {
+      use proof <- result.try(prove(pending))
+      fabric.reject(handle, pending.reference, proof:, reason:)
+      |> result.map_error(Failed)
+    }
     run.Suspended(_, [uncertain, ..]), Happened(content) ->
       fabric.reconcile(handle, uncertain.reference, content)
+      |> result.map_error(Failed)
     run.Suspended(_, [uncertain, ..]), StillUnknown(note) ->
       fabric.reconcile(
         handle,
         uncertain.reference,
         tool.unconfirmed_reconciliation(note),
       )
+      |> result.map_error(Failed)
     // `Working`: the time ran out. `Unattended`: its runner was lost.
     // `Finished`: nothing more can change it.
     status, _ -> Ok(status)
@@ -270,10 +301,12 @@ pub fn summary_codec() -> codec.Codec(Summary) {
 /// in the parent's status, cancelling the parent cancels it, and
 /// recovering the parent recovers it. The researcher's typed answer is the
 /// delegation's output (`Summary`); any other ending is a definite failure
-/// the model sees.
+/// the model sees. A sub-agent without approvers of its own is answered
+/// with its parent's.
 pub fn front_desk(
   model: Model,
   researcher: Agent(Context, Summary),
+  treasurers: Approvers(credential),
 ) -> Result(Agent(Context, String), List(agent.ConfigError)) {
   let research =
     tool.define(
@@ -289,6 +322,7 @@ pub fn front_desk(
   |> agent.with_sub_agent(research, to: researcher, prompt: fn(topic) {
     topic.name
   })
+  |> agent.with_approvers(treasurers)
   |> agent.build
 }
 
@@ -306,6 +340,71 @@ pub fn settling_transfer(
     fn(_error) { tool.Uncertain("the transfer did not report") },
     settle_within: duration.seconds(5),
   )
+}
+```
+
+### Who may answer: approvers
+
+An answer to an approval request takes a proof, and only
+`approvers.check` makes one: the agent's approvers (`agent.with_approvers`,
+`graph.with_approvers`) verify the reviewer's credential for the request's
+`run.Requirement`, and return the authenticated reviewer or why they refuse
+(`NotAuthenticated`, `NotAuthorized`, `Unavailable`). An answer refuses
+(`fabric.ProofRefused`) a proof made by other approvers (each
+`approvers.new` makes distinct ones, so build them once and share the
+value), one checked for another requirement, one older than 60 s
+(`approvers.with_proof_lifetime`), and any proof at all when the agent has
+no approvers. A sub-agent without approvers of its own is answered with its
+parent's. The reviewer and the
+approvers' name are recorded with the answer (`run.Approval.reviewer`,
+`run.Approval.verifier`). Tests that are not about who answers use
+`fabric/testing.trusting_approvers()`, whose credential is the reviewer.
+
+Fabric does not depend on an identity library. With warden, the approvers
+take a bearer token for the application's audience that carries the scope
+`approve:<requirement name>`. The block is `consumers/approvers_warden`
+verbatim, which tests it against warden's test provider, and the module doc
+of `fabric/approvers` carries the same code (`scripts/check.py recipe`):
+
+<!-- approvers-recipe -->
+
+```gleam
+import fabric/approvers.{type Approvers}
+import fabric/reviewer
+import gleam/bool
+import gleam/list
+import gleam/result
+import warden/resource
+
+/// Approvers that accept a warden access token issued for the validator's
+/// audience and carrying the scope `approve:<requirement name>`. The answer
+/// records the token's `sub` and `iss`, and the verifier `"warden"`. Call
+/// it once, at boot: the agent and the request handlers share the value.
+pub fn warden_approvers(validator: resource.Validator) -> Approvers(String) {
+  use token, requirement <- approvers.new("warden")
+  use claims <- result.try(
+    resource.verify(validator, token) |> result.map_error(denial),
+  )
+  let scope = "approve:" <> requirement.name
+  use <- bool.guard(
+    !list.contains(resource.scopes(claims), scope),
+    Error(approvers.NotAuthorized("the token lacks the scope " <> scope)),
+  )
+  reviewer.new(resource.subject(claims))
+  |> result.try(reviewer.with_issuer(_, resource.issuer(claims)))
+  |> result.map_error(fn(error) {
+    approvers.NotAuthenticated(reviewer.describe_error(error))
+  })
+}
+
+fn denial(error: resource.TokenError) -> approvers.Denial {
+  let reason = resource.describe_error(error)
+  case resource.error_kind(error) {
+    resource.Rejected | resource.WrongAudience ->
+      approvers.NotAuthenticated(reason)
+    resource.Forbidden -> approvers.NotAuthorized(reason)
+    resource.Unavailable -> approvers.Unavailable(reason)
+  }
 }
 ```
 
@@ -329,6 +428,7 @@ and tool timeouts, and the answers it waits for.
 | A provider's retry delay                      | 10 min at most                  | none (a cap)                                             | a longer `Retry-After` is cut to 10 min                                  |
 | Sub-agents per run, depth                     | 4, 1                            | `agent.with_max_children`, `agent.with_max_depth`        | the delegation is refused and the model sees why                         |
 | An approval request                           | 7 days                          | `agent.with_approval_expiry`                             | the request expires: the action is rejected, the model sees it           |
+| A proof for an answer                         | 60 s                            | `approvers.with_proof_lifetime`                          | the answer is refused: `ProofRefused(ProofExpired(..))`                  |
 | Token budget                                  | none (opt in)                   | `agent.with_token_budget`                                | `BudgetExhausted(TokenLimit(..))`                                        |
 | Family budget                                 | none (opt in)                   | `agent.with_family_budget`, `graph.with_family_budget`   | `BudgetExhausted(FamilyLimit(..))`, `graph.FamilyBudget(..)`             |
 | Family children, depth (once a budget is set) | as many as `work`, 16 levels    | `budget.with_children`, `budget.with_depth` (at most 63) | the child is refused (`ChildLimit`, `DepthLimit`)                        |
@@ -415,20 +515,22 @@ agents included, which name the graph's root as theirs.
 A graph runtime speaks the agent's vocabulary: the same `policy.Policy`
 (an action's `step` is `policy.Activation(..)` and its `target`
 `policy.RunOperation(node:, operation:, kind:)`), the same `tool.Failure`
-for operation bodies, approvals answered with a `reviewer.Reviewer` and the
-current context, a context built from the run id, and one classified
-`graph.Error`.
+for operation bodies, approvals answered with an `approvers.Proof` from the
+runtime's approvers (`graph.with_approvers`) and the current context, a
+context built from the run id, and one classified `graph.Error`.
 
 ```gleam
 let assert Ok(runtime) =
   graph.new(publishing, runs, context: fn(_run) { ctx }, policy:)
+  |> graph.with_approvers(editors)
   |> graph.with_approval_expiry(run.After(duration.hours(48)))
   |> graph.build   // Result(Runtime, List(graph.ConfigError))
 let assert Ok(handle) =
   graph.start(runtime, id: run.new_id(), initial: draft, correlation: None)
 let assert Ok(graph.AwaitingApproval(pending)) =
   graph.await(handle, within: duration.seconds(5))
-graph.approve(handle, pending, reviewer:, context: ctx)
+let assert Ok(proof) = approvers.check(editors, token, pending.requirement)
+graph.approve(handle, pending, proof:, context: ctx)
 ```
 
 `await` and every command return the run's `graph.Status`, as in the agent
