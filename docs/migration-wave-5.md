@@ -1365,3 +1365,25 @@ for a person.
 
 Dependents: `oversight/apps/tool_hub/src/tool_hub/assistant.gleam`
 (`service`, `start`, `serve`) breaks at compile time.
+
+### `fabric_relay.run_of` reads the run a served call names (added)
+
+```gleam
+// Before: the raw `_meta` key
+let assert Ok(client.Succeeded(answer, [content.TextContent(meta:, ..), ..])) =
+  client.call(peer, ask_assistant(), question)
+let assert Ok(value.String(id)) =
+  list.key_find(meta, "io.github.gleam-dream/run-id")
+
+// After
+let assert Ok(result) = client.call(peer, ask_assistant(), question)
+let assert Some(id) = fabric_relay.run_of(result)  // a `run.RunId`
+```
+
+`run_of(result: client.ToolResult(output)) -> Option(RunId)` reads an
+answered or failed result alike; it is `None` for a result that names no
+run (a content-only definition's answer, a result waiting for input, or a
+tool not published with `serve`). Nothing breaks: the `_meta` key stays.
+
+Dependents: `oversight/apps/tool_hub/test/tool_hub_test.gleam` reads the
+raw key and can switch to `run_of`.

@@ -43,7 +43,8 @@
 //// as one Relay tool. Each call starts a run with the call's correlation
 //// (`tool.correlation`) and the context and prompt `start` builds, waits
 //// for its answer, and answers with it, naming the run in the result's
-//// `_meta` (`io.github.gleam-dream/run-id`). An agent whose answer type is
+//// `_meta` (`io.github.gleam-dream/run-id`; a client reads it with
+//// `run_of`). An agent whose answer type is
 //// the definition's output (`agent.with_answer(output_codec)`) answers with
 //// the typed value.
 ////
@@ -450,8 +451,8 @@ pub fn run_id(
 /// Publishes `service`'s agent as its Relay tool, for `relay/server.new`.
 /// A call answers with the run's answer when it completes in time; the
 /// answer's text block names the run in its `_meta`
-/// (`io.github.gleam-dream/run-id`; a content-only definition's answer has
-/// none). Otherwise it answers `isError: true` with a line for people,
+/// (`io.github.gleam-dream/run-id`, which `run_of` reads; a content-only
+/// definition's answer has none). Otherwise it answers `isError: true` with a line for people,
 /// whose `_meta` names the run the same way, and, as structured content, an
 /// object whose `error` names what happened and whose `run_id` names the
 /// run:
@@ -516,6 +517,29 @@ pub fn serve(
         Error(failure("unavailable", id, fabric.describe_error(error), []))
     }
   })
+}
+
+/// The run a call to a tool published with `serve` names in its result,
+/// answered or failed, read from a text block's `_meta`; `None` when the
+/// result names none (an answer of a content-only definition, a result
+/// still waiting for input, or another server's tool). A client reads it
+/// to open the run (`fabric.open`), such as to answer its approvals.
+pub fn run_of(result: client.ToolResult(output)) -> Option(RunId) {
+  let blocks = case result {
+    client.Succeeded(content:, ..) | client.ToolFailed(content:, ..) -> content
+    client.InputRequired(..) -> []
+  }
+  list.find_map(blocks, fn(block) {
+    case block {
+      content.TextContent(meta:, ..) ->
+        case list.key_find(meta, run_id_meta) {
+          Ok(value.String(id)) -> run.parse_id(id)
+          _ -> Error(Nil)
+        }
+      _ -> Error(Nil)
+    }
+  })
+  |> option.from_result
 }
 
 /// The `_meta` key that names a served call's run.

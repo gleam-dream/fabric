@@ -13,6 +13,12 @@ Wave 5 is described with before/after snippets in
 
 ### Wave 5, gate reliability
 
+#### Added
+
+- `fabric_relay.run_of(result)` reads the run a served call names in its
+  result's `_meta`, so a client needs no raw key (see the fabric_relay
+  CHANGELOG).
+
 #### Fixed
 
 - A store started with `store.start` whose caller died could still hold

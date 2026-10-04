@@ -91,7 +91,8 @@ context.
 The agent's answer type is the definition's output
 (`agent.with_answer(answer_codec())`), so a completed run answers with the
 typed value, and its text block names the run in `_meta`
-(`io.github.gleam-dream/run-id`). Each call's run takes the call's
+(`io.github.gleam-dream/run-id`); a client reads it with
+`fabric_relay.run_of(result)`. Each call's run takes the call's
 correlation (`relay/tool.correlation`).
 
 A call with an idempotency key (`client.with_idempotency_key`) names its
