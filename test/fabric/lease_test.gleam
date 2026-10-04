@@ -6,6 +6,7 @@
 
 import fabric
 import fabric/agent.{type Agent}
+import fabric/internal/leased_memory
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
@@ -401,7 +402,7 @@ pub fn a_lost_lease_kills_the_runner_and_its_running_body_test() {
 /// alone decides the kill.
 pub fn a_store_that_cannot_renew_kills_its_runners_before_their_leases_expire_test() {
   let probe = probe.new()
-  let memory = conformance.frozen_leased_memory()
+  let memory = leased_memory.frozen()
   let unreachable =
     backend.LeasedBackend(..memory.backend, renew: fn(_, _, _) {
       Error(backend.Unavailable("the backend is unreachable"))
