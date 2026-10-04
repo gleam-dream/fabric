@@ -52,8 +52,11 @@
 ////
 //// A sub-agent run stores its family's root run id as `"root"`, in any
 //// version; a root run writes none. A sub-agent record without the key
-//// (written before roots were stored, or by a reader that ignores it) reads
-//// its parent as its root.
+//// (written before roots were stored, or by a reader that ignores it)
+//// decodes with its parent as its root, marked inexact (`root_exact`): a
+//// reader of the store derives the exact root from the stored ancestors
+//// (`ancestry.resolve_root`), and the run's next commit stores it. A root
+//// that is not exact is never written.
 ////
 //// An outcome's budget is written under its own tag (`turn_limit`,
 //// `token_limit`). The tag `budget_exhausted`, which wraps a budget, is
@@ -95,7 +98,7 @@ import fabric/run.{
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam/time/duration
@@ -334,8 +337,9 @@ fn encode_version(state: State, version: Int, phase: Phase) -> String {
         #("correlation", json.string(correlation.to_string(state.correlation))),
       ])
   }
-  // A root run is its own root and stores none, keeping its bytes.
-  let fields = case state.root == state.run {
+  // A root run is its own root and stores none, keeping its bytes. A root
+  // that is not exact is not stored either: a later reader derives it again.
+  let fields = case state.root == state.run || !state.root_exact {
     True -> fields
     False -> list.append(fields, [#("root", json.string(state.root))])
   }
@@ -873,12 +877,13 @@ fn state_decoder(found: Int) -> Decoder(State) {
     correlation_decoder(),
   )
   // A sub-agent record written before roots were stored names its parent:
-  // the root of a family one level deep.
-  let default_root = case parent {
-    Some(run.AgentParent(run: parent, ..)) -> run_id.to_string(parent)
-    _ -> run
-  }
-  use root <- decode.optional_field("root", default_root, decode.string)
+  // the root of a family one level deep, and inexact deeper down.
+  use stored_root <- decode.optional_field(
+    "root",
+    None,
+    decode.map(decode.string, Some),
+  )
+  let #(root, root_exact) = lineage_root(run, parent, stored_root)
   decode.success(State(
     run:,
     agent:,
@@ -895,7 +900,23 @@ fn state_decoder(found: Int) -> Decoder(State) {
     family_budget:,
     correlation:,
     root:,
+    root_exact:,
   ))
+}
+
+/// The root a record names, and whether it is exact: the stored one, the
+/// run itself for a root run, or, for a child record that stores none, its
+/// parent, not exact.
+pub fn lineage_root(
+  id: String,
+  parent: Option(run.Parent),
+  stored: Option(String),
+) -> #(String, Bool) {
+  case stored, parent {
+    Some(root), _ -> #(root, True)
+    None, None -> #(id, True)
+    None, Some(link) -> #(run.id_to_string(link.run), False)
+  }
 }
 
 pub fn correlation_decoder() -> Decoder(Correlation) {

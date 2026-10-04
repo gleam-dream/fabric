@@ -410,18 +410,20 @@ pub fn child_state(
   let depth = parent.depth + 1
   let max_depth =
     int.min(parent.limits.max_depth, depth + setup.limits.max_depth)
-  // A sub-agent run carries its parent's correlation.
-  controller.start_correlated(
-    setup.env,
-    id,
-    setup.identity,
-    controller.Limits(..setup.limits, max_depth:),
-    prompt,
-    Some(run.AgentParent(run_id.from_string(parent.run), action)),
-    depth,
-    parent.correlation,
-    parent.root,
-  )
+  // A sub-agent run carries its parent's correlation and root, exact or not.
+  let #(state, effects) =
+    controller.start_correlated(
+      setup.env,
+      id,
+      setup.identity,
+      controller.Limits(..setup.limits, max_depth:),
+      prompt,
+      Some(run.AgentParent(run_id.from_string(parent.run), action)),
+      depth,
+      parent.correlation,
+      parent.root,
+    )
+  #(controller.State(..state, root_exact: parent.root_exact), effects)
 }
 
 type Runner(context) {
@@ -2062,7 +2064,9 @@ pub fn send_live(
   }
 }
 
-/// The stored record of `id`.
+/// The stored record of `id`, with its family's root derived from its
+/// ancestors when it was written before roots were stored
+/// (`ancestry.settle_root`).
 pub fn load(
   store: Store,
   id: String,
@@ -2087,10 +2091,21 @@ pub fn load(
       }
     }),
   )
-  case state.run == id {
-    True -> Ok(#(entry, state))
+  use Nil <- result.try(case state.run == id {
+    True -> Ok(Nil)
     False -> Error(Corrupt("the record's run id differs from its storage key"))
-  }
+  })
+  use #(root, root_exact) <- result.map(
+    ancestry.settle_root(
+      store,
+      id,
+      state.parent,
+      #(state.root, state.root_exact),
+      state.correlation,
+    )
+    |> result.map_error(StoreFailed),
+  )
+  #(entry, controller.State(..state, root:, root_exact:))
 }
 
 /// `load`, and the record must be able to continue under `setup`'s agent.

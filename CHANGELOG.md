@@ -11,6 +11,33 @@ Wave 5 is described with before/after snippets in
 [docs/migration-wave-5.md](docs/migration-wave-5.md), round 5 in
 [docs/migration-round-5.md](docs/migration-round-5.md).
 
+### Wave 5, round 7: exact roots for records stored before roots
+
+#### Fixed
+
+- A sub-agent or graph child record written before wave 5 stores no
+  `"root"`. Its events carried its parent as the family's root, which is
+  wrong below the first level. A read of the store now derives the exact
+  root by following the stored parent links (at most 64, without repeats)
+  to a root run or to the first ancestor that stores its root, and the
+  run's next commit stores it, so the walk is paid once. A missing or
+  unreadable ancestor, or an overlong chain, gives the topmost readable
+  ancestor (the parent when none can be read); that root is never stored,
+  and an unavailable store fails the read instead of inferring one.
+
+#### Added
+
+- `telemetry.root_inferred()` (`[fabric, run, root, infer]`), with
+  `RootInferred(run, root, ancestor, problem, correlation)` and
+  `RootProblem` (`AncestorMissing`, `AncestorUnreadable`, `AncestryCycle`,
+  `AncestryTooLong`): emitted by a reader each time it falls back to an
+  inferred root.
+
+#### Changed
+
+- `fabric_relay`'s tests match relay's opaque `client.Error` through
+  `client.reason`.
+
 ### Wave 5, round 6: llm_wire content filters are refusals
 
 #### Changed

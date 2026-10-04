@@ -112,7 +112,7 @@ fn lineage_json(state: g.State) -> List(#(String, Json)) {
         #("correlation", json.string(correlation.to_string(state.correlation))),
       ]
     },
-    case state.root == state.run {
+    case state.root == state.run || !state.root_exact {
       True -> []
       False -> [#("root", json.string(state.root))]
     },
@@ -869,13 +869,12 @@ fn state_decoder(found: Int) -> Decoder(g.State) {
     correlation.from_key(run),
     agent_record.correlation_decoder(),
   )
-  let default_root = case parent {
-    Some(run.GraphParent(id, _))
-    | Some(run.GraphBranch(id, _, _))
-    | Some(run.AgentParent(id, _)) -> run.id_to_string(id)
-    None -> run
-  }
-  use root <- decode.optional_field("root", default_root, decode.string)
+  use stored_root <- decode.optional_field(
+    "root",
+    None,
+    decode.map(decode.string, Some),
+  )
+  let #(root, root_exact) = agent_record.lineage_root(run, parent, stored_root)
   decode.success(g.State(
     run:,
     definition:,
@@ -891,6 +890,7 @@ fn state_decoder(found: Int) -> Decoder(g.State) {
     forks:,
     correlation:,
     root:,
+    root_exact:,
   ))
 }
 

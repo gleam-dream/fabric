@@ -1,0 +1,72 @@
+{
+  "format": "fabric.run",
+  "version": 7,
+  "write": "4aa863c355bcc28c5ba3dec1f44ddb9e",
+  "run": "legacy",
+  "agent": {
+    "name": "front",
+    "version": 1
+  },
+  "incarnation": 1,
+  "parent": null,
+  "depth": 0,
+  "limits": {
+    "max_turns": 8,
+    "token_budget": null,
+    "max_children": 4,
+    "max_depth": 2
+  },
+  "turns_used": 1,
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "unreported_replies": 0
+  },
+  "transcript": [
+    {
+      "tag": "user",
+      "text": "go"
+    },
+    {
+      "tag": "assistant",
+      "text": "",
+      "calls": [
+        {
+          "id": "r1",
+          "name": "research",
+          "arguments": "{\"topic\":\"x\"}",
+          "provider_id": null,
+          "provider_state": null
+        }
+      ],
+      "data": null
+    }
+  ],
+  "history": [],
+  "approvals_issued": 0,
+  "phase": {
+    "tag": "acting",
+    "turn": 1,
+    "actions": [
+      {
+        "id": {
+          "turn": 1,
+          "call_id": "r1"
+        },
+        "call": {
+          "id": "r1",
+          "name": "research",
+          "arguments": "{\"topic\":\"x\"}",
+          "provider_id": null,
+          "provider_state": null
+        },
+        "state": {
+          "tag": "delegated"
+        },
+        "approvals": [],
+        "child": "legacy-1"
+      }
+    ]
+  },
+  "family_budget": null
+}

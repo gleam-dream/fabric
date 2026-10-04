@@ -396,7 +396,11 @@ A run has one `sinal/correlation.Correlation`, chosen where the run starts
 stored with the run and carried in every `fabric/telemetry` event of the
 run and its sub-agents, in every `model.Request` (with the run id and the
 turn), and in every tool's `tool.Call`. Every run event also names its
-family's root run (`root`), so a sub-agent's events join their root's. `fabric/llm` puts it on each
+family's root run (`root`), so a sub-agent's events join their root's. A
+sub-agent record stored before roots were recorded gets its exact root from
+its stored ancestors when it is read, and stores it at its next commit; when
+an ancestor cannot be read, the topmost readable one stands in and
+`telemetry.root_inferred` says so. `fabric/llm` puts it on each
 turn's HTTP Gun client view, so one agent serves every run.
 `fabric_saga` starts each Saga run with it, and every step of the workflow
 reads it with `saga.correlation_of(key)` for the clients it calls; the

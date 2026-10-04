@@ -1,0 +1,114 @@
+{
+  "format": "fabric.run",
+  "version": 7,
+  "write": "c638c69eaf10eb31600515539a3ca4f3",
+  "run": "legacy-1-1",
+  "agent": {
+    "name": "leaf",
+    "version": 1
+  },
+  "incarnation": 1,
+  "parent": {
+    "tag": "agent",
+    "run": "legacy-1",
+    "action": {
+      "turn": 1,
+      "call_id": "r1"
+    }
+  },
+  "depth": 2,
+  "limits": {
+    "max_turns": 8,
+    "token_budget": null,
+    "max_children": 4,
+    "max_depth": 2
+  },
+  "turns_used": 1,
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "unreported_replies": 0
+  },
+  "transcript": [
+    {
+      "tag": "user",
+      "text": "x"
+    },
+    {
+      "tag": "assistant",
+      "text": "",
+      "calls": [
+        {
+          "id": "t1",
+          "name": "transfer_funds",
+          "arguments": "{\"to\":\"bob\",\"amount\":10}",
+          "provider_id": null,
+          "provider_state": null
+        },
+        {
+          "id": "t2",
+          "name": "transfer_funds",
+          "arguments": "{\"to\":\"ann\",\"amount\":20}",
+          "provider_id": null,
+          "provider_state": null
+        }
+      ],
+      "data": null
+    }
+  ],
+  "history": [],
+  "approvals_issued": 2,
+  "phase": {
+    "tag": "acting",
+    "turn": 1,
+    "actions": [
+      {
+        "id": {
+          "turn": 1,
+          "call_id": "t1"
+        },
+        "call": {
+          "id": "t1",
+          "name": "transfer_funds",
+          "arguments": "{\"to\":\"bob\",\"amount\":10}",
+          "provider_id": null,
+          "provider_state": null
+        },
+        "state": {
+          "tag": "awaiting_approval",
+          "requirement": {
+            "name": "transfer",
+            "version": 1
+          },
+          "revision": 1
+        },
+        "approvals": [],
+        "child": null
+      },
+      {
+        "id": {
+          "turn": 1,
+          "call_id": "t2"
+        },
+        "call": {
+          "id": "t2",
+          "name": "transfer_funds",
+          "arguments": "{\"to\":\"ann\",\"amount\":20}",
+          "provider_id": null,
+          "provider_state": null
+        },
+        "state": {
+          "tag": "awaiting_approval",
+          "requirement": {
+            "name": "transfer",
+            "version": 1
+          },
+          "revision": 2
+        },
+        "approvals": [],
+        "child": null
+      }
+    ]
+  },
+  "family_budget": null
+}

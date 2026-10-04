@@ -48,7 +48,8 @@ fn(_, m: o.LeaseLost) { #(m.run, m.root, m.correlation) }
 
 A sub-agent record stores `"root"`; a root record writes no key, so its
 bytes are unchanged. A sub-agent record written before wave 5 reads its
-parent as its root, which is exact for sub-agents one level deep. A graph
+parent as its root, which is exact for sub-agents one level deep (round 7
+derives the exact root at any depth). A graph
 run's `lease_lost` derives its correlation from the run id and names the
 graph run as its root until graph telemetry lands (planned for wave 5).
 
@@ -1605,3 +1606,90 @@ is `testing.interrupted(testing.text(""))`, in `llm_test`, `graph_llm_test`,
 `llm_recovery_test` and `llm_turn_format_test`.
 
 Dependents: none; the change is internal to Fabric's tests.
+
+## Round 7: exact roots for records stored before roots
+
+Since slice F1 a sub-agent record stores `"root"`, and every event carries
+it. A record written before then stores none; its reader took the parent as
+the root, which is wrong for a grandchild and below: a pre-wave-5
+grandchild's events named its parent, not its family's root.
+
+### A read of the store derives the root; the next commit stores it
+
+`runner.load` (agent records) and the graph runner's `load_raw` (graph
+records) are the reads behind `open`, `recover`, `child`, commands, the
+sweeper and settlement. For a child record with no `"root"`, they follow the
+stored parent links up to a root run or to the first ancestor that stores
+its root. The walk is bounded by the 64 links every ancestry walk allows
+and never visits a run twice; one level deep it costs one read of the
+parent. The resolved root is in the runner's state, so the run's next
+commit (any normal commit, for example an approval) writes it, and later
+reads take it from the record without walking.
+
+When an ancestor's record is missing or unreadable (cannot be decoded, or
+names another run), or the chain repeats or passes the bound, the root is
+the topmost ancestor that could be read, or the parent when none could.
+That root is marked inexact: the record keeps storing no root, so a later
+reader derives it again once the ancestors can be read, and the reader
+emits `root_inferred` each time. An unavailable store fails the read with
+its `StoreFailed` error instead: nothing is inferred from a store that
+cannot answer. A child started by a run whose root is inexact inherits it
+inexact.
+
+Internally `controller.State` and the graph `State` gain `root_exact: Bool`
+(their records write `"root"` only when it is `True`), and
+`graph_runner.lineage` returns it with the correlation and root. These are
+internal; no public type changed shape.
+
+### `telemetry.root_inferred` (added)
+
+```gleam
+// After
+sinal.observe(telemetry.root_inferred(), fn(_, m: telemetry.RootInferred) {
+  // m.run took m.root, its topmost readable ancestor, because of
+  // m.problem at m.ancestor.
+  log.warning(m.run <> ": root inferred as " <> m.root)
+})
+```
+
+`[fabric, run, root, infer]`, metadata
+`RootInferred(run:, root:, ancestor:, problem:, correlation:)`, with
+`problem: RootProblem` one of `AncestorMissing`, `AncestorUnreadable`,
+`AncestryCycle` and `AncestryTooLong` (metadata names `ancestor_missing`,
+`ancestor_unreadable`, `ancestry_cycle`, `ancestry_too_long`). Like the
+lease events, it describes no commit: the reading process emits it.
+Records written by the current decoder cannot form a cycle (a child's id
+derives from its parent's), so `AncestryCycle` guards only foreign or
+damaged stores.
+
+Tests: `legacy_root_test` loads fixtures written in the pre-wave-5 shape
+(`test/fixtures/records/pre-wave-5-family/`, a root, a child and a
+grandchild waiting for two approvals, with no `root`, `correlation` or
+`expires_at`). The grandchild's events carry the true root before the
+write-back (its first approval and tool) and after it (the second approval,
+through another store over the same files, to the family's end); the record
+stores `"root":"legacy"` after its first commit. Further cases: a missing
+root record (topmost readable ancestor, `root_inferred`, nothing stored), an
+unreadable parent, a chain past the bound, and a pre-wave-5 graph child.
+
+Dependents: none break. `root_inferred` is a new event; the three app
+telemetry modules (`research_agent`, `support_desk`, `tool_hub`) attach
+events one by one and are unaffected. Their stored records written before
+wave 5 now report the exact root.
+
+### `fabric_relay`'s tests match relay's opaque `client.Error`
+
+relay's round 7 makes `client.Error` opaque. `fabric_relay`'s source does
+not match it; one test did:
+
+```gleam
+// Before: integrations/fabric_relay/test/serve_test.gleam
+let assert Error(client.TimedOut(_)) =
+  client.call(peer, ask(), Question("slow"))
+
+// After
+let assert Error(error) = client.call(peer, ask(), Question("slow"))
+let assert client.TimedOut(_) = client.reason(error)
+```
+
+Dependents: none; the change is internal to the integration's tests.

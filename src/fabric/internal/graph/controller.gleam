@@ -162,8 +162,12 @@ pub type State {
     /// Carried in every event and operation invocation of the run, and
     /// inherited by its child runs.
     correlation: Correlation,
-    /// The id of the family's root run: the run itself for a root.
+    /// The id of the family's root run: the run itself for a root. A
+    /// record stores it only for a child run, and only when it is exact.
     root: String,
+    /// Whether `root` is exact: `False` only for a child record written
+    /// before roots were stored, as for agent runs (`controller.State`).
+    root_exact: Bool,
   )
 }
 
@@ -287,6 +291,7 @@ pub fn start_correlated(
         forks: [],
         correlation:,
         root:,
+        root_exact: True,
       ),
       [
         Inspect(activation),

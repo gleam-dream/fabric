@@ -70,6 +70,22 @@ pub fn lease_lost(
   emit(o.lease_lost(), Nil, o.LeaseLost(run, owner, reason, root, correlation))
 }
 
+/// A reader took `root` as the root of `run`, whose record stores none,
+/// because of `problem` at `ancestor`.
+pub fn root_inferred(
+  run: String,
+  root: String,
+  ancestor: String,
+  problem: o.RootProblem,
+  correlation: Correlation,
+) -> Nil {
+  emit(
+    o.root_inferred(),
+    Nil,
+    o.RootInferred(run, root, ancestor, problem, correlation),
+  )
+}
+
 /// The leased store `owner` failed to renew the leases of `runs` runners.
 pub fn renewal_failed(owner: String, runs: Int) -> Nil {
   emit(o.renewal_failed(), Nil, o.RenewalFailed(owner, runs))

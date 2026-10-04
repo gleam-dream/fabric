@@ -1,0 +1,79 @@
+{
+  "format": "fabric.run",
+  "version": 7,
+  "write": "58bb1f69ad4cc2f274b557305066b64e",
+  "run": "legacy-1",
+  "agent": {
+    "name": "middle",
+    "version": 1
+  },
+  "incarnation": 1,
+  "parent": {
+    "tag": "agent",
+    "run": "legacy",
+    "action": {
+      "turn": 1,
+      "call_id": "r1"
+    }
+  },
+  "depth": 1,
+  "limits": {
+    "max_turns": 8,
+    "token_budget": null,
+    "max_children": 4,
+    "max_depth": 2
+  },
+  "turns_used": 1,
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "unreported_replies": 0
+  },
+  "transcript": [
+    {
+      "tag": "user",
+      "text": "x"
+    },
+    {
+      "tag": "assistant",
+      "text": "",
+      "calls": [
+        {
+          "id": "r1",
+          "name": "research",
+          "arguments": "{\"topic\":\"x\"}",
+          "provider_id": null,
+          "provider_state": null
+        }
+      ],
+      "data": null
+    }
+  ],
+  "history": [],
+  "approvals_issued": 0,
+  "phase": {
+    "tag": "acting",
+    "turn": 1,
+    "actions": [
+      {
+        "id": {
+          "turn": 1,
+          "call_id": "r1"
+        },
+        "call": {
+          "id": "r1",
+          "name": "research",
+          "arguments": "{\"topic\":\"x\"}",
+          "provider_id": null,
+          "provider_state": null
+        },
+        "state": {
+          "tag": "delegated"
+        },
+        "approvals": [],
+        "child": "legacy-1-1"
+      }
+    ]
+  },
+  "family_budget": null
+}
