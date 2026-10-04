@@ -1,7 +1,7 @@
 import app
 import fabric
 import fabric/agent.{type Agent}
-import fabric/reviewer
+import fabric/approvers
 import fabric/run
 import fabric/store
 import fabric/telemetry
@@ -22,10 +22,11 @@ pub fn main() -> Nil {
 }
 
 pub fn a_member_finds_and_reserves_a_book_test() {
+  let staff = app.staff()
   let assert Ok(run) =
     fabric.start(
       memory(),
-      librarian(),
+      librarian(staff),
       id: run.new_id(),
       context: app.member("ada"),
       prompt: "reserve Dune",
@@ -42,10 +43,11 @@ pub fn a_member_finds_and_reserves_a_book_test() {
 }
 
 pub fn a_missing_book_is_explained_to_the_model_test() {
+  let staff = app.staff()
   let assert Ok(run) =
     fabric.start(
       memory(),
-      librarian(),
+      librarian(staff),
       id: run.new_id(),
       context: app.member("ada"),
       prompt: "reserve Necronomicon",
@@ -62,10 +64,11 @@ pub fn a_missing_book_is_explained_to_the_model_test() {
 }
 
 pub fn the_policy_denies_guests_with_a_visible_reason_test() {
+  let staff = app.staff()
   let assert Ok(run) =
     fabric.start(
       memory(),
-      librarian(),
+      librarian(staff),
       id: run.new_id(),
       context: app.member("guest"),
       prompt: "reserve Dune",
@@ -80,10 +83,11 @@ pub fn the_policy_denies_guests_with_a_visible_reason_test() {
 }
 
 pub fn an_unavailable_member_directory_is_a_host_failure_test() {
+  let staff = app.staff()
   let assert Ok(run) =
     fabric.start(
       memory(),
-      librarian(),
+      librarian(staff),
       id: run.new_id(),
       context: app.member(""),
       prompt: "reserve Dune",
@@ -95,11 +99,12 @@ pub fn an_unavailable_member_directory_is_a_host_failure_test() {
 }
 
 pub fn a_long_inventory_scan_can_be_cancelled_test() {
+  let staff = app.staff()
   let arrivals = process.new_subject()
   let assert Ok(run) =
     fabric.start(
       memory(),
-      librarian(),
+      librarian(staff),
       id: run.new_id(),
       context: app.member_with_scan_gate("ada", arrivals),
       prompt: "scan the inventory",
@@ -117,17 +122,19 @@ pub fn a_long_inventory_scan_can_be_cancelled_test() {
 }
 
 pub fn the_configuration_is_checked_before_anything_starts_test() {
-  app.librarian() |> should.be_ok
-  app.misconfigured() |> should.be_error
+  let staff = app.staff()
+  app.librarian(staff) |> should.be_ok
+  app.misconfigured(staff) |> should.be_error
 }
 
 // --- approvals, cancellation, restart -----------------------------------------
 
 pub fn a_guardian_approves_a_junior_reservation_test() {
+  let staff = app.staff()
   let assert Ok(run) =
     fabric.start(
       memory(),
-      librarian(),
+      librarian(staff),
       id: run.new_id(),
       context: app.member("junior"),
       prompt: "reserve Dune",
@@ -140,7 +147,7 @@ pub fn a_guardian_approves_a_junior_reservation_test() {
     fabric.approve(
       run,
       pending.reference,
-      reviewer: as_reviewer("guardian-ann"),
+      proof: badge_proof(staff, pending.reference.requirement, "guardian-ann"),
       context: app.member("junior"),
     )
   fabric.await(run, within: duration.milliseconds(5000))
@@ -153,11 +160,49 @@ pub fn a_guardian_approves_a_junior_reservation_test() {
   )
 }
 
-pub fn a_rejected_reservation_is_explained_to_the_model_test() {
+/// Only a guardian's badge answers a guardian's request, and only through
+/// the staff approvers the librarian was given.
+pub fn a_badge_without_the_role_cannot_answer_test() {
+  let staff = app.staff()
   let assert Ok(run) =
     fabric.start(
       memory(),
-      librarian(),
+      librarian(staff),
+      id: run.new_id(),
+      context: app.member("junior"),
+      prompt: "reserve Dune",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([pending], [])) =
+    fabric.await(run, within: duration.milliseconds(5000))
+  let requirement = pending.reference.requirement
+  approvers.check(staff, app.Badge("treasurer-tom", ["treasurer"]), requirement)
+  |> should.equal(
+    Error(approvers.NotAuthorized("treasurer-tom is not a guardian")),
+  )
+  let assert Ok(elsewhere) =
+    approvers.check(
+      app.staff(),
+      app.Badge("guardian-ann", ["guardian"]),
+      requirement,
+    )
+  fabric.approve(
+    run,
+    pending.reference,
+    proof: elsewhere,
+    context: app.member("junior"),
+  )
+  |> should.equal(
+    Error(fabric.ProofRefused(approvers.OtherApprovers("library-badges"))),
+  )
+}
+
+pub fn a_rejected_reservation_is_explained_to_the_model_test() {
+  let staff = app.staff()
+  let assert Ok(run) =
+    fabric.start(
+      memory(),
+      librarian(staff),
       id: run.new_id(),
       context: app.member("junior"),
       prompt: "reserve Dune",
@@ -169,8 +214,8 @@ pub fn a_rejected_reservation_is_explained_to_the_model_test() {
     fabric.reject(
       run,
       pending.reference,
+      proof: badge_proof(staff, pending.reference.requirement, "guardian-ann"),
       reason: "ask again tomorrow",
-      reviewer: as_reviewer("guardian-ann"),
     )
   fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
@@ -183,10 +228,11 @@ pub fn a_rejected_reservation_is_explained_to_the_model_test() {
 }
 
 pub fn a_paused_reservation_can_be_cancelled_test() {
+  let staff = app.staff()
   let assert Ok(run) =
     fabric.start(
       memory(),
-      librarian(),
+      librarian(staff),
       id: run.new_id(),
       context: app.member("junior"),
       prompt: "reserve Dune",
@@ -198,7 +244,7 @@ pub fn a_paused_reservation_can_be_cancelled_test() {
   fabric.approve(
     run,
     pending.reference,
-    reviewer: as_reviewer("reviewer"),
+    proof: badge_proof(staff, pending.reference.requirement, "reviewer"),
     context: app.member("junior"),
   )
   |> should.equal(Error(fabric.RunEnded))
@@ -207,6 +253,7 @@ pub fn a_paused_reservation_can_be_cancelled_test() {
 /// The process that started the run dies with its store; the paused run
 /// survives on disk, and a new process recovers and approves it.
 pub fn a_paused_reservation_survives_a_restart_test() {
+  let staff = app.staff()
   let dir =
     temp_root()
     <> "/fabric-restart-"
@@ -219,7 +266,7 @@ pub fn a_paused_reservation_survives_a_restart_test() {
       let assert Ok(run) =
         fabric.start(
           store,
-          librarian(),
+          librarian(staff),
           id: run.new_id(),
           context: app.member("junior"),
           prompt: "reserve Dune",
@@ -241,13 +288,13 @@ pub fn a_paused_reservation_survives_a_restart_test() {
   let store = store.directory(process.new_name("desk-store"), dir)
   let assert Ok(Nil) = store.start(store)
   let assert Ok(run) =
-    fabric.recover(store, librarian(), app.member("junior"), id)
+    fabric.recover(store, librarian(staff), app.member("junior"), id)
   let assert Ok([pending]) = fabric.pending(run)
   let assert Ok(_) =
     fabric.approve(
       run,
       pending.reference,
-      reviewer: as_reviewer("guardian-ann"),
+      proof: badge_proof(staff, pending.reference.requirement, "guardian-ann"),
       context: app.member("junior"),
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -276,10 +323,11 @@ fn getenv(name: String) -> Result(String, Nil)
 /// then waits for the treasurer, and that approval surfaces at the front
 /// desk, naming the purchaser's run. Both are answered through the desk.
 pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
+  let staff = app.staff()
   let assert Ok(desk) =
     fabric.start(
       memory(),
-      app.front_desk(),
+      app.front_desk(staff),
       id: run.new_id(),
       context: app.member("ada"),
       prompt: "acquire Dune",
@@ -293,7 +341,11 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
     fabric.approve(
       desk,
       committee.reference,
-      reviewer: as_reviewer("committee-chair"),
+      proof: badge_proof(
+        staff,
+        committee.reference.requirement,
+        "committee-chair",
+      ),
       context: app.member("ada"),
     )
 
@@ -305,7 +357,11 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
     fabric.approve(
       desk,
       treasurer.reference,
-      reviewer: as_reviewer("treasurer-tom"),
+      proof: badge_proof(
+        staff,
+        treasurer.reference.requirement,
+        "treasurer-tom",
+      ),
       context: app.member("ada"),
     )
   fabric.await(desk, within: duration.milliseconds(5000))
@@ -321,10 +377,11 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
 /// Cancelling the desk while the purchaser waits for the treasurer cancels
 /// the purchaser too; its pending order is void.
 pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
+  let staff = app.staff()
   let assert Ok(desk) =
     fabric.start(
       memory(),
-      app.front_desk(),
+      app.front_desk(staff),
       id: run.new_id(),
       context: app.member("ada"),
       prompt: "acquire Dune",
@@ -336,7 +393,7 @@ pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
     fabric.approve(
       desk,
       committee.reference,
-      reviewer: as_reviewer("reviewer"),
+      proof: badge_proof(staff, committee.reference.requirement, "reviewer"),
       context: app.member("ada"),
     )
   let assert Ok(run.Suspended([treasurer], [])) =
@@ -351,7 +408,7 @@ pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
   fabric.approve(
     desk,
     treasurer.reference,
-    reviewer: as_reviewer("reviewer"),
+    proof: badge_proof(staff, treasurer.reference.requirement, "reviewer"),
     context: app.member("ada"),
   )
   |> should.equal(Error(fabric.RunEnded))
@@ -360,10 +417,11 @@ pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
 // --- an interlibrary loan as a Saga workflow --------------------------------------
 
 pub fn an_interlibrary_loan_runs_as_one_tool_test() {
+  let staff = app.staff()
   let assert Ok(loan) =
     fabric.start(
       memory(),
-      app.front_desk(),
+      app.front_desk(staff),
       id: run.new_id(),
       context: app.member("ada"),
       prompt: "borrow Dune",
@@ -378,7 +436,7 @@ pub fn an_interlibrary_loan_runs_as_one_tool_test() {
   let assert Ok(lost) =
     fabric.start(
       memory(),
-      app.front_desk(),
+      app.front_desk(staff),
       id: run.new_id(),
       context: app.member("ada"),
       prompt: "borrow Lost Scroll",
@@ -400,6 +458,7 @@ pub fn an_interlibrary_loan_runs_as_one_tool_test() {
 /// commit, from the forwarder the application routed Fabric's events
 /// through.
 pub fn observations_show_what_a_run_did_test() {
+  let staff = app.staff()
   let assert Ok(observation) = app.start_observation()
   let events = process.new_subject()
   let started =
@@ -425,7 +484,7 @@ pub fn observations_show_what_a_run_did_test() {
   let assert Ok(desk) =
     fabric.start(
       memory(),
-      app.front_desk(),
+      app.front_desk(staff),
       id: run.new_id(),
       context: app.member("ada"),
       prompt: "acquire Dune",
@@ -437,7 +496,7 @@ pub fn observations_show_what_a_run_did_test() {
     fabric.approve(
       desk,
       committee.reference,
-      reviewer: as_reviewer("reviewer"),
+      proof: badge_proof(staff, committee.reference.requirement, "reviewer"),
       context: app.member("ada"),
     )
   let assert Ok(run.Suspended([treasurer], [])) =
@@ -446,7 +505,7 @@ pub fn observations_show_what_a_run_did_test() {
     fabric.approve(
       desk,
       treasurer.reference,
-      reviewer: as_reviewer("reviewer"),
+      proof: badge_proof(staff, treasurer.reference.requirement, "reviewer"),
       context: app.member("ada"),
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -479,8 +538,10 @@ fn receive_until(
   }
 }
 
-fn librarian() -> Agent(app.Member, String) {
-  let assert Ok(librarian) = app.librarian()
+fn librarian(
+  staff: approvers.Approvers(app.Badge),
+) -> Agent(app.Member, String) {
+  let assert Ok(librarian) = app.librarian(staff)
   librarian
 }
 
@@ -496,6 +557,7 @@ fn memory() -> store.Store {
 /// request opens the run by its id, which takes nothing over. The reference
 /// names its run with a typed id; a string from a link parses back to it.
 pub fn a_run_outlives_the_request_that_started_it_test() {
+  let staff = app.staff()
   let runs = store.in_memory(process.new_name("supervised-runs"))
   let assert Ok(_) =
     static_supervisor.new(static_supervisor.OneForOne)
@@ -506,7 +568,7 @@ pub fn a_run_outlives_the_request_that_started_it_test() {
     let assert Ok(run) =
       fabric.start(
         runs,
-        librarian(),
+        librarian(staff),
         id: run.new_id(),
         context: app.member("junior"),
         prompt: "reserve Dune",
@@ -515,7 +577,8 @@ pub fn a_run_outlives_the_request_that_started_it_test() {
     process.send(handed, fabric.id(run))
   })
   let assert Ok(id) = process.receive(handed, 5000)
-  let assert Ok(run) = fabric.open(runs, librarian(), app.member("junior"), id)
+  let assert Ok(run) =
+    fabric.open(runs, librarian(staff), app.member("junior"), id)
   let assert Ok(run.Suspended([pending], [])) =
     fabric.await(run, within: duration.milliseconds(5000))
   run.parse_id(run.id_to_string(pending.reference.run))
@@ -525,14 +588,21 @@ pub fn a_run_outlives_the_request_that_started_it_test() {
     fabric.reject(
       run,
       pending.reference,
+      proof: badge_proof(staff, pending.reference.requirement, "reviewer"),
       reason: "not today",
-      reviewer: as_reviewer("reviewer"),
     )
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))
 }
 
-fn as_reviewer(subject: String) -> reviewer.Reviewer {
-  let assert Ok(reviewer) = reviewer.new(subject)
-  reviewer
+/// A proof from `staff` that `holder`, whose badge carries the role the
+/// request needs, answers it.
+fn badge_proof(
+  staff: approvers.Approvers(app.Badge),
+  requirement: run.Requirement,
+  holder: String,
+) -> approvers.Proof {
+  let assert Ok(proof) =
+    approvers.check(staff, app.Badge(holder, [requirement.name]), requirement)
+  proof
 }

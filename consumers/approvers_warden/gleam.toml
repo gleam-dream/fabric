@@ -1,0 +1,21 @@
+# Compiles and tests the warden recipe of `fabric/approvers` verbatim:
+# src/approvers_warden.gleam is the block of the README and of the module
+# doc, which scripts/check.py compares. Fabric itself does not depend on
+# warden.
+name = "approvers_warden"
+version = "0.0.0"
+target = "erlang"
+gleam = ">= 1.18.0"
+
+[dependencies]
+gleam_stdlib = ">= 0.70.0 and < 2.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_http = ">= 4.4.0 and < 5.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"
+gleam_time = ">= 1.11.0 and < 2.0.0"
+fabric = { path = "../.." }
+json_blueprint = { path = "../../../json_blueprint" }
+warden = { path = "../../../warden" }
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"

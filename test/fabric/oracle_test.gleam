@@ -456,7 +456,15 @@ pub fn an_approved_call_matches_beamweaver_test() {
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("hitl_approve"))
   let assert Ok(_) =
-    fabric.approve(run, pending.reference, support.reviewer("reviewer"), Nil)
+    fabric.approve(
+      run,
+      pending.reference,
+      proof: support.proof(
+        pending.reference.requirement,
+        support.reviewer("reviewer"),
+      ),
+      context: Nil,
+    )
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))
   observe(run, probe) |> should.equal(fixture("hitl_approve"))
@@ -484,8 +492,11 @@ pub fn a_rejected_call_matches_beamweaver_test() {
     fabric.reject(
       run,
       pending.reference,
+      proof: support.proof(
+        pending.reference.requirement,
+        support.reviewer("reviewer"),
+      ),
       reason: "payment declined by reviewer",
-      reviewer: support.reviewer("reviewer"),
     )
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))
@@ -534,7 +545,15 @@ pub fn an_approval_after_a_restart_matches_beamweaver_test() {
     fabric.recover(store, hitl_agent(probe), Nil, fabric.id(run))
   let assert Ok([pending]) = fabric.pending(run)
   let assert Ok(_) =
-    fabric.approve(run, pending.reference, support.reviewer("reviewer"), Nil)
+    fabric.approve(
+      run,
+      pending.reference,
+      proof: support.proof(
+        pending.reference.requirement,
+        support.reviewer("reviewer"),
+      ),
+      context: Nil,
+    )
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))
   observe(run, probe) |> should.equal(fixture("hitl_cold_restart"))
@@ -645,7 +664,15 @@ pub fn an_approved_sub_agent_start_matches_beamweaver_test() {
   let #(pause, pending) = paused(run, probe)
   pause |> should.equal(pause_fixture("subagent_gate_approve"))
   let assert Ok(_) =
-    fabric.approve(run, pending.reference, support.reviewer("reviewer"), Nil)
+    fabric.approve(
+      run,
+      pending.reference,
+      proof: support.proof(
+        pending.reference.requirement,
+        support.reviewer("reviewer"),
+      ),
+      context: Nil,
+    )
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))
   observe(run, probe) |> should.equal(fixture("subagent_gate_approve"))
@@ -671,8 +698,11 @@ pub fn a_rejected_sub_agent_start_matches_beamweaver_test() {
     fabric.reject(
       run,
       pending.reference,
+      proof: support.proof(
+        pending.reference.requirement,
+        support.reviewer("reviewer"),
+      ),
       reason: "no sub-agent today",
-      reviewer: support.reviewer("reviewer"),
     )
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))

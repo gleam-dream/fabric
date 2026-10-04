@@ -3,6 +3,7 @@
 
 import fabric/budget
 import fabric/graph/definition.{type Definition}
+import fabric/internal/answerer.{type Answerer}
 import fabric/internal/graph/live
 import fabric/internal/graph/runner
 import fabric/internal/store.{type Store}
@@ -18,6 +19,8 @@ pub opaque type Runtime(context, state, answer) {
     with_context: fn(context) -> live.Work,
     options: runner.Options,
     family_budget: Option(budget.Limits),
+    /// Who may answer the runtime's approval requests.
+    approvers: Option(Answerer),
   )
 }
 
@@ -35,6 +38,7 @@ pub fn new(
     with_context:,
     options:,
     family_budget: option.None,
+    approvers: option.None,
   )
 }
 
@@ -50,6 +54,17 @@ pub fn with_family_budget(
   limits: budget.Limits,
 ) -> Runtime(context, state, answer) {
   Runtime(..runtime, family_budget: option.Some(limits))
+}
+
+pub fn with_approvers(
+  runtime: Runtime(context, state, answer),
+  approvers: Answerer,
+) -> Runtime(context, state, answer) {
+  Runtime(..runtime, approvers: option.Some(approvers))
+}
+
+pub fn approvers(runtime: Runtime(context, state, answer)) -> Option(Answerer) {
+  runtime.approvers
 }
 
 pub fn definition(

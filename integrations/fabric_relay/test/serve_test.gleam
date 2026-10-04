@@ -5,11 +5,13 @@
 
 import fabric
 import fabric/agent
+import fabric/approvers
 import fabric/model
 import fabric/policy
 import fabric/reviewer
 import fabric/run
 import fabric/store
+import fabric/testing as fabric_testing
 import fabric/tool as fabric_tool
 import fabric_relay
 import gleam/erlang/process
@@ -107,6 +109,7 @@ fn desk(model: model.Model) -> agent.Agent(Nil, Answer) {
       }
     })
     |> agent.with_answer(answer_codec())
+    |> agent.with_approvers(fabric_testing.trusting_approvers())
     |> agent.build
   desk
 }
@@ -259,7 +262,12 @@ pub fn a_retried_call_reaches_the_same_run_test() {
     fabric.await(handle, within: duration.milliseconds(100))
   let assert Ok(ada) = reviewer.new("ada")
   let assert Ok(_) =
-    fabric.approve(handle, pending.reference, reviewer: ada, context: Nil)
+    fabric.approve(
+      handle,
+      pending.reference,
+      proof: proof_for(pending.reference.requirement, ada),
+      context: Nil,
+    )
   let assert Ok(client.Succeeded(answer, _)) =
     client.call(peer, ask(), Question("pay"))
   answer |> should.equal(Answer("done: pay"))
@@ -417,4 +425,15 @@ pub fn a_run_that_ends_otherwise_names_its_outcome_test() {
   )
   // The default corrective turn: two answers.
   count(turns) |> should.equal(2)
+}
+
+/// A proof that `reviewer` answers a request waiting for `requirement`,
+/// from the trusting approvers the test's agents and runtimes are given.
+fn proof_for(
+  requirement: run.Requirement,
+  reviewer: reviewer.Reviewer,
+) -> approvers.Proof {
+  let assert Ok(proof) =
+    approvers.check(fabric_testing.trusting_approvers(), reviewer, requirement)
+  proof
 }

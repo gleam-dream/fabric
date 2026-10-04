@@ -1,8 +1,10 @@
+import fabric/approvers
 import fabric/graph
 import fabric/graph/operation
 import fabric/reviewer
 import fabric/run
 import fabric/store
+import fabric/testing as fabric_testing
 import fabric/tool
 import fabric_writing
 import fabric_writing/domain
@@ -42,7 +44,14 @@ pub fn approval_survives_restart_without_repeating_generation_or_review_test() {
   let publisher = file.publisher(directory <> "/published")
   let runs = store.directory(process.new_name("writing"), directory <> "/runs")
   let owner = start_store(runs)
-  let runtime = fabric_writing.runtime(runs, generator, reviewer, publisher)
+  let runtime =
+    fabric_writing.runtime(
+      runs,
+      generator,
+      reviewer,
+      publisher,
+      fabric_testing.trusting_approvers(),
+    )
   let assert Ok(handle) =
     fabric_writing.start(
       runtime,
@@ -58,7 +67,13 @@ pub fn approval_survives_restart_without_repeating_generation_or_review_test() {
   let owner = start_store(runs)
   let handle =
     open_graph(
-      fabric_writing.runtime(runs, generator, reviewer, publisher),
+      fabric_writing.runtime(
+        runs,
+        generator,
+        reviewer,
+        publisher,
+        fabric_testing.trusting_approvers(),
+      ),
       graph.id(handle),
     )
   let assert Ok(after) = graph.snapshot(handle)
@@ -69,14 +84,19 @@ pub fn approval_survives_restart_without_repeating_generation_or_review_test() {
     graph.approve(
       handle,
       first,
-      reviewer: as_reviewer("reviewer"),
+      proof: proof_for(first.requirement, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(domain.Published(artifact)) = done
   file.read(artifact.path)
   |> should.equal(Ok("The library opens on 12 May, with free admission.\n"))
-  graph.approve(handle, first, reviewer: as_reviewer("reviewer"), context: Nil)
+  graph.approve(
+    handle,
+    first,
+    proof: proof_for(first.requirement, as_reviewer("reviewer")),
+    context: Nil,
+  )
   |> should.be_error
   stop_store(owner, runs)
   http_gun.stop(client)
@@ -204,6 +224,7 @@ fn fixture(
       provider.generator(client, testing.config(), model()),
       provider.llm_reviewer(client, testing.config(), model()),
       publish(directory <> "/published"),
+      fabric_testing.trusting_approvers(),
     )
   let assert Ok(handle) =
     fabric_writing.start(
@@ -269,8 +290,8 @@ pub fn rejection_and_rejected_human_approval_never_publish_test() {
     graph.reject(
       f.handle,
       approval,
+      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
       reason: "do not publish",
-      reviewer: as_reviewer("reviewer"),
     )
   let assert Ok(rejected) = graph.snapshot(f.handle)
   let assert graph.Failed(_) = rejected.status
@@ -316,7 +337,7 @@ pub fn a_corrected_draft_is_reviewed_before_approval_test() {
     graph.approve(
       f.handle,
       approval,
-      reviewer: as_reviewer("reviewer"),
+      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) =
@@ -337,6 +358,7 @@ pub fn absent_source_stops_before_a_provider_call_test() {
       provider.generator(client, testing.config(), model()),
       provider.llm_reviewer(client, testing.config(), model()),
       file.publisher(directory),
+      fabric_testing.trusting_approvers(),
     )
   let assert Ok(handle) =
     fabric_writing.start(runtime, "absent", directory <> "/missing", "write")
@@ -398,7 +420,7 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
     graph.approve(
       f.handle,
       approval,
-      reviewer: as_reviewer("reviewer"),
+      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(receipt) = process.receive(saved, 30_000)
@@ -412,7 +434,7 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
   graph.approve(
     f.handle,
     approval,
-    reviewer: as_reviewer("reviewer"),
+    proof: proof_for(approval.requirement, as_reviewer("reviewer")),
     context: Nil,
   )
   |> should.be_error
@@ -420,7 +442,7 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
     graph.approve(
       f.handle,
       renewed,
-      reviewer: as_reviewer("reviewer"),
+      proof: proof_for(renewed.requirement, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) =
@@ -442,4 +464,15 @@ fn open_graph(
 fn as_reviewer(subject: String) -> reviewer.Reviewer {
   let assert Ok(reviewer) = reviewer.new(subject)
   reviewer
+}
+
+/// A proof that `reviewer` answers a request waiting for `requirement`,
+/// from the trusting approvers the test's agents and runtimes are given.
+fn proof_for(
+  requirement: run.Requirement,
+  reviewer: reviewer.Reviewer,
+) -> approvers.Proof {
+  let assert Ok(proof) =
+    approvers.check(fabric_testing.trusting_approvers(), reviewer, requirement)
+  proof
 }

@@ -13,6 +13,7 @@
 ////   |> agent.with_answer(resolution_codec)
 ////   |> agent.with_max_turns(6)
 ////   |> agent.with_approval_expiry(run.After(duration.hours(24)))
+////   |> agent.with_approvers(desk_approvers)  // who may answer approvals
 ////   |> agent.build
 //// ```
 ////
@@ -45,8 +46,10 @@
 //// corrective turn by default (`with_answer_attempts`); the run ends with
 //// `run.AnswerInvalid` when that answer does not decode either.
 
+import fabric/approvers.{type Approvers}
 import fabric/budget
 import fabric/internal/answer.{type Answer} as answers
+import fabric/internal/answerer
 import fabric/internal/checked_agent.{type Admitted, Admitted}
 import fabric/internal/limit as bounds
 import fabric/internal/registry
@@ -92,6 +95,7 @@ pub opaque type Spec(context, answer) {
     max_result_bytes: Int,
     approval_expiry: Timeout,
     family_budget: Option(budget.Limits),
+    approvers: Option(answerer.Answerer),
   )
 }
 
@@ -209,6 +213,7 @@ pub fn new(
     max_result_bytes: 1_048_576,
     approval_expiry: After(duration.hours(7 * 24)),
     family_budget: None,
+    approvers: None,
   )
 }
 
@@ -366,6 +371,23 @@ pub fn with_approval_expiry(
   Spec(..spec, approval_expiry: expiry)
 }
 
+/// Who may answer this agent's approval requests: `fabric.approve` and
+/// `fabric.reject` take a proof from `approvers.check` with these
+/// approvers, checked for the request's requirement (see
+/// `fabric/approvers`), and refuse any other. An agent without approvers
+/// refuses every answer (`approvers.NoApprovers`): its policy may never
+/// require an approval, or its requests wait until they expire. A
+/// sub-agent without approvers of its own takes its parent's.
+///
+/// The approvers are not stored: a run opened or recovered with another
+/// agent value is answered with that value's approvers.
+pub fn with_approvers(
+  spec: Spec(context, answer),
+  approvers: Approvers(credential),
+) -> Spec(context, answer) {
+  Spec(..spec, approvers: Some(answerer.from(approvers)))
+}
+
 /// One budget shared by a root run of this agent and all the runs it
 /// delegates to (see `fabric/budget`), stored with the root. Failed or
 /// uncertain reservations keep their charge. It complements the agent's
@@ -423,6 +445,7 @@ pub fn with_answer(
     max_result_bytes: spec.max_result_bytes,
     approval_expiry: spec.approval_expiry,
     family_budget: spec.family_budget,
+    approvers: spec.approvers,
   )
 }
 
@@ -664,6 +687,7 @@ fn admit(
         max_result_bytes: spec.max_result_bytes,
         approval_expiry: timeout(spec.approval_expiry),
         family_budget: spec.family_budget,
+        approvers: spec.approvers,
         children: dict.from_list(spec.children),
         max_children: spec.max_children,
         max_depth: spec.max_depth,

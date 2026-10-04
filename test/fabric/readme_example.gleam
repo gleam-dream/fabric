@@ -1,8 +1,8 @@
 import fabric
 import fabric/agent.{type Agent}
+import fabric/approvers.{type Approvers}
 import fabric/model.{type Model}
 import fabric/policy
-import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric/tool
@@ -98,11 +98,20 @@ pub fn resolution_codec() -> codec.Codec(Resolution) {
 /// A provider's model comes from `fabric/llm.model(client, settings, model_id)`,
 /// given the application's started HTTP Gun client. Without `with_answer`
 /// the answer is the model's text (`Agent(Context, String)`).
+///
+/// `treasurers` decide who may answer the desk's approval requests: the
+/// application's own `approvers.new(name, verify)`, whose `verify`
+/// authenticates a credential (a token) and checks that it may answer the
+/// request's requirement. `fabric/approvers` shows one for warden tokens.
+/// Build them once, at boot, and give the same value to `review`: a proof
+/// from any other approvers is refused.
 pub fn desk(
   model: Model,
   pay: fn(Transfer) -> Result(Receipt, TransferError),
+  treasurers: Approvers(credential),
 ) -> Result(Agent(Context, Resolution), List(agent.ConfigError)) {
   agent.new("desk", model, [transfer_tool(pay)], desk_policy)
+  |> agent.with_approvers(treasurers)
   |> agent.with_answer(resolution_codec())
   |> agent.with_max_turns(6)
   |> agent.with_token_budget(20_000)
@@ -162,14 +171,12 @@ pub type Verdict {
   StillUnknown(note: String)
 }
 
-/// The application authenticates whoever answers an approval, then names
-/// them. A subject and an issuer come from a token, so `reviewer.new` and
-/// `reviewer.with_issuer` check them (1 to 256 bytes each).
-pub fn reviewer_of(
-  subject: String,
-  issuer: String,
-) -> Result(reviewer.Reviewer, reviewer.Error) {
-  reviewer.new(subject) |> result.try(reviewer.with_issuer(_, issuer))
+/// Why a review did nothing.
+pub type ReviewError {
+  /// The credential may not answer the request: not authenticated, not
+  /// authorized for its requirement, or the verifier is unavailable.
+  Denied(approvers.Denial)
+  Failed(fabric.Error)
 }
 
 /// A later request opens the run by the id it kept and acts on its status.
@@ -179,33 +186,57 @@ pub fn reviewer_of(
 /// default, `agent.with_approval_expiry`) is `fabric.ApprovalExpired`.
 /// Every command returns the run's status, as `await` does; a finished
 /// run's is `run.Finished(run.Completed(Resolution(..)))`.
+///
+/// An answer takes a proof: `approvers.check` verifies the reviewer's
+/// credential for the request's requirement with the desk's approvers, and
+/// the desk refuses a proof from any other approvers
+/// (`fabric.ProofRefused`). The reviewer the verifier returned and the
+/// approvers' name are recorded with the answer.
 pub fn review(
   runs: store.Store,
   desk: Agent(Context, Resolution),
+  treasurers: Approvers(credential),
   context: Context,
-  reviewer: reviewer.Reviewer,
+  credential: credential,
   stored_id: String,
   verdict: Verdict,
-) -> Result(run.Status(Resolution), fabric.Error) {
+) -> Result(run.Status(Resolution), ReviewError) {
   use id <- result.try(
     run.parse_id(stored_id)
-    |> result.replace_error(fabric.RunNotFound),
+    |> result.replace_error(Failed(fabric.RunNotFound)),
   )
-  use handle <- result.try(fabric.open(runs, desk, context, id))
-  use status <- result.try(fabric.await(handle, within: duration.seconds(5)))
+  use handle <- result.try(
+    fabric.open(runs, desk, context, id) |> result.map_error(Failed),
+  )
+  use status <- result.try(
+    fabric.await(handle, within: duration.seconds(5))
+    |> result.map_error(Failed),
+  )
+  let prove = fn(pending: run.PendingApproval) {
+    approvers.check(treasurers, credential, pending.reference.requirement)
+    |> result.map_error(Denied)
+  }
   case status, verdict {
-    run.Suspended([pending, ..], _), Approve ->
-      fabric.approve(handle, pending.reference, reviewer:, context:)
-    run.Suspended([pending, ..], _), Reject(reason) ->
-      fabric.reject(handle, pending.reference, reason:, reviewer:)
+    run.Suspended([pending, ..], _), Approve -> {
+      use proof <- result.try(prove(pending))
+      fabric.approve(handle, pending.reference, proof:, context:)
+      |> result.map_error(Failed)
+    }
+    run.Suspended([pending, ..], _), Reject(reason) -> {
+      use proof <- result.try(prove(pending))
+      fabric.reject(handle, pending.reference, proof:, reason:)
+      |> result.map_error(Failed)
+    }
     run.Suspended(_, [uncertain, ..]), Happened(content) ->
       fabric.reconcile(handle, uncertain.reference, content)
+      |> result.map_error(Failed)
     run.Suspended(_, [uncertain, ..]), StillUnknown(note) ->
       fabric.reconcile(
         handle,
         uncertain.reference,
         tool.unconfirmed_reconciliation(note),
       )
+      |> result.map_error(Failed)
     // `Working`: the time ran out. `Unattended`: its runner was lost.
     // `Finished`: nothing more can change it.
     status, _ -> Ok(status)
@@ -250,10 +281,12 @@ pub fn summary_codec() -> codec.Codec(Summary) {
 /// in the parent's status, cancelling the parent cancels it, and
 /// recovering the parent recovers it. The researcher's typed answer is the
 /// delegation's output (`Summary`); any other ending is a definite failure
-/// the model sees.
+/// the model sees. A sub-agent without approvers of its own is answered
+/// with its parent's.
 pub fn front_desk(
   model: Model,
   researcher: Agent(Context, Summary),
+  treasurers: Approvers(credential),
 ) -> Result(Agent(Context, String), List(agent.ConfigError)) {
   let research =
     tool.define(
@@ -269,6 +302,7 @@ pub fn front_desk(
   |> agent.with_sub_agent(research, to: researcher, prompt: fn(topic) {
     topic.name
   })
+  |> agent.with_approvers(treasurers)
   |> agent.build
 }
 

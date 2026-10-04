@@ -178,17 +178,22 @@ pub type Answer {
   Expired
 }
 
-/// An answered approval request, kept on its action. Read it by label.
-/// `reviewer` is the identity the application passed to `fabric.approve` or
-/// `fabric.reject`: Fabric records it and does not authenticate it. It is
-/// `None` for an `Expired` answer, and for an answer stored before reviewers
-/// were required.
+/// An answered approval request, kept on its action. Read it by label:
+/// Fabric may add fields.
+///
+/// `reviewer` is the identity the approvers' `verify` returned for the
+/// proof the answer was given with (`fabric/approvers`), and `verifier`
+/// those approvers' name. Both are `None` for an `Expired` answer. An
+/// answer stored before reviewers were required has neither, and one
+/// stored before proofs were required has a reviewer the application
+/// named, with no verifier.
 pub type Approval {
   Approval(
     requirement: Requirement,
     revision: Int,
     answer: Answer,
     reviewer: Option(Reviewer),
+    verifier: Option(String),
   )
 }
 

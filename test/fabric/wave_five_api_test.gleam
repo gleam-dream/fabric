@@ -180,7 +180,12 @@ pub fn an_answer_records_its_typed_reviewer_test() {
   let assert Ok(alice) =
     support.reviewer("alice") |> reviewer.with_issuer("https://id.example")
   let assert Ok(_) =
-    fabric.approve(handle, pending.reference, reviewer: alice, context: Nil)
+    fabric.approve(
+      handle,
+      pending.reference,
+      proof: support.proof(pending.reference.requirement, alice),
+      context: Nil,
+    )
   let assert Ok(run.Finished(_)) =
     fabric.await(handle, within: duration.seconds(5))
   // Opened from the store: the reviewer was stored, issuer included.

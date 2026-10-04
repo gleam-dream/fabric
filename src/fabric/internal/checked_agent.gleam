@@ -5,6 +5,7 @@
 
 import fabric/budget
 import fabric/internal/answer.{type Answer}
+import fabric/internal/answerer.{type Answerer}
 import fabric/internal/registry.{type Registry}
 import fabric/model.{type Model}
 import fabric/policy.{type Policy}
@@ -64,6 +65,9 @@ pub type Admitted(context) {
     approval_expiry: Option(Int),
     /// The family budget a root run of this agent declares.
     family_budget: Option(budget.Limits),
+    /// Who may answer the agent's approval requests
+    /// (`agent.with_approvers`).
+    approvers: Option(Answerer),
     /// The admitted sub-agent of each delegation, by delegation name.
     children: Dict(String, Admitted(context)),
     max_children: Int,

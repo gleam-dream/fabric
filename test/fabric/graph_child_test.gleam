@@ -10,6 +10,7 @@ import fabric/support
 import fabric/support/flaky
 import fabric/support/probe
 import fabric/support/restart
+import fabric/testing
 import fabric/tool
 import gleam/erlang/process
 import gleam/list
@@ -63,7 +64,10 @@ fn child_with(
       )
       |> definition.with_max_activations(1),
     )
-  graph.new(spec, runs, fn(_) { Nil }, policy) |> graph.build |> should.be_ok
+  graph.new(spec, runs, fn(_) { Nil }, policy)
+  |> graph.with_approvers(testing.trusting_approvers())
+  |> graph.build
+  |> should.be_ok
 }
 
 fn parent(
@@ -98,6 +102,7 @@ fn parent_with(
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.with_approvers(testing.trusting_approvers())
   |> graph.build
   |> should.be_ok
 }
@@ -165,7 +170,7 @@ pub fn a_child_approval_survives_restart_and_continues_the_same_attachment_test(
     graph.approve(
       child_handle,
       approval,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -198,7 +203,7 @@ pub fn an_idle_parent_releases_its_runner_and_wakes_when_its_child_is_approved_t
     graph.approve(
       child_handle,
       approval,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -242,7 +247,10 @@ fn signal_child(
       )
       |> definition.with_max_activations(1),
     )
-  graph.new(spec, runs, fn(_) { Nil }, policy) |> graph.build |> should.be_ok
+  graph.new(spec, runs, fn(_) { Nil }, policy)
+  |> graph.with_approvers(testing.trusting_approvers())
+  |> graph.build
+  |> should.be_ok
 }
 
 pub fn nested_approval_and_signal_waits_release_every_runner_and_keep_each_route_test() {
@@ -272,7 +280,7 @@ pub fn nested_approval_and_signal_waits_release_every_runner_and_keep_each_route
     graph.approve(
       leaf_handle,
       approval,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
       context: Nil,
     )
   // The signal wait arms its 7-day deadline by the store's clock first.
@@ -381,7 +389,7 @@ pub fn parking_checks_a_child_that_completed_before_wakeup_registration_test() {
     graph.approve(
       child_handle,
       approval,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(child_done) =

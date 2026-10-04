@@ -1,5 +1,7 @@
 //// Source → generation → review → bounded revision → approval → local artifact.
+//// `approvers` decide who may approve publishing.
 
+import fabric/approvers.{type Approvers}
 import fabric/graph
 import fabric/graph/definition
 import fabric/graph/llm
@@ -21,6 +23,7 @@ pub fn runtime(
   generator: operation.Operation(Nil, Draft, llm.Receipt(String)),
   reviewer: provider.Reviewer(receipt),
   publisher: operation.Operation(Nil, Draft, Artifact),
+  approvers: Approvers(credential),
 ) -> graph.Runtime(Nil, State, Outcome) {
   let source =
     definition.node(
@@ -113,6 +116,7 @@ pub fn runtime(
     |> graph.with_callback_timeout(duration.milliseconds(5000))
     |> graph.with_operation_timeout(run.After(duration.milliseconds(30_000)))
     |> graph.with_command_timeout(duration.milliseconds(1000))
+    |> graph.with_approvers(approvers)
     |> graph.build
   runtime
 }

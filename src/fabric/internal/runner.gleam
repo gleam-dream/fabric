@@ -30,6 +30,7 @@
 //// end of its drain window leaves its record as a lost runner does.
 
 import fabric/internal/ancestry
+import fabric/internal/answerer.{type Answerer}
 import fabric/internal/bounded
 import fabric/internal/budget/admission as capacity
 import fabric/internal/budget/bootstrap
@@ -88,6 +89,9 @@ pub type Setup(context) {
     max_result_bytes: Int,
     /// For a sub-agent run: where its end is delivered.
     parent: Option(Parent(context)),
+    /// Who may answer the run's approval requests: the agent's approvers,
+    /// or for a sub-agent without its own, its parent's.
+    approvers: Option(Answerer),
   )
 }
 
@@ -133,6 +137,7 @@ pub fn setup(
     tool_timeout: admitted.tool_timeout,
     max_result_bytes: admitted.max_result_bytes,
     parent:,
+    approvers: admitted.approvers,
   )
 }
 
@@ -351,12 +356,14 @@ fn self_setup(
   run: String,
   action: ActionId,
 ) -> Setup(context) {
-  setup(
-    parent.store,
-    admitted,
-    parent.env.context,
-    Some(Parent(parent, run, action)),
-  )
+  let child =
+    setup(
+      parent.store,
+      admitted,
+      parent.env.context,
+      Some(Parent(parent, run, action)),
+    )
+  Setup(..child, approvers: option.or(child.approvers, parent.approvers))
 }
 
 /// A policy that crashes or gives no decision in time has failed: the run

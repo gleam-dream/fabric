@@ -216,7 +216,10 @@ pub fn an_approval_of_an_idle_run_on_another_node_claims_the_lease_test() {
     fabric.approve(
       there,
       pending.reference,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(
+        pending.reference.requirement,
+        support.reviewer("reviewer"),
+      ),
       context: Nil,
     )
   let running = probe.arrival(probe)
@@ -260,7 +263,10 @@ pub fn an_approval_needing_another_nodes_runner_is_unattended_test() {
   fabric.approve(
     there,
     pending.reference,
-    reviewer: support.reviewer("reviewer"),
+    proof: support.proof(
+      pending.reference.requirement,
+      support.reviewer("reviewer"),
+    ),
     context: Nil,
   )
   |> should.equal(Error(fabric.RunUnattended))
@@ -269,7 +275,10 @@ pub fn an_approval_needing_another_nodes_runner_is_unattended_test() {
     fabric.approve(
       run,
       pending.reference,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(
+        pending.reference.requirement,
+        support.reviewer("reviewer"),
+      ),
       context: Nil,
     )
   let second = probe.arrival(probe)

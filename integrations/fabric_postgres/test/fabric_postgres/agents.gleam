@@ -7,6 +7,7 @@ import fabric/agent.{type Agent}
 import fabric/model.{FinalAnswer, ToolRequest, ToolResultMessage, Usage}
 import fabric/policy
 import fabric/run
+import fabric/testing
 import fabric/tool
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
@@ -110,7 +111,9 @@ pub fn agent(gate: Gate, amount: Int) -> Agent(Nil, String) {
     }
   }
   let assert Ok(agent) =
-    agent.new("worker", model, [work], policy) |> agent.build
+    agent.new("worker", model, [work], policy)
+    |> agent.with_approvers(testing.trusting_approvers())
+    |> agent.build
   agent
 }
 

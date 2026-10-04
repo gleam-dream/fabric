@@ -3,6 +3,7 @@
 
 import argparse
 from dataclasses import dataclass
+import difflib
 import json
 import os
 from pathlib import Path
@@ -34,6 +35,7 @@ PACKAGES = (
     "consumers/decision",
     "consumers/jobs",
     "consumers/writing",
+    "consumers/approvers_warden",
     "experiments/workflow_composition",
     "experiments/graph_authoring",
     "experiments/graph_authoring/consumer",
@@ -52,6 +54,9 @@ def checks(root: Path, profile: str) -> list[Check]:
             f"missing={set(PACKAGES) - found}"
         )
     selected = [Check("formatting", ".", ("nix", "flake", "check"))]
+    selected.append(Check(
+        "approvers-recipe", ".", ("python3", "-B", "scripts/check.py", "recipe"),
+    ))
     selected.append(Check(
         "gate-tests", ".",
         ("python3", "-B", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"),
@@ -87,6 +92,61 @@ def checks(root: Path, profile: str) -> list[Check]:
             ),
         ])
     return selected
+
+
+# The warden recipe of `fabric/approvers` is written three times: in the
+# README (after the marker), in the module doc (after its heading) and as the
+# consumer package that compiles and tests it. They must be identical.
+RECIPE_README = "README.md"
+RECIPE_MARKER = "<!-- approvers-recipe -->"
+RECIPE_MODULE = "src/fabric/approvers.gleam"
+RECIPE_HEADING = "//// ## With warden"
+RECIPE_CONSUMER = "consumers/approvers_warden/src/approvers_warden.gleam"
+
+
+def readme_recipe(text: str) -> str:
+    """The first gleam block after the marker line."""
+    lines = text.splitlines()
+    try:
+        start = lines.index(RECIPE_MARKER)
+        opening = lines.index("```gleam", start)
+        closing = lines.index("```", opening)
+    except ValueError as error:
+        raise ValueError(f"{RECIPE_README}: no gleam block after {RECIPE_MARKER}") from error
+    return "\n".join(lines[opening + 1:closing]) + "\n"
+
+
+def module_recipe(text: str) -> str:
+    """The first gleam block of the module doc after the heading."""
+    lines = text.splitlines()
+    try:
+        start = lines.index(RECIPE_HEADING)
+        opening = lines.index("//// ```gleam", start)
+        closing = lines.index("//// ```", opening)
+    except ValueError as error:
+        raise ValueError(f"{RECIPE_MODULE}: no gleam block after {RECIPE_HEADING}") from error
+    return "\n".join(
+        line.removeprefix("//// ").removeprefix("////")
+        for line in lines[opening + 1:closing]
+    ) + "\n"
+
+
+def recipe_problems(root: Path) -> list[str]:
+    """Where the three copies of the recipe differ from the consumer's."""
+    consumer = (root / RECIPE_CONSUMER).read_text()
+    copies = {
+        RECIPE_README: readme_recipe((root / RECIPE_README).read_text()),
+        RECIPE_MODULE: module_recipe((root / RECIPE_MODULE).read_text()),
+    }
+    problems = []
+    for name, copy in copies.items():
+        if copy != consumer:
+            diff = difflib.unified_diff(
+                consumer.splitlines(), copy.splitlines(),
+                RECIPE_CONSUMER, name, lineterm="",
+            )
+            problems.append(f"{name} differs from {RECIPE_CONSUMER}:\n" + "\n".join(diff))
+    return problems
 
 
 def dependencies(root: Path) -> list[dict[str, str]]:
@@ -162,9 +222,19 @@ def run_checks(root: Path, selected: list[Check], logs: Path) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("profile", choices=("fast", "full", "ci"))
+    parser.add_argument("profile", choices=("fast", "full", "ci", "recipe"))
     parser.add_argument("--logs", type=Path, default=ROOT / ".artifacts/check")
     arguments = parser.parse_args()
+    if arguments.profile == "recipe":
+        try:
+            problems = recipe_problems(ROOT)
+        except (ValueError, OSError) as error:
+            problems = [str(error)]
+        for problem in problems:
+            print(problem, flush=True)
+        if not problems:
+            print("the approvers recipe is the same in the README, the module doc and the consumer")
+        raise SystemExit(1 if problems else 0)
     logs = arguments.logs.resolve()
     logs.mkdir(parents=True, exist_ok=True)
     # Reset the result before preflight too: an old green must never describe

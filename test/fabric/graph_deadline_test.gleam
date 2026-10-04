@@ -16,6 +16,7 @@ import fabric/support/probe
 import fabric/support/restart
 import fabric/sweeper
 import fabric/telemetry
+import fabric/testing
 import fabric/tool
 import gleam/erlang/process
 import gleam/option.{None, Some}
@@ -66,7 +67,10 @@ fn runtime_with(runs, inspect, within, accept) {
       )
       |> definition.with_max_activations(3),
     )
-  graph.new(spec, runs, fn(_) { Nil }, inspect) |> graph.build |> should.be_ok
+  graph.new(spec, runs, fn(_) { Nil }, inspect)
+  |> graph.with_approvers(testing.trusting_approvers())
+  |> graph.build
+  |> should.be_ok
 }
 
 pub fn deadline_configuration_is_bounded_and_part_of_definition_compatibility_test() {
@@ -374,7 +378,7 @@ pub fn approval_does_not_start_the_clock_and_revisits_get_new_deadlines_test() {
     graph.approve(
       handle,
       approval,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(approved) = graph.snapshot(handle)
@@ -394,7 +398,7 @@ pub fn approval_does_not_start_the_clock_and_revisits_get_new_deadlines_test() {
     graph.approve(
       handle,
       approval,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))

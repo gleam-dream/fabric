@@ -4,17 +4,19 @@
 //// a policy that decides with the member in context, and a deterministic
 //// model scripted over the transcript. A front desk delegates acquisitions
 //// to a purchasing sub-agent (starting it needs the committee's approval,
-//// and each order the treasurer's) and arranges interlibrary loans with a
+//// and each order the treasurer's, answered by staff badges) and arranges interlibrary loans with a
 //// Saga workflow exposed as one tool. At start the application routes
 //// Fabric's observations through a Sinal forwarder, so a slow handler never
 //// holds up a run.
 
 import fabric/agent.{type Agent}
+import fabric/approvers.{type Approvers}
 import fabric/model.{
   type Message, type Reply, FinalAnswer, ToolRequest, ToolResultMessage, Usage,
   UserMessage,
 }
 import fabric/policy
+import fabric/reviewer
 import fabric/run
 import fabric/tool
 import fabric_saga
@@ -301,9 +303,36 @@ pub fn scripted_librarian(messages: List(Message)) -> Reply {
   }
 }
 
+// --- who may answer approvals --------------------------------------------------
+
+/// A staff member's badge, as the library's sign-in returns it once it has
+/// verified the badge: who holds it, and the roles they hold.
+pub type Badge {
+  Badge(holder: String, roles: List(String))
+}
+
+/// Who may answer the library's approval requests: a badge holder answers a
+/// requirement named after one of their roles (a guardian a `"guardian"`
+/// request, the treasurer a `"treasurer"` one). Built once, at boot, and
+/// given to the agents and to the request handlers that answer.
+pub fn staff() -> Approvers(Badge) {
+  use badge: Badge, requirement <- approvers.new("library-badges")
+  case list.contains(badge.roles, requirement.name) {
+    False ->
+      Error(approvers.NotAuthorized(
+        badge.holder <> " is not a " <> requirement.name,
+      ))
+    True ->
+      reviewer.new(badge.holder)
+      |> result.map_error(fn(error) {
+        approvers.NotAuthenticated(reviewer.describe_error(error))
+      })
+  }
+}
+
 // --- agent --------------------------------------------------------------------
 
-pub fn librarian_spec() -> agent.Spec(Member, String) {
+pub fn librarian_spec(staff: Approvers(Badge)) -> agent.Spec(Member, String) {
   agent.new(
     "librarian",
     model.new(fn(request: model.Request) {
@@ -316,15 +345,20 @@ pub fn librarian_spec() -> agent.Spec(Member, String) {
   |> agent.with_max_turns(4)
   |> agent.with_max_concurrency(2)
   |> agent.with_token_budget(10_000)
+  |> agent.with_approvers(staff)
 }
 
 /// Built once, at boot: every problem is reported before any run.
-pub fn librarian() -> Result(Agent(Member, String), List(agent.ConfigError)) {
-  agent.build(librarian_spec())
+pub fn librarian(
+  staff: Approvers(Badge),
+) -> Result(Agent(Member, String), List(agent.ConfigError)) {
+  agent.build(librarian_spec(staff))
 }
 
-pub fn misconfigured() -> Result(Agent(Member, String), List(agent.ConfigError)) {
-  librarian_spec()
+pub fn misconfigured(
+  staff: Approvers(Badge),
+) -> Result(Agent(Member, String), List(agent.ConfigError)) {
+  librarian_spec(staff)
   |> agent.with_max_turns(0)
   |> agent.build
 }
@@ -497,8 +531,9 @@ pub fn loan_tool() -> tool.Tool(Member) {
 // --- the front desk -------------------------------------------------------------
 
 /// Acquires a book through the purchaser, or borrows one through an
-/// interlibrary loan.
-pub fn front_desk() -> Agent(Member, String) {
+/// interlibrary loan. The purchaser has no approvers of its own: its
+/// requests are answered with the desk's.
+pub fn front_desk(staff: Approvers(Badge)) -> Agent(Member, String) {
   let assert Ok(desk) =
     agent.new(
       "front-desk",
@@ -540,6 +575,7 @@ pub fn front_desk() -> Agent(Member, String) {
       to: purchaser(),
       prompt: fn(purchase: Purchase) { "buy " <> purchase.title },
     )
+    |> agent.with_approvers(staff)
     |> agent.build
   desk
 }

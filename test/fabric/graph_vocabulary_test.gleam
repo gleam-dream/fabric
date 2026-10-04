@@ -26,6 +26,7 @@ import fabric/support
 import fabric/support/nodes
 import fabric/sweeper
 import fabric/telemetry as o
+import fabric/testing
 import fabric/tool
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -78,7 +79,10 @@ fn gated(
   seen: Subject(#(policy.Action, String)),
   body: fn(String, operation.Invocation, Int) -> Result(Int, Nil),
 ) -> graph.Runtime(String, Int, Int) {
-  gated_spec(runs, seen, body) |> graph.build |> should.be_ok
+  gated_spec(runs, seen, body)
+  |> graph.with_approvers(testing.trusting_approvers())
+  |> graph.build
+  |> should.be_ok
 }
 
 fn gated_spec(
@@ -140,7 +144,12 @@ pub fn the_policy_sees_one_action_shape_and_the_approver_context_runs_test() {
   waiting.current |> should.equal(Some(action))
   // The answer is checked again, and runs, with the approver's context.
   let assert Ok(_) =
-    graph.approve(handle, pending, reviewer: alice(), context: "approver")
+    graph.approve(
+      handle,
+      pending,
+      proof: support.proof(pending.requirement, alice()),
+      context: "approver",
+    )
   let assert Ok(#(_, recheck)) = process.receive(seen, 30_000)
   recheck |> should.equal("approver")
   let assert Ok(#(body_context, invocation)) = process.receive(bodies, 30_000)
@@ -163,19 +172,32 @@ pub fn a_rejection_records_its_reviewer_and_a_second_answer_is_refused_test() {
   let assert Ok(waiting) = graph.await(handle, within: duration.seconds(5))
   let assert graph.AwaitingApproval(pending) = waiting
   let assert Ok(_) =
-    graph.reject(handle, pending, reason: "not today", reviewer: alice())
+    graph.reject(
+      handle,
+      pending,
+      proof: support.proof(pending.requirement, alice()),
+      reason: "not today",
+    )
   let assert Ok(rejected) = graph.snapshot(handle)
   rejected.status |> should.equal(graph.Failed(graph.Denied("not today")))
   let assert [
     run.Approval(answer: run.Reject("not today"), reviewer: Some(_), ..),
   ] = rejected.approvals
-  graph.approve(handle, pending, reviewer: alice(), context: "late")
+  graph.approve(
+    handle,
+    pending,
+    proof: support.proof(pending.requirement, alice()),
+    context: "late",
+  )
   |> should.equal(Error(graph.AlreadyAnswered))
   graph.reject(
     handle,
     graph.ApprovalRef(..pending, run: support.id("other")),
+    proof: support.proof(
+      graph.ApprovalRef(..pending, run: support.id("other")).requirement,
+      alice(),
+    ),
     reason: "x",
-    reviewer: alice(),
   )
   |> should.equal(Error(graph.WrongReference))
 }
@@ -216,7 +238,12 @@ pub fn approval_requests_expire_after_seven_days_by_the_store_clock_test() {
   due |> should.equal(expires)
   // Past the store's deadline, an answer is refused and the run fails.
   memory.advance(7 * day)
-  graph.approve(handle, pending, reviewer: alice(), context: "late")
+  graph.approve(
+    handle,
+    pending,
+    proof: support.proof(pending.requirement, alice()),
+    context: "late",
+  )
   |> should.equal(Error(graph.ApprovalExpired))
   let assert Ok(failed) = graph.snapshot(handle)
   failed.status |> should.equal(graph.Failed(graph.ExpiredApproval(expires)))
@@ -230,6 +257,7 @@ pub fn await_and_recovery_expire_a_due_request_and_infinity_never_does_test() {
   let quick =
     gated_spec(runs, seen, doubled)
     |> graph.with_approval_expiry(run.After(duration.milliseconds(20)))
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(handle) =
@@ -260,6 +288,7 @@ pub fn await_and_recovery_expire_a_due_request_and_infinity_never_does_test() {
   let forever =
     gated_spec(runs, seen, doubled)
     |> graph.with_approval_expiry(run.Infinity)
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(patient) =
@@ -282,6 +311,7 @@ pub fn the_sweeper_expires_a_due_graph_approval_test() {
   let build = fn(runs) {
     gated_spec(runs, seen, doubled)
     |> graph.with_approval_expiry(run.After(duration.minutes(1)))
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   }
@@ -359,6 +389,7 @@ pub fn waits_are_bounded_by_seven_days_unless_infinity_is_asked_test() {
   let assert Ok(handle) =
     graph.start(
       graph.new(waiting(None), runs, context: fn(_) { Nil }, policy: allow)
+        |> graph.with_approvers(testing.trusting_approvers())
         |> graph.build
         |> should.be_ok,
       id: support.id("vocabulary-wait"),
@@ -378,6 +409,7 @@ pub fn waits_are_bounded_by_seven_days_unless_infinity_is_asked_test() {
         context: fn(_) { Nil },
         policy: allow,
       )
+        |> graph.with_approvers(testing.trusting_approvers())
         |> graph.build
         |> should.be_ok,
       id: support.id("vocabulary-unbounded"),
@@ -488,7 +520,12 @@ pub fn a_graph_run_emits_its_lifecycle_with_its_correlation_test() {
   // through two processes have no order, so the approval waits for it.
   let requested = lines(subject, "requested")
   let assert Ok(_) =
-    graph.approve(handle, pending, reviewer: alice(), context: "approver")
+    graph.approve(
+      handle,
+      pending,
+      proof: support.proof(pending.requirement, alice()),
+      context: "approver",
+    )
   let assert Ok(done) = graph.await(handle, within: duration.seconds(5))
   done |> should.equal(graph.Completed(4))
   list.append(requested, lines(subject, "finished"))
@@ -532,6 +569,7 @@ pub fn a_child_graph_inherits_its_parent_correlation_and_root_test() {
   let allow = fn(_, _) { Ok(policy.Allow) }
   let child =
     graph.new(waiting(None), runs, context: fn(_) { Nil }, policy: allow)
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let id = definition.node_id("delegate")
@@ -553,6 +591,7 @@ pub fn a_child_graph_inherits_its_parent_correlation_and_root_test() {
     ))
   let parent =
     graph.new(parent_graph, runs, context: fn(_) { Nil }, policy: allow)
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   let assert Ok(order) = correlation.from_string("order-7")
@@ -654,6 +693,7 @@ pub fn build_reports_every_bound_out_of_range_test() {
       |> budget.with_children(-2)
       |> budget.with_depth(64),
     )
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
   errors
   |> should.equal([
@@ -677,6 +717,7 @@ pub fn build_reports_every_bound_out_of_range_test() {
   let assert Ok(_) =
     spec
     |> graph.with_approval_expiry(run.After(duration.hours(24 * 365)))
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
 }
 
@@ -689,6 +730,7 @@ pub fn build_applies_every_bound_in_range_test() {
     |> graph.with_command_timeout(duration.seconds(2))
     |> graph.with_approval_expiry(run.After(duration.hours(1)))
     |> graph.with_family_budget(budget.limits(work: 3))
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
   let options = graph_runtime.options(set)
   options.callback_timeout |> should.equal(250)
@@ -698,7 +740,10 @@ pub fn build_applies_every_bound_in_range_test() {
   graph_runtime.family_budget(set) |> should.equal(Some(budget.limits(work: 3)))
   // The defaults.
   let defaults =
-    gated_spec(support.store(), seen, doubled) |> graph.build |> should.be_ok
+    gated_spec(support.store(), seen, doubled)
+    |> graph.with_approvers(testing.trusting_approvers())
+    |> graph.build
+    |> should.be_ok
   graph_runtime.options(defaults)
   |> should.equal(runner.Options(
     callback_timeout: 1000,
@@ -736,6 +781,7 @@ pub fn a_definite_and_an_uncertain_body_failure_are_the_tools_test() {
         answer: codec.int(),
       ))
     graph.new(graph, support.store(), context: fn(_) { Nil }, policy: allow)
+    |> graph.with_approvers(testing.trusting_approvers())
     |> graph.build
     |> should.be_ok
   }

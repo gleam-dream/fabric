@@ -9,6 +9,7 @@ import fabric/support
 import fabric/support/codecs
 import fabric/support/fake_provider
 import fabric/support/restart
+import fabric/testing as fabric_testing
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -96,7 +97,10 @@ fn runtime_with(
       )
       |> definition.with_max_activations(1),
     )
-  graph.new(spec, runs, fn(_) { Nil }, policy) |> graph.build |> should.be_ok
+  graph.new(spec, runs, fn(_) { Nil }, policy)
+  |> graph.with_approvers(fabric_testing.trusting_approvers())
+  |> graph.build
+  |> should.be_ok
 }
 
 pub fn a_structured_decision_retains_native_answer_raw_output_and_usage_test() {
@@ -192,7 +196,7 @@ pub fn policy_approval_precedes_the_provider_request_test() {
   graph.approve(
     handle,
     approval,
-    reviewer: support.reviewer("reviewer"),
+    proof: support.proof(approval.requirement, support.reviewer("reviewer")),
     context: Nil,
   )
   |> should.be_ok

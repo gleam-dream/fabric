@@ -206,7 +206,10 @@ pub fn a_pre_wave_5_grandchild_carries_its_true_root_test() {
     fabric.approve(
       handle,
       first.reference,
-      reviewer: support.reviewer("alice"),
+      proof: support.proof(
+        first.reference.requirement,
+        support.reviewer("alice"),
+      ),
       context: Nil,
     )
   let assert Ok(run.Suspended([second], [])) =
@@ -230,7 +233,10 @@ pub fn a_pre_wave_5_grandchild_carries_its_true_root_test() {
     fabric.approve(
       handle,
       second.reference,
-      reviewer: support.reviewer("alice"),
+      proof: support.proof(
+        second.reference.requirement,
+        support.reviewer("alice"),
+      ),
       context: Nil,
     )
   let assert Ok(run.Finished(run.Completed(_))) =

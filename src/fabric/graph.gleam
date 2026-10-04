@@ -5,13 +5,17 @@
 //// ```gleam
 //// let assert Ok(runtime) =
 ////   graph.new(publishing, runs, context: fn(_run) { Ctx(user:) }, policy:)
+////   |> graph.with_approvers(editors)
 ////   |> graph.with_operation_timeout(run.After(duration.minutes(5)))
 ////   |> graph.build
 //// let assert Ok(handle) =
 ////   graph.start(runtime, id: run.new_id(), initial: draft, correlation: None)
 //// case graph.await(handle, within: duration.seconds(5)) {
-////   Ok(graph.AwaitingApproval(pending)) ->
-////     graph.approve(handle, pending, reviewer:, context: Ctx(user:))
+////   Ok(graph.AwaitingApproval(pending)) -> {
+////     let assert Ok(proof) =
+////       approvers.check(editors, token, pending.requirement)
+////     graph.approve(handle, pending, proof:, context: Ctx(user:))
+////   }
 ////   ...
 //// }
 //// ```
@@ -28,7 +32,7 @@
 ////
 //// The vocabulary is the agent runtime's: one `policy.Action` and
 //// `policy.Policy`, one `tool.Failure` for operation bodies, `ApprovalRef`
-//// answered with a `reviewer.Reviewer` and the current context, the
+//// answered with an `approvers.Proof` and the current context, the
 //// context built from the run id (`fn(RunId) -> context`), and one `Error`
 //// classified by `error_kind` (`fabric.ErrorKind`).
 ////
@@ -53,6 +57,7 @@
 //// composition functions take.
 
 import fabric
+import fabric/approvers.{type Approvers, type Proof, type ProofError}
 import fabric/budget
 import fabric/graph/child
 import fabric/graph/definition
@@ -60,6 +65,7 @@ import fabric/graph/fork
 import fabric/graph/job
 import fabric/graph/operation
 import fabric/graph/signal
+import fabric/internal/answerer
 import fabric/internal/bounded
 import fabric/internal/budget/model as reservations
 import fabric/internal/graph/agent_child
@@ -401,8 +407,12 @@ pub type Error {
   /// `ExpiredApproval`.
   ApprovalExpired
   /// The current policy now requires another approval for the operation;
-  /// the answer was not applied. Answer the new request.
+  /// the answer was not applied. Answer the new request, with a proof
+  /// checked for its requirement.
   RequirementChanged(ApprovalRef)
+  /// The answer's proof is not one the runtime's approvers accept for the
+  /// request (see `fabric/approvers`). Nothing was changed.
+  ProofRefused(ProofError)
   /// A different value was already accepted for this signal.
   SignalConflict
   /// The run has no uncertain effect to reconcile.
@@ -431,6 +441,7 @@ pub fn error_kind(error: Error) -> fabric.ErrorKind {
     | AlreadyAnswered
     | ApprovalExpired
     | RequirementChanged(_)
+    | ProofRefused(_)
     | SignalConflict
     | SignalEncodingFailed(_)
     | ValueRefused(_)
@@ -478,6 +489,8 @@ pub fn describe_error(error: Error) -> String {
     AlreadyAnswered -> "the approval request was already answered"
     ApprovalExpired -> "the approval request expired before this answer"
     RequirementChanged(_) -> "the policy now requires another approval"
+    ProofRefused(error) ->
+      "the answer's proof is refused: " <> approvers.describe_proof_error(error)
     SignalConflict -> "another value was accepted for this signal"
     NotReconcilable -> "the run has no uncertain effect to reconcile"
     ReconcileChildFirst ->
@@ -661,6 +674,25 @@ pub fn with_approval_expiry(
   expiry: run.Timeout,
 ) -> Spec(context, state, answer) {
   Spec(..spec, approval_expiry: expiry)
+}
+
+/// Who may answer this runtime's approval requests: `approve` and
+/// `reject` take a proof from `approvers.check` with these approvers,
+/// checked for the request's requirement (see `fabric/approvers`), and
+/// refuse any other. A runtime without approvers refuses every answer
+/// (`approvers.NoApprovers`). A child runtime (`as_subgraph`, `both`,
+/// `map`) answers with its own approvers, given to its own spec.
+pub fn with_approvers(
+  spec: Spec(context, state, answer),
+  approvers: Approvers(credential),
+) -> Spec(context, state, answer) {
+  Spec(
+    ..spec,
+    runtime: graph_runtime.with_approvers(
+      spec.runtime,
+      answerer.from(approvers),
+    ),
+  )
 }
 
 /// One budget shared by every root run this runtime starts and all its
@@ -1724,38 +1756,53 @@ fn refusing_work() -> live.Work {
 /// (`with_approval_expiry`) is refused with `ApprovalExpired`: the request
 /// expires instead, and the run fails.
 ///
-/// `reviewer` is recorded with the answer (`Snapshot.approvals`,
-/// `Receipt.approvals`). Fabric does not authenticate it: the application
-/// authenticates and authorizes whoever answers, and builds the reviewer
-/// from that identity, before calling this.
+/// `proof` says who answers: `approvers.check` made it for the request's
+/// requirement (`reference.requirement`) with the runtime's approvers
+/// (`with_approvers`). Any other proof, or one older than the proof
+/// lifetime, is refused with `ProofRefused` before the run is read. The
+/// reviewer it names and the approvers' name are recorded with the answer
+/// (`Snapshot.approvals`, `Receipt.approvals`).
 pub fn approve(
   handle: Handle(context, state, answer),
   reference: ApprovalRef,
-  reviewer reviewer: Reviewer,
+  proof proof: Proof,
   context context: context,
 ) -> Result(Status(answer), Error) {
-  answer_approval(handle, reference, Approving(reviewer, context), 3)
+  use #(reviewer, verifier) <- result.try(answerer_of(handle, proof, reference))
+  answer_approval(handle, reference, Approving(reviewer, verifier, context), 3)
   |> result.map(fn(snapshot) { snapshot.status })
 }
 
 /// Rejects the run's waiting approval request: the operation does not run
 /// and the run fails with `Denied(reason)`. A rejection is not checked
 /// again, so it takes no context. It is refused like an approval (see
-/// `approve`), except `RequirementChanged`. `reviewer` is recorded as for
-/// `approve`.
+/// `approve`), except `RequirementChanged`. `proof` is checked and
+/// recorded as for `approve`.
 pub fn reject(
   handle: Handle(context, state, answer),
   reference: ApprovalRef,
+  proof proof: Proof,
   reason reason: String,
-  reviewer reviewer: Reviewer,
 ) -> Result(Status(answer), Error) {
-  answer_approval(handle, reference, Rejecting(reviewer, reason), 3)
+  use #(reviewer, verifier) <- result.try(answerer_of(handle, proof, reference))
+  answer_approval(handle, reference, Rejecting(reviewer, verifier, reason), 3)
   |> result.map(fn(snapshot) { snapshot.status })
 }
 
+/// The reviewer and verifier of an answer to `reference` with `proof`.
+fn answerer_of(
+  handle: Handle(context, state, answer),
+  proof: Proof,
+  reference: ApprovalRef,
+) -> Result(#(Reviewer, String), Error) {
+  graph_runtime.approvers(graph_handle.runtime(handle))
+  |> answerer.check(proof, reference.requirement)
+  |> result.map_error(ProofRefused)
+}
+
 type Answering(context) {
-  Approving(reviewer: Reviewer, context: context)
-  Rejecting(reviewer: Reviewer, reason: String)
+  Approving(reviewer: Reviewer, verifier: String, context: context)
+  Rejecting(reviewer: Reviewer, verifier: String, reason: String)
 }
 
 /// Supply a native value for the exact committed wait. An identical encoded
@@ -1995,9 +2042,9 @@ fn answer_approval(
         runner.check_ancestry(runs, state) |> result.map_error(from_runner),
       )
       use #(event, body) <- result.try(case answering {
-        Rejecting(reviewer, reason) ->
-          Ok(#(control.Rejected(current, reason, reviewer), None))
-        Approving(reviewer, context) ->
+        Rejecting(reviewer, verifier, reason) ->
+          Ok(#(control.Rejected(current, reason, reviewer, verifier), None))
+        Approving(reviewer, verifier, context) ->
           case
             runner.admit(
               runs,
@@ -2017,13 +2064,25 @@ fn answer_approval(
                 |> result.map_error(from_runner),
               )
               #(
-                control.Approved(current, Ok(decision), reviewer, expires),
+                control.Approved(
+                  current,
+                  Ok(decision),
+                  reviewer,
+                  verifier,
+                  expires,
+                ),
                 Some(body),
               )
             }
             Error(runner.PolicyRejected(reason)) ->
               Ok(#(
-                control.Approved(current, Error(reason), reviewer, None),
+                control.Approved(
+                  current,
+                  Error(reason),
+                  reviewer,
+                  verifier,
+                  None,
+                ),
                 None,
               ))
             Error(runner.BudgetLimited(reason)) ->

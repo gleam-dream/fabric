@@ -187,6 +187,7 @@ pub fn approval_requires_a_current_reference_and_fresh_requirement_test() {
         reference,
         Ok(policy.RequireApproval(updated)),
         support.reviewer("reviewer"),
+        "verifier",
         None,
       ),
     )
@@ -198,6 +199,7 @@ pub fn approval_requires_a_current_reference_and_fresh_requirement_test() {
       reference,
       Ok(policy.Allow),
       support.reviewer("reviewer"),
+      "verifier",
       None,
     ),
   )
@@ -210,13 +212,20 @@ pub fn approval_requires_a_current_reference_and_fresh_requirement_test() {
         next,
         Ok(policy.RequireApproval(updated)),
         support.reviewer("reviewer"),
+        "verifier",
         None,
       ),
     )
   let assert graph.Queued(_) = queued.phase
   graph.step(
     queued,
-    graph.Approved(next, Ok(policy.Allow), support.reviewer("reviewer"), None),
+    graph.Approved(
+      next,
+      Ok(policy.Allow),
+      support.reviewer("reviewer"),
+      "verifier",
+      None,
+    ),
   )
   |> should.equal(Error(graph.WrongPhase))
 }

@@ -6,15 +6,19 @@
 //// let assert Ok(Nil) = store.start(runs)   // or store.supervised(runs)
 //// let assert Ok(agent) =
 ////   agent.new("desk", model, [weather_tool, transfer_tool], my_policy)
+////   |> agent.with_approvers(desk_approvers)
 ////   |> agent.build
 //// let assert Ok(handle) =
 ////   fabric.start(runs, agent, id: run.new_id(), context:, prompt: "Pay Bob",
 ////     correlation: None)
-//// let assert Ok(reviewer) = reviewer.new(user.id)  // authenticated
 //// case fabric.await(handle, within: duration.seconds(5)) {
-////   Ok(run.Suspended([pending, ..], _)) ->
-////     fabric.approve(handle, pending.reference, reviewer:,
+////   Ok(run.Suspended([pending, ..], _)) -> {
+////     // `desk_approvers` verify the reviewer's token (`fabric/approvers`)
+////     let assert Ok(proof) =
+////       approvers.check(desk_approvers, token, pending.reference.requirement)
+////     fabric.approve(handle, pending.reference, proof:,
 ////       context: current_context)
+////   }
 ////   ...
 //// }
 //// ```
@@ -77,7 +81,9 @@
 //// (`store.new`).
 
 import fabric/agent.{type Agent}
+import fabric/approvers.{type Proof, type ProofError}
 import fabric/internal/answer as answers
+import fabric/internal/answerer
 import fabric/internal/budget/model as reservations
 import fabric/internal/checked_agent
 import fabric/internal/clock
@@ -87,7 +93,7 @@ import fabric/internal/run_id
 import fabric/internal/runner
 import fabric/internal/settlement
 import fabric/internal/store as store_core
-import fabric/reviewer.{type Reviewer}
+import fabric/reviewer
 import fabric/run.{
   type ActionRef, type Answer, type ApprovalRef, type Incompatibility,
   type PendingApproval, type RunId, type Snapshot, type Status, id_to_string,
@@ -168,8 +174,14 @@ pub type Error {
   /// and the model sees that. The run goes on without the action.
   ApprovalExpired
   /// The current policy now requires another approval for the action; the
-  /// answer was not applied. Answer the new request.
+  /// answer was not applied. Answer the new request, with a proof checked
+  /// for its requirement.
   RequirementChanged(PendingApproval)
+  /// The answer's proof is not one this run's approvers accept for the
+  /// request: the agent has none, they did not make it, it was checked for
+  /// another requirement, or it is too old (see `fabric/approvers`).
+  /// Nothing was changed.
+  ProofRefused(ProofError)
   /// The action is not an uncertain effect, or the run is in a phase that
   /// accepts no reconciliation (for example while the model is called).
   NotReconcilable
@@ -198,7 +210,7 @@ pub type ErrorKind {
   /// The run's state refuses the request; trying it again unchanged does
   /// not help: `AlreadyStarted`, `RunEnded`, `RunNotFinished`,
   /// `StaleReference`, `AlreadyAnswered`, `ApprovalExpired`,
-  /// `RequirementChanged`, `NotReconcilable`.
+  /// `RequirementChanged`, `ProofRefused`, `NotReconcilable`.
   Refused
   /// A transient conflict: the same call may succeed soon (`RunnerBusy`,
   /// `Contended`).
@@ -223,6 +235,7 @@ pub fn error_kind(error: Error) -> ErrorKind {
     | AlreadyAnswered
     | ApprovalExpired
     | RequirementChanged(_)
+    | ProofRefused(_)
     | NotReconcilable -> Refused
     RunnerBusy | Contended -> Retry
     StartUnconfirmed(..) | StoreUnavailable(_) | RunUnattended -> Unavailable
@@ -269,6 +282,8 @@ pub fn describe_error(error: Error) -> String {
     AlreadyAnswered -> "the approval request was already answered"
     ApprovalExpired -> "the approval request expired before this answer"
     RequirementChanged(_) -> "the policy now requires another approval"
+    ProofRefused(error) ->
+      "the answer's proof is refused: " <> approvers.describe_proof_error(error)
     NotReconcilable -> "the action is not an uncertain effect to reconcile"
     RunUnattended -> "work is in flight and no runner drives the run"
     RunnerBusy -> "the run's runner did not take the command in time"
@@ -840,17 +855,21 @@ pub fn pending(
 /// is refused with `ApprovalExpired`: the request expires instead, its
 /// action is rejected, and the run goes on.
 ///
-/// `reviewer` is recorded with the answer (`run.Approval.reviewer`). Fabric
-/// does not authenticate it: the application must authenticate and
-/// authorize whoever answers, and build the reviewer from that identity,
-/// before calling this.
+/// `proof` says who answers: `approvers.check` made it for the request's
+/// requirement (`reference.requirement`) with the approvers of the agent
+/// whose run issued the request (`agent.with_approvers`). Any other proof,
+/// or one older than the proof lifetime, is refused with `ProofRefused`
+/// before the request is checked. The reviewer it names
+/// and the approvers' name are recorded with the answer
+/// (`run.Approval.reviewer`, `run.Approval.verifier`).
 pub fn approve(
   run: Run(context, answer),
   reference: ApprovalRef,
-  reviewer reviewer: Reviewer,
+  proof proof: Proof,
   context context: context,
 ) -> Result(Status(answer), Error) {
   use #(target_id, target) <- result.try(locate(run, reference.run))
+  use answerer <- result.try(answerer_of(target, proof, reference))
   let recheck = controller.Env(..target.env, context:)
   use state <- result.try(answer(
     run,
@@ -859,7 +878,7 @@ pub fn approve(
     recheck,
     reference,
     run.Approve,
-    reviewer,
+    answerer,
   ))
   let reissued =
     list.find(family.own_pending(state), fn(pending) {
@@ -890,14 +909,15 @@ fn expired(state: State, reference: ApprovalRef) -> Bool {
 /// never runs the policy; the run continues with its own context. It is
 /// committed like an approval (see `approve`), with the same refusals
 /// except `RequirementChanged`; a rejection after the request's deadline is
-/// `ApprovalExpired`. `reviewer` is recorded as for `approve`.
+/// `ApprovalExpired`. `proof` is checked and recorded as for `approve`.
 pub fn reject(
   run: Run(context, answer),
   reference: ApprovalRef,
+  proof proof: Proof,
   reason reason: String,
-  reviewer reviewer: Reviewer,
 ) -> Result(Status(answer), Error) {
   use #(target_id, target) <- result.try(locate(run, reference.run))
+  use answerer <- result.try(answerer_of(target, proof, reference))
   use state <- result.try(answer(
     run,
     target_id,
@@ -905,12 +925,23 @@ pub fn reject(
     target.env,
     reference,
     run.Reject(reason),
-    reviewer,
+    answerer,
   ))
   case expired(state, reference) {
     True -> Error(ApprovalExpired)
     False -> family_status_after(run, target_id, state)
   }
+}
+
+/// The reviewer and verifier of an answer to `reference` with `proof`, by
+/// the approvers of `target`, the run that issued the request.
+fn answerer_of(
+  target: runner.Setup(context),
+  proof: Proof,
+  reference: ApprovalRef,
+) -> Result(#(reviewer.Reviewer, String), Error) {
+  answerer.check(target.approvers, proof, reference.requirement)
+  |> result.map_error(ProofRefused)
 }
 
 /// The run `id` of `run`'s family, located by following the child links:
@@ -938,14 +969,15 @@ fn answer(
   env: controller.Env(context),
   reference: ApprovalRef,
   answer: Answer,
-  reviewer: Reviewer,
+  answerer: #(reviewer.Reviewer, String),
 ) -> Result(State, Error) {
   use Nil <- result.try(open_to_commands(run, target_id))
+  let #(reviewer, verifier) = answerer
   runner.command(
     target,
     target_id,
     env,
-    controller.Answer(reference, answer, Some(reviewer)),
+    controller.Answer(reference, answer, Some(reviewer), Some(verifier)),
     retries,
   )
   |> result.map_error(command_error)

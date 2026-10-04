@@ -1693,3 +1693,247 @@ let assert client.TimedOut(_) = client.reason(error)
 ```
 
 Dependents: none; the change is internal to the integration's tests.
+
+## Round 8: approvers and proofs
+
+Until round 7 an answer took a `reviewer.Reviewer`, and any code could build
+one with `reviewer.new(subject)`. Fabric could not tell a reviewer that a
+sign-in produced from one a form field named. Gleam cannot make a value
+unforgeable across packages, and a type that only warden could build would
+make warden a dependency of fabric. Fabric therefore stops trusting a
+reviewer value: the application configures a verifier once, on the agent
+or graph runtime, and an answer takes a proof that only that verifier's
+`check` makes.
+
+### `fabric/approvers` (added)
+
+```gleam
+// After
+let desk_approvers =
+  approvers.new("sso", fn(token: String, requirement: run.Requirement) {
+    // authenticate the token, then authorize it for requirement.name
+    use claims <- result.try(verify(token) |> result.map_error(approvers.NotAuthenticated))
+    use <- bool.guard(!may_approve(claims, requirement.name),
+      Error(approvers.NotAuthorized("not a " <> requirement.name)))
+    reviewer.new(claims.sub)
+    |> result.map_error(fn(e) { approvers.NotAuthenticated(reviewer.describe_error(e)) })
+  })
+let proof = approvers.check(desk_approvers, token, pending.reference.requirement)
+// Ok(Proof) | Error(NotAuthenticated(_) | NotAuthorized(_) | Unavailable(_))
+```
+
+- `Approvers(credential)` is opaque. `new(name, verify)` takes the name
+  stored with every answer (1 to 64 bytes; another name is a definition bug
+  and panics) and `verify: fn(credential, run.Requirement) ->
+Result(Reviewer, Denial)`. `verify` runs in the caller of `check`.
+- `Denial` is `NotAuthenticated(reason)`, `NotAuthorized(reason)` or
+  `Unavailable(reason)`, with `describe_denial`. The three cases are the
+  classification (401, 403, 503), so there is no `denial_kind`.
+- `Proof` is opaque, made only by `check`, and read with `reviewer`,
+  `verifier` and `requirement`.
+- `accept(approvers, proof, requirement)` is what an answer does with a
+  proof; Fabric calls it, and an application rarely needs it.
+- `ProofError` is `NoApprovers`, `OtherApprovers(verifier)`,
+  `OtherRequirement(proof:, request:)` or `ProofExpired(age:, lifetime:)`,
+  with `describe_proof_error`.
+- `with_proof_lifetime(approvers, run.Timeout)`: 60 s by default.
+
+Authorization maps from the request's existing `run.Requirement`, for
+example the scope `"approve:" <> requirement.name`. No role field was
+added: a requirement already names what the approval is for and carries a
+version that stale approvals are refused by.
+
+### Answers take a proof
+
+```gleam
+// Before
+fabric.approve(handle, pending.reference, reviewer:, context:)
+fabric.reject(handle, pending.reference, reason:, reviewer:)
+graph.approve(handle, pending, reviewer:, context:)
+graph.reject(handle, pending, reason:, reviewer:)
+
+// After
+let assert Ok(proof) =
+  approvers.check(desk_approvers, token, pending.reference.requirement)
+fabric.approve(handle, pending.reference, proof:, context:)
+fabric.reject(handle, pending.reference, proof:, reason:)
+graph.approve(handle, pending, proof:, context:)  // pending.requirement
+graph.reject(handle, pending, proof:, reason:)
+```
+
+The labelled order of `reject` changes: `proof:` comes before `reason:`, as
+it does before `context:` in `approve`. A call that passed `reason` and
+`reviewer` by position must name them.
+
+A proof is checked before the request is. It is refused with
+`fabric.ProofRefused(error)` or `graph.ProofRefused(error)` (kind `Refused`),
+and nothing changes, when:
+
+- the agent or runtime has no approvers (`NoApprovers`);
+- another approvers value made it (`OtherApprovers`), even one with the same
+  name and the same function;
+- it was checked for another requirement than the reference's
+  (`OtherRequirement`). The reference's requirement is the stored request's,
+  or the reference is `StaleReference`, so a proof for requirement A never
+  answers requirement B;
+- it is older than the receiving approvers' lifetime (`ProofExpired`).
+
+`RequirementChanged` after an approval's policy recheck needs a new proof,
+for the new requirement.
+
+### `agent.with_approvers`, `graph.with_approvers` (added)
+
+```gleam
+// After
+let assert Ok(desk) =
+  agent.new("desk", model, tools, policy)
+  |> agent.with_approvers(desk_approvers)
+  |> agent.build
+let assert Ok(runtime) =
+  graph.new(definition, runs, context:, policy:)
+  |> graph.with_approvers(editors)
+  |> graph.build
+```
+
+The approvers are not stored with the run. A run is answered with the
+approvers of the agent value it was started, opened or recovered with, so a
+deployment that forgot them is fixed by deploying an agent that has them;
+no stored run is lost. A sub-agent without approvers of its own is answered
+with its parent's (the parent's requests and its children's surface
+together). A graph child runtime (`as_subgraph`, `both`, `map`) is opened
+with its own runtime and answers with that runtime's approvers.
+
+### `run.Approval.verifier` and the stored record
+
+```gleam
+// Before
+Approval(requirement:, revision:, answer:, reviewer: Option(Reviewer))
+// After
+Approval(requirement:, revision:, answer:, reviewer: Option(Reviewer), verifier: Option(String))
+```
+
+The reviewer is the one `verify` returned, and `verifier` the approvers'
+name. Both are `None` for an `Expired` answer. The record stores
+`"verifier"` beside `"reviewer"` and `"reviewer_issuer"` in agent and graph
+records alike. A record without it reads with `verifier: None`: string
+reviewers (before wave 5), typed reviewers with an issuer (round 7), and
+none. `test/fixtures/records/pre-round-8-suspended.json` is a round-7 run
+waiting for an approval: it reads, and the new approvers reject it
+(`approvers_test`); `graph_stored_record_test` answers a pre-F5 graph
+approval and finds the verifier recorded.
+
+### `testing.trusting_approvers()` (added)
+
+```gleam
+// After: a test that is not about who answers
+let assert Ok(proof) =
+  approvers.check(testing.trusting_approvers(), alice, pending.reference.requirement)
+```
+
+The credential is the reviewer itself, and every requirement is granted.
+The answers record the verifier `"fabric/testing.trusting_approvers"`, so a
+shortcut that reaches production shows in the records and in a grep. Unlike
+`approvers.new`, every call returns the same approvers (memoized in the VM),
+so a test can give them to an agent in one helper and check proofs in
+another.
+
+### Decisions
+
+**Binding.** Each `approvers.new` mints a unique reference. A proof records
+that reference, the requirement it was checked for, the reviewer, the
+approvers' name and the time of the check. An answer accepts it only when
+the reference is the one of the approvers the agent or runtime holds, and
+the requirement is the reference's. An application cannot build permissive
+approvers elsewhere and slip their proofs in: they carry another reference.
+The agent keeps the approvers in a closure, so `Agent(context, answer)`
+gains no credential type parameter.
+
+Comparing the `verify` function instead of a reference was tried and
+rejected: the compiler specializes a closure at each call site (a test that
+called `desk_approvers("sesame")` twice got two unequal functions), so "the
+same function" was not stable. The cost of the reference is a rule: build
+the approvers once, at boot, and share the value. `trusting_approvers` is
+the one exception, by memoization.
+
+**Expiry: yes, 60 s by default.** A proof is evidence that a credential was
+verified for one answer, made right before it. A proof that is kept, in a
+session or a cache, would turn one sign-in into standing authority and
+outlive the credential's revocation or expiry. The lifetime bounds that.
+It is judged by the receiving approvers with this node's clock, so
+`with_proof_lifetime(run.Infinity)` on the agent's approvers lifts it. A
+request handler that checks and answers at once never comes near 60 s.
+
+**Single use: no.** An approval request already takes one answer: the
+commit is compare-and-set, and a second answer is `AlreadyAnswered`. A
+proof is limited to one requirement and to its lifetime. Single use would
+need shared state across nodes for an in-memory value, and it would forbid
+a reviewer answering several requests of the same requirement with one
+check, which is a legitimate "approve all" action.
+
+**No approvers: answers fail with a typed error.** `build` cannot know
+whether a policy requires approvals: a `Policy` is a function whose
+decision depends on the action's arguments and the context. Refusing at
+`build` every agent without approvers would force approvers on agents that
+never ask for one, including every `policy.always_allow()` agent. Refusing
+when a request is issued would end runs that a corrected deployment could
+still answer. So `approve` and `reject` return `ProofRefused(NoApprovers)`,
+whose description names the setters. The request waits until it expires (7
+days by default) or the run is cancelled.
+
+**Entry points.** `fabric.approve`, `fabric.reject`, `graph.approve` and
+`graph.reject` are the only ones. `fabric_relay` serves runs and tools but
+answers no approval, and the store commands (`cancel_stored`,
+`reconcile_stored`, `settle_stored`) answer none either.
+
+### The warden recipe and its gate step (added)
+
+Fabric does not depend on warden. The README (after
+`<!-- approvers-recipe -->`) and the module doc of `fabric/approvers` (under
+`## With warden`) carry the same block, about 30 lines:
+`warden_approvers(validator)` verifies an access token for the validator's
+audience, requires the scope `approve:<requirement name>`, and builds the
+reviewer from the token's `sub` and `iss`. `consumers/approvers_warden` is
+that block verbatim (`src/approvers_warden.gleam`), and its tests run it
+against warden's test provider, whose `with_granted_scopes` (warden round 8)
+grants `approve:refund` to one user only:
+
+- a signed-in user with the scope gets a proof, and the approval records
+  `sub`, `iss` and the verifier `"warden"`;
+- a signed-in user without it gets `NotAuthorized`;
+- expired, unsigned, HMAC-forged, wrong-audience, foreign-issuer, malformed
+  and empty tokens get `NotAuthenticated`;
+- a key source that cannot be reached gets `Unavailable`;
+- a proof from the trusting approvers, from a permissive verifier named
+  `"warden"`, from the recipe built a second time, and from the recipe over
+  another validator is refused by `approve` with `OtherApprovers`.
+
+`scripts/check.py` gains the package and the step `approvers-recipe`
+(`python3 scripts/check.py recipe`), which fails with a diff when the
+README or module doc copy differs from the consumer's file. The gate's own
+unit tests cover the extraction.
+
+### Migration inside this repository
+
+Every test, integration, consumer and experiment is migrated. Tests that
+are not about who answers give their agents and runtimes
+`testing.trusting_approvers()` and check proofs with it (`support.agent`
+and `support.proof` in the core tests). `consumers/app` gained
+`app.staff()`, approvers over staff badges whose roles name the
+requirements they may answer; `librarian`, `librarian_spec`,
+`misconfigured` and `front_desk` take it, and the purchaser sub-agent is
+answered with the desk's. `consumers/writing`'s `fabric_writing.runtime`
+and `consumers/jobs`'s `cancellation_runtime` take approvers; the writing
+CLI answers as the operator at the terminal (`FABRIC_WRITING_OPERATOR`).
+
+Dependents:
+
+| Item                                                                | Dependent                                                                  | How it breaks                                                                                                                                                        |
+| ------------------------------------------------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fabric.approve(.., reviewer:, ..)`, `fabric.reject(.., reviewer:)` | `oversight/apps/support_desk/src/support_desk/desk.gleam` (lines 243, 257) | does not compile: the label is `proof:` and the value an `approvers.Proof`                                                                                           |
+| `reviewer.new` inside the verifier                                  | `oversight/apps/support_desk/src/support_desk/approvers.gleam` (line 63)   | compiles; its `authenticate` becomes the `verify` of `approvers.new`, and should also check the approver's scope (support_desk authenticates but does not authorize) |
+| no approvers on the agent                                           | support_desk's desk agent                                                  | answers fail with `ProofRefused(NoApprovers)` until it calls `agent.with_approvers`                                                                                  |
+| `run.Approval`                                                      | `oversight/apps/support_desk/test/support_desk_test.gleam` (line 105)      | compiles (label pattern with `..`); can assert `verifier:`                                                                                                           |
+
+No other app answers approvals (`research_agent` and `tool_hub` build
+agents whose policies never require one), and no sibling repository uses
+these items.

@@ -680,7 +680,10 @@ pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
     fabric.approve(
       run_a,
       p.reference,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(
+        p.reference.requirement,
+        support.reviewer("reviewer"),
+      ),
       context: Nil,
     )
   let started = probe.arrival(probe)
@@ -689,14 +692,14 @@ pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
   fabric.approve(
     run_b,
     p.reference,
-    reviewer: support.reviewer("reviewer"),
+    proof: support.proof(p.reference.requirement, support.reviewer("reviewer")),
     context: Nil,
   )
   |> should.equal(Error(fabric.AlreadyAnswered))
   fabric.approve(
     run_b,
     q.reference,
-    reviewer: support.reviewer("reviewer"),
+    proof: support.proof(q.reference.requirement, support.reviewer("reviewer")),
     context: Nil,
   )
   |> should.equal(Error(fabric.RunUnattended))
@@ -708,7 +711,10 @@ pub fn a_second_store_checks_commands_before_reporting_an_unknown_owner_test() {
     fabric.approve(
       run_b,
       q.reference,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(
+        q.reference.requirement,
+        support.reviewer("reviewer"),
+      ),
       context: Nil,
     )
   probe.release(probe.arrival(probe))
@@ -833,7 +839,10 @@ pub fn an_approval_through_an_opened_handle_runs_the_action_test() {
     fabric.approve(
       opened,
       p.reference,
-      reviewer: support.reviewer("reviewer"),
+      proof: support.proof(
+        p.reference.requirement,
+        support.reviewer("reviewer"),
+      ),
       context: Nil,
     )
   probe.release(probe.arrival(probe))
@@ -843,8 +852,11 @@ pub fn an_approval_through_an_opened_handle_runs_the_action_test() {
     fabric.reject(
       opened,
       q.reference,
+      proof: support.proof(
+        q.reference.requirement,
+        support.reviewer("reviewer"),
+      ),
       reason: "no",
-      reviewer: support.reviewer("reviewer"),
     )
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(opened, within: duration.milliseconds(5000))

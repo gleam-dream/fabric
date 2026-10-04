@@ -14,6 +14,7 @@ import fabric/support
 import fabric/support/flaky
 import fabric/support/probe
 import fabric/support/restart
+import fabric/testing
 import fabric/tool
 import gleam/erlang/process
 import gleam/list
@@ -67,7 +68,10 @@ fn runtime_version(runs, read, request, policy, version) {
       )
       |> definition.with_max_activations(1),
     )
-  graph.new(spec, runs, fn(_) { Nil }, policy) |> graph.build |> should.be_ok
+  graph.new(spec, runs, fn(_) { Nil }, policy)
+  |> graph.with_approvers(testing.trusting_approvers())
+  |> graph.build
+  |> should.be_ok
 }
 
 pub fn refusals_uncertainty_and_read_failures_remain_pending_until_terminal_evidence_test() {
@@ -144,7 +148,7 @@ pub fn cancellation_before_owned_admission_never_requests_a_remote_stop_test() {
   graph.approve(
     handle,
     approval,
-    reviewer: support.reviewer("reviewer"),
+    proof: support.proof(approval.requirement, support.reviewer("reviewer")),
     context: Nil,
   )
   |> should.be_error
@@ -216,6 +220,7 @@ pub fn owned_cleanup_continues_under_a_cancelled_parent_with_no_unused_work_budg
           |> budget.with_children(1)
           |> budget.with_depth(1),
         )
+        |> graph.with_approvers(testing.trusting_approvers())
         |> graph.build
         |> should.be_ok,
       support.id("owned-parent"),

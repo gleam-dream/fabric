@@ -4,7 +4,26 @@
          claim_take/2, exit_shutdown/0, shut_down/1, factory_name/1,
          await_or_shutdown/3, requeue_shutdown/1, take_shutdown/1, graph_child_id/2,
          family_budget_id/1, system_time_ms/0, graph_branch_id/3,
-         sha256_hex/1]).
+         sha256_hex/1, memoized/2]).
+
+%% The value stored under Key in persistent_term, made by Make on the
+%% first call in this VM; concurrent first calls agree on one value.
+memoized(Key, Make) ->
+    case persistent_term:get(Key, undefined) of
+        undefined ->
+            global:trans({Key, self()}, fun() ->
+                case persistent_term:get(Key, undefined) of
+                    undefined ->
+                        Value = Make(),
+                        persistent_term:put(Key, Value),
+                        Value;
+                    Value ->
+                        Value
+                end
+            end);
+        Value ->
+            Value
+    end.
 
 family_budget_id(Root) ->
     Hash = crypto:hash(sha256, [<<"fabric.family.budget:">>, Root]),

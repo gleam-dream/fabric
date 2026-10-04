@@ -69,11 +69,13 @@ fn every_action() -> List(run.ActionRecord) {
           1,
           run.Approve,
           Some(support.reviewer("alice")),
+          Some("warden"),
         ),
         run.Approval(
           requirement,
           2,
           run.Reject("no \"quotes\" \u{1F600}"),
+          None,
           None,
         ),
       ],

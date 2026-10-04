@@ -185,9 +185,15 @@ pub type Event {
   /// The executor confirms nothing of this batch runs any more.
   ToolsStopped
   Reconcile(ActionId, content: String)
-  /// A reviewer's answer; the policy is checked again with the context of
-  /// the environment the event is applied with.
-  Answer(reference: ApprovalRef, answer: Answer, reviewer: Option(Reviewer))
+  /// A reviewer's answer, verified by the approvers named `verifier`; the
+  /// policy is checked again with the context of the environment the
+  /// event is applied with.
+  Answer(
+    reference: ApprovalRef,
+    answer: Answer,
+    reviewer: Option(Reviewer),
+    verifier: Option(String),
+  )
   /// Rejects every approval request of the current batch whose deadline
   /// has passed (`env.clock`); refused as stale when none has.
   ExpireApprovals
@@ -343,8 +349,8 @@ pub fn step(
   event: Event,
 ) -> Transition(Rejection) {
   case event {
-    Answer(reference, answer, reviewer) ->
-      answer_approval(env, state, reference, answer, reviewer)
+    Answer(reference, answer, reviewer, verifier) ->
+      answer_approval(env, state, reference, answer, reviewer, verifier)
     ExpireApprovals ->
       case expire(env, state) {
         Ok(next) -> Ok(next)
@@ -900,6 +906,7 @@ fn answer_approval(
   reference: ApprovalRef,
   answer: Answer,
   reviewer: Option(Reviewer),
+  verifier: Option(String),
 ) -> Transition(Rejection) {
   let find = fn(actions: List(ActionRecord)) {
     list.find(actions, fn(action) { action.id == reference.id })
@@ -932,7 +939,7 @@ fn answer_approval(
                 turn,
                 actions,
                 action,
-                run.Approval(requirement, revision, answer, reviewer),
+                run.Approval(requirement, revision, answer, reviewer, verifier),
               ))
           }
         Ok(action) -> Error(unanswerable(action, reference))
@@ -1041,7 +1048,13 @@ fn expire(env: Env(context), state: State) -> Transition(Nil) {
                       turn,
                       actions,
                       action,
-                      run.Approval(requirement, revision, run.Expired, None),
+                      run.Approval(
+                        requirement,
+                        revision,
+                        run.Expired,
+                        None,
+                        None,
+                      ),
                     )
                   #(state, list.append(effects, more))
                 }

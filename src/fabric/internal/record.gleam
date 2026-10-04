@@ -67,8 +67,9 @@
 //// An approval request with a deadline (`agent.with_approval_expiry`)
 //// stores it as `"expires_at"`, in Unix milliseconds, in any version; one
 //// without the key never expires. An answer stores its reviewer's subject
-//// as `"reviewer"` (a string, as before) and its issuer, when there is one,
-//// as `"reviewer_issuer"`. An expired request is stored as a rejection
+//// as `"reviewer"` (a string, as before), its issuer, when there is one,
+//// as `"reviewer_issuer"`, and the name of the approvers that verified it
+//// as `"verifier"`; an answer stored before proofs has no verifier. An expired request is stored as a rejection
 //// with `"expired": true`, which a reader that ignores the key reads as a
 //// rejection. A replayed action (`tool.with_replay`) stores `"replays"`;
 //// one without the key was never replayed. A model failure stores its
@@ -465,6 +466,10 @@ pub fn approval(approval: Approval) -> Json {
       ],
       case option.then(approval.reviewer, reviewer.issuer) {
         Some(issuer) -> [#("reviewer_issuer", json.string(issuer))]
+        None -> []
+      },
+      case approval.verifier {
+        Some(verifier) -> [#("verifier", json.string(verifier))]
         None -> []
       },
       case approval.answer {
@@ -1083,6 +1088,11 @@ pub fn approval_decoder() -> Decoder(Approval) {
     None,
     decode.optional(decode.string),
   )
+  use verifier <- decode.optional_field(
+    "verifier",
+    None,
+    decode.optional(decode.string),
+  )
   use expired <- decode.optional_field("expired", False, decode.bool)
   let reviewer =
     option.map(subject, fn(subject) { stored_reviewer.restore(subject, issuer) })
@@ -1090,7 +1100,7 @@ pub fn approval_decoder() -> Decoder(Approval) {
     True -> run.Expired
     False -> answer
   }
-  decode.success(run.Approval(required, revision, answer, reviewer))
+  decode.success(run.Approval(required, revision, answer, reviewer, verifier))
 }
 
 fn action_state_decoder(version: Int) -> Decoder(ActionState) {
