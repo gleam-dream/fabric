@@ -333,3 +333,100 @@ pub fn an_answer_outside_the_schema_keeps_its_text_test() {
   |> should.be_true
   fake_provider.stop(fake)
 }
+
+// --- answers whose schema has no object root -------------------------------------
+
+pub type Verdict {
+  Approve
+  Revise(reason: String)
+}
+
+fn verdict_codec() -> codec.Codec(Verdict) {
+  codec.union({
+    use approve <- codec.unit_variant("approve", Approve)
+    use revise <- codec.variant("revise", of: codec.string(), construct: Revise)
+    codec.match(fn(verdict) {
+      case verdict {
+        Approve -> approve
+        Revise(reason) -> revise(reason)
+      }
+    })
+  })
+}
+
+fn answering_with(
+  answer: codec.Codec(a),
+  model: model.Model,
+) -> agent.Agent(Nil, a) {
+  agent.new("typed", model, [], policy.always_allow())
+  |> agent.with_answer(answer)
+  |> support.agent
+}
+
+/// A `codec.union` answer is the caller's own type: a model answers the
+/// union's JSON, the run completes with the variant, and the record keeps
+/// that JSON.
+pub fn a_union_answer_completes_with_its_variant_test() {
+  let seen = process.new_subject()
+  let #(handle, status) =
+    finish(
+      answering_with(
+        verdict_codec(),
+        answering("{\"tag\":\"revise\",\"value\":\"cite a source\"}", seen),
+      ),
+      "review this",
+    )
+  status |> should.equal(run.Finished(run.Completed(Revise("cite a source"))))
+  process.receive(seen, 1000) |> should.equal(Ok(Some(schema(verdict_codec()))))
+  let assert Ok(snapshot) = fabric.snapshot(handle)
+  let assert [_, model.AssistantMessage(turn)] = snapshot.transcript
+  turn.text |> should.equal("{\"tag\":\"revise\",\"value\":\"cite a source\"}")
+}
+
+/// The adapter wraps an answer whose schema has no object root as
+/// `{"answer": ..}` for the provider and unwraps the reply: the run stores
+/// the answer's own JSON.
+pub fn the_adapter_wraps_an_answer_without_an_object_root_test() {
+  let fake =
+    fake_provider.start([
+      testing.text("{\"answer\":[\"Paris\",\"Rome\"]}")
+      |> testing.with_usage(message.Usage(5, 6, 11))
+      |> testing.events_for(message.OpenAI, _),
+    ])
+  let cities = codec.list(codec.string())
+  let #(handle, status) =
+    finish(
+      answering_with(
+        cities,
+        llm.model(fake.client, fake_provider.openai(fake), "gpt-scripted"),
+      ),
+      "two cities?",
+    )
+  status |> should.equal(run.Finished(run.Completed(["Paris", "Rome"])))
+  let assert [body] = fake_provider.bodies(fake)
+  string.contains(body, "\"name\":\"answer\"") |> should.be_true
+  string.contains(body, "\"required\":[\"answer\"]") |> should.be_true
+  let assert Ok(snapshot) = fabric.snapshot(handle)
+  let assert [_, model.AssistantMessage(turn)] = snapshot.transcript
+  turn.text |> should.equal("[\"Paris\",\"Rome\"]")
+  fake_provider.stop(fake)
+}
+
+/// A boolean answer is wrapped the same way.
+pub fn the_adapter_wraps_a_boolean_answer_test() {
+  let fake =
+    fake_provider.start([
+      testing.text("{\"answer\":true}")
+      |> testing.events_for(message.OpenAI, _),
+    ])
+  let #(_, status) =
+    finish(
+      answering_with(
+        codec.bool(),
+        llm.model(fake.client, fake_provider.openai(fake), "gpt-scripted"),
+      ),
+      "is it sunny?",
+    )
+  status |> should.equal(run.Finished(run.Completed(True)))
+  fake_provider.stop(fake)
+}
