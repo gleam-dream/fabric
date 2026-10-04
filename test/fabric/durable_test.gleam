@@ -1000,22 +1000,44 @@ pub fn a_start_the_backend_stored_despite_reporting_it_taken_runs_test() {
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
 }
 
-/// A first write reported taken by a record the start did not write is
-/// another run under the caller's id: the start stored nothing and names
-/// the id, so the caller can open that run.
-pub fn a_start_whose_id_holds_another_record_is_already_started_test() {
+/// A first write reported taken by a record this Fabric cannot read is not
+/// `AlreadyStarted(same_input: False)`, which would claim the stored run
+/// was compared: the start stored nothing and returns the read's error.
+pub fn a_start_whose_id_holds_an_unreadable_record_says_so_test() {
   let runs = taken_backend(support.store(), False)
-  let id = run.new_id()
-  fabric.start(
-    runs,
-    one_slow(probe.new()),
-    id:,
-    context: Nil,
-    prompt: "go",
-    correlation: None,
-  )
-  |> result.map(fabric.id)
-  |> should.equal(Error(fabric.AlreadyStarted(id, same_input: False)))
+  let assert Error(fabric.CorruptRecord(_)) =
+    fabric.start(
+      runs,
+      one_slow(probe.new()),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+}
+
+/// A taken id whose record the store cannot read now is unavailable, so the
+/// caller starts again to compare.
+pub fn a_start_whose_taken_id_cannot_be_read_is_unavailable_test() {
+  let runs =
+    store.new(
+      process.new_name("taken-unreadable-store"),
+      get: fn(_) { Error(backend.Unavailable("down")) },
+      insert: fn(_, _) { Error(backend.AlreadyExists) },
+      compare_and_set: fn(_, _, _) { Error(backend.Unavailable("down")) },
+    )
+    |> support.started
+  let assert Error(error) =
+    fabric.start(
+      runs,
+      one_slow(probe.new()),
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  error |> should.equal(fabric.StoreUnavailable("down"))
+  fabric.error_kind(error) |> should.equal(fabric.Unavailable)
 }
 
 /// A start whose first write the store does not confirm names the run it
