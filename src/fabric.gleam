@@ -121,8 +121,11 @@ pub type Error {
   /// it, or `recover` it to take over its work. `same_input` says whether
   /// the stored run was started by the same agent with the same prompt and
   /// correlation, so that a retry can tell its own run from another start's
-  /// that reused the id; it is `False` when the stored run cannot be read. A
-  /// run's context is never stored, so it is not compared.
+  /// that reused the id. A run's context is never stored, so it is not
+  /// compared. When the id is taken but the stored run cannot be read, the
+  /// start returns the read's error instead: `StoreUnavailable` (start again
+  /// to compare), or `UnsupportedVersion` or `CorruptRecord` (the id holds a
+  /// record this Fabric cannot read).
   AlreadyStarted(id: RunId, same_input: Bool)
   /// The store did not confirm the run's first record, so its outcome is
   /// unknown: the backend may still store it later, as the run `id` with
@@ -317,23 +320,22 @@ pub fn start(
   case runner.launch_new(setup, state, effects) {
     Ok(_) -> Ok(Run(id: text, setup:, answer: checked_agent.answer(agent)))
     Error(backend.AlreadyExists) ->
-      Error(AlreadyStarted(id, same_input(store, state)))
+      same_input(store, state)
+      |> result.map_error(record_error)
+      |> result.try(fn(same) { Error(AlreadyStarted(id, same)) })
     Error(error) -> Error(StartUnconfirmed(id, describe_store(error)))
   }
 }
 
 /// Whether the stored run `fresh.run` is a root started by the same agent
 /// with the same prompt and correlation as `fresh`, the state a start
-/// wanted to store.
-fn same_input(store: Store, fresh: State) -> Bool {
-  case runner.load(store, fresh.run) {
-    Ok(#(_, stored)) ->
-      stored.parent == None
-      && stored.agent == fresh.agent
-      && stored.correlation == fresh.correlation
-      && list.first(stored.transcript) == list.first(fresh.transcript)
-    Error(_) -> False
-  }
+/// wanted to store; the read's error when the stored run cannot be read.
+fn same_input(store: Store, fresh: State) -> Result(Bool, runner.ReadError) {
+  use #(_, stored) <- result.map(runner.load(store, fresh.run))
+  stored.parent == None
+  && stored.agent == fresh.agent
+  && stored.correlation == fresh.correlation
+  && list.first(stored.transcript) == list.first(fresh.transcript)
 }
 
 /// Opens the stored run `id` under `agent` and `context`. When work was in

@@ -312,7 +312,9 @@ pub type Error {
   /// A run with this id is already stored: this start stored nothing.
   /// `same_input` says whether the stored run is a root of the same graph
   /// with the same initial state and correlation; a retry can then `open`
-  /// it. It is `False` when the stored run cannot be read.
+  /// it. When the id is taken but the stored run cannot be read, the start
+  /// returns the read's error instead (`StoreUnavailable`, `CorruptRecord`
+  /// or `UnsupportedVersion`).
   AlreadyStarted(id: run.RunId, same_input: Bool)
   /// The runtime declares a family budget (`with_family_budget`) and the
   /// store writes agent records older than version 7. Nothing was stored.
@@ -1332,25 +1334,28 @@ pub fn start(
   {
     Ok(_) -> Ok(handle(runtime, id))
     Error(runner.StoreFailed(backend.AlreadyExists)) ->
-      Error(AlreadyStarted(id, same_input(runtime, state)))
+      same_input(runtime, state)
+      |> result.map_error(from_runner)
+      |> result.try(fn(same) { Error(AlreadyStarted(id, same)) })
     Error(error) -> Error(from_runner(error))
   }
 }
 
 /// Whether the stored run `fresh.run` is a root of the same graph started
-/// with the same initial state and correlation as `fresh`.
+/// with the same initial state and correlation as `fresh`; the read's error
+/// when the stored run cannot be read.
 fn same_input(
   runtime: Runtime(context, state, answer),
   fresh: control.State,
-) -> Bool {
-  case runner.load_raw(graph_runtime.store(runtime), fresh.run) {
-    Ok(#(_, stored)) ->
-      stored.parent == None
-      && stored.definition == fresh.definition
-      && stored.initial == fresh.initial
-      && stored.correlation == fresh.correlation
-    Error(_) -> False
-  }
+) -> Result(Bool, runner.Error) {
+  use #(_, stored) <- result.map(runner.load_raw(
+    graph_runtime.store(runtime),
+    fresh.run,
+  ))
+  stored.parent == None
+  && stored.definition == fresh.definition
+  && stored.initial == fresh.initial
+  && stored.correlation == fresh.correlation
 }
 
 /// The run as stored, read through its current definition.

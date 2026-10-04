@@ -19,6 +19,7 @@ import fabric/policy
 import fabric/reviewer
 import fabric/run
 import fabric/store
+import fabric/store/backend
 import fabric/store/conformance
 import fabric/store/discovery
 import fabric/support
@@ -555,6 +556,27 @@ pub fn a_second_start_says_whether_it_is_the_same_run_test() {
   |> should.equal(Error(graph.AlreadyStarted(id, False)))
   graph.error_kind(graph.AlreadyStarted(id, True))
   |> should.equal(fabric.Refused)
+}
+
+/// A taken id whose record cannot be read is the read's error, not
+/// `AlreadyStarted(_, False)`.
+pub fn a_start_whose_taken_id_cannot_be_read_says_so_test() {
+  let runs =
+    store.new(
+      process.new_name("vocabulary-unreadable"),
+      get: fn(_) { Ok(backend.Stored(1, "not a graph record")) },
+      insert: fn(_, _) { Error(backend.AlreadyExists) },
+      compare_and_set: fn(_, _, _) { Error(backend.Unavailable("down")) },
+    )
+    |> support.started
+  let seen = process.new_subject()
+  let assert Error(graph.CorruptRecord(_)) =
+    graph.start(
+      gated(runs, seen, doubled),
+      id: support.id("vocabulary-unreadable"),
+      initial: 1,
+      correlation: None,
+    )
 }
 
 pub fn errors_have_a_stable_kind_and_a_description_test() {
