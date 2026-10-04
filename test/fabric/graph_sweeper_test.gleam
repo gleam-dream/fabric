@@ -30,6 +30,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None}
+import gleam/string
 import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
@@ -681,10 +682,10 @@ pub fn fork_discovery_survives_lost_watches_and_does_not_repeat_unchanged_waits_
   restart.crash(owner, original)
   let a = nodes.node(memory.backend, "scan", nodes.long)
   let b = nodes.node(memory.backend, "remote", nodes.long)
-  scan_runtime(a, mapped_signals).claimed |> should.equal(1)
+  claims(scan_runtime(a, mapped_signals), 1, "scan 1")
   await_free(memory.backend, ids, 3000)
   let revisions = list.map(ids, nodes.revision(memory.backend, _))
-  scan_runtime(b, mapped_signals).claimed |> should.equal(0)
+  claims(scan_runtime(b, mapped_signals), 0, "scan 2")
   list.map(ids, nodes.revision(memory.backend, _)) |> should.equal(revisions)
   let root = support.open_graph(mapped_signals(b), id)
   let assert Ok(second) = graph.branch(root, 1, 2, signal_leaf(b))
@@ -693,7 +694,7 @@ pub fn fork_discovery_survives_lost_watches_and_does_not_repeat_unchanged_waits_
   let assert Ok(_) = graph.deliver(second, reference, response(), 20)
   // The delivery's own runner settles the branch first; scan once it let go.
   await_free(memory.backend, ids, 3000)
-  scan_runtime(a, mapped_signals).claimed |> should.equal(1)
+  claims(scan_runtime(a, mapped_signals), 1, "scan 3")
   let assert Ok(waiting) =
     graph.await(
       support.open_graph(mapped_signals(a), id),
@@ -702,23 +703,39 @@ pub fn fork_discovery_survives_lost_watches_and_does_not_repeat_unchanged_waits_
   let assert graph.Fork(_, _) = waiting
   await_free(memory.backend, ids, 3000)
   // The new wait has one fewer dependency; one claim records that new scope.
-  scan_runtime(b, mapped_signals).claimed |> should.equal(1)
+  claims(scan_runtime(b, mapped_signals), 1, "scan 4")
   await_free(memory.backend, ids, 3000)
-  scan_runtime(a, mapped_signals).claimed |> should.equal(0)
+  claims(scan_runtime(a, mapped_signals), 0, "scan 5")
+  // `b` parked the root in the scan before and watches its members, so a
+  // delivery through `b` could wake it there before any scan. Through a
+  // node with no watches, only a scan finds the root.
+  let c = nodes.node(memory.backend, "deliver", nodes.long)
+  let unwatched = support.open_graph(mapped_signals(c), id)
   list.each([1, 3], fn(member) {
-    let assert Ok(handle) = graph.branch(root, 1, member, signal_leaf(b))
+    let assert Ok(handle) = graph.branch(unwatched, 1, member, signal_leaf(c))
     let assert Ok(waiting) = graph.snapshot(handle)
     let assert graph.AwaitingSignal(reference) = waiting.status
     let assert Ok(_) = graph.deliver(handle, reference, response(), member * 10)
   })
   await_free(memory.backend, ids, 3000)
-  scan_runtime(a, mapped_signals).claimed |> should.equal(1)
+  claims(scan_runtime(a, mapped_signals), 1, "scan 6")
   let assert Ok(done) =
     graph.await(
       support.open_graph(mapped_signals(a), id),
       within: duration.milliseconds(5000),
     )
   done |> should.equal(graph.Completed([10, 20, 30]))
+}
+
+/// Checks the claims of one scan, naming the scan when they differ.
+fn claims(summary: o.Sweep, expected: Int, scan: String) -> Nil {
+  case summary.claimed == expected {
+    True -> Nil
+    False -> {
+      let message = scan <> ": " <> string.inspect(summary)
+      panic as message
+    }
+  }
 }
 
 fn await_free(backend, ids, tries) {
