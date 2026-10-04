@@ -8,6 +8,7 @@ import fabric/model
 import fabric/readme_example.{
   type Context, type Receipt, type Resolution, type Transfer, type TransferError,
   Approve, Context, GatewayTimeout, Happened, Receipt, Reject, Resolution,
+  StillUnknown,
 }
 import fabric/run
 import fabric/support/restart
@@ -126,6 +127,33 @@ pub fn the_readme_example_runs_test() {
   readme_example.review(runs, large, tess, tess_reviewer(), id, Approve)
   |> should.equal(
     Ok(run.Finished(run.Completed(Resolution("final: {\"receipt\":\"r-1\"}")))),
+  )
+
+  // Approved, and no one knows yet whether the gateway paid: the model is
+  // told, and the run goes on.
+  let unknown = desk("5000")
+  let assert Ok(id) =
+    readme_example.start_payment(runs, unknown, ann, "Pay Carol")
+  let assert Ok(_) =
+    readme_example.review(runs, unknown, tess, tess_reviewer(), id, Approve)
+  let assert Ok(_) =
+    readme_example.review(
+      runs,
+      unknown,
+      tess,
+      tess_reviewer(),
+      id,
+      StillUnknown("the bank is checking"),
+    )
+  readme_example.review(runs, unknown, tess, tess_reviewer(), id, Approve)
+  |> should.equal(
+    Ok(
+      run.Finished(
+        run.Completed(Resolution(
+          "final: {\"unconfirmed\":\"the bank is checking\"}",
+        )),
+      ),
+    ),
   )
 
   // At boot: a finished run is reopened unchanged; a malformed id names

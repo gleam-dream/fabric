@@ -262,6 +262,28 @@ pub fn reconciliation(
   }
 }
 
+/// The content `fabric.reconcile` takes when a person cannot yet say what
+/// happened: `{"unconfirmed": note}`, which tells the model the effect may
+/// or may not have happened and why, so it does not report the effect as
+/// done or as failed.
+///
+/// An uncertain effect waits for a reconciliation, and the run with it. Leave
+/// it unreconciled while the answer is near: the run stays `Suspended`, and
+/// `fabric.reconcile` with `reconciliation` later records what happened.
+/// Reconcile it as unconfirmed only to let the run go on without the
+/// answer: the action then ends `Reconciled` and leaves the run's uncertain
+/// effects, so the application tracks the open question from there, and a
+/// policy that must not repeat the effect refuses a second call itself.
+///
+/// ```gleam
+/// let content =
+///   tool.unconfirmed_reconciliation("finance is checking with the provider")
+/// fabric.reconcile(handle, uncertain.reference, content)
+/// ```
+pub fn unconfirmed_reconciliation(note: String) -> String {
+  invocation.unconfirmed_content(note)
+}
+
 /// Lets the runtime start this tool's body again, up to `max_attempts`
 /// starts in all, when an attempt ends without a result of its own: its
 /// body crashed, ran past its timeout, or its runner was lost (a restart,

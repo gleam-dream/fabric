@@ -52,6 +52,55 @@ pub fn a_reconciliation_is_encoded_with_the_tools_codec_test() {
   |> should.equal(Ok("{\"error\":\"declined\"}"))
 }
 
+/// A person who cannot yet say what happened reconciles the effect as
+/// unconfirmed: the model sees why, and the action leaves the uncertain
+/// effects.
+pub fn an_unconfirmed_reconciliation_tells_the_model_test() {
+  tool.unconfirmed_reconciliation("finance is checking")
+  |> should.equal("{\"unconfirmed\":\"finance is checking\"}")
+  let settling =
+    tool.bind_settling(
+      apps.weather_definition(),
+      fn(_, _call, _city, _settlement) { Error(Nil) },
+      fn(_) { tool.Uncertain("unknown") },
+      settle_within: duration.seconds(1),
+    )
+  let desk =
+    agent.new(
+      "unconfirmed",
+      scripted.plan([
+        scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}"),
+      ]),
+      [settling],
+      policy.always_allow(),
+    )
+    |> support.agent
+  let assert Ok(handle) =
+    fabric.start(
+      support.store(),
+      desk,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended([], [uncertain])) =
+    fabric.await(handle, within: duration.seconds(5))
+  let assert Ok(_) =
+    fabric.reconcile(
+      handle,
+      uncertain.reference,
+      tool.unconfirmed_reconciliation("finance is checking"),
+    )
+  let assert Ok(run.Finished(run.Completed(answer))) =
+    fabric.await(handle, within: duration.seconds(5))
+  string.contains(answer, "finance is checking") |> should.be_true
+  let assert Ok(snapshot) = fabric.snapshot(handle)
+  let assert [action] = snapshot.actions
+  action.state
+  |> should.equal(run.Reconciled("{\"unconfirmed\":\"finance is checking\"}"))
+}
+
 /// A settlement names its action: the reference `fabric.reconcile` takes.
 pub fn a_settlement_names_its_action_test() {
   let actions = process.new_subject()
