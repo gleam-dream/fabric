@@ -1,16 +1,18 @@
-name = "fabric_mcp"
+name = "fabric_relay"
 version = "0.1.0"
 target = "erlang"
 gleam = ">= 1.18.0"
 licenses = ["Apache-2.0"]
-description = "Typed MCP operations for Fabric graphs."
+description = "Relay MCP tools for Fabric agents and graphs, and Fabric agents served as Relay MCP tools."
 
 [dependencies]
 gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
 fabric = { path = "../.." }
+relay = { path = "../../../relay" }
 json_blueprint = { path = "../../../json_blueprint" }
+sinal = { path = "../../../sinal" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

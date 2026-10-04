@@ -108,9 +108,10 @@ no live classifier/MCP acceptance is claimed by this initial reconnaissance.
 
 ## Current adapter evidence
 
-The optional [MCP package](../../../integrations/fabric_mcp/README.md) now owns
-its bounded modern stdio transport and typed schema-pinned graph binding; its
-real local SQLite service evidence is recorded in [the MCP contract](mcp-adapter.md).
+The optional [Relay package](../../../integrations/fabric_relay/README.md)
+replaces the earlier `fabric_mcp` package (wave 5): MCP tools reach agents and
+graph activities through Relay's client. The earlier package's evidence is
+recorded in [the MCP contract](mcp-adapter.md).
 The optional [TypeSafe package](../../../integrations/fabric_typesafe/README.md)
 now provides typed heterogeneous classifier batches and native HTTP. Its
 [contract and evidence](classifier-adapter.md) retain protocol-fixture checks

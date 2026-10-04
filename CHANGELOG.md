@@ -25,6 +25,13 @@ Wave 5 is described with before/after snippets in
   100 (`agent.AnswerAttempts`).
 - `telemetry.TurnResult.AnswerRejected` (`"answer_rejected"`) for a model
   turn whose answer was refused and corrected.
+- `integrations/fabric_relay`, which replaces `fabric_mcp`: Relay MCP
+  tools in agents (`fabric_relay.tool`, `discover`, `discovered`) and graphs
+  (`operation`), and agents served as Relay tools (`serve`), with the run's
+  correlation and idempotency keys on every call. See its
+  [CHANGELOG](integrations/fabric_relay/CHANGELOG.md).
+- `run.describe_outcome`: one line for a run's outcome.
+- A README and a CHANGELOG for `fabric_saga`.
 
 #### Changed
 
@@ -32,6 +39,11 @@ Wave 5 is described with before/after snippets in
   one more model call before it ends with `run.AnswerInvalid`, whose `raw`
   is the last answer.
 - **Breaking:** `telemetry.TurnResult` and `agent.Limit` gain a variant.
+
+#### Removed
+
+- **Breaking:** `integrations/fabric_mcp`, its stdio client and its Python
+  service tests. Use `fabric_relay` over `relay/client`.
 
 ### Wave 5, typed answers (slice F3)
 

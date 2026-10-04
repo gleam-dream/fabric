@@ -1069,3 +1069,85 @@ as `AnswerRejected`; an exhaustive `case` on `telemetry.TurnResult` or
 Dependents: none in `oversight/apps` uses `with_answer` yet (the apps are
 migrated to slice F3 afterwards); a test that counts model calls on a refused
 answer counts two, or sets `with_answer_attempts(1)`.
+
+### `fabric_mcp` is gone: `integrations/fabric_relay`
+
+`fabric_mcp` shipped its own stdio JSON-RPC client, bound MCP tools only as
+graph operations, mapped a remote `isError` to an uncertain effect and
+reported `Result(_, String)` errors. The new package `fabric_relay` works
+over Relay's client, which speaks stdio and Streamable HTTP, in agents and
+graphs, and serves agents as MCP tools.
+
+```gleam
+// Before: a stdio client of its own, a pinned descriptor, a graph binding
+let assert Ok(connection) =
+  fabric_mcp_client.start("counter", fabric_mcp_client.options("python3", ["server.py"]))
+let assert Ok(pinned) = fabric_mcp.discover(connection, "increment")
+let assert Ok(increment) =
+  fabric_mcp.bind(run.DefinitionId("increment", 1), pinned, input_codec, output_codec,
+    fn(context) { context.counter }, convert)
+// increment: Operation(context, Input, Receipt(Output))
+
+// After: Relay's client and the tool's Relay definition
+let assert Ok(peer) = client.connect(client.stdio("python3", ["server.py"]))
+let increment = fabric_relay.operation(increment_definition(), version: 1,
+  peer: fn(context) { context.counter })
+// increment: Operation(context, Input, Output)
+let agent_tool = fabric_relay.tool(increment_definition(), peer: fn(context) { context.counter })
+let listed = fabric_relay.discover(peer, peer: fn(context) { context.counter })
+```
+
+| `fabric_mcp`                                               | `fabric_relay`                                                                                                     |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `fabric_mcp/client.start`, `request`, `stop`               | `relay/client` (`client.stdio`, `client.http`, `connect`, `close`)                                                 |
+| `discover(connection, name) -> Result(Tool, String)`       | `discover(client, peer:)`, `discovered(declaration, peer:)` (typed `DiscoveryError`), or the server's `Definition` |
+| `bind(identity, tool, input, output, connection, convert)` | `operation(definition, version:, peer:)`; agents: `tool(definition, peer:)`                                        |
+| `Receipt(output)` with the raw response                    | the output; the graph stores its JSON as for any operation                                                         |
+| `tool_codec` (a pinned descriptor)                         | none: the `Definition` is in source code; a listed tool is rediscovered at start                                   |
+| remote `isError` -> uncertain effect                       | remote `isError` -> `tool.Explain`; a call that may have reached the server -> `tool.Uncertain` unless read-only   |
+| (none)                                                     | the run's correlation and an idempotency key on every call                                                         |
+| (none)                                                     | `serve(definition, service(runs, agent, start:))`, `with_wait`, `run_id`                                           |
+
+A stored graph run whose node used `fabric_mcp.bind` continues only under an
+operation with the same identity and output codec. `fabric_relay.operation`
+outputs the bare value, not a `Receipt`, so give the operation a new version
+and let runs stored under the old one finish first.
+
+`fabric_relay.serve` publishes an agent as one Relay tool. Each call starts
+a run with the call's correlation; a call with an idempotency key
+(`client.with_idempotency_key`) names its run
+(`fabric_relay.run_id(definition, principal:, key:)`), so a retried call
+reaches the same run and waits for it again. A keyed run outlives its call;
+a call without a key owns its run, which is cancelled when the call is
+cancelled or its wait (25 s, `with_wait`) ends. A run that does not complete
+in time answers `isError: true` with structured `error` and `run_id`.
+
+Dependents: no package depends on `fabric_mcp`. `oversight/apps/tool_hub`
+wrote the adapter itself, and can delete it:
+
+- `src/tool_hub/remote_tools.gleam` (204 lines): `mount(definition, peer)`
+  is `fabric_relay.tool(definition, peer:)`, `discover(connected, peer)` is
+  `fabric_relay.discover(connected, peer:)`, `mount_discovered` is
+  `fabric_relay.discovered`; `classify` and `RemoteFailure` are built in, with
+  the same evidence rule (the app's wording "the inventory is unavailable"
+  becomes "the MCP call failed: ..."). `fabric_definition` has no
+  replacement: `fabric_relay.tool` derives it.
+- `src/tool_hub/assistant.gleam`: `serve`, `ask`, `render` and `tool_error`
+  (about 120 lines) are `fabric_relay.serve(ask_assistant(),
+fabric_relay.service(store, agent, start:) |> fabric_relay.with_wait(budget))`
+  with an agent built with `agent.with_answer(answer_codec())`. `Answer`
+  loses `run_id` (the answer is the agent's; a failed call's structured
+  content names the run), the `AskError` texts become the `error` values
+  above, and `cancel_with_caller` becomes the key rule: an unkeyed call is
+  cancelled with its caller, a keyed one is not.
+
+### `run.describe_outcome` (added)
+
+```gleam
+pub fn describe_outcome(outcome: run.Outcome(answer)) -> String
+```
+
+One line for logs and for a caller that reports why a run did not complete,
+such as `fabric_relay.serve`'s `isError` text. It replaces
+`string.inspect(outcome)` in `oversight/apps/tool_hub/src/tool_hub/assistant.gleam`
+(`Failed(string.inspect(other))`).
