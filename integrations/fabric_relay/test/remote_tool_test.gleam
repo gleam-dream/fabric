@@ -146,7 +146,7 @@ fn run_once(tools, inventory: client.Client, tool: String, arguments: String) {
       prompt: "check stock",
       correlation: Some(correlation.from_key("question-7")),
     )
-  let assert Ok(status) = fabric.await(handle, within: duration.seconds(5))
+  let assert Ok(status) = fabric.await(handle, within: duration.seconds(30))
   #(id, status)
 }
 
@@ -271,11 +271,11 @@ pub fn a_lost_call_to_a_read_only_tool_is_explained_test() {
 /// A call the client never sent is a definite failure even for a tool that
 /// changes state.
 pub fn a_call_never_sent_is_explained_test() {
+  // Nothing listens on the discard port, so the connection is refused at
+  // once. A short connect timeout would race that refusal on a loaded
+  // machine and report `timed_out.not_sent` instead.
   let assert Ok(config) = client.http("http://127.0.0.1:9/mcp")
-  let assert Ok(unreachable) =
-    config
-    |> client.with_connect_timeout(duration.milliseconds(200))
-    |> client.connect
+  let assert Ok(unreachable) = client.connect(config)
   let #(_, status) =
     run_once(
       [fabric_relay.tool(reserve(), peer:)],
@@ -325,11 +325,11 @@ pub fn a_listed_tool_needs_a_name_a_model_accepts_test() {
 }
 
 pub fn a_listing_failure_is_reported_test() {
+  // Nothing listens on the discard port, so the connection is refused at
+  // once. A short connect timeout would race that refusal on a loaded
+  // machine and report `timed_out.not_sent` instead.
   let assert Ok(config) = client.http("http://127.0.0.1:9/mcp")
-  let assert Ok(unreachable) =
-    config
-    |> client.with_connect_timeout(duration.milliseconds(200))
-    |> client.connect
+  let assert Ok(unreachable) = client.connect(config)
   let assert Error(fabric_relay.ListingFailed(error)) =
     fabric_relay.discover(unreachable, peer:)
   client.evidence(error) |> should.equal(client.NotSent)

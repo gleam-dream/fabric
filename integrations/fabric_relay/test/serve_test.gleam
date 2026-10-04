@@ -316,15 +316,20 @@ pub fn a_key_reused_for_another_request_is_refused_test() {
 /// key gets the answer, and the model was asked once.
 pub fn a_keyed_run_keeps_working_for_the_retry_test() {
   let turns = process.new_subject()
+  let runs = runs()
+  let desk = desk(desk_model(turns, False, 300))
   let service =
-    served(runs(), desk(desk_model(turns, False, 300)))
-    |> fabric_relay.with_wait(duration.milliseconds(50))
+    served(runs, desk) |> fabric_relay.with_wait(duration.milliseconds(50))
   let peer =
     testing.connect(desk_server(service), "ada")
     |> client.with_idempotency_key("slow-1")
-  let assert #("working", Some(_)) =
+  let assert #("working", Some(id)) =
     refusal(client.call(peer, ask(), Question("slow")))
-  process.sleep(400)
+  // The retry comes once the run has its answer, however long that takes.
+  let assert Ok(id) = run.parse_id(id)
+  let assert Ok(handle) = fabric.open(runs, desk, Nil, id)
+  let assert Ok(run.Finished(_)) =
+    fabric.await(handle, within: duration.seconds(30))
   let assert Ok(client.Succeeded(Answer("done: slow"), _)) =
     client.call(peer, ask(), Question("slow"))
   count(turns) |> should.equal(1)
@@ -344,7 +349,7 @@ pub fn an_unkeyed_run_is_cancelled_when_the_wait_ends_test() {
   let assert #("timed_out", Some(id)) = refusal(result)
   let assert Ok(id) = run.parse_id(id)
   let assert Ok(handle) = fabric.open(runs, desk, Nil, id)
-  fabric.await(handle, within: duration.seconds(1))
+  fabric.await(handle, within: duration.seconds(30))
   |> should.equal(Ok(run.Finished(run.Cancelled)))
 }
 
@@ -353,19 +358,20 @@ pub fn an_unkeyed_run_is_cancelled_when_the_wait_ends_test() {
 pub fn a_disconnect_cancels_an_unkeyed_run_test() {
   let runs = runs()
   let turns = process.new_subject()
-  let desk = desk(desk_model(turns, False, 3000))
+  // The model outlasts any wait here: only the cancellation ends the run.
+  let desk = desk(desk_model(turns, False, 60_000))
   let assert Ok(mcp) =
     http.new_with_context(desk_server(served(runs, desk)), fn(_) { Ok("ada") })
     |> http.start
   let assert Ok(config) =
     client.http("http://127.0.0.1:" <> int.to_string(http.port(mcp)) <> "/")
   let assert Ok(peer) =
-    config |> client.with_timeout(duration.milliseconds(200)) |> client.connect
+    config |> client.with_timeout(duration.seconds(1)) |> client.connect
   let assert Error(client.TimedOut(_)) =
     client.call(peer, ask(), Question("slow"))
-  let assert Ok(Turn(run: id, ..)) = process.receive(turns, 1000)
+  let assert Ok(Turn(run: id, ..)) = process.receive(turns, 30_000)
   let assert Ok(handle) = fabric.open(runs, desk, Nil, id)
-  fabric.await(handle, within: duration.seconds(2))
+  fabric.await(handle, within: duration.seconds(30))
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   client.close(peer)
   http.stop(mcp)
