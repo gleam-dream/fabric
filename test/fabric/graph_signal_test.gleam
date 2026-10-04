@@ -70,6 +70,8 @@ fn accept(
 
 fn runtime(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
   graph.new(spec(accept), runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 pub fn a_typed_signal_survives_store_loss_without_holding_a_runner_test() {
@@ -126,6 +128,8 @@ pub fn duplicate_delivery_cannot_consume_a_later_visit_to_the_same_node_test() {
       fn(_) { Nil },
       fn(_, _) { Ok(policy.Allow) },
     )
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("signal-loop"), 0, correlation: None)
   let assert Ok(first) =
@@ -154,6 +158,8 @@ pub fn a_signal_is_available_only_after_policy_admission_test() {
       support.kind(action) |> should.equal(policy.Signal)
       Ok(policy.RequireApproval(run.Requirement("publish-review", 1)))
     })
+    |> graph.build
+    |> should.be_ok
   let id = run_id("signal-policy")
   let assert Ok(handle) = graph.start(runtime, id, 1, correlation: None)
   let assert Ok(waiting) =
@@ -217,6 +223,8 @@ pub fn rejected_transition_can_be_corrected_without_consuming_a_signal_test() {
       fn(_) { Nil },
       fn(_, _) { Ok(policy.Allow) },
     )
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("signal-transition"), 1, correlation: None)
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
@@ -358,6 +366,8 @@ fn with_successor(
       |> definition.with_max_activations(2),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 pub fn unconfirmed_signal_consumption_releases_no_successor_effect_test() {
@@ -458,6 +468,8 @@ pub fn recovery_refuses_a_signal_contract_replaced_by_an_activity_test() {
     )
   let replacement =
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+    |> should.be_ok
   graph.open(replacement, id) |> result.is_error |> should.be_true
   let assert Ok(unchanged) = graph.snapshot(handle)
   unchanged.revision |> should.equal(waiting.revision)

@@ -94,6 +94,8 @@ pub fn public_runtime_executes_a_typed_bounded_generation_review_loop_test() {
       fn(_) { Nil },
       fn(_, _) { Ok(policy.Allow) },
     )
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("loop"), 0, correlation: None)
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
@@ -108,7 +110,7 @@ pub fn public_runtime_executes_a_typed_bounded_generation_review_loop_test() {
 
 pub fn a_shared_work_budget_bounds_graph_cycles_before_the_next_body_test() {
   let calls = probe.new()
-  let runtime =
+  let runtime_spec =
     graph.new(
       loop(fn(_, _, n) {
         probe.record(calls, "generate")
@@ -120,12 +122,14 @@ pub fn a_shared_work_budget_bounds_graph_cycles_before_the_next_body_test() {
     )
   let assert Ok(handle) =
     graph.start(
-      graph.with_family_budget(
-        runtime,
-        budget.limits(work: 3)
+      runtime_spec
+        |> graph.with_family_budget(
+          budget.limits(work: 3)
           |> budget.with_children(0)
           |> budget.with_depth(0),
-      ),
+        )
+        |> graph.build
+        |> should.be_ok,
       run_id("bounded-loop"),
       0,
       correlation: None,
@@ -139,12 +143,14 @@ pub fn a_shared_work_budget_bounds_graph_cycles_before_the_next_body_test() {
   probe.entries(calls) |> should.equal(["generate", "generate"])
   let assert Ok(zero) =
     graph.start(
-      graph.with_family_budget(
-        runtime,
-        budget.limits(work: 0)
+      runtime_spec
+        |> graph.with_family_budget(
+          budget.limits(work: 0)
           |> budget.with_children(0)
           |> budget.with_depth(0),
-      ),
+        )
+        |> graph.build
+        |> should.be_ok,
       run_id("zero-work"),
       0,
       correlation: None,
@@ -167,18 +173,20 @@ pub fn graph_approval_after_restart_reuses_its_reserved_work_unit_test() {
   let #(owner, #(runs, handle)) =
     restart.owned(fn() {
       let runs = support.directory(dir)
-      let runtime =
+      let runtime_spec =
         graph.new(spec, runs, fn(_) { Nil }, fn(_, _) {
           Ok(policy.RequireApproval(run.Requirement("review", 1)))
         })
       let assert Ok(handle) =
         graph.start(
-          graph.with_family_budget(
-            runtime,
-            budget.limits(work: 1)
+          runtime_spec
+            |> graph.with_family_budget(
+              budget.limits(work: 1)
               |> budget.with_children(0)
               |> budget.with_depth(0),
-          ),
+            )
+            |> graph.build
+            |> should.be_ok,
           run_id("budget-approval"),
           0,
           correlation: None,
@@ -193,6 +201,8 @@ pub fn graph_approval_after_restart_reuses_its_reserved_work_unit_test() {
     graph.new(spec, support.directory(dir), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.build
+    |> should.be_ok
   let handle = support.open_graph(runtime, run_id("budget-approval"))
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(_) =
@@ -227,6 +237,8 @@ pub fn a_saved_decision_survives_process_loss_without_repeating_its_body_test() 
             _ -> Ok(policy.Allow)
           }
         })
+        |> graph.build
+        |> should.be_ok
       let assert Ok(handle) =
         graph.start(runtime, run_id("saved-decision"), 0, correlation: None)
       #(runs, handle)
@@ -243,6 +255,8 @@ pub fn a_saved_decision_survives_process_loss_without_repeating_its_body_test() 
     graph.new(spec, support.directory(dir), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.build
+    |> should.be_ok
   let handle = support.open_graph(runtime, run_id("saved-decision"))
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(_) =
@@ -272,6 +286,8 @@ pub fn an_interrupted_effect_blocks_recovery_until_reconciled_test() {
       let runs = support.directory(dir)
       let runtime =
         graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.build
+        |> should.be_ok
       let assert Ok(handle) =
         graph.start(runtime, run_id("interrupted"), 2, correlation: None)
       #(runs, handle)
@@ -282,6 +298,8 @@ pub fn an_interrupted_effect_blocks_recovery_until_reconciled_test() {
     graph.new(spec, support.directory(dir), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.build
+    |> should.be_ok
   let handle = support.open_graph(runtime, run_id("interrupted"))
   let assert Ok(blocked) = graph.recover(handle)
   let assert graph.Blocked(reference, _) = blocked
@@ -338,6 +356,8 @@ pub fn approval_uses_fresh_context_and_passes_it_to_the_admitted_body_test() {
       },
       fn(_, _) { Ok(policy.RequireApproval(run.Requirement("publish", 1))) },
     )
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("approval-context"), 0, correlation: None)
   let assert Ok(waiting) =
@@ -368,6 +388,8 @@ pub fn cancel_stops_a_started_body_and_preserves_uncertainty_test() {
     graph.new(spec, support.store(), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("cancel"), 0, correlation: None)
   let assert Ok(pid) = process.receive(worker, 30_000)
@@ -424,6 +446,8 @@ pub fn denial_and_a_crashed_policy_never_enter_the_operation_test() {
     graph.new(effect(ledger), support.store(), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Deny("no permission"))
     })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(denied, run_id("denied"), 0, correlation: None)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
@@ -432,6 +456,8 @@ pub fn denial_and_a_crashed_policy_never_enter_the_operation_test() {
     graph.new(effect(ledger), support.store(), fn(_) { Nil }, fn(_, _) {
       panic as "policy crashed"
     })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(broken, run_id("policy-crashed"), 0, correlation: None)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
@@ -450,6 +476,8 @@ pub fn runtime_stops_cycles_at_the_saved_activation_bound_test() {
     graph.new(spec, support.store(), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("bounded"), -1, correlation: None)
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
@@ -470,6 +498,8 @@ pub fn an_unconfirmed_start_fence_never_releases_the_body_test() {
     graph.new(effect(ledger), flaky.store(backend), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("fence-refused"), 0, correlation: None)
   let assert Ok(stopped) =
@@ -490,6 +520,8 @@ pub fn lost_write_acknowledgements_do_not_repeat_an_effect_test() {
     graph.new(effect(ledger), flaky.store(backend), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("lost-ack"), 0, correlation: None)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
@@ -505,11 +537,11 @@ pub fn cancellation_during_a_held_policy_withdraws_the_pending_command_test() {
       probe.gate(gate, "policy held")
       Ok(policy.Allow)
     })
-  let runtime =
-    runtime
     |> graph.with_callback_timeout(duration.milliseconds(5000))
     |> graph.with_operation_timeout(run.After(duration.milliseconds(5000)))
     |> graph.with_command_timeout(duration.milliseconds(10))
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("held-policy"), 0, correlation: None)
   let held = probe.arrival(gate)
@@ -538,11 +570,11 @@ pub fn operation_timeout_blocks_with_uncertainty_and_kills_the_body_test() {
     graph.new(spec, support.store(), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
-  let runtime =
-    runtime
     |> graph.with_callback_timeout(duration.milliseconds(1000))
     |> graph.with_operation_timeout(run.After(duration.milliseconds(20)))
     |> graph.with_command_timeout(duration.milliseconds(1000))
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("timeout"), 0, correlation: None)
   let assert Ok(body) = process.receive(started, 30_000)
@@ -584,6 +616,8 @@ pub fn cancelled_reconciliation_retains_output_without_calling_a_broken_route_te
     graph.new(spec, support.store(), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("bad-result"), 0, correlation: None)
   let assert Ok(blocked) =
@@ -628,6 +662,8 @@ pub fn replay_after_process_loss_is_bounded_and_keeps_the_logical_identity_test(
       let runs = support.directory(dir)
       let runtime =
         graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.build
+        |> should.be_ok
       let assert Ok(_) =
         graph.start(runtime, run_id("replay"), 0, correlation: None)
       runs
@@ -639,6 +675,8 @@ pub fn replay_after_process_loss_is_bounded_and_keeps_the_logical_identity_test(
       let runs = support.directory(dir)
       let runtime =
         graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.build
+        |> should.be_ok
       let assert Ok(_) =
         graph.recover(support.open_graph(runtime, run_id("replay")))
       runs
@@ -649,6 +687,8 @@ pub fn replay_after_process_loss_is_bounded_and_keeps_the_logical_identity_test(
     graph.new(spec, support.directory(dir), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(blocked) =
     graph.recover(support.open_graph(runtime, run_id("replay")))
   let assert graph.Blocked(_, graph.EffectUncertain(_)) = blocked
@@ -672,6 +712,8 @@ pub fn a_draining_graph_finishes_its_body_and_hands_off_the_saved_successor_test
   let application = restart.application(runs)
   let runtime =
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("drain"), 0, correlation: None)
   let held = probe.arrival(ledger)
@@ -683,6 +725,8 @@ pub fn a_draining_graph_finishes_its_body_and_hands_off_the_saved_successor_test
     graph.new(spec, support.directory(dir), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.build
+    |> should.be_ok
   let handle = support.open_graph(runtime, graph.id(handle))
   let assert Ok(saved) = graph.snapshot(handle)
   saved.status |> should.equal(graph.Unattended)
@@ -714,13 +758,17 @@ pub fn a_live_foreign_lease_is_not_taken_by_graph_recovery_test() {
     ))
   let runtime =
     graph.new(spec, first, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("leased"), 0, correlation: None)
   let held = probe.arrival(ledger)
   let revision = nodes.revision(memory.backend, graph.id(handle))
   let elsewhere =
     support.open_graph(
-      graph.new(spec, second, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) }),
+      graph.new(spec, second, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.build
+        |> should.be_ok,
       graph.id(handle),
     )
   let assert Ok(snapshot) = graph.recover(elsewhere)
@@ -741,6 +789,8 @@ pub fn a_start_fence_that_lands_late_is_reconciled_without_running_the_body_test
     graph.new(effect(ledger), flaky.store(backend), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("late-fence"), 0, correlation: None)
   let assert Ok(stopped) =
@@ -763,6 +813,8 @@ pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
         Ok(policy.RequireApproval(run.Requirement("publish", version + 1)))
       },
     )
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("new-requirement"), 0, correlation: None)
   let assert Ok(waiting) =
@@ -807,6 +859,8 @@ pub fn incompatible_definitions_are_refused_but_do_not_prevent_cancellation_test
     graph.new(effect(ledger), runs, fn(_) { Nil }, fn(_, _) {
       Ok(policy.RequireApproval(run.Requirement("publish", 1)))
     })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(original, run_id("versioned"), 0, correlation: None)
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(1000))
@@ -823,6 +877,8 @@ pub fn incompatible_definitions_are_refused_but_do_not_prevent_cancellation_test
     ))
   let changed =
     graph.new(changed, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+    |> should.be_ok
   graph.open(changed, graph.id(handle))
   |> should.equal(
     Error(graph.IncompatibleDefinition(definition.DefinitionChanged)),
@@ -851,6 +907,8 @@ pub fn losing_a_lease_kills_the_graph_body_before_recovery_test() {
     ))
   let runtime =
     graph.new(spec, first, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("lease-loss"), 0, correlation: None)
   let assert Ok(body) = process.receive(started, 30_000)
@@ -868,7 +926,9 @@ pub fn losing_a_lease_kills_the_graph_body_before_recovery_test() {
   let second = nodes.node(memory.backend, "lease-b", nodes.long)
   let handle =
     support.open_graph(
-      graph.new(spec, second, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) }),
+      graph.new(spec, second, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.build
+        |> should.be_ok,
       graph.id(handle),
     )
   let assert Ok(blocked) = graph.recover(handle)
@@ -882,6 +942,8 @@ pub fn concurrent_starts_of_one_identity_release_one_body_test() {
     graph.new(effect(ledger), support.store(), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.build
+    |> should.be_ok
   let answers = process.new_subject()
   list.each(list.repeat(Nil, 8), fn(_) {
     process.spawn(fn() {
@@ -921,6 +983,8 @@ pub fn an_uncommitted_routing_decision_does_not_admit_its_successor_test() {
       probe.record(admissions, support.node(action))
       Ok(policy.Allow)
     })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("completion-refused"), 0, correlation: None)
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(1000))
@@ -1009,6 +1073,8 @@ pub fn restart_uses_the_saved_branch_even_when_the_decision_producer_changes_its
             _ -> Ok(policy.Allow)
           }
         })
+        |> graph.build
+        |> should.be_ok
       let assert Ok(handle) =
         graph.start(
           runtime,
@@ -1030,6 +1096,8 @@ pub fn restart_uses_the_saved_branch_even_when_the_decision_producer_changes_its
     graph.new(spec, support.directory(dir), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
     })
+    |> graph.build
+    |> should.be_ok
   let handle = support.open_graph(runtime, graph.id(handle))
   let assert Ok(_) =
     graph.approve(

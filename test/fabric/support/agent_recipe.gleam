@@ -164,7 +164,10 @@ pub fn runtime(
       )
       |> definition.with_max_activations(config.max_turns * 2 + 1),
     )
-  graph.new(spec, runs, context, fn(_, _) { Ok(policy.Allow) })
+  let assert Ok(runtime) =
+    graph.new(spec, runs, context, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+  runtime
 }
 
 fn node(name, body) {

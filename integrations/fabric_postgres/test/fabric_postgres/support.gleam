@@ -1,6 +1,9 @@
 //// The throwaway cluster `scripts/test-postgres.sh` starts: its URL, a
 //// connection pool per test, and a fresh schema per test.
 
+import fabric/budget
+import fabric/graph
+import fabric/internal/graph/runtime as graph_runtime
 import fabric_postgres.{type Settings}
 import gleam/erlang/process
 import gleam/int
@@ -71,4 +74,14 @@ pub fn migrated(
     |> fabric_postgres.with_schema(schema)
   let assert Ok(Nil) = fabric_postgres.migrate(settings)
   settings
+}
+
+/// `runtime` with a family budget, for a test that builds its runtime in a
+/// helper: `graph.with_family_budget` sets one on a spec, before
+/// `graph.build`.
+pub fn budgeted(
+  runtime: graph.Runtime(context, state, answer),
+  limits: budget.Limits,
+) -> graph.Runtime(context, state, answer) {
+  graph_runtime.with_family_budget(runtime, limits)
 }

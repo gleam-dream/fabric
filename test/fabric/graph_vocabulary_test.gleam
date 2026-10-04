@@ -12,8 +12,8 @@ import fabric/graph/definition
 import fabric/graph/operation
 import fabric/graph/signal
 import fabric/internal/clock
-import fabric/internal/executor
 import fabric/internal/graph/compiled
+import fabric/internal/graph/runner
 import fabric/internal/graph/runtime as graph_runtime
 import fabric/policy
 import fabric/reviewer
@@ -78,6 +78,14 @@ fn gated(
   seen: Subject(#(policy.Action, String)),
   body: fn(String, operation.Invocation, Int) -> Result(Int, Nil),
 ) -> graph.Runtime(String, Int, Int) {
+  gated_spec(runs, seen, body) |> graph.build |> should.be_ok
+}
+
+fn gated_spec(
+  runs: store.Store,
+  seen: Subject(#(policy.Action, String)),
+  body: fn(String, operation.Invocation, Int) -> Result(Int, Nil),
+) -> graph.Spec(String, Int, Int) {
   graph.new(
     publish(body),
     runs,
@@ -220,8 +228,10 @@ pub fn await_and_recovery_expire_a_due_request_and_infinity_never_does_test() {
   let seen = process.new_subject()
   let runs = support.store()
   let quick =
-    gated(runs, seen, doubled)
+    gated_spec(runs, seen, doubled)
     |> graph.with_approval_expiry(run.After(duration.milliseconds(20)))
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(
       quick,
@@ -248,7 +258,10 @@ pub fn await_and_recovery_expire_a_due_request_and_infinity_never_does_test() {
   let assert graph.Failed(graph.ExpiredApproval(_)) = recovered
   // Without a deadline the request waits.
   let forever =
-    gated(runs, seen, doubled) |> graph.with_approval_expiry(run.Infinity)
+    gated_spec(runs, seen, doubled)
+    |> graph.with_approval_expiry(run.Infinity)
+    |> graph.build
+    |> should.be_ok
   let assert Ok(patient) =
     graph.start(
       forever,
@@ -267,8 +280,10 @@ pub fn the_sweeper_expires_a_due_graph_approval_test() {
   let runs = nodes.node(memory.backend, "graph-sweeper-expiry", nodes.long)
   let seen = process.new_subject()
   let build = fn(runs) {
-    gated(runs, seen, doubled)
+    gated_spec(runs, seen, doubled)
     |> graph.with_approval_expiry(run.After(duration.minutes(1)))
+    |> graph.build
+    |> should.be_ok
   }
   let assert Ok(handle) =
     graph.start(
@@ -343,7 +358,9 @@ pub fn waits_are_bounded_by_seven_days_unless_infinity_is_asked_test() {
   let assert Ok(now) = store.now(runs)
   let assert Ok(handle) =
     graph.start(
-      graph.new(waiting(None), runs, context: fn(_) { Nil }, policy: allow),
+      graph.new(waiting(None), runs, context: fn(_) { Nil }, policy: allow)
+        |> graph.build
+        |> should.be_ok,
       id: support.id("vocabulary-wait"),
       initial: 1,
       correlation: None,
@@ -360,7 +377,9 @@ pub fn waits_are_bounded_by_seven_days_unless_infinity_is_asked_test() {
         runs,
         context: fn(_) { Nil },
         policy: allow,
-      ),
+      )
+        |> graph.build
+        |> should.be_ok,
       id: support.id("vocabulary-unbounded"),
       initial: 1,
       correlation: None,
@@ -513,6 +532,8 @@ pub fn a_child_graph_inherits_its_parent_correlation_and_root_test() {
   let allow = fn(_, _) { Ok(policy.Allow) }
   let child =
     graph.new(waiting(None), runs, context: fn(_) { Nil }, policy: allow)
+    |> graph.build
+    |> should.be_ok
   let id = definition.node_id("delegate")
   let assert Ok(parent_graph) =
     definition.build(definition.new(
@@ -532,6 +553,8 @@ pub fn a_child_graph_inherits_its_parent_correlation_and_root_test() {
     ))
   let parent =
     graph.new(parent_graph, runs, context: fn(_) { Nil }, policy: allow)
+    |> graph.build
+    |> should.be_ok
   let assert Ok(order) = correlation.from_string("order-7")
   let attachment =
     sinal.observe(o.graph_started(), fn(_, m: o.GraphRunStarted) {
@@ -617,40 +640,73 @@ pub fn errors_have_a_stable_kind_and_a_description_test() {
   })
 }
 
-pub fn bounds_written_in_source_out_of_range_panic_test() {
+pub fn build_reports_every_bound_out_of_range_test() {
   let seen = process.new_subject()
-  let runtime = gated(support.store(), seen, doubled)
-  let panics = fn(body) {
-    executor.rescue(body) |> result.is_error |> should.be_true
-  }
-  panics(fn() { graph.with_callback_timeout(runtime, duration.milliseconds(0)) })
-  panics(fn() {
-    graph.with_operation_timeout(runtime, run.After(duration.milliseconds(-1)))
-  })
-  panics(fn() {
-    graph.with_approval_expiry(
-      runtime,
-      run.After(duration.milliseconds(4_294_967_296)),
+  let spec = gated_spec(support.store(), seen, doubled)
+  let assert Error(errors) =
+    spec
+    |> graph.with_callback_timeout(duration.milliseconds(0))
+    |> graph.with_operation_timeout(run.After(duration.milliseconds(-1)))
+    |> graph.with_command_timeout(duration.milliseconds(4_294_967_296))
+    |> graph.with_approval_expiry(run.After(duration.milliseconds(0)))
+    |> graph.with_family_budget(
+      budget.limits(work: -1)
+      |> budget.with_children(-2)
+      |> budget.with_depth(64),
     )
-  })
-  panics(fn() {
-    graph.with_family_budget(
-      runtime,
-      budget.limits(work: 1) |> budget.with_depth(64),
-    )
-  })
-  // In range, each setter takes effect.
-  let set =
-    runtime
+    |> graph.build
+  errors
+  |> should.equal([
+    graph.InvalidLimit(graph.CallbackTimeout, 0, 1, 4_294_967_295),
+    graph.InvalidLimit(graph.OperationTimeout, -1, 1, 4_294_967_295),
+    graph.InvalidLimit(graph.CommandTimeout, 4_294_967_296, 1, 4_294_967_295),
+    graph.InvalidLimit(graph.ApprovalExpiry, 0, 1, 9_007_199_254_740_991),
+    graph.InvalidLimit(graph.FamilyWork, -1, 0, 9_007_199_254_740_991),
+    graph.InvalidLimit(graph.FamilyChildren, -2, 0, 9_007_199_254_740_991),
+    graph.InvalidLimit(graph.FamilyDepth, 64, 0, 63),
+  ])
+  graph.describe_config_errors(errors)
+  |> string.starts_with(
+    "graph.with_callback_timeout (ms) is 0, outside 1..4294967295; graph.with_operation_timeout (ms) is -1",
+  )
+  |> should.be_true
+  graph.describe_config_error(graph.InvalidLimit(graph.FamilyDepth, 64, 0, 63))
+  |> should.equal("budget.with_depth is 64, outside 0..63")
+  // A runtime configured from data is never a panic: an approval expiry of
+  // more than a timer's range is a stored deadline, as for agents.
+  let assert Ok(_) =
+    spec
+    |> graph.with_approval_expiry(run.After(duration.hours(24 * 365)))
+    |> graph.build
+}
+
+pub fn build_applies_every_bound_in_range_test() {
+  let seen = process.new_subject()
+  let assert Ok(set) =
+    gated_spec(support.store(), seen, doubled)
     |> graph.with_callback_timeout(duration.milliseconds(250))
     |> graph.with_operation_timeout(run.Infinity)
     |> graph.with_command_timeout(duration.seconds(2))
     |> graph.with_approval_expiry(run.After(duration.hours(1)))
+    |> graph.with_family_budget(budget.limits(work: 3))
+    |> graph.build
   let options = graph_runtime.options(set)
   options.callback_timeout |> should.equal(250)
   options.operation_timeout |> should.equal(None)
   options.command_timeout |> should.equal(2000)
   options.approval_expiry |> should.equal(Some(3_600_000))
+  graph_runtime.family_budget(set) |> should.equal(Some(budget.limits(work: 3)))
+  // The defaults.
+  let defaults =
+    gated_spec(support.store(), seen, doubled) |> graph.build |> should.be_ok
+  graph_runtime.options(defaults)
+  |> should.equal(runner.Options(
+    callback_timeout: 1000,
+    operation_timeout: Some(60_000),
+    command_timeout: 1000,
+    approval_expiry: Some(604_800_000),
+  ))
+  graph_runtime.family_budget(defaults) |> should.equal(None)
 }
 
 pub fn a_definite_and_an_uncertain_body_failure_are_the_tools_test() {
@@ -680,6 +736,8 @@ pub fn a_definite_and_an_uncertain_body_failure_are_the_tools_test() {
         answer: codec.int(),
       ))
     graph.new(graph, support.store(), context: fn(_) { Nil }, policy: allow)
+    |> graph.build
+    |> should.be_ok
   }
   let assert Ok(declined) =
     graph.start(

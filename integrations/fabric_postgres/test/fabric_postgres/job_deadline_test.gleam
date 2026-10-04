@@ -53,6 +53,8 @@ fn runtime(runs, read, request) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 fn store(settings) {
@@ -115,7 +117,7 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
       }
       let assert Ok(handle) =
         graph.start(
-          graph.with_family_budget(
+          support.budgeted(
             build(runs),
             budget.limits(work: 1)
               |> budget.with_children(1)

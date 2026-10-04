@@ -82,6 +82,8 @@ fn wrap_native(runs, op, values) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 fn expire(runs, backend: backend.LeasedBackend, id) {
@@ -459,6 +461,8 @@ fn map_children(
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 fn nested_forks(

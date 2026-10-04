@@ -34,6 +34,7 @@ import fabric/internal/graph/contract
 import fabric/internal/graph/controller as control
 import fabric/internal/graph/fork_driver
 import fabric/internal/graph/record
+import fabric/internal/limit as bounds
 import fabric/run
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -49,8 +50,10 @@ import json/blueprint/codec.{type Codec}
 /// How long a wait waits by default: 7 days, in milliseconds.
 const default_wait = 604_800_000
 
-/// The longest timer the runtime can set, in milliseconds.
-const longest_timer = 4_294_967_295
+const longest_timer = bounds.longest_timer
+
+/// The most attempts `operation.with_replay` allows, as `tool.with_replay`.
+const max_replay_attempts = 100
 
 pub opaque type NodeId {
   NodeId(String)
@@ -123,13 +126,21 @@ pub type BuildError {
   /// The graph's or an operation's name is empty or its version is not
   /// positive.
   InvalidIdentity(run.DefinitionId)
-  /// `with_max_activations` below 1.
-  InvalidActivationLimit(Int)
+  /// A bound is outside `minimum..maximum` (both included), as for
+  /// `agent.InvalidLimit`.
+  InvalidLimit(limit: Limit, value: Int, minimum: Int, maximum: Int)
   DuplicateNode(NodeId)
   MissingEntry(NodeId)
   UnknownDestination(source: NodeId, destination: NodeId)
   /// A setting of the operation of the node `node`.
   InvalidOperation(node: NodeId, problem: operation.ConfigurationError)
+}
+
+/// A bound of a graph that `build` checks, named after its setter. This
+/// union may grow.
+pub type Limit {
+  /// `with_max_activations`, at least 1.
+  MaxActivations
 }
 
 pub type Error {
@@ -214,7 +225,7 @@ pub fn node(
     problems: list.flatten([
       recovery_problems(kind, recovery),
       deadline_problems,
-      polling_problems(kind),
+      kind_problems(kind),
     ]),
     destinations:,
     prepare: fn(state) {
@@ -263,7 +274,9 @@ fn deadline_of(
       let ms = duration.to_milliseconds(within)
       case ms > 0 && ms <= longest_timer {
         True -> #(Some(ms), [])
-        False -> #(None, [operation.InvalidDeadline(within)])
+        False -> #(None, [
+          operation.InvalidLimit(operation.Deadline, ms, 1, longest_timer),
+        ])
       }
     }
   }
@@ -275,24 +288,35 @@ fn recovery_problems(
 ) -> List(operation.ConfigurationError) {
   case kind, recovery {
     _, operation.RequireReconciliation -> []
-    operation.Activity, operation.ReplayInterrupted(max) if max >= 1 -> []
-    operation.Activity, operation.ReplayInterrupted(max) -> [
-      operation.InvalidAttemptBound(max),
-    ]
+    operation.Activity, operation.ReplayInterrupted(max) ->
+      bounds.check(
+        [
+          bounds.Bound(
+            operation.ReplayAttempts,
+            Some(max),
+            1,
+            max_replay_attempts,
+          ),
+        ],
+        operation.InvalidLimit,
+      )
     _, operation.ReplayInterrupted(_) -> [operation.ReplayRequiresActivity]
   }
 }
 
-fn polling_problems(
-  kind: operation.Kind,
-) -> List(operation.ConfigurationError) {
-  case kind {
-    operation.Job(job.Every(ms))
-      | operation.OwnedJob(job.Every(ms))
-      if ms <= 0 || ms > longest_timer
-    -> [operation.InvalidPollInterval(duration.milliseconds(ms))]
+/// The bounds of a job's polling and of a fork's members.
+fn kind_problems(kind: operation.Kind) -> List(operation.ConfigurationError) {
+  let checked = case kind {
+    operation.Job(job.Every(ms)) | operation.OwnedJob(job.Every(ms)) -> [
+      bounds.Bound(operation.PollInterval, Some(ms), 1, longest_timer),
+    ]
+    operation.Fork(max_members:, concurrency:, ..) -> [
+      bounds.Bound(operation.MaxMembers, Some(max_members), 1, bounds.largest),
+      bounds.Bound(operation.Concurrency, Some(concurrency), 1, bounds.largest),
+    ]
     _ -> []
   }
+  bounds.check(checked, operation.InvalidLimit)
 }
 
 /// A graph named by `identity`, starting at `entry`, over `nodes`, whose
@@ -310,8 +334,10 @@ pub fn new(
 }
 
 /// At most `limit` activations per run, retries and node revisits included
-/// (at least 1). A run that would start one more ends `graph.Exhausted`.
-/// The limit is part of the graph's stored structure.
+/// (at least 1; `build` reports another value as
+/// `InvalidLimit(MaxActivations, ..)`). A run that would start one more
+/// ends `graph.Exhausted`. The limit is part of the graph's stored
+/// structure.
 pub fn with_max_activations(
   spec: Spec(context, state, answer),
   limit: Int,
@@ -334,10 +360,17 @@ pub fn build(
   let problems =
     list.flatten([
       check_identity(spec.identity),
-      case spec.max_activations >= 1 {
-        True -> []
-        False -> [InvalidActivationLimit(spec.max_activations)]
-      },
+      bounds.check(
+        [
+          bounds.Bound(
+            MaxActivations,
+            Some(spec.max_activations),
+            1,
+            bounds.largest,
+          ),
+        ],
+        InvalidLimit,
+      ),
       check_node_id(spec.entry),
       case dict.has_key(nodes, spec.entry) {
         True -> []
@@ -388,10 +421,8 @@ pub fn describe_build_error(error: BuildError) -> String {
       <> " version "
       <> int.to_string(identity.version)
       <> " needs a name and a positive version"
-    InvalidActivationLimit(limit) ->
-      "definition.with_max_activations is "
-      <> int.to_string(limit)
-      <> ", below 1"
+    InvalidLimit(limit, value, minimum, maximum) ->
+      bounds.describe(setter(limit), value, minimum, maximum)
     DuplicateNode(id) -> "two nodes are named " <> node_name(id)
     MissingEntry(id) -> "the entry node " <> node_name(id) <> " does not exist"
     UnknownDestination(source, destination) ->
@@ -404,24 +435,44 @@ pub fn describe_build_error(error: BuildError) -> String {
       "the operation of the node "
       <> node_name(id)
       <> ": "
-      <> case problem {
-        operation.InvalidAttemptBound(max) ->
-          "operation.with_replay is "
-          <> int.to_string(max)
-          <> " attempts, below 1"
-        operation.ReplayRequiresActivity ->
-          "operation.with_replay applies to activities only"
-        operation.InvalidDeadline(within) ->
-          "operation.with_deadline is "
-          <> int.to_string(duration.to_milliseconds(within))
-          <> " ms, outside 1..4294967295"
-        operation.DeadlineRequiresWait ->
-          "operation.with_deadline applies to waits only; an activity is bounded by graph.with_operation_timeout"
-        operation.InvalidPollInterval(every) ->
-          "job.with_poll_interval is "
-          <> int.to_string(duration.to_milliseconds(every))
-          <> " ms, outside 1..4294967295"
-      }
+      <> describe_configuration_error(problem)
+  }
+}
+
+/// One line for every problem `build` reported, in its order, joined with
+/// `"; "`.
+pub fn describe_build_errors(errors: List(BuildError)) -> String {
+  errors
+  |> list.map(describe_build_error)
+  |> string.join("; ")
+}
+
+fn describe_configuration_error(
+  problem: operation.ConfigurationError,
+) -> String {
+  case problem {
+    operation.InvalidLimit(limit, value, minimum, maximum) ->
+      bounds.describe(operation_setter(limit), value, minimum, maximum)
+    operation.ReplayRequiresActivity ->
+      "operation.with_replay applies to activities only"
+    operation.DeadlineRequiresWait ->
+      "operation.with_deadline applies to waits only; an activity is bounded by graph.with_operation_timeout"
+  }
+}
+
+fn setter(limit: Limit) -> String {
+  case limit {
+    MaxActivations -> "definition.with_max_activations"
+  }
+}
+
+fn operation_setter(limit: operation.Limit) -> String {
+  case limit {
+    operation.ReplayAttempts -> "operation.with_replay"
+    operation.Deadline -> "operation.with_deadline (ms)"
+    operation.PollInterval -> "job.with_poll_interval (ms)"
+    operation.MaxMembers -> "graph.map's max_members"
+    operation.Concurrency -> "graph.map's concurrency"
   }
 }
 

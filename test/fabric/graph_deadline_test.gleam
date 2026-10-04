@@ -66,7 +66,7 @@ fn runtime_with(runs, inspect, within, accept) {
       )
       |> definition.with_max_activations(3),
     )
-  graph.new(spec, runs, fn(_) { Nil }, inspect)
+  graph.new(spec, runs, fn(_) { Nil }, inspect) |> graph.build |> should.be_ok
 }
 
 pub fn deadline_configuration_is_bounded_and_part_of_definition_compatibility_test() {

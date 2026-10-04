@@ -11,6 +11,40 @@ Wave 5 is described with before/after snippets in
 [docs/migration-wave-5.md](docs/migration-wave-5.md), round 5 in
 [docs/migration-round-5.md](docs/migration-round-5.md).
 
+### Wave 5, round 6: bounds are checked by a build step
+
+#### Changed
+
+- **Breaking:** `graph.new` returns an opaque `graph.Spec`; its setters
+  (`with_callback_timeout`, `with_operation_timeout`,
+  `with_command_timeout`, `with_approval_expiry`, `with_family_budget`)
+  only store, and `graph.build(spec) -> Result(Runtime, List(ConfigError))`
+  reports every bound out of range at once instead of the setters
+  panicking. `graph.ConfigError` is `InvalidLimit(limit:, value:,
+minimum:, maximum:)`, the agent's shape; `graph.Limit` names the setter;
+  `graph.describe_config_error(s)`. An approval expiry may now be up to
+  2^53 - 1 ms, as for agents (it is a stored deadline, not a timer).
+- **Breaking:** `graph.map` no longer panics on `max_members` or
+  `concurrency` below 1: `definition.build` reports them as
+  `InvalidOperation(node, operation.InvalidLimit(MaxMembers | Concurrency,
+..))`.
+- **Breaking:** the range problems of `definition.build` take the same
+  shape: `definition.InvalidActivationLimit(n)` is
+  `InvalidLimit(MaxActivations, n, 1, 2^53 - 1)`;
+  `operation.InvalidAttemptBound`, `InvalidDeadline` and
+  `InvalidPollInterval` are `operation.InvalidLimit(ReplayAttempts |
+Deadline | PollInterval, ..)`. `operation.with_replay` takes at most 100
+  attempts, as `tool.with_replay`; `definition.with_max_activations` at
+  most 2^53 - 1.
+- **Breaking:** `fabric_relay.with_wait` no longer panics; `serve` returns
+  `Result(Tool, List(fabric_relay.ConfigError))` (see the fabric_relay
+  CHANGELOG).
+
+#### Added
+
+- `definition.describe_build_errors`: every problem `build` reported, in
+  one line.
+
 ### Wave 5, gate reliability
 
 #### Added

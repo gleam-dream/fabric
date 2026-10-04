@@ -37,10 +37,11 @@ pub fn runtime(
       )
       |> definition.with_max_activations(1),
     )
-  let runtime =
+  let assert Ok(runtime) =
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
     |> graph.with_callback_timeout(duration.milliseconds(5000))
     |> graph.with_operation_timeout(run.After(duration.milliseconds(30_000)))
     |> graph.with_command_timeout(duration.milliseconds(1000))
+    |> graph.build
   runtime
 }

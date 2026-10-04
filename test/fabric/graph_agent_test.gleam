@@ -38,6 +38,10 @@ fn runtime(runs, worker) {
 }
 
 fn parent(runs, runtime) {
+  parent_spec(runs, runtime) |> graph.build |> should.be_ok
+}
+
+fn parent_spec(runs, runtime) {
   let id = definition.node_id("agent")
   let node =
     definition.node(
@@ -81,12 +85,14 @@ pub fn graph_and_managed_agent_share_one_work_and_child_budget_test() {
   let runtime = runtime(runs, fixed("42", calls))
   let assert Ok(handle) =
     graph.start(
-      graph.with_family_budget(
-        parent(runs, runtime),
-        budget.limits(work: 2)
+      parent_spec(runs, runtime)
+        |> graph.with_family_budget(
+          budget.limits(work: 2)
           |> budget.with_children(1)
           |> budget.with_depth(1),
-      ),
+        )
+        |> graph.build
+        |> should.be_ok,
       support.id("shared-budget"),
       41,
       correlation: None,
@@ -96,12 +102,14 @@ pub fn graph_and_managed_agent_share_one_work_and_child_budget_test() {
   probe.entries(calls) |> should.equal(["model"])
   let assert Ok(blocked) =
     graph.start(
-      graph.with_family_budget(
-        parent(runs, runtime),
-        budget.limits(work: 1)
+      parent_spec(runs, runtime)
+        |> graph.with_family_budget(
+          budget.limits(work: 1)
           |> budget.with_children(1)
           |> budget.with_depth(1),
-      ),
+        )
+        |> graph.build
+        |> should.be_ok,
       support.id("shared-exhausted"),
       41,
       correlation: None,
@@ -122,12 +130,14 @@ pub fn a_zero_child_budget_refuses_a_managed_agent_before_creating_it_test() {
   let runtime = runtime(runs, fixed("42", calls))
   let assert Ok(handle) =
     graph.start(
-      graph.with_family_budget(
-        parent(runs, runtime),
-        budget.limits(work: 10)
+      parent_spec(runs, runtime)
+        |> graph.with_family_budget(
+          budget.limits(work: 10)
           |> budget.with_children(0)
           |> budget.with_depth(3),
-      ),
+        )
+        |> graph.build
+        |> should.be_ok,
       support.id("no-children"),
       41,
       correlation: None,
@@ -147,12 +157,14 @@ pub fn a_graph_owned_agents_delegation_cannot_reset_family_depth_test() {
   let runtime = runtime(runs, worker)
   let assert Ok(handle) =
     graph.start(
-      graph.with_family_budget(
-        parent(runs, runtime),
-        budget.limits(work: 10)
+      parent_spec(runs, runtime)
+        |> graph.with_family_budget(
+          budget.limits(work: 10)
           |> budget.with_children(3)
           |> budget.with_depth(1),
-      ),
+        )
+        |> graph.build
+        |> should.be_ok,
       support.id("shared-depth"),
       41,
       correlation: None,
@@ -615,6 +627,8 @@ fn wrap(runs, inner) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 pub fn nested_graphs_observe_an_agents_own_delegated_family_test() {

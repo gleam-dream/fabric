@@ -47,6 +47,8 @@ fn leaf(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 fn mapped(
@@ -79,6 +81,8 @@ fn mapped(
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 fn inner(runs: store.Store) {
@@ -119,6 +123,8 @@ fn repeated(runs: store.Store) {
       |> definition.with_max_activations(2),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 fn waiting_branch(parent, activation, ordinal, runs) {
@@ -138,7 +144,7 @@ pub fn repeated_forks_keep_prior_results_separate_and_reuse_budget_after_restart
       let runs = support.directory(directory)
       let assert Ok(root) =
         graph.start(
-          graph.with_family_budget(
+          support.budgeted(
             repeated(runs),
             budget.limits(work: 6)
               |> budget.with_children(4)
@@ -201,7 +207,7 @@ pub fn sibling_maps_keep_private_joins_with_one_shared_family_budget_test() {
   let runs = support.store()
   let assert Ok(root) =
     graph.start(
-      graph.with_family_budget(
+      support.budgeted(
         outer(runs),
         budget.limits(work: 7)
           |> budget.with_children(6)
@@ -246,7 +252,7 @@ pub fn child_budget_closes_admission_and_keeps_refused_members_distinct_test() {
   let runs = support.store()
   let assert Ok(root) =
     graph.start(
-      graph.with_family_budget(
+      support.budgeted(
         inner(runs),
         budget.limits(work: 10)
           |> budget.with_children(2)
@@ -280,7 +286,7 @@ pub fn nested_forks_cannot_reset_the_family_depth_limit_test() {
   let runs = support.store()
   let assert Ok(root) =
     graph.start(
-      graph.with_family_budget(
+      support.budgeted(
         outer(runs),
         budget.limits(work: 10)
           |> budget.with_children(6)
@@ -311,7 +317,7 @@ pub fn fork_members_share_the_parents_work_limit_test() {
   let runs = support.store()
   let assert Ok(root) =
     graph.start(
-      graph.with_family_budget(
+      support.budgeted(
         inner(runs),
         budget.limits(work: 1)
           |> budget.with_children(3)

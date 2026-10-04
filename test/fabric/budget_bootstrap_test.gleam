@@ -175,6 +175,8 @@ fn fixture(runs, kind, initialized, calls) {
         )
       let runtime =
         graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.build
+        |> should.be_ok
       let handle = support.open_graph(runtime, support.id("root"))
       Fixture(
         fn() {

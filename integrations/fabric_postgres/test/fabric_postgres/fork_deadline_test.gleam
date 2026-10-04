@@ -37,6 +37,8 @@ fn wrap(runs, name, op, values, accept) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 fn leaf(runs, arrivals) {
@@ -230,7 +232,7 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
       let runs = start_store(settings)
       let assert Ok(root) =
         graph.start(
-          graph.with_family_budget(
+          support.budgeted(
             parent(runs, arrivals),
             budget.limits(work: 5)
               |> budget.with_children(4)

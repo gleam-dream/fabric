@@ -42,7 +42,16 @@ pub fn native_body_receives_the_stable_logical_identity_and_current_attempt_test
   second.attempt |> should.equal(2)
   operation.with_replay(op, 0)
   |> support.operation_problems
-  |> should.equal([operation.InvalidAttemptBound(0)])
+  |> should.equal([operation.InvalidLimit(operation.ReplayAttempts, 0, 1, 100)])
+  // At most 100 attempts, as `tool.with_replay`.
+  operation.with_replay(op, 101)
+  |> support.operation_problems
+  |> should.equal([
+    operation.InvalidLimit(operation.ReplayAttempts, 101, 1, 100),
+  ])
+  operation.with_replay(op, 100)
+  |> support.operation_problems
+  |> should.equal([])
   let replayable = operation.with_replay(op, 2)
   operation.recovery(replayable) |> should.equal(operation.ReplayInterrupted(2))
 }

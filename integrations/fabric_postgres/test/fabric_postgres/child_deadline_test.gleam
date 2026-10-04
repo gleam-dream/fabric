@@ -43,6 +43,8 @@ fn runtime(runs, identity, op) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 fn leaf(runs) {
@@ -119,7 +121,7 @@ pub fn unchanged_children_expire_after_restart_and_remain_retained_until_reconci
       let runs = start_store(settings)
       let assert Ok(handle) =
         graph.start(
-          graph.with_family_budget(
+          support.budgeted(
             parent(runs),
             budget.limits(work: 2)
               |> budget.with_children(1)

@@ -67,7 +67,7 @@ fn runtime_version(runs, read, request, policy, version) {
       )
       |> definition.with_max_activations(1),
     )
-  graph.new(spec, runs, fn(_) { Nil }, policy)
+  graph.new(spec, runs, fn(_) { Nil }, policy) |> graph.build |> should.be_ok
 }
 
 pub fn refusals_uncertainty_and_read_failures_remain_pending_until_terminal_evidence_test() {
@@ -206,16 +206,18 @@ pub fn owned_cleanup_continues_under_a_cancelled_parent_with_no_unused_work_budg
       )
       |> definition.with_max_activations(1),
     )
-  let parent =
+  let parent_spec =
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
   let assert Ok(handle) =
     graph.start(
-      graph.with_family_budget(
-        parent,
-        budget.limits(work: 2)
+      parent_spec
+        |> graph.with_family_budget(
+          budget.limits(work: 2)
           |> budget.with_children(1)
           |> budget.with_depth(1),
-      ),
+        )
+        |> graph.build
+        |> should.be_ok,
       support.id("owned-parent"),
       "receipt",
       correlation: None,

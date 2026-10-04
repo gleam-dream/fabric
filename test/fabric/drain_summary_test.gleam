@@ -376,6 +376,8 @@ pub fn graph_runners_are_included_in_the_same_summary_test() {
   let application = restart.application(runs)
   let runtime =
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(id) = run.parse_id("graph-drain-summary")
   let assert Ok(_) = graph.start(runtime, id, 0, correlation: None)
   let held = probe.arrival(ledger)

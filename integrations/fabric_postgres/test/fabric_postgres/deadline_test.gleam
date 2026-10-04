@@ -48,6 +48,8 @@ fn runtime(runs) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {

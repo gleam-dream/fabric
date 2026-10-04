@@ -24,6 +24,15 @@ version:, peer:)` as a graph activity. `isError` is `tool.Explain`; a call
 - `run_of(result)`: the run a served call's result names in its `_meta`,
   as a `RunId`, for a client that opens the run (`fabric.open`).
 
+### Changed (round 6)
+
+- **Breaking:** `with_wait` only stores the wait, which may come from
+  configuration; `serve(service)` checks it and returns
+  `Result(relay_tool.Tool(server_context), List(ConfigError))` instead of
+  `with_wait` panicking. `ConfigError` is `InvalidLimit(limit: Wait,
+value:, minimum:, maximum:)`, the shape of `agent.InvalidLimit`;
+  `describe_config_error(s)`.
+
 ### Changed (slice F6, for code written against slice F4)
 
 - **Breaking:** `service` takes the definition first, so `start`'s input

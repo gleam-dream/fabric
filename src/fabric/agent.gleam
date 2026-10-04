@@ -47,8 +47,8 @@
 
 import fabric/budget
 import fabric/internal/answer.{type Answer} as answers
-import fabric/internal/budget/model as reservations
 import fabric/internal/checked_agent.{type Admitted, Admitted}
+import fabric/internal/limit as bounds
 import fabric/internal/registry
 import fabric/internal/tool as core_tool
 import fabric/model.{type Model}
@@ -168,14 +168,9 @@ const max_depth_limit = 16
 
 const max_answer_attempts = 100
 
-/// The longest timer the runtime can set, in milliseconds: a longer wait
-/// crashes the process that waits.
-const longest_timer = 4_294_967_295
+const longest_timer = bounds.longest_timer
 
-/// The largest count or duration a record keeps exactly (2^53 - 1, the
-/// largest integer JSON readers agree on), the maximum of bounds that have
-/// no other.
-const largest = 9_007_199_254_740_991
+const largest = bounds.largest
 
 /// How many times the first model retry delay is doubled, at most (64
 /// times the first delay).
@@ -519,9 +514,14 @@ pub fn describe_config_error(error: ConfigError) -> String {
       <> int.to_string(version)
       <> " needs a name and a positive version"
     InvalidLimit(limit, value, minimum, maximum) ->
-      range(setter(limit), value, minimum, maximum)
+      bounds.describe(setter(limit), value, minimum, maximum)
     InvalidToolLimit(name, limit, value, minimum, maximum) ->
-      range(setter(limit) <> " of the tool " <> name, value, minimum, maximum)
+      bounds.describe(
+        setter(limit) <> " of the tool " <> name,
+        value,
+        minimum,
+        maximum,
+      )
   }
 }
 
@@ -538,16 +538,6 @@ pub fn describe_config_errors(errors: List(ConfigError)) -> String {
   errors
   |> list.map(describe_config_error)
   |> string.join("; ")
-}
-
-fn range(name: String, value: Int, minimum: Int, maximum: Int) -> String {
-  name
-  <> " is "
-  <> int.to_string(value)
-  <> ", outside "
-  <> int.to_string(minimum)
-  <> ".."
-  <> int.to_string(maximum)
 }
 
 fn setter(limit: Limit) -> String {
@@ -586,46 +576,61 @@ fn admit(
       Infinity -> None
     }
   }
-  let family = fn(read: fn(budget.Limits) -> Int) {
-    option.map(spec.family_budget, read)
-  }
-  let bounds = [
-    #(MaxTurns, Some(spec.max_turns), 1, largest),
-    #(MaxConcurrency, Some(spec.max_concurrency), 1, largest),
-    #(TokenBudget, spec.token_budget, 1, largest),
-    #(MaxChildren, Some(spec.max_children), 0, max_children_limit),
-    #(MaxDepth, Some(spec.max_depth), 0, max_depth_limit),
-    #(PolicyTimeout, Some(ms(spec.policy_timeout)), 1, longest_timer),
-    #(
-      ModelRetryDelay,
-      Some(ms(spec.model_retry_delay)),
-      0,
-      longest_timer / retry_delay_factor,
-    ),
-    #(CommandTimeout, Some(ms(spec.command_timeout)), 1, longest_timer),
-    #(ModelTimeout, timeout(spec.model_timeout), 1, longest_timer),
-    #(ToolTimeout, timeout(spec.tool_timeout), 1, longest_timer),
-    #(MaxResultBytes, Some(spec.max_result_bytes), 1, largest),
-    #(AnswerAttempts, Some(spec.answer_attempts), 1, max_answer_attempts),
-    #(ApprovalExpiry, timeout(spec.approval_expiry), 1, largest),
-    #(FamilyWork, family(fn(limits) { limits.work }), 0, largest),
-    #(FamilyChildren, family(fn(limits) { limits.children }), 0, largest),
-    #(
-      FamilyDepth,
-      family(fn(limits) { limits.depth }),
-      0,
-      reservations.max_depth,
-    ),
-  ]
   let problems =
-    list.filter_map(bounds, fn(bound) {
-      case bound {
-        #(limit, Some(value), minimum, maximum)
-          if value < minimum || value > maximum
-        -> Ok(InvalidLimit(limit, value, minimum, maximum))
-        _ -> Error(Nil)
-      }
-    })
+    bounds.check(
+      [
+        bounds.Bound(MaxTurns, Some(spec.max_turns), 1, largest),
+        bounds.Bound(MaxConcurrency, Some(spec.max_concurrency), 1, largest),
+        bounds.Bound(TokenBudget, spec.token_budget, 1, largest),
+        bounds.Bound(
+          MaxChildren,
+          Some(spec.max_children),
+          0,
+          max_children_limit,
+        ),
+        bounds.Bound(MaxDepth, Some(spec.max_depth), 0, max_depth_limit),
+        bounds.Bound(
+          PolicyTimeout,
+          Some(ms(spec.policy_timeout)),
+          1,
+          longest_timer,
+        ),
+        bounds.Bound(
+          ModelRetryDelay,
+          Some(ms(spec.model_retry_delay)),
+          0,
+          longest_timer / retry_delay_factor,
+        ),
+        bounds.Bound(
+          CommandTimeout,
+          Some(ms(spec.command_timeout)),
+          1,
+          longest_timer,
+        ),
+        bounds.Bound(
+          ModelTimeout,
+          timeout(spec.model_timeout),
+          1,
+          longest_timer,
+        ),
+        bounds.Bound(ToolTimeout, timeout(spec.tool_timeout), 1, longest_timer),
+        bounds.Bound(MaxResultBytes, Some(spec.max_result_bytes), 1, largest),
+        bounds.Bound(
+          AnswerAttempts,
+          Some(spec.answer_attempts),
+          1,
+          max_answer_attempts,
+        ),
+        bounds.Bound(ApprovalExpiry, timeout(spec.approval_expiry), 1, largest),
+        ..bounds.family(
+          spec.family_budget,
+          work: FamilyWork,
+          children: FamilyChildren,
+          depth: FamilyDepth,
+        )
+      ],
+      InvalidLimit,
+    )
   let #(answer_schema, problems) = case answers.schema(spec.answer) {
     Ok(schema) -> #(schema, problems)
     Error(Nil) -> #(None, [AnswerSchemaUnavailable, ..problems])

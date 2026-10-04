@@ -58,7 +58,10 @@ pub fn runtime(
       )
       |> definition.with_max_activations(1),
     )
-  graph.new(definition, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  let assert Ok(runtime) =
+    graph.new(definition, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+  runtime
 }
 
 pub type State {
@@ -90,7 +93,7 @@ pub fn waiting_runtime(
   submit: Submit,
   url: String,
 ) -> graph.Runtime(Nil, State, String) {
-  wait_with(runs, submit, url, job.Manual, Detached, None)
+  built(wait_with(runs, submit, url, job.Manual, Detached, None))
 }
 
 /// The registered sweeper can observe this graph's saved job every 100 ms.
@@ -99,7 +102,26 @@ pub fn scheduled_runtime(
   submit: Submit,
   url: String,
 ) -> graph.Runtime(Nil, State, String) {
+  built(scheduled_spec(runs, submit, url))
+}
+
+/// The scheduled runtime before `graph.build`, for a caller that sets more
+/// bounds (`graph.with_family_budget`).
+pub fn scheduled_spec(
+  runs: store.Store,
+  submit: Submit,
+  url: String,
+) -> graph.Spec(Nil, State, String) {
   wait_with(runs, submit, url, job.Every(100), Detached, None)
+}
+
+fn built(
+  spec: graph.Spec(Nil, State, String),
+) -> graph.Runtime(Nil, State, String) {
+  case graph.build(spec) {
+    Ok(runtime) -> runtime
+    Error(errors) -> panic as graph.describe_config_errors(errors)
+  }
 }
 
 type Lifetime {
@@ -115,7 +137,7 @@ pub fn owned_runtime(
   request: fn(operation.Invocation, client.Receipt) -> Result(Nil, client.Error),
   url: String,
 ) -> graph.Runtime(Nil, State, String) {
-  wait_with(runs, submit, url, job.Every(100), Owned(request), None)
+  built(wait_with(runs, submit, url, job.Every(100), Owned(request), None))
 }
 
 /// Bound the accepted job wait while retaining owned cancellation and terminal
@@ -127,6 +149,17 @@ pub fn deadline_runtime(
   url: String,
   within: Int,
 ) -> graph.Runtime(Nil, State, String) {
+  built(deadline_spec(runs, submit, request, url, within))
+}
+
+/// The deadline runtime before `graph.build`.
+pub fn deadline_spec(
+  runs: store.Store,
+  submit: Submit,
+  request: fn(operation.Invocation, client.Receipt) -> Result(Nil, client.Error),
+  url: String,
+  within: Int,
+) -> graph.Spec(Nil, State, String) {
   wait_with(runs, submit, url, job.Every(100), Owned(request), Some(within))
 }
 
@@ -137,7 +170,7 @@ fn wait_with(
   polling: job.Polling,
   lifetime: Lifetime,
   deadline: Option(Int),
-) -> graph.Runtime(Nil, State, String) {
+) -> graph.Spec(Nil, State, String) {
   let submit_id = definition.node_id("submit")
   let wait_id = definition.node_id("wait")
   let submit =
@@ -305,5 +338,7 @@ pub fn cancellation_runtime(
       )
       |> definition.with_max_activations(2),
     )
-  graph.new(spec, runs, fn(_) { Nil }, gate)
+  let assert Ok(runtime) =
+    graph.new(spec, runs, fn(_) { Nil }, gate) |> graph.build
+  runtime
 }

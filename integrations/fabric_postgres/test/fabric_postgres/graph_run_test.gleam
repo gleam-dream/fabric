@@ -74,6 +74,8 @@ pub fn a_graph_survives_store_restart_and_completes_on_postgres_test() {
         graph.new(spec, runs, fn(_) { Nil }, fn(_, _) {
           Ok(policy.RequireApproval(run.Requirement("increment", 1)))
         })
+        |> graph.build
+        |> should.be_ok
       let assert Ok(handle) = graph.start(runtime, id, 41, correlation: None)
       let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
       let assert graph.AwaitingApproval(approval) = waiting
@@ -85,6 +87,8 @@ pub fn a_graph_survives_store_restart_and_completes_on_postgres_test() {
   let assert Ok(Nil) = store.start(runs)
   let runtime =
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+    |> should.be_ok
   let handle = open_graph(runtime, id)
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(_) =
@@ -139,6 +143,8 @@ pub fn a_signal_wait_releases_its_lease_and_another_store_consumes_it_once_test(
       let assert Ok(Nil) = store.start(runs)
       let runtime =
         graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.build
+        |> should.be_ok
       let assert Ok(handle) = graph.start(runtime, id, 41, correlation: None)
       let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
       let assert graph.AwaitingSignal(reference) = waiting
@@ -155,7 +161,9 @@ pub fn a_signal_wait_releases_its_lease_and_another_store_consumes_it_once_test(
   let assert Ok(Nil) = store.start(runs)
   let handle =
     open_graph(
-      graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) }),
+      graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.build
+        |> should.be_ok,
       id,
     )
   let assert Ok(_) = graph.deliver(handle, reference, response, True)
@@ -207,6 +215,8 @@ pub fn a_job_wait_survives_store_loss_without_holding_a_lease_test() {
       let assert Ok(Nil) = store.start(runs)
       let runtime =
         graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.build
+        |> should.be_ok
       let assert Ok(handle) =
         graph.start(runtime, id, "accepted-job", correlation: None)
       let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
@@ -228,7 +238,9 @@ pub fn a_job_wait_survives_store_loss_without_holding_a_lease_test() {
   let assert Ok(Nil) = store.start(runs)
   let handle =
     open_graph(
-      graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) }),
+      graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.build
+        |> should.be_ok,
       id,
     )
   let assert Ok(waiting) = graph.recover(handle)
@@ -277,6 +289,8 @@ pub fn scheduled_job(runs, every, read) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 fn owned_job(runs, read, request) {
@@ -315,6 +329,8 @@ fn owned_job(runs, read, request) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 pub fn owned_job_cancellation_survives_postgres_restart_and_sweeps_before_pruning_test() {
@@ -328,7 +344,7 @@ pub fn owned_job_cancellation_survives_postgres_restart_and_sweeps_before_prunin
       let assert Ok(Nil) = store.start(runs)
       let assert Ok(handle) =
         graph.start(
-          graph.with_family_budget(
+          support.budgeted(
             owned_job(runs, fn(_) { Ok(job.Pending) }, fn(receipt) {
               receipt |> should.equal("accepted")
               Ok(Nil)
@@ -430,7 +446,7 @@ pub fn a_postgres_sweeper_retains_the_next_poll_across_store_loss_test() {
       }
       let assert Ok(handle) =
         graph.start(
-          graph.with_family_budget(
+          support.budgeted(
             build(runs),
             budget.limits(work: 1)
               |> budget.with_children(1)
@@ -587,7 +603,8 @@ fn managed_pair_with(
       )
       |> definition.with_max_activations(1),
     )
-  let child = graph.new(spec, runs, fn(_) { Nil }, policy)
+  let child =
+    graph.new(spec, runs, fn(_) { Nil }, policy) |> graph.build |> should.be_ok
   let node =
     definition.node(
       node_id,
@@ -607,7 +624,12 @@ fn managed_pair_with(
       )
       |> definition.with_max_activations(1),
     )
-  #(graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) }), child)
+  #(
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+      |> graph.build
+      |> should.be_ok,
+    child,
+  )
 }
 
 pub fn a_managed_subgraph_adopts_its_approved_child_after_postgres_restart_test() {
@@ -788,7 +810,12 @@ fn managed_agent(runs: store.Store, gate: agents.Gate) {
       )
       |> definition.with_max_activations(1),
     )
-  #(graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) }), agent)
+  #(
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+      |> graph.build
+      |> should.be_ok,
+    agent,
+  )
 }
 
 pub fn a_managed_agent_keeps_its_approval_and_identity_after_postgres_restart_test() {
@@ -805,7 +832,7 @@ pub fn a_managed_agent_keeps_its_approval_and_identity_after_postgres_restart_te
       let #(parent, _) = managed_agent(runs, gate)
       let assert Ok(handle) =
         graph.start(
-          graph.with_family_budget(
+          support.budgeted(
             parent,
             budget.limits(work: 4)
               |> budget.with_children(1)
@@ -864,7 +891,7 @@ pub fn a_restarted_managed_agent_cannot_reset_its_family_work_budget_test() {
       // The graph activation and initial model attempt consume both units.
       let assert Ok(handle) =
         graph.start(
-          graph.with_family_budget(
+          support.budgeted(
             parent,
             budget.limits(work: 2)
               |> budget.with_children(1)
@@ -920,7 +947,7 @@ pub fn a_registered_graph_recovers_its_agent_after_postgres_store_loss_test() {
       let #(runtime, worker) = managed_agent(runs, gate)
       let assert Ok(handle) =
         graph.start(
-          graph.with_family_budget(
+          support.budgeted(
             runtime,
             budget.limits(work: 4)
               |> budget.with_children(1)

@@ -77,7 +77,7 @@ fn activity(runs: store.Store, gate) -> graph.Runtime(Nil, Int, Int) {
       )
       |> definition.with_max_activations(3),
     )
-  graph.new(d, runs, fn(_) { Nil }, gate)
+  graph.new(d, runs, fn(_) { Nil }, gate) |> graph.build |> should.be_ok
 }
 
 fn ready() -> signal.Signal(Bool) {
@@ -105,6 +105,8 @@ fn signal_runtime(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
       |> definition.with_max_activations(3),
     )
   graph.new(d, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 fn allow(_: Nil, _) {
@@ -211,7 +213,7 @@ pub fn a_stored_child_wait_recovers_and_its_child_finishes_test() {
     )
   let parent =
     support.open_graph(
-      graph.new(d, runs, fn(_) { Nil }, allow),
+      graph.new(d, runs, fn(_) { Nil }, allow) |> graph.build |> should.be_ok,
       support.id("graph-parent"),
     )
   let assert Ok(_) = graph.recover(parent)
@@ -273,7 +275,7 @@ pub fn a_stored_job_wait_without_a_deadline_is_polled_to_completion_test() {
     )
   let handle =
     support.open_graph(
-      graph.new(d, runs, fn(_) { Nil }, allow),
+      graph.new(d, runs, fn(_) { Nil }, allow) |> graph.build |> should.be_ok,
       support.id("graph-job"),
     )
   let assert Ok(_) = graph.recover(handle)
@@ -315,7 +317,7 @@ pub fn a_stored_uncertain_effect_is_reconciled_test() {
     )
   let handle =
     support.open_graph(
-      graph.new(d, runs, fn(_) { Nil }, allow),
+      graph.new(d, runs, fn(_) { Nil }, allow) |> graph.build |> should.be_ok,
       support.id("graph-blocked"),
     )
   let assert Ok(blocked) = graph.snapshot(handle)

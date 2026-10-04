@@ -49,10 +49,12 @@
 //// the typed value.
 ////
 //// ```gleam
-//// fabric_relay.service(ask_desk(), runs:, agent: desk, start: fn(_call, question) {
-////   fabric_relay.start(Nil, prompt: question.text)
-//// })
-//// |> fabric_relay.serve
+//// let assert Ok(assistant) =
+////   fabric_relay.service(ask_desk(), runs:, agent: desk, start: fn(_call, question) {
+////     fabric_relay.start(Nil, prompt: question.text)
+////   })
+////   |> fabric_relay.serve
+//// server.new([assistant])
 //// ```
 ////
 //// A call that carries an idempotency key (`client.with_idempotency_key`)
@@ -400,11 +402,12 @@ const longest_timer = 4_294_967_295
 /// (`refuse`). A call waits 25 seconds for the answer (`with_wait`).
 ///
 /// ```gleam
-/// fabric_relay.service(ask_desk(), runs:, agent: desk, start: fn(call, question) {
-///   fabric_relay.start(Nil, prompt: question.text)
-///   |> fabric_relay.with_principal(tool.context(call).subject)
-/// })
-/// |> fabric_relay.serve
+/// let assert Ok(assistant) =
+///   fabric_relay.service(ask_desk(), runs:, agent: desk, start: fn(call, question) {
+///     fabric_relay.start(Nil, prompt: question.text)
+///     |> fabric_relay.with_principal(tool.context(call).subject)
+///   })
+///   |> fabric_relay.serve
 /// ```
 pub fn service(
   definition: relay_tool.Definition(input, answer),
@@ -420,21 +423,51 @@ pub fn service(
 /// invocation timeouts (`relay/http.with_request_timeout`,
 /// `relay/runtime.with_invocation_timeout`, 30 s by default): when Relay
 /// ends the call first, a run the call owns is cancelled. From 1 ms to
-/// 2^32 - 1 ms; another value is a bug and panics.
+/// 2^32 - 1 ms; `serve` reports another value
+/// (`InvalidLimit(Wait, ..)`).
 pub fn with_wait(
   service: Service(server_context, context, input, answer),
   wait: Duration,
 ) -> Service(server_context, context, input, answer) {
-  let ms = duration.to_milliseconds(wait)
-  case ms >= 1 && ms <= longest_timer {
-    True -> Service(..service, wait:)
-    False ->
-      panic as {
-        "fabric_relay.with_wait: the wait must be 1 ms to 2^32 - 1 ms, not "
-        <> int.to_string(ms)
-        <> " ms"
+  Service(..service, wait:)
+}
+
+/// Why `serve` refused a service. This union may grow: match the variants
+/// you handle and keep a catch-all, or use `describe_config_error`.
+pub type ConfigError {
+  /// A bound is outside `minimum..maximum` (both included), as for
+  /// `agent.InvalidLimit`. Durations are in milliseconds.
+  InvalidLimit(limit: Limit, value: Int, minimum: Int, maximum: Int)
+}
+
+/// A bound `serve` checks, named after its setter. This union may grow.
+pub type Limit {
+  /// `with_wait`, 1 ms to 2^32 - 1 ms.
+  Wait
+}
+
+/// One line naming the problem and the setter that changes it.
+pub fn describe_config_error(error: ConfigError) -> String {
+  case error {
+    InvalidLimit(limit, value, minimum, maximum) ->
+      case limit {
+        Wait -> "fabric_relay.with_wait (ms)"
       }
+      <> " is "
+      <> int.to_string(value)
+      <> ", outside "
+      <> int.to_string(minimum)
+      <> ".."
+      <> int.to_string(maximum)
   }
+}
+
+/// One line for every problem `serve` reported, in its order, joined with
+/// `"; "`.
+pub fn describe_config_errors(errors: List(ConfigError)) -> String {
+  errors
+  |> list.map(describe_config_error)
+  |> string.join("; ")
 }
 
 /// The run a call to `definition` with idempotency key `key` starts for
@@ -472,6 +505,18 @@ pub fn run_id(
 /// The list may grow: match the values a client handles and keep a
 /// default.
 ///
+/// `serve` checks the service's bounds and reports every problem at once
+/// (`ConfigError`), since a wait may come from configuration:
+///
+/// ```gleam
+/// use assistant <- result.try(
+///   fabric_relay.service(ask_desk(), runs:, agent: desk, start:)
+///   |> fabric_relay.with_wait(config.wait)
+///   |> fabric_relay.serve,
+/// )
+/// server.new([assistant])
+/// ```
+///
 /// A call without a key owns its run, which ends with the call. A keyed
 /// run outlives it, bounded by the agent's own limits: its model attempts
 /// (`agent.with_max_turns`), model and tool timeouts, an optional token
@@ -483,6 +528,16 @@ pub fn run_id(
 /// reconcile (`fabric.reconcile`) or cancel (`fabric.cancel`) them; an
 /// `unattended` run waits for `fabric.recover` or a sweeper.
 pub fn serve(
+  service: Service(server_context, context, input, answer),
+) -> Result(relay_tool.Tool(server_context), List(ConfigError)) {
+  let wait = duration.to_milliseconds(service.wait)
+  case wait >= 1 && wait <= longest_timer {
+    True -> Ok(published(service))
+    False -> Error([InvalidLimit(Wait, wait, 1, longest_timer)])
+  }
+}
+
+fn published(
   service: Service(server_context, context, input, answer),
 ) -> relay_tool.Tool(server_context) {
   let definition = service.definition

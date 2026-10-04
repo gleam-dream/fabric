@@ -1,10 +1,12 @@
 //// Shorthands that keep the tests about behaviour rather than set-up.
 
 import fabric/agent.{type Agent, type Spec}
+import fabric/budget
 import fabric/graph
 import fabric/graph/definition
 import fabric/graph/job
 import fabric/graph/operation
+import fabric/internal/graph/runtime as graph_runtime
 import fabric/policy
 import fabric/reviewer.{type Reviewer}
 import fabric/run.{type ActionId, type DefinitionId, type RunId}
@@ -34,6 +36,16 @@ pub fn open_graph(
 ) -> graph.Handle(context, state, answer) {
   let assert Ok(handle) = graph.open(runtime, id)
   handle
+}
+
+/// `runtime` with a family budget, for a test that builds its runtime in a
+/// helper: `graph.with_family_budget` sets one on a spec, before
+/// `graph.build`.
+pub fn budgeted(
+  runtime: graph.Runtime(context, state, answer),
+  limits: budget.Limits,
+) -> graph.Runtime(context, state, answer) {
+  graph_runtime.with_family_budget(runtime, limits)
 }
 
 /// The id of an agent action the policy sees.

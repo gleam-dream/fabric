@@ -89,8 +89,9 @@ pub fn execute_batch(
       )
       |> definition.with_max_activations(1),
     )
-  let runtime =
+  let assert Ok(runtime) =
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
   let assert Ok(id) = run.parse_id("batch-demo")
   let assert Ok(handle) = graph.start(runtime, id, initial, correlation: None)
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
@@ -220,7 +221,10 @@ fn review_runtime(
       )
       |> definition.with_max_activations(limit),
     )
-  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  let assert Ok(runtime) =
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+  runtime
 }
 
 pub fn main() -> Nil {

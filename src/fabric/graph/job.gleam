@@ -61,7 +61,7 @@ pub fn observe(
 /// available. Changing this interval changes the persisted operation contract,
 /// which keeps it in whole milliseconds (`Every`). `definition.build`
 /// refuses an interval under 1 ms or over 2^32 - 1 ms
-/// (`operation.InvalidPollInterval`).
+/// (`operation.InvalidLimit(PollInterval, ..)`).
 pub fn with_poll_interval(
   observer: Observer(context, receipt, output),
   every: Duration,

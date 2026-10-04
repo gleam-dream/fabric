@@ -102,7 +102,7 @@ pub fn runtime(
       )
       |> definition.with_max_activations(8),
     )
-  let runtime =
+  let assert Ok(runtime) =
     graph.new(spec, runs, fn(_) { Nil }, fn(_, action) {
       case action.target {
         policy.RunOperation(node: "publish", ..) ->
@@ -113,6 +113,7 @@ pub fn runtime(
     |> graph.with_callback_timeout(duration.milliseconds(5000))
     |> graph.with_operation_timeout(run.After(duration.milliseconds(30_000)))
     |> graph.with_command_timeout(duration.milliseconds(1000))
+    |> graph.build
   runtime
 }
 
