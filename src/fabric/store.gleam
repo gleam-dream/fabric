@@ -293,8 +293,9 @@ pub fn supervised(store: Store) -> supervision.ChildSpecification(Nil) {
 
 /// Starts the store's subtree (see `supervised`) for scripts and tests,
 /// linked to the caller. The store's process stops when the caller exits
-/// for any reason, normally or not, so its name is free again; its runners
-/// stop with it without draining, as if the node had stopped. `Unavailable`
+/// for any reason, normally or not, so its name is free again once every
+/// process linked to the caller is gone; its runners stop with it without
+/// draining, as if the node had stopped. `Unavailable`
 /// when its backend could not be opened or its name is taken.
 ///
 /// `stop` stops it again, draining its runners.

@@ -44,6 +44,10 @@ pub fn owned(body: fn() -> a) -> #(Pid, a) {
   #(pid, process.receive_forever(reply))
 }
 
+/// The processes linked to `pid`, other than the caller.
+@external(erlang, "fabric_test_ffi", "linked")
+pub fn linked(pid: Pid) -> List(Pid)
+
 /// Kills `pid` and waits until it is gone.
 pub fn kill(pid: Pid) -> Nil {
   let monitor = process.monitor(pid)

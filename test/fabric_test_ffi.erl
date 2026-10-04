@@ -1,6 +1,6 @@
 -module(fabric_test_ffi).
 -export([temp_dir/0, remove_dir/1, list_dir/1, write_file/2, read_file/1, age_file/2, waits_on/2, waits_in/2,
-         suspend/1, resume/1, queued/1, leasing/0, set_leasing/1]).
+         suspend/1, resume/1, queued/1, leasing/0, set_leasing/1, linked/1]).
 
 %% A fresh, empty directory under the system temporary directory.
 temp_dir() ->
@@ -83,3 +83,10 @@ leasing() ->
 set_leasing(Leasing) ->
     put(fabric_test_leasing, Leasing),
     nil.
+
+%% The processes linked to Pid, other than the caller.
+linked(Pid) ->
+    case erlang:process_info(Pid, links) of
+        {links, Links} -> [L || L <- Links, is_pid(L), L =/= self()];
+        undefined -> []
+    end.

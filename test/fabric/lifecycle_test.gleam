@@ -3,6 +3,7 @@
 
 import fabric
 import fabric/agent
+import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
 import fabric/run
@@ -11,9 +12,11 @@ import fabric/store/backend
 import fabric/store/conformance
 import fabric/support
 import fabric/support/probe
+import fabric/support/restart
 import fabric/support/scripted
 import fabric/sweeper
 import gleam/erlang/process
+import gleam/list
 import gleam/option.{None}
 import gleam/otp/static_supervisor
 import gleam/time/duration
@@ -118,6 +121,32 @@ pub fn a_started_store_stops_and_can_start_again_test() {
   store.stop(runs) |> should.equal(Ok(Nil))
   let assert Ok(Nil) = store.start(runs)
   let assert Ok(_) = store.readiness(runs)
+  store.stop(runs) |> should.equal(Ok(Nil))
+}
+
+/// A store started with `start` is gone, name and all, by the time every
+/// process linked to its dead caller is: a node that waits for those
+/// starts a new store under the same name at once. The store's process is
+/// suspended when the caller dies, as on a loaded machine, so it has not
+/// seen the death itself: its keeper stops it.
+pub fn a_store_restarts_under_its_name_once_its_dead_callers_links_are_gone_test() {
+  let runs = store.in_memory(process.new_name("lifecycle-restart"))
+  let #(owner, Nil) =
+    restart.owned(fn() {
+      let assert Ok(Nil) = store.start(runs)
+      Nil
+    })
+  let linked = restart.linked(owner)
+  let assert Ok(pid) = store_core.pid(runs)
+  restart.suspend(pid)
+  restart.kill(owner)
+  let gone = process.new_subject()
+  process.spawn(fn() {
+    list.each(linked, restart.gone)
+    process.send(gone, Nil)
+  })
+  let assert Ok(Nil) = process.receive(gone, 30_000)
+  store.start(runs) |> should.equal(Ok(Nil))
   store.stop(runs) |> should.equal(Ok(Nil))
 }
 

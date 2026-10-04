@@ -1,7 +1,7 @@
 -module(fabric_ffi).
 -export([rescue/1, random_id/0, now_ms/0, ensure_directory/1, directory_get/2,
          directory_insert/3, directory_compare_and_set/4, claim_new/0,
-         claim_take/2, exit_shutdown/0, factory_name/1,
+         claim_take/2, exit_shutdown/0, shut_down/1, factory_name/1,
          await_or_shutdown/3, requeue_shutdown/1, take_shutdown/1, graph_child_id/2,
          family_budget_id/1, system_time_ms/0, graph_branch_id/3,
          sha256_hex/1]).
@@ -30,6 +30,11 @@ rescue(Body) ->
 %% started stops its children in order, and no crash is logged.
 exit_shutdown() ->
     exit(shutdown).
+
+shut_down(Pid) ->
+    Ref = erlang:monitor(process, Pid),
+    exit(Pid, shutdown),
+    receive {'DOWN', Ref, process, Pid, _} -> nil end.
 
 %% Waits for a message on the subject, or for the caller's own trapped exit
 %% signal `shutdown` from Factory, whichever comes first within Timeout ms;
