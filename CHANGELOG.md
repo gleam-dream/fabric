@@ -11,6 +11,51 @@ Wave 5 is described with before/after snippets in
 [docs/migration-wave-5.md](docs/migration-wave-5.md), round 5 in
 [docs/migration-round-5.md](docs/migration-round-5.md).
 
+### Wave 5, typed answers (slice F3)
+
+#### Added
+
+- `agent.with_answer(spec, codec)`: a typed final answer. The model is
+  given the codec's JSON Schema (`model.Request.answer`), and a run
+  completes with the decoded value (`run.Completed(value)`) or ends with
+  `run.AnswerInvalid(raw:, reason:)`. `build` refuses a codec without a
+  schema (`agent.AnswerSchemaUnavailable`).
+- `fabric/llm` asks the provider for the answer's schema as structured
+  output (`llm_wire.with_output`); a reply outside the schema keeps its
+  text and ends the run with `AnswerInvalid`.
+- `telemetry.OutcomeKind.AnswerInvalid` (`"answer_invalid"`).
+- `graph.status_kind` (`Active`, `NeedsRecovery`, `NeedsInput`, `Ended`)
+  and `graph.describe_status`.
+
+#### Changed
+
+- **Breaking:** `agent.Spec`, `agent.Agent`, `fabric.Run`, `run.Status`,
+  `run.Outcome`, `run.Snapshot` and `fabric.Awaited` gain the answer type;
+  `agent.new` returns `Spec(context, String)`. `run.Completed(text:)` is
+  `run.Completed(answer:)`; `run.ChildSettled` holds an `Outcome(String)`.
+- **Breaking:** `model.Request` gains `answer: Option(codec.Schema)`.
+- **Breaking:** `agent.with_sub_agent(spec, definition, to:, prompt:)`
+  drops `output:`: the child's answer type is the delegation's output type.
+- **Breaking:** `graph_agent.new(identity, agent, input:, prompt:)` drops
+  `output:` and `answer:`: the operation's output codec is the agent's
+  answer codec. `graph_agent.child` returns `fabric.Run(context, output)`.
+- **Breaking:** graph commands return the run's status, as the agent
+  runtime's do: `graph.await`, `recover`, `poll_job`, `cancel`, `approve`,
+  `reject`, `deliver`, `deliver_json` and `reconcile` return
+  `Result(graph.Status(answer), graph.Error)`; `graph.snapshot` reads the
+  record.
+- `fabric.child` returns `Run(context, String)`, and the store-only
+  commands read the stored text: `cancel_stored` returns `Status(String)`,
+  `reconcile_stored` and `settle_stored` return `Snapshot(String)`.
+
+#### Compatibility
+
+- A run stores its answer as the model's text, as before: completed runs
+  stored before typed answers read as `Completed(text)` under a plain agent
+  and through a typed agent's codec when the text decodes (fixtures
+  `pre-answer-*.json`). An invalid answer is stored as a completion with
+  an `"answer_invalid"` key, which older readers read as the text answer.
+
 ### Wave 5, one vocabulary for agents and graphs (slice F5)
 
 #### Added
