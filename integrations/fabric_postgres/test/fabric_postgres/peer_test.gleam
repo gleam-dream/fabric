@@ -27,7 +27,9 @@ fn start_run(peer: Peer, schema: String, lease: Int) -> run.RunId
 @external(erlang, "fabric_postgres_peer_test_ffi", "kill_peer")
 fn kill_peer(peer: Peer) -> Nil
 
-const lease = 600
+/// Long enough that a loaded machine never misses the peer's renewals: the
+/// run must stay live until the test kills the VM.
+const lease = 3000
 
 /// Called inside the peer VM. Its owner process retains the pool, store,
 /// and gated tool after the peer's RPC handler returns the run id.
