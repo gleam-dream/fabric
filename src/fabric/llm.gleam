@@ -27,9 +27,18 @@
 //// llm_wire validates the reply against the schema; a final text that does
 //// not match is still returned as the `FinalAnswer`, so that Fabric asks
 //// the model to correct it (`agent.with_answer_attempts`) or ends the run
-//// with `run.AnswerInvalid`, keeping the text. A schema the
-//// provider cannot take (OpenAI's and Anthropic's need an object at the
-//// root) fails the turn as `model.InvalidRequest`.
+//// with `run.AnswerInvalid`, keeping the text.
+////
+//// Providers need an object at the root of an output schema. An answer
+//// whose schema has another root (a string, a number, a boolean, a list, a
+//// nullable value or a `codec.union`) is wrapped for the provider as
+//// `{"answer": <schema>}` and unwrapped before Fabric reads it, so the
+//// agent's codec stays the natural type and the run stores the answer's
+//// own JSON, never the wrapper: `[1, 2]`, not `{"answer": [1, 2]}`. A reply
+//// that is not the wrapper is kept as sent, for the corrective turn. A
+//// schema the provider still cannot take (llm_wire's strict output refuses
+//// a `codec.union` at any depth, and Google a nullable value) fails the
+//// turn as `model.InvalidRequest`.
 ////
 //// A failed call becomes a `model.ModelError` whose kind follows
 //// `llm_wire.advise`: a failure llm_wire says another attempt may help is
@@ -48,7 +57,9 @@ import gleam/result
 import gleam/string
 import http_gun
 import http_gun/error as http_error
+import json/blueprint/codec
 import json/blueprint/contract
+import json/blueprint/value
 import llm_wire
 import llm_wire/error
 import llm_wire/message
@@ -85,27 +96,60 @@ fn call(
     llm_wire.request(model_id, messages) |> llm_wire.with_tools(tools)
   let client = http_gun.with_correlation(client, request.correlation)
   case request.answer {
-    None -> execute(client, config, wire_request)
-    Some(schema) ->
-      llm_wire.with_output(
-        wire_request,
-        answer_name,
-        contract.value_codec(contract.from_schema(schema)),
-      )
-      |> execute(client, config, _)
+    None -> execute(client, config, wire_request, Ok)
+    Some(schema) -> {
+      let answer = contract.value_codec(contract.from_schema(schema))
+      case object_root(schema) {
+        True ->
+          llm_wire.with_output(wire_request, answer_name, answer)
+          |> execute(client, config, _, Ok)
+        False ->
+          llm_wire.with_output(wire_request, answer_name, {
+            use value <- codec.field(wrapper_field, answer, get: fn(value) {
+              value
+            })
+            codec.success(value)
+          })
+          |> execute(client, config, _, unwrap)
+      }
+    }
   }
 }
 
 /// The name of the answer's output format, which providers require.
 const answer_name = "answer"
 
+/// The property that holds an answer whose schema has no object root.
+const wrapper_field = "answer"
+
+fn object_root(schema: codec.Schema) -> Bool {
+  case codec.view(schema) {
+    codec.ObjectSchema(_) -> True
+    _ -> False
+  }
+}
+
+/// The answer's own JSON inside a wrapped reply, or `Error(Nil)` for a
+/// reply that is not the wrapper.
+fn unwrap(text: String) -> Result(String, Nil) {
+  case value.parse(text, value.default_limits()) {
+    Ok(value.Object([#(field, inner)])) if field == wrapper_field ->
+      Ok(value.to_string(inner))
+    _ -> Error(Nil)
+  }
+}
+
 /// Runs one turn. The answer's text is the `FinalAnswer`, whatever its
-/// decoded `output`: Fabric reads it with the agent's own codec.
+/// decoded `output`: Fabric reads it with the agent's own codec. `answer`
+/// takes a wrapped answer's own JSON out of the reply's text; a text it
+/// refuses is kept as sent.
 fn execute(
   client: http_gun.Client,
   config: llm_wire.Config,
   wire_request: llm_wire.Request(output),
+  answer: fn(String) -> Result(String, Nil),
 ) -> Result(Reply, ModelError) {
+  let answer = fn(text) { answer(text) |> result.unwrap(text) }
   use prepared <- result.try(
     llm_wire.prepare(config, wire_request)
     |> result.map_error(fn(error) {
@@ -114,7 +158,7 @@ fn execute(
   )
   case llm_wire.run(client, prepared) {
     Ok(llm_wire.Answer(text:, usage:, ..)) ->
-      Ok(model.FinalAnswer(text, usage_of(usage)))
+      Ok(model.FinalAnswer(answer(text), usage_of(usage)))
     Ok(llm_wire.NeedsTools(turn:, usage:, ..)) ->
       Ok(model.ToolRequest(from_wire_turn(turn), usage_of(usage)))
     Ok(llm_wire.OutputLimited(partial_text:, usage:, ..)) ->
@@ -128,7 +172,7 @@ fn execute(
       error: error.InvalidOutput(raw_output:, ..),
       usage:,
       ..,
-    )) -> Ok(model.FinalAnswer(raw_output, usage_of(usage)))
+    )) -> Ok(model.FinalAnswer(answer(raw_output), usage_of(usage)))
     Error(failure) -> Error(failure_of(failure))
   }
 }
