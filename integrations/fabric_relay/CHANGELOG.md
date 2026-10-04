@@ -16,9 +16,21 @@ version:, peer:)` as a graph activity. `isError` is `tool.Explain`; a call
   that may have reached the server is `tool.Uncertain` unless the tool is
   read-only. Every call carries the run's correlation and an idempotency
   key named by the run and the action.
-- `fabric_relay.serve(definition, service(runs, agent, start:))`: a Fabric
-  agent as a Relay tool. A run takes the call's correlation; a call with an
-  idempotency key names its run (`run_id`), so a retry reaches the same
-  run. `with_wait` sets how long a call waits (25 s).
+- `fabric_relay.serve(service(definition, runs:, agent:, start:))`: a
+  Fabric agent as a Relay tool. A run takes the call's correlation; a call
+  with an idempotency key names its run (`run_id`), so a retry reaches the
+  same run. `with_wait` sets how long a call waits (25 s). Every result's
+  text block names the run in `_meta` (`io.github.gleam-dream/run-id`).
+
+### Changed (slice F6, for code written against slice F4)
+
+- **Breaking:** `service` takes the definition first, so `start`'s input
+  type is inferred, and `serve(service)` takes no definition.
+- **Breaking:** `start` returns a `Start`, not a `Result`; `refuse(error)`
+  refuses a call. `start(context, prompt:)` runs for the `anonymous`
+  principal; `with_principal(start, principal)` names one.
+- A completed call's text block names its run in `_meta`, as an `isError`
+  result's does.
+- `serve` documents what bounds a keyed run whose client never retries.
 - `DiscoveryError` (`ListingFailed`, `UnsupportedName`,
   `UnsupportedSchema`) and `describe_discovery_error`.

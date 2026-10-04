@@ -11,6 +11,38 @@ Wave 5 is described with before/after snippets in
 [docs/migration-wave-5.md](docs/migration-wave-5.md), round 5 in
 [docs/migration-round-5.md](docs/migration-round-5.md).
 
+### Wave 5, leftovers (slice F6)
+
+#### Added
+
+- `run.host_failure_kind` (`PolicyFault`, `ToolFault`, `ModelFault`),
+  `run.describe_host_failure`, `run.action_state_kind` (`Active`,
+  `NeedsApproval`, `NeedsReconciliation`, `Ended`) and
+  `run.describe_action_state`. `describe_outcome` keeps its text.
+- `agent.describe_config_errors`: every problem `build` reported, in one
+  line.
+- `tool.unconfirmed_reconciliation(note)`: the content that tells the model
+  an effect is still unconfirmed, instead of hand-written JSON.
+
+#### Changed
+
+- `fabric/llm` wraps an answer whose schema has no object root (a list, a
+  scalar, a nullable value, a union) as `{"answer": ..}` for the provider
+  and unwraps the reply, so such an answer no longer fails every turn; the
+  run stores the answer's own JSON. llm_wire still refuses a `codec.union`.
+- **Breaking (behaviour):** `fabric.start` and `graph.start` return the
+  read's error (`StoreUnavailable`, `CorruptRecord`, `UnsupportedVersion`)
+  for a taken id whose record cannot be read, instead of
+  `AlreadyStarted(_, same_input: False)`.
+- `fabric_typesafe` posts through a caller's `http_gun.Client`, and
+  `fabric_relay.service` takes the definition; see their CHANGELOGs.
+
+#### Documentation
+
+- The README and `fabric_saga` say that a Saga step reads the run's
+  correlation with `saga.correlation_of(key)`. The README's review example
+  reconciles an effect as still unknown.
+
 ### Wave 5, a corrective answer turn, Relay and docs (slice F4)
 
 #### Added

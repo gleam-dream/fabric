@@ -6,7 +6,15 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Changed
+
+- The uncertain effect of an `Unresolved` workflow renders the error the
+  step held its effects on with `explain`, after the held step (FABRIC-R11).
+
 ### Added
+
+- Docs and a test: a step reads the Fabric run's correlation with
+  `saga.correlation_of(key)`.
 
 - A README with the outcome mapping and the lifecycle.
 - `fabric_saga.tool(definition, workflow, config, input:, explain:,

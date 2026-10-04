@@ -8,6 +8,21 @@ package uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Breaking:** `client.new(http, key:)` takes the caller's
+  `http_gun.Client`. The request goes through that view: its timeout
+  (`http_gun.with_timeout`; the client's default is 30 s), body and header
+  limits, destination policy and telemetry are HTTP Gun's, and it carries
+  the graph run's correlation. The Erlang transport and the `gun`
+  dependency are gone (FABRIC-R12).
+
+### Removed
+
+- **Breaking:** `client.Bounds`, `client.bounds` and `client.with_bounds`
+  (use HTTP Gun's settings), and `client.post`, `client.Error` and
+  `client.Response` (the operation posts).
+
+### Changed (earlier in wave 5)
+
 - **Breaking:** the TypeSafe binding classifies its failures with
   `fabric/tool.Failure` (`Explain`, `Uncertain`), Fabric's one failure
   type for agent tools and graph operations; `operation.Failure` is gone.
