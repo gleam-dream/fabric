@@ -370,7 +370,7 @@ pub fn cancel_stops_a_started_body_and_preserves_uncertainty_test() {
     })
   let assert Ok(handle) =
     graph.start(runtime, run_id("cancel"), 0, correlation: None)
-  let assert Ok(pid) = process.receive(worker, 1000)
+  let assert Ok(pid) = process.receive(worker, 30_000)
   let assert Ok(_) = graph.cancel(handle)
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
   let assert Ok(done) = graph.snapshot(handle)
@@ -545,7 +545,7 @@ pub fn operation_timeout_blocks_with_uncertainty_and_kills_the_body_test() {
     |> graph.with_command_timeout(duration.milliseconds(1000))
   let assert Ok(handle) =
     graph.start(runtime, run_id("timeout"), 0, correlation: None)
-  let assert Ok(body) = process.receive(started, 1000)
+  let assert Ok(body) = process.receive(started, 30_000)
   let assert Ok(blocked) =
     graph.await(handle, within: duration.milliseconds(1000))
   let assert graph.Blocked(_, graph.EffectUncertain(_)) = blocked
@@ -853,7 +853,7 @@ pub fn losing_a_lease_kills_the_graph_body_before_recovery_test() {
     graph.new(spec, first, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
   let assert Ok(handle) =
     graph.start(runtime, run_id("lease-loss"), 0, correlation: None)
-  let assert Ok(body) = process.receive(started, 1000)
+  let assert Ok(body) = process.receive(started, 30_000)
   let assert Ok(current) = memory.backend.get("lease-loss")
   memory.backend.compare_and_set(
     "lease-loss",

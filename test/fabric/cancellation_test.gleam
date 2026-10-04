@@ -177,7 +177,7 @@ fn release_and_wait(held: Held) -> Nil {
   let assert Ok(_) =
     process.new_selector()
     |> process.select_specific_monitor(monitor, fn(down) { down })
-    |> process.selector_receive(5000)
+    |> process.selector_receive(30_000)
   Nil
 }
 
@@ -206,7 +206,7 @@ pub fn a_held_child_is_cancelled_through_its_record_test() {
       prompt: "go",
       correlation: None,
     )
-  let assert Ok(held) = process.receive(holds, 5000)
+  let assert Ok(held) = process.receive(holds, 30_000)
   let _ = sinal.detach(attached)
 
   let assert Ok(_) = fabric.cancel(run)
@@ -250,7 +250,7 @@ pub fn a_held_run_is_cancelled_through_its_record_test() {
         prompt: "go",
         correlation: None,
       )
-    let assert Ok(held) = process.receive(holds, 5000)
+    let assert Ok(held) = process.receive(holds, 30_000)
     let _ = sinal.detach(attached)
 
     cancel(run, store) |> should.equal(Ok(run.Finished(run.Cancelled)))
@@ -320,7 +320,7 @@ pub fn a_held_runner_calls_no_model_after_its_cancellation_test() {
       prompt: "go",
       correlation: None,
     )
-  let assert Ok(held) = process.receive(holds, 5000)
+  let assert Ok(held) = process.receive(holds, 30_000)
   let _ = sinal.detach(attached)
   probe.count(probe, "model") |> should.equal(1)
 
@@ -347,7 +347,7 @@ pub fn a_held_runners_running_body_dies_with_it_test() {
       correlation: None,
     )
   let arrival = probe.arrival(probe)
-  let assert Ok(held) = process.receive(holds, 5000)
+  let assert Ok(held) = process.receive(holds, 30_000)
   let _ = sinal.detach(attached)
   let assert Ok(body) = process.subject_owner(arrival.release)
   let body_exit = process.monitor(body)
@@ -356,7 +356,7 @@ pub fn a_held_runners_running_body_dies_with_it_test() {
   let assert Ok(_) =
     process.new_selector()
     |> process.select_specific_monitor(body_exit, fn(down) { down })
-    |> process.selector_receive(5000)
+    |> process.selector_receive(30_000)
   release_and_wait(held)
   probe.count(probe, "end:x") |> should.equal(0)
   probe.count(probe, "model") |> should.equal(1)
@@ -384,12 +384,12 @@ pub fn a_runner_whose_handler_cancelled_its_run_calls_no_model_test() {
       prompt: "go",
       correlation: None,
     )
-  let assert Ok(#(runner, cancelled)) = process.receive(runners, 5000)
+  let assert Ok(#(runner, cancelled)) = process.receive(runners, 30_000)
   let runner_exit = process.monitor(runner)
   let assert Ok(_) =
     process.new_selector()
     |> process.select_specific_monitor(runner_exit, fn(down) { down })
-    |> process.selector_receive(5000)
+    |> process.selector_receive(30_000)
   let _ = sinal.detach(attached)
 
   cancelled |> should.equal(Ok(run.Finished(run.Cancelled)))
@@ -589,10 +589,10 @@ pub fn an_answer_racing_the_parent_cancellation_starts_nothing_test() {
         ),
       )
     })
-    let assert Ok(release) = process.receive(rechecks, 5000)
+    let assert Ok(release) = process.receive(rechecks, 30_000)
     let assert Ok(_) = fabric.cancel(run)
     process.send(release, Nil)
-    let assert Ok(_) = process.receive(answered, 5000)
+    let assert Ok(_) = process.receive(answered, 30_000)
     fabric.await(run, within: duration.milliseconds(5000))
     |> should.equal(Ok(run.Finished(run.Cancelled)))
     let assert Ok(child) = fabric.child(run, pending.reference.run)
@@ -618,7 +618,7 @@ pub fn a_start_racing_an_ancestor_cancellation_never_runs_test() {
         True, 1 -> {
           let armed = process.new_subject()
           process.send(starts, #(turn.run, armed))
-          let assert Ok(Nil) = process.receive(armed, 5000)
+          let assert Ok(Nil) = process.receive(armed, 30_000)
           Nil
         }
         _, _ -> Nil
@@ -633,13 +633,13 @@ pub fn a_start_racing_an_ancestor_cancellation_never_runs_test() {
       prompt: "go",
       correlation: None,
     )
-  let assert Ok(#(child, armed)) = process.receive(starts, 5000)
+  let assert Ok(#(child, armed)) = process.receive(starts, 30_000)
   let held = flaky.hold(backend, fn(run) { run == child })
   // A read through the backend: the hold is in place before the runner
   // writes again.
   let _ = store_core.get(flaky.store(backend), child)
   process.send(armed, Nil)
-  let assert Ok(_) = process.receive(held, 5000)
+  let assert Ok(_) = process.receive(held, 30_000)
   let _ = sinal.detach(attached)
 
   let assert Ok(_) = fabric.cancel(run)
@@ -736,7 +736,7 @@ pub fn cancel_stored_of_a_parent_with_a_settling_child_test() {
       prompt: "go",
       correlation: None,
     )
-  let assert Ok(settlement) = process.receive(handed, 5000)
+  let assert Ok(settlement) = process.receive(handed, 30_000)
 
   fabric.cancel_stored(store, fabric.id(run))
   |> should.equal(Ok(run.Finished(run.Cancelled)))

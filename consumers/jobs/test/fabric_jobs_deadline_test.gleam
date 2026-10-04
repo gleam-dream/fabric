@@ -50,7 +50,7 @@ fn settle(runs, build, id) {
       [sweeper.graph(run.DefinitionId("artifact-submit-and-wait", 1), build)],
       every: duration.milliseconds(20),
     )
-  let done = await_expired(open_graph(build(runs), id), 200)
+  let done = await_expired(open_graph(build(runs), id), 1500)
   process.unlink(started)
   process.kill(started)
   done

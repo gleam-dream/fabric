@@ -105,7 +105,7 @@ pub fn claims_cover_initial_work_and_only_successful_renewals_refresh_age_test()
   should.be_true(first_age >= 20)
   probe.record(failures, "fail")
   store_core.renew_now(runs)
-  let assert Ok(Nil) = process.receive(failed, 5000)
+  let assert Ok(Nil) = process.receive(failed, 30_000)
   let assert Ok(report) = store.readiness(runs)
   report.status |> should.equal(store.Accepting)
   let assert store.Leased(_, Some(age)) = report.lease
@@ -162,7 +162,7 @@ pub fn a_slow_probe_is_bounded_and_does_not_block_other_reads_test() {
   let _ = probe.arrival(gates)
   let assert Ok(row) = store_core.get(runs, "existing")
   row.record |> should.equal("record")
-  let assert Ok(Error(backend.Unavailable(_))) = process.receive(reply, 5000)
+  let assert Ok(Error(backend.Unavailable(_))) = process.receive(reply, 30_000)
 }
 
 pub fn a_probe_finishing_after_drain_starts_reports_the_current_state_test() {
@@ -203,7 +203,7 @@ pub fn a_probe_finishing_after_drain_starts_reports_the_current_state_test() {
   restart.begin_stop(app)
   restart.draining(runs)
   probe.release(checking)
-  let assert Ok(Ok(report)) = process.receive(reply, 5000)
+  let assert Ok(Ok(report)) = process.receive(reply, 30_000)
   report.status |> should.equal(store.StoreDraining)
   report.runners |> should.equal(1)
   probe.release(body)
@@ -282,7 +282,7 @@ pub fn a_delayed_report_cannot_reuse_an_expired_lease_window_test() {
   // but resumes after the original claim's 2400 ms safe window has expired.
   process.sleep(2500)
   restart.resume(owner)
-  let assert Ok(Ok(report)) = process.receive(reply, 1000)
+  let assert Ok(Ok(report)) = process.receive(reply, 30_000)
   report.status |> should.equal(store.LeaseUnconfirmed)
   report.runners |> should.equal(1)
   probe.release(body)

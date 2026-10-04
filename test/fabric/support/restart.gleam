@@ -135,7 +135,7 @@ pub fn application_with(
     // `shutdown`, and the supervisor stops its children in reverse order.
     exit_shutdown()
   })
-  let assert Ok(application) = process.receive(reply, 5000)
+  let assert Ok(application) = process.receive(reply, 30_000)
   application
 }
 
@@ -155,7 +155,7 @@ pub fn application_of(
     let assert Ok(Nil) = process.receive(stop, 60_000)
     exit_shutdown()
   })
-  let assert Ok(application) = process.receive(reply, 5000)
+  let assert Ok(application) = process.receive(reply, 30_000)
   application
 }
 

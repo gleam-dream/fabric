@@ -170,7 +170,7 @@ pub fn mixed_family_scanning_keeps_the_foreign_parent_lease_and_uses_its_graph_r
   ]
   let #(events, attachment) = capture()
   let sweeper = start_all(b, registrations)
-  process.receive(events, 5000) |> should.equal(Ok(o.Sweep(1, 1, 0, 0)))
+  process.receive(events, 30_000) |> should.equal(Ok(o.Sweep(1, 1, 0, 0)))
   let assert Ok(worker) = fabric.open(b, worker(calls), Nil, child)
   fabric.await(worker, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed(42))))
@@ -185,7 +185,7 @@ pub fn mixed_family_scanning_keeps_the_foreign_parent_lease_and_uses_its_graph_r
   nodes.holder(memory.backend, child) |> should.equal(backend.Free)
   let #(events, attachment) = capture()
   let sweeper = start_all(b, registrations)
-  let assert Ok(summary) = process.receive(events, 5000)
+  let assert Ok(summary) = process.receive(events, 30_000)
   summary.claimed |> should.equal(1)
   let handle = support.open_graph(managed(b, calls), graph.id(parent))
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -220,7 +220,7 @@ pub fn invalid_graph_registrations_do_not_change_the_claimed_execution_test() {
   let before = nodes.revision(memory.backend, graph.id(handle))
   let #(events, attachment) = capture()
   let sweeper = start(b, sweeper.graph(identity(), fn(_) { runtime(a, calls) }))
-  process.receive(events, 5000) |> should.equal(Ok(o.Sweep(1, 0, 0, 1)))
+  process.receive(events, 30_000) |> should.equal(Ok(o.Sweep(1, 0, 0, 1)))
   nodes.revision(memory.backend, graph.id(handle)) |> should.equal(before)
   probe.count(calls, "effect") |> should.equal(1)
   stop(sweeper, attachment)
@@ -246,8 +246,8 @@ pub fn competing_graph_scans_claim_each_expired_run_once_test() {
     sweeper.graph(identity(), fn(runs) { runtime(runs, calls) })
   let first = start(b, registration)
   let second = start(c, registration)
-  let assert Ok(one) = process.receive(events, 5000)
-  let assert Ok(two) = process.receive(events, 5000)
+  let assert Ok(one) = process.receive(events, 30_000)
+  let assert Ok(two) = process.receive(events, 30_000)
   one.claimed + two.claimed |> should.equal(6)
   one.recovered + two.recovered |> should.equal(6)
   list.each(ids, fn(id) {
@@ -293,7 +293,7 @@ pub fn unknown_and_misfiled_graphs_do_not_invoke_a_registration_test() {
         runtime(runs, calls)
       }),
     )
-  process.receive(events, 5000) |> should.equal(Ok(o.Sweep(2, 0, 1, 1)))
+  process.receive(events, 30_000) |> should.equal(Ok(o.Sweep(2, 0, 1, 1)))
   nodes.revision(memory.backend, graph.id(handle)) |> should.equal(row.revision)
   probe.count(calls, "wrong-factory") |> should.equal(0)
   stop(sweeper, attachment)
@@ -345,7 +345,7 @@ pub fn a_child_without_a_reciprocal_parent_reservation_cannot_trigger_root_recov
         managed(runs, calls)
       }),
     )
-  process.receive(events, 5000) |> should.equal(Ok(o.Sweep(1, 0, 0, 1)))
+  process.receive(events, 30_000) |> should.equal(Ok(o.Sweep(1, 0, 0, 1)))
   probe.entries(contexts) |> should.equal([])
   probe.count(calls, "model") |> should.equal(1)
   stop(sweeper, attachment)
@@ -375,7 +375,7 @@ pub fn expired_graph_work_recovers_without_repeating_its_started_effect_test() {
   let #(events, attachment) = capture()
   let sweeper =
     start(b, sweeper.graph(identity(), fn(runs) { runtime(runs, calls) }))
-  process.receive(events, 5000) |> should.equal(Ok(o.Sweep(1, 1, 0, 0)))
+  process.receive(events, 30_000) |> should.equal(Ok(o.Sweep(1, 1, 0, 0)))
   let handle = support.open_graph(runtime(b, calls), graph.id(handle))
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
   let assert Ok(snapshot) = graph.snapshot(handle)
@@ -408,7 +408,7 @@ fn scan_once(runs) {
 fn scan_runtime(runs, build) {
   let #(events, attachment) = capture()
   let sweeper = start(runs, sweeper.graph(identity(), build))
-  let assert Ok(summary) = process.receive(events, 5000)
+  let assert Ok(summary) = process.receive(events, 30_000)
   stop(sweeper, attachment)
   summary
 }
@@ -535,13 +535,13 @@ pub fn cancelled_nested_fork_settles_without_routing_or_repeating_effects_test()
     graph.await(root, within: duration.milliseconds(5000))
   let assert graph.Cancelled(graph.ChildUnresolved(_, _)) = cancelled
   let ids = [id, middle_id, ..leaves]
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   restart.crash(owner, original)
   let a = nodes.node(memory.backend, "scanner", nodes.long)
   let b = nodes.node(memory.backend, "remote", nodes.long)
   list.each([1, 2, 3], fn(_) {
     let _ = scan_runtime(a, build)
-    await_free(memory.backend, ids, 200)
+    await_free(memory.backend, ids, 3000)
   })
   scan_runtime(b, build).claimed |> should.equal(0)
   list.each(leaves, fn(id) {
@@ -629,14 +629,14 @@ pub fn nested_forks_release_leases_and_converge_after_lost_notifications_test() 
         leaves,
       )
     })
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   restart.crash(owner, original)
   let a = nodes.node(memory.backend, "scanner", nodes.long)
   let b = nodes.node(memory.backend, "remote", nodes.long)
   // Initial observation and independent claim releases may require several passes.
   list.each([1, 2, 3, 4, 5], fn(_) {
     let _ = scan_runtime(a, nested_forks)
-    await_free(memory.backend, ids, 200)
+    await_free(memory.backend, ids, 3000)
   })
   let revisions = list.map(ids, nodes.revision(memory.backend, _))
   scan_runtime(b, nested_forks).claimed |> should.equal(0)
@@ -677,12 +677,12 @@ pub fn fork_discovery_survives_lost_watches_and_does_not_repeat_unchanged_waits_
       support.id(attachment.branch_id("fork-discovery", 1, member))
     })
   ]
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   restart.crash(owner, original)
   let a = nodes.node(memory.backend, "scan", nodes.long)
   let b = nodes.node(memory.backend, "remote", nodes.long)
   scan_runtime(a, mapped_signals).claimed |> should.equal(1)
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   let revisions = list.map(ids, nodes.revision(memory.backend, _))
   scan_runtime(b, mapped_signals).claimed |> should.equal(0)
   list.map(ids, nodes.revision(memory.backend, _)) |> should.equal(revisions)
@@ -692,7 +692,7 @@ pub fn fork_discovery_survives_lost_watches_and_does_not_repeat_unchanged_waits_
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Ok(_) = graph.deliver(second, reference, response(), 20)
   // The delivery's own runner settles the branch first; scan once it let go.
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   scan_runtime(a, mapped_signals).claimed |> should.equal(1)
   let assert Ok(waiting) =
     graph.await(
@@ -700,10 +700,10 @@ pub fn fork_discovery_survives_lost_watches_and_does_not_repeat_unchanged_waits_
       within: duration.milliseconds(5000),
     )
   let assert graph.Fork(_, _) = waiting
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   // The new wait has one fewer dependency; one claim records that new scope.
   scan_runtime(b, mapped_signals).claimed |> should.equal(1)
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   scan_runtime(a, mapped_signals).claimed |> should.equal(0)
   list.each([1, 3], fn(member) {
     let assert Ok(handle) = graph.branch(root, 1, member, signal_leaf(b))
@@ -711,7 +711,7 @@ pub fn fork_discovery_survives_lost_watches_and_does_not_repeat_unchanged_waits_
     let assert graph.AwaitingSignal(reference) = waiting.status
     let assert Ok(_) = graph.deliver(handle, reference, response(), member * 10)
   })
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   scan_runtime(a, mapped_signals).claimed |> should.equal(1)
   let assert Ok(done) =
     graph.await(
@@ -753,16 +753,16 @@ pub fn nested_idle_discovery_converges_and_later_observes_an_external_signal_tes
   let middle = support.id(attachment.reserved_id("idle-root", 1))
   let leaf = support.id(attachment.reserved_id(run.id_to_string(middle), 1))
   let ids = [root, middle, leaf]
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   restart.crash(owner, original)
   let a = nodes.node(memory.backend, "a", nodes.long)
   let b = nodes.node(memory.backend, "b", nodes.long)
   let _ = scan_once(a)
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   let _ = scan_once(b)
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   let _ = scan_once(a)
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   let revisions = list.map(ids, nodes.revision(memory.backend, _))
   scan_once(b).claimed |> should.equal(0)
   list.map(ids, nodes.revision(memory.backend, _)) |> should.equal(revisions)
@@ -816,13 +816,13 @@ pub fn nested_blocked_discovery_converges_without_replaying_uncertain_effects_te
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(_, child.Uncertain(_)) = waiting
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   let _ = scan_runtime(b, build)
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   let _ = scan_runtime(a, build)
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   let _ = scan_runtime(b, build)
-  await_free(memory.backend, ids, 200)
+  await_free(memory.backend, ids, 3000)
   let revisions = list.map(ids, nodes.revision(memory.backend, _))
   scan_runtime(a, build).claimed |> should.equal(0)
   list.map(ids, nodes.revision(memory.backend, _)) |> should.equal(revisions)

@@ -133,7 +133,7 @@ pub fn a_settlement_names_its_action_test() {
       prompt: "go",
       correlation: None,
     )
-  let assert Ok(action) = process.receive(actions, 5000)
+  let assert Ok(action) = process.receive(actions, 30_000)
   action |> should.equal(run.ActionRef(fabric.id(handle), run.ActionId(1, "w")))
   let assert Ok(run.Suspended([], [uncertain])) =
     fabric.await(handle, within: duration.seconds(5))

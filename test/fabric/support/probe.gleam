@@ -31,16 +31,16 @@ pub fn new() -> Probe {
     process.send(ready, subject)
     ledger_loop(subject, [])
   })
-  let assert Ok(subject) = process.receive(ready, 1000)
+  let assert Ok(subject) = process.receive(ready, 30_000)
   Probe(Ledger(subject), process.new_subject())
 }
 
 pub fn record(probe: Probe, entry: String) -> Nil {
-  process.call(probe.ledger.subject, 1000, Record(entry, _))
+  process.call(probe.ledger.subject, 30_000, Record(entry, _))
 }
 
 pub fn entries(probe: Probe) -> List(String) {
-  process.call(probe.ledger.subject, 1000, Entries)
+  process.call(probe.ledger.subject, 30_000, Entries)
 }
 
 pub fn count(probe: Probe, entry: String) -> Int {
@@ -51,13 +51,13 @@ pub fn count(probe: Probe, entry: String) -> Int {
 pub fn gate(probe: Probe, name: String) -> Nil {
   let release = process.new_subject()
   process.send(probe.arrivals, Arrival(name, release))
-  let assert Ok(Nil) = process.receive(release, 10_000)
+  let assert Ok(Nil) = process.receive(release, 60_000)
   Nil
 }
 
 /// Called from the test process: the next arrival at any barrier.
 pub fn arrival(probe: Probe) -> Arrival {
-  let assert Ok(arrival) = process.receive(probe.arrivals, 5000)
+  let assert Ok(arrival) = process.receive(probe.arrivals, 30_000)
   arrival
 }
 

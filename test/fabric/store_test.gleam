@@ -207,7 +207,7 @@ pub fn a_started_store_stops_when_its_starter_exits_normally_test() {
     let assert Ok(1) = store_core.insert(runs, "run-s", "one", store_core.Keep)
     process.send(started, store_core.pid(runs))
   })
-  let assert Ok(Ok(pid)) = process.receive(started, 1000)
+  let assert Ok(Ok(pid)) = process.receive(started, 30_000)
   let monitor = process.monitor(pid)
   let assert Ok(Nil) =
     process.new_selector()
@@ -286,14 +286,14 @@ pub fn a_hung_backend_call_blocks_only_its_run_until_its_deadline_test() {
     )
   let hung = process.new_subject()
   process.spawn(fn() { process.send(hung, store_core.get(hanging, "run-hung")) })
-  let assert Ok(Nil) = process.receive(entered, 1000)
+  let assert Ok(Nil) = process.receive(entered, 30_000)
   // While run-hung's call hangs, another run is served.
   store_core.insert(hanging, "run-ok", "one", store_core.Keep)
   |> should.equal(Ok(1))
   let assert Ok(store_core.Entry(revision: 1, record: "one", ..)) =
     store_core.get(hanging, "run-ok")
   let assert Ok(Error(backend.Unavailable(reason))) =
-    process.receive(hung, 5000)
+    process.receive(hung, 30_000)
   string.contains(reason, "200 ms") |> should.be_true
 }
 

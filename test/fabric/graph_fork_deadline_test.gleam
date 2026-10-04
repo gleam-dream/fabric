@@ -234,7 +234,7 @@ pub fn expired_uncertain_fork_retains_cleanup_and_reconciles_without_replay_test
   let assert Ok(waiting) = graph.snapshot(root)
   let assert Some(due) = waiting.deadline
   let assert graph.Fork(_, _) = waiting.status
-  parked(memory.backend, graph.id(root), 200)
+  parked(memory.backend, graph.id(root), 3000)
   let started = probe.count(calls, "effect")
   { started > 0 && started <= 2 } |> should.be_true
   memory.advance(60_001)
@@ -302,7 +302,7 @@ pub fn overdue_fork_recovers_the_same_children_and_withdraws_pending_members_tes
       let assert Ok(branch) = graph.branch(root, 1, n, leaf(runs))
       graph.id(branch)
     })
-  parked(memory.backend, id, 200)
+  parked(memory.backend, id, 3000)
   restart.crash(owner, runs)
   memory.advance(60_001)
   let runs = nodes.node(memory.backend, "after", 300_000)

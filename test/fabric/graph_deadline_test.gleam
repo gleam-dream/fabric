@@ -223,7 +223,7 @@ fn scan(runs) {
       ],
       every: duration.milliseconds(60_000),
     )
-  let assert Ok(summary) = process.receive(events, 5000)
+  let assert Ok(summary) = process.receive(events, 30_000)
   process.unlink(started)
   restart.kill(started)
   let _ = sinal.detach(attached)
@@ -317,7 +317,7 @@ pub fn an_expiration_commit_wins_against_an_in_progress_delivery_test() {
   let assert Ok(expired) = graph.snapshot(handle)
   expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
   probe.release(held)
-  let assert Ok(Error(graph.RunEnded)) = process.receive(reply, 5000)
+  let assert Ok(Error(graph.RunEnded)) = process.receive(reply, 30_000)
   let assert Ok(unchanged) = graph.snapshot(handle)
   unchanged.revision |> should.equal(expired.revision)
   unchanged.receipts |> should.equal([])

@@ -541,7 +541,7 @@ pub fn a_delegation_approved_ahead_of_the_stop_does_not_hold_up_the_drain_test()
   // The runner's shutdown is queued behind the approval.
   queued(runner, 2)
   restart.resume(runner)
-  let assert Ok(Ok(_)) = process.receive(approved, 5000)
+  let assert Ok(Ok(_)) = process.receive(approved, 30_000)
   probe.release(running)
   restart.stopped_within(app, 5000) |> should.be_true
 

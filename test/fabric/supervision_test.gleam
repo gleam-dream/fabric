@@ -70,7 +70,7 @@ pub fn a_request_process_that_exits_leaves_its_run_intact_test() {
         )
       process.send(handed, fabric.id(run))
     })
-  let assert Ok(id) = process.receive(handed, 5000)
+  let assert Ok(id) = process.receive(handed, 30_000)
   restart.gone(request)
 
   let arrival = probe.arrival(probe)

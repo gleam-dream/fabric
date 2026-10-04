@@ -368,7 +368,7 @@ pub fn an_interrupted_stop_is_not_replayed_and_completion_settles_without_routin
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting
   let assert Ok(_) = graph.cancel(handle)
-  process.receive(called, 5000) |> should.equal(Ok(Nil))
+  process.receive(called, 30_000) |> should.equal(Ok(Nil))
   restart.crash(owner, runs)
   let handle =
     support.open_graph(

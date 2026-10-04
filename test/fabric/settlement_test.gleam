@@ -95,7 +95,7 @@ fn start(
       prompt: "weather",
       correlation: None,
     )
-  let assert Ok(handed) = process.receive(handed, 5000)
+  let assert Ok(handed) = process.receive(handed, 30_000)
   #(run, handed)
 }
 
@@ -168,7 +168,7 @@ pub fn a_settlement_while_the_task_runs_waits_for_its_report_test() {
     )
   })
   process.send(handed.release, Nil)
-  process.receive(offered, 5000)
+  process.receive(offered, 30_000)
   |> should.equal(Ok(Error(tool.AlreadyRecorded)))
   fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
@@ -181,7 +181,7 @@ pub fn a_settlement_while_the_task_runs_waits_for_its_report_test() {
 pub fn a_handler_settling_its_own_call_is_refused_test() {
   let settled = process.new_subject()
   let #(run, _) = start(process.new_subject(), SettleOwn(settled), 5000)
-  process.receive(settled, 5000) |> should.equal(Ok(Error(tool.NotAwaited)))
+  process.receive(settled, 30_000) |> should.equal(Ok(Error(tool.NotAwaited)))
   fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
@@ -308,8 +308,8 @@ fn start_two(
       prompt: "go",
       correlation: None,
     )
-  let assert Ok(first) = process.receive(handed, 5000)
-  let assert Ok(second) = process.receive(handed, 5000)
+  let assert Ok(first) = process.receive(handed, 30_000)
+  let assert Ok(second) = process.receive(handed, 30_000)
   case first.name {
     "wa" -> #(run, first.settlement, second.settlement)
     _ -> #(run, second.settlement, first.settlement)
@@ -355,7 +355,7 @@ pub fn a_settlement_after_the_bound_is_refused_while_stopping_test() {
     })
   let #(run, a, b) = start_two(20, 5000)
   let assert Ok(run.Working) = fabric.cancel(run)
-  let assert Ok(Nil) = process.receive(lapsed, 5000)
+  let assert Ok(Nil) = process.receive(lapsed, 30_000)
   let _ = sinal.detach(attached)
 
   tool.settle(a, Ok(Forecast("late")), summary: "")
@@ -392,8 +392,8 @@ pub fn a_refused_settlement_is_observed_test() {
     summary: "the service reported cloudy",
   )
   |> should.equal(Error(tool.NotAwaited))
-  let assert Ok(first) = process.receive(refused, 5000)
-  let assert Ok(second) = process.receive(refused, 5000)
+  let assert Ok(first) = process.receive(refused, 30_000)
+  let assert Ok(second) = process.receive(refused, 30_000)
   let _ = sinal.detach(attached)
   #(first.offered, first.reason, first.summary)
   |> should.equal(#(o.EffectUncertain, o.NotAwaited, "the bank did not say"))

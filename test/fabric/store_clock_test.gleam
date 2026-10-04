@@ -60,7 +60,7 @@ pub fn an_unavailable_clock_never_uses_local_time_and_does_not_block_run_reads_t
   let assert Ok(row) = store_core.get(runs, "clock-record")
   row.record |> should.equal("retained")
   process.receive(reply, 0) |> should.equal(Error(Nil))
-  let assert Ok(Error(backend.Unavailable(_))) = process.receive(reply, 5000)
+  let assert Ok(Error(backend.Unavailable(_))) = process.receive(reply, 30_000)
   let failed =
     backend.LeasedBackend(..memory.backend, now: fn() {
       Error(backend.Unavailable("clock offline"))

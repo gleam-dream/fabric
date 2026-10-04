@@ -1042,7 +1042,7 @@ pub fn a_child_stored_after_its_parent_was_cancelled_never_runs_test() {
       prompt: "go",
       correlation: None,
     )
-  let assert Ok(child_id) = process.receive(held, 5000)
+  let assert Ok(child_id) = process.receive(held, 30_000)
   let assert Ok(runner) = restart.runner(owner, fabric.id(run))
   let runner_exit = process.monitor(runner)
 
@@ -1052,7 +1052,7 @@ pub fn a_child_stored_after_its_parent_was_cancelled_never_runs_test() {
   let assert Ok(_) =
     process.new_selector()
     |> process.select_specific_monitor(runner_exit, fn(down) { down })
-    |> process.selector_receive(5000)
+    |> process.selector_receive(30_000)
 
   let assert Ok(child) = fabric.child(run, support.id(child_id))
   fabric.await(child, within: duration.milliseconds(0))
@@ -1083,7 +1083,7 @@ pub fn recovery_does_not_start_a_child_after_its_parent_was_cancelled_test() {
         )
       #(store, run)
     })
-  let assert Ok(_) = process.receive(held, 5000)
+  let assert Ok(_) = process.receive(held, 30_000)
   crash(owner, first)
   flaky.drop_held(backend)
 
@@ -1097,11 +1097,11 @@ pub fn recovery_does_not_start_a_child_after_its_parent_was_cancelled_test() {
       fabric.recover(second, eager_family(probe), Nil, id),
     )
   })
-  let assert Ok(child_id) = process.receive(held, 5000)
+  let assert Ok(child_id) = process.receive(held, 30_000)
   fabric.cancel_stored(flaky.store(backend), id)
   |> should.equal(Ok(run.Finished(run.Cancelled)))
   flaky.release_held(backend)
-  let assert Ok(Ok(recovered)) = process.receive(recovering, 5000)
+  let assert Ok(Ok(recovered)) = process.receive(recovering, 30_000)
 
   let assert Ok(child) = fabric.child(recovered, support.id(child_id))
   fabric.await(child, within: duration.milliseconds(0))

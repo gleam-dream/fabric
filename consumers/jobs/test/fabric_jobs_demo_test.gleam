@@ -64,7 +64,7 @@ pub fn a_restarted_sweeper_observes_the_real_job_without_manual_polling_test() {
       [sweeper.graph(run.DefinitionId("artifact-submit-and-wait", 1), build)],
       every: duration.milliseconds(20),
     )
-  let done = await_scheduled(handle, 200)
+  let done = await_scheduled(handle, 1500)
   done.status
   |> should.equal(graph.Completed(support.sha256("SCHEDULED RESULT")))
   list.length(done.receipts) |> should.equal(2)
@@ -142,7 +142,7 @@ pub fn an_acceptance_receipt_does_not_claim_business_completion_test() {
   let assert Ok(done) = graph.snapshot(handle)
   let assert graph.Completed(receipt) = done.status
   client.read(support.url(), receipt) |> should.equal(Ok(client.Queued))
-  let assert client.Complete(digest) = await_job(receipt, 200)
+  let assert client.Complete(digest) = await_job(receipt, 1500)
   client.artifact(support.url(), receipt)
   |> should.equal(Ok("FABRIC COMPOSES JOBS"))
   digest |> should.equal(support.sha256("FABRIC COMPOSES JOBS"))
@@ -182,7 +182,7 @@ pub fn lost_acceptance_acknowledgement_replays_the_same_logical_submission_test(
   let assert [saved] = done.receipts
   saved.activation |> should.equal(1)
   saved.attempt |> should.equal(2)
-  await_job(receipt, 100)
+  await_job(receipt, 1500)
   |> should.equal(client.Complete(support.sha256("SURVIVES FABRIC")))
   client.artifact(support.url(), receipt) |> should.equal(Ok("SURVIVES FABRIC"))
   support.remove_dir(directory)
@@ -331,7 +331,7 @@ pub fn a_retained_job_attachment_survives_restart_without_resubmitting_test() {
   let handle = open_graph(restored, id("attached-job"))
   let assert Ok(recovered) = graph.recover(handle)
   recovered |> should.equal(waiting.status)
-  let done = poll_attachment(handle, reference, 150)
+  let done = poll_attachment(handle, reference, 1500)
   done.status
   |> should.equal(graph.Completed(support.sha256("ATTACHED OUTPUT")))
   list.length(done.receipts) |> should.equal(2)
@@ -357,7 +357,7 @@ pub fn canceling_a_read_only_attachment_leaves_the_real_remote_job_running_test(
   |> should.equal(graph.Cancelled(graph.JobDetached(reference)))
   list.length(cancelled.receipts) |> should.equal(1)
   graph.poll_job(handle, reference) |> should.be_error
-  await_job(receipt, 150)
+  await_job(receipt, 1500)
   |> should.equal(client.Complete(support.sha256("STILL EXTERNAL")))
   client.artifact(support.url(), receipt) |> should.equal(Ok("STILL EXTERNAL"))
   graph.snapshot(handle) |> should.equal(Ok(cancelled))

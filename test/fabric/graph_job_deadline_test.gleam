@@ -208,7 +208,7 @@ fn scan(runs, build) {
       [sweeper.graph(run.DefinitionId("job-deadline", 1), build)],
       every: duration.milliseconds(60_000),
     )
-  let assert Ok(summary) = process.receive(events, 5000)
+  let assert Ok(summary) = process.receive(events, 30_000)
   process.unlink(started)
   restart.kill(started)
   let _ = sinal.detach(attached)

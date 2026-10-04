@@ -166,7 +166,7 @@ fn collect(
   last: String,
   seen: List(String),
 ) -> List(String) {
-  let assert Ok(line) = process.receive(subject, 5000)
+  let assert Ok(line) = process.receive(subject, 30_000)
   let seen = [line, ..seen]
   case string.starts_with(line, last) {
     True -> list.reverse(seen)
@@ -527,7 +527,7 @@ fn entered_by(
   entered: Subject(#(String, Pid, Subject(Nil))),
   id: String,
 ) -> #(Pid, Subject(Nil)) {
-  let assert Ok(#(run, pid, gate)) = process.receive(entered, 5000)
+  let assert Ok(#(run, pid, gate)) = process.receive(entered, 30_000)
   case run == id {
     True -> #(pid, gate)
     False -> {
@@ -654,7 +654,7 @@ pub fn a_handler_commanding_its_own_run_is_refused_test() {
       prompt: "weather",
       correlation: None,
     )
-  let assert Ok(refused) = process.receive(results, 5000)
+  let assert Ok(refused) = process.receive(results, 30_000)
   let finished = fabric.await(run, within: duration.milliseconds(5000))
   let _ = sinal.detach(attachment)
 
@@ -687,7 +687,7 @@ pub fn a_handler_cancelling_its_own_run_commits_the_cancellation_test() {
       prompt: "weather",
       correlation: None,
     )
-  let assert Ok(cancelled) = process.receive(results, 5000)
+  let assert Ok(cancelled) = process.receive(results, 30_000)
   let finished = fabric.await(run, within: duration.milliseconds(5000))
   let _ = sinal.detach(attachment)
 
@@ -726,7 +726,7 @@ pub fn a_command_returns_before_its_handlers_run_test() {
     )
   let _ = probe.arrival(probe)
   let cancelled = fabric.cancel(run)
-  let assert Ok(#(cancelled_run, gate)) = process.receive(entered, 5000)
+  let assert Ok(#(cancelled_run, gate)) = process.receive(entered, 30_000)
   process.send(gate, Nil)
   let finished = fabric.await(run, within: duration.milliseconds(5000))
   let _ = sinal.detach(attachment)

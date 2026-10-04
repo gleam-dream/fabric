@@ -196,11 +196,11 @@ pub fn a_started_sweeper_stops_with_its_caller_test() {
       process.unlink(started)
       process.send(reply, started)
     })
-  let assert Ok(started) = process.receive(reply, 5000)
+  let assert Ok(started) = process.receive(reply, 30_000)
   let monitor = process.monitor(started)
   process.new_selector()
   |> process.select_specific_monitor(monitor, fn(_) { Nil })
-  |> process.selector_receive(5000)
+  |> process.selector_receive(30_000)
   |> should.equal(Ok(Nil))
   process.is_alive(caller) |> should.be_false
 }

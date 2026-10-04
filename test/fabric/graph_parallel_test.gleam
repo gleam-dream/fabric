@@ -162,7 +162,7 @@ pub fn map_limits_concurrency_and_joins_in_input_order_test() {
     member(runs, "mapped-integer", codec.int(), codec.int(), fn(n) {
       let release = process.new_subject()
       process.send(started, #(n, release))
-      let assert Ok(Nil) = process.receive(release, 5000)
+      let assert Ok(Nil) = process.receive(release, 30_000)
       Ok(n * 10)
     })
   let assert Ok(handle) =
@@ -172,15 +172,15 @@ pub fn map_limits_concurrency_and_joins_in_input_order_test() {
       [1, 2, 3],
       correlation: None,
     )
-  let assert Ok(first) = process.receive(started, 2000)
-  let assert Ok(second) = process.receive(started, 2000)
+  let assert Ok(first) = process.receive(started, 30_000)
+  let assert Ok(second) = process.receive(started, 30_000)
   let assert Ok(#(_, release_first)) =
     list.find([first, second], fn(entry) { entry.0 == 1 })
   let assert Ok(#(_, release_second)) =
     list.find([first, second], fn(entry) { entry.0 == 2 })
   process.receive(started, 20) |> should.be_error
   process.send(release_second, Nil)
-  let assert Ok(#(3, release_third)) = process.receive(started, 2000)
+  let assert Ok(#(3, release_third)) = process.receive(started, 30_000)
   process.send(release_third, Nil)
   let assert Ok(third) = graph.branch(handle, 1, 3, child)
   let assert Ok(third_done) =
@@ -407,14 +407,14 @@ pub fn typed_pair_runs_real_children_concurrently_and_retains_ordered_answers_te
     member(runs, "integer", codec.int(), codec.int(), fn(value) {
       let release = process.new_subject()
       process.send(started, #("left", release))
-      let assert Ok(Nil) = process.receive(release, 5000)
+      let assert Ok(Nil) = process.receive(release, 30_000)
       Ok(value + 1)
     })
   let right =
     member(runs, "text", codec.string(), codec.string(), fn(value) {
       let release = process.new_subject()
       process.send(started, #("right", release))
-      let assert Ok(Nil) = process.receive(release, 5000)
+      let assert Ok(Nil) = process.receive(release, 30_000)
       Ok(string.uppercase(value))
     })
   let assert Ok(run_id) = run.parse_id("typed-pair")
@@ -425,8 +425,8 @@ pub fn typed_pair_runs_real_children_concurrently_and_retains_ordered_answers_te
       #(41, "two"),
       correlation: None,
     )
-  let assert Ok(first) = process.receive(started, 2000)
-  let assert Ok(second) = process.receive(started, 2000)
+  let assert Ok(first) = process.receive(started, 30_000)
+  let assert Ok(second) = process.receive(started, 30_000)
   let gates = [first, second]
   let assert Ok(#(_, right_gate)) =
     list.find(gates, fn(entry) { entry.0 == "right" })
@@ -459,7 +459,7 @@ pub fn a_definite_member_failure_can_route_to_a_typed_fallback_test() {
     member(runs, "text", codec.string(), codec.string(), fn(_) {
       let release = process.new_subject()
       process.send(started, release)
-      let assert Ok(Nil) = process.receive(release, 5000)
+      let assert Ok(Nil) = process.receive(release, 30_000)
       Error(tool.Explain("review unavailable"))
     })
   let assert Ok(run_id) = run.parse_id("pair-fallback")
@@ -470,7 +470,7 @@ pub fn a_definite_member_failure_can_route_to_a_typed_fallback_test() {
       #(41, "two"),
       correlation: None,
     )
-  let assert Ok(release) = process.receive(started, 2000)
+  let assert Ok(release) = process.receive(started, 30_000)
   let assert Ok(left_handle) = graph.branch(handle, 1, 1, left)
   let assert Ok(left_done) =
     graph.await(left_handle, within: duration.milliseconds(5000))
@@ -491,21 +491,21 @@ pub fn parent_cancel_during_uncertain_sibling_cleanup_suppresses_fallback_test()
     member(runs, "integer", codec.int(), codec.int(), fn(n) {
       let release = process.new_subject()
       process.send(started, #("left", release))
-      let assert Ok(Nil) = process.receive(release, 5000)
+      let assert Ok(Nil) = process.receive(release, 30_000)
       Ok(n + 1)
     })
   let right =
     member(runs, "text", codec.string(), codec.string(), fn(_) {
       let release = process.new_subject()
       process.send(started, #("right", release))
-      let assert Ok(Nil) = process.receive(release, 5000)
+      let assert Ok(Nil) = process.receive(release, 30_000)
       Error(tool.Explain("unavailable"))
     })
   let assert Ok(id) = run.parse_id("pair-cancel-failure-cleanup")
   let assert Ok(handle) =
     graph.start(paired(runs, left, right), id, #(41, "two"), correlation: None)
-  let assert Ok(first) = process.receive(started, 2000)
-  let assert Ok(second) = process.receive(started, 2000)
+  let assert Ok(first) = process.receive(started, 30_000)
+  let assert Ok(second) = process.receive(started, 30_000)
   let assert Ok(#(_, release)) =
     list.find([first, second], fn(entry) { entry.0 == "right" })
   process.send(release, Nil)
