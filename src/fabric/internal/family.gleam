@@ -86,7 +86,7 @@ pub fn with_children(
 /// What a family is doing, and whether everything in flight has an owner
 /// this store knows.
 pub type View {
-  View(status: Status, driven: Bool)
+  View(status: Status(String), driven: Bool)
 }
 
 /// The family's status: finished or working as the run itself is; a run
@@ -135,7 +135,7 @@ pub fn view(node: Node) -> View {
 
 /// The family's status as a caller sees it: work in flight that no runner
 /// of this store drives is `Unattended`.
-pub fn status(node: Node) -> Status {
+pub fn status(node: Node) -> Status(String) {
   case view(node) {
     View(run.Working, False) -> run.Unattended
     View(status, _) -> status

@@ -26,7 +26,7 @@ import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
-fn one_slow(probe: Probe) -> Agent(Nil) {
+fn one_slow(probe: Probe) -> Agent(Nil, String) {
   agent.new(
     "agent",
     scripted.plan([scripted.slow("a", "a")]),
@@ -43,12 +43,12 @@ fn reviewed(
   Ok(policy.RequireApproval(Requirement("review", 1)))
 }
 
-fn states(run: fabric.Run(context)) -> List(run.ActionState) {
+fn states(run: fabric.Run(context, String)) -> List(run.ActionState) {
   let assert Ok(snapshot) = fabric.snapshot(run)
   list.map(snapshot.actions, fn(action) { action.state })
 }
 
-fn turns_used(run: fabric.Run(context)) -> Int {
+fn turns_used(run: fabric.Run(context, String)) -> Int {
   let assert Ok(snapshot) = fabric.snapshot(run)
   snapshot.turns_used
 }
@@ -396,12 +396,9 @@ pub fn a_child_run_drains_on_its_own_and_is_recovered_with_its_parent_test() {
       [],
       policy.always_allow(),
     )
-    |> agent.with_sub_agent(
-      research,
-      to: researcher,
-      prompt: fn(topic) { topic },
-      output: fn(answer) { Ok(answer) },
-    )
+    |> agent.with_sub_agent(research, to: researcher, prompt: fn(topic) {
+      topic
+    })
     |> support.agent
   let app = restart.application(runs)
   let assert Ok(run) =
@@ -452,7 +449,7 @@ fn delegating(
   probe: Probe,
   calls: List(model.ToolCall),
   policy: policy.Policy(Nil),
-) -> Agent(Nil) {
+) -> Agent(Nil, String) {
   let researcher =
     agent.new(
       "researcher",
@@ -473,12 +470,9 @@ fn delegating(
     policy,
   )
   |> agent.with_policy_timeout(duration.milliseconds(60_000))
-  |> agent.with_sub_agent(
-    research(),
-    to: researcher,
-    prompt: fn(topic) { topic },
-    output: fn(answer) { Ok(answer) },
-  )
+  |> agent.with_sub_agent(research(), to: researcher, prompt: fn(topic) {
+    topic
+  })
   |> support.agent
 }
 
@@ -660,7 +654,7 @@ pub fn a_retry_backoff_is_not_waited_for_and_its_turn_is_given_back_test() {
 }
 
 /// Waits until the run's record counts `turns` model turns.
-fn wait_for_turns(run: fabric.Run(context), turns: Int) -> Nil {
+fn wait_for_turns(run: fabric.Run(context, String), turns: Int) -> Nil {
   case turns_used(run) >= turns {
     True -> Nil
     False -> {

@@ -129,7 +129,8 @@ pub fn unchanged_children_expire_after_restart_and_remain_retained_until_reconci
           41,
           correlation: None,
         )
-      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+      let assert Ok(_) = graph.await(handle, within: duration.seconds(30))
+      let assert Ok(waiting) = graph.snapshot(handle)
       let assert graph.Child(child_ref, child.Uncertain(_)) = waiting.status
       let assert Ok(child_handle) =
         graph.child(handle, child_ref.activation, leaf(runs))

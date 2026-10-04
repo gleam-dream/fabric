@@ -175,7 +175,8 @@ fn turn_result(turn: Int, after: State) -> Option(o.TurnResult) {
     controller.AwaitingModel(next) if next == turn -> None
     controller.AwaitingModel(_) -> Some(o.Retry)
     controller.Acting(..) | controller.Stopping(..) -> Some(o.ToolRequest)
-    controller.Ended(run.Completed(_)) -> Some(o.FinalAnswer)
+    controller.Ended(run.Completed(_))
+    | controller.Ended(run.AnswerInvalid(..)) -> Some(o.FinalAnswer)
     controller.Ended(run.Refused(_)) -> Some(o.Refusal)
     controller.Ended(run.OutputLimited(_)) -> Some(o.Truncated)
     controller.Ended(run.Failed(run.ModelFailed(_))) -> Some(o.ModelFailure)
@@ -408,9 +409,10 @@ fn finished(before: Option(State), after: State) -> Nil {
   }
 }
 
-fn outcome_kind(outcome: run.Outcome) -> o.OutcomeKind {
+fn outcome_kind(outcome: run.Outcome(String)) -> o.OutcomeKind {
   case outcome {
     run.Completed(_) -> o.Completed
+    run.AnswerInvalid(..) -> o.AnswerInvalid
     run.Refused(_) -> o.Refused
     run.OutputLimited(_) -> o.OutputLimited
     run.BudgetExhausted(_) -> o.BudgetExhausted

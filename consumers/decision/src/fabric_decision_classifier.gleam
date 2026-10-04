@@ -101,8 +101,8 @@ pub fn main() -> Nil {
       "2 + 2 = 4",
       correlation: None,
     )
-  let assert Ok(done) =
-    graph.await(handle, within: duration.milliseconds(30_000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(30_000))
+  let assert Ok(done) = graph.snapshot(handle)
   let assert graph.Completed("approved") = done.status
   let assert [review, terminal] = done.receipts
   io.println(terminal.node)

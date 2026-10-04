@@ -132,7 +132,8 @@ pub fn a_stored_approval_without_a_deadline_is_answered_and_never_expires_test()
       Ok(policy.RequireApproval(run.Requirement("publish", 1)))
     })
   let handle = support.open_graph(runtime, support.id("graph-approval"))
-  let assert Ok(recovered) = graph.recover(handle)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(recovered) = graph.snapshot(handle)
   let assert graph.AwaitingApproval(reference) = recovered.status
   recovered.deadline |> should.equal(None)
   reference.requirement |> should.equal(run.Requirement("publish", 1))
@@ -143,7 +144,8 @@ pub fn a_stored_approval_without_a_deadline_is_answered_and_never_expires_test()
       reviewer: support.reviewer("reviewer"),
       context: Nil,
     )
-  let assert Ok(done) = graph.await(handle, within: duration.seconds(5))
+  let assert Ok(_) = graph.await(handle, within: duration.seconds(5))
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(42))
   // The answer is stored with its reviewer in the new format.
   let assert [receipt] = done.receipts
@@ -171,11 +173,12 @@ pub fn a_stored_signal_wait_without_a_deadline_recovers_and_keeps_none_test() {
   advance(days_8)
   let handle =
     support.open_graph(signal_runtime(runs), support.id("graph-signal"))
-  let assert Ok(recovered) = graph.recover(handle)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(recovered) = graph.snapshot(handle)
   let assert graph.AwaitingSignal(reference) = recovered.status
   recovered.deadline |> should.equal(None)
   let assert Ok(done) = graph.deliver(handle, reference, ready(), True)
-  done.status |> should.equal(graph.Completed(7))
+  done |> should.equal(graph.Completed(7))
 }
 
 pub fn a_stored_child_wait_recovers_and_its_child_finishes_test() {
@@ -212,7 +215,8 @@ pub fn a_stored_child_wait_recovers_and_its_child_finishes_test() {
       support.id("graph-parent"),
     )
   let assert Ok(_) = graph.recover(parent)
-  let assert Ok(waiting) = graph.await(parent, within: duration.seconds(5))
+  let assert Ok(_) = graph.await(parent, within: duration.seconds(5))
+  let assert Ok(waiting) = graph.snapshot(parent)
   let assert graph.Child(_, _) = waiting.status
   waiting.deadline |> should.equal(None)
   let assert Ok(handle) = graph.child(parent, 1, child)
@@ -225,7 +229,8 @@ pub fn a_stored_child_wait_recovers_and_its_child_finishes_test() {
 }
 
 fn await_finished(handle, tries: Int) {
-  let assert Ok(snapshot) = graph.await(handle, within: duration.seconds(5))
+  let assert Ok(_) = graph.await(handle, within: duration.seconds(5))
+  let assert Ok(snapshot) = graph.snapshot(handle)
   case snapshot.status, tries {
     graph.Completed(_), _ | _, 0 -> Ok(snapshot)
     _, _ -> {
@@ -271,11 +276,12 @@ pub fn a_stored_job_wait_without_a_deadline_is_polled_to_completion_test() {
       graph.new(d, runs, fn(_) { Nil }, allow),
       support.id("graph-job"),
     )
-  let assert Ok(waiting) = graph.recover(handle)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   waiting.deadline |> should.equal(None)
   let assert Ok(done) = graph.poll_job(handle, reference)
-  done.status |> should.equal(graph.Completed(11))
+  done |> should.equal(graph.Completed(11))
 }
 
 pub fn a_stored_uncertain_effect_is_reconciled_test() {
@@ -315,7 +321,8 @@ pub fn a_stored_uncertain_effect_is_reconciled_test() {
   let assert Ok(blocked) = graph.snapshot(handle)
   let assert graph.Blocked(reference, graph.EffectUncertain("gateway timeout")) =
     blocked.status
-  let assert Ok(done) = graph.reconcile(handle, reference, "18")
+  let assert Ok(_) = graph.reconcile(handle, reference, "18")
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(18))
   list.length(done.receipts) |> should.equal(1)
 }

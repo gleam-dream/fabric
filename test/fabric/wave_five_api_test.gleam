@@ -99,7 +99,7 @@ pub fn a_settlement_names_its_action_test() {
 
 // --- reviewers -----------------------------------------------------------------
 
-fn approval_desk(probe: probe.Probe) -> agent.Agent(Nil) {
+fn approval_desk(probe: probe.Probe) -> agent.Agent(Nil, String) {
   agent.new(
     "reviewed",
     scripted.plan([

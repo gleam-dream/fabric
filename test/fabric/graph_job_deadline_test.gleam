@@ -94,10 +94,10 @@ pub fn ownership_can_be_cancelled_even_when_arming_cannot_read_the_clock_test() 
     graph.start(spec, support.id("unarmed-owner"), "receipt", correlation: None)
   let assert Ok(unattended) =
     graph.await(handle, within: duration.milliseconds(5000))
-  unattended.status |> should.equal(graph.Unattended)
+  unattended |> should.equal(graph.Unattended)
   let assert Ok(_) = graph.cancel(handle)
-  let assert Ok(pending) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(pending) = graph.snapshot(handle)
   let assert graph.CancellingJob(
     reference,
     job.RequestAccepted,
@@ -105,7 +105,7 @@ pub fn ownership_can_be_cancelled_even_when_arming_cannot_read_the_clock_test() 
   ) = pending.status
   pending.deadline |> should.equal(None)
   let assert Ok(done) = graph.poll_job(handle, reference)
-  done.status |> should.equal(graph.Cancelled(graph.AfterResult))
+  done |> should.equal(graph.Cancelled(graph.AfterResult))
   probe.entries(calls) |> should.equal(["stop"])
 }
 
@@ -130,11 +130,12 @@ pub fn a_terminal_result_observed_after_the_deadline_is_retained_without_routing
       "receipt",
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
-  let assert Ok(done) = graph.poll_job(handle, reference)
+  let assert Ok(_) = graph.poll_job(handle, reference)
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Expired(due, graph.AfterResult))
   let assert [receipt] = done.receipts
   receipt.output_json |> should.equal("42")
@@ -178,21 +179,21 @@ pub fn a_failed_read_cannot_extend_a_deadline_and_cleanup_ignores_clock_failure_
       "receipt",
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   let assert Ok(_) = graph.poll_job(handle, reference)
   let assert Ok(pending) =
     graph.await(handle, within: duration.milliseconds(5000))
-  pending.status
+  pending
   |> should.equal(graph.CancellingJob(
     reference,
     job.RequestAccepted,
     operation.DeadlineReached(due),
   ))
   let assert Ok(done) = graph.poll_job(handle, reference)
-  done.status |> should.equal(graph.Expired(due, graph.JobStopped(reference)))
+  done |> should.equal(graph.Expired(due, graph.JobStopped(reference)))
 }
 
 fn scan(runs, build) {
@@ -244,8 +245,8 @@ pub fn the_deadline_preempts_polling_but_does_not_spin_cleanup_observations_test
       "receipt",
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   scan(runs, build).claimed |> should.equal(1)
@@ -255,7 +256,7 @@ pub fn the_deadline_preempts_polling_but_does_not_spin_cleanup_observations_test
   scan(runs, build).claimed |> should.equal(1)
   let assert Ok(pending) =
     graph.await(handle, within: duration.milliseconds(5000))
-  pending.status
+  pending
   |> should.equal(graph.CancellingJob(
     reference,
     job.RequestAccepted,
@@ -291,16 +292,17 @@ pub fn read_only_expiration_detaches_without_observation_or_a_stop_request_test(
       "receipt",
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   memory.advance(60_001)
-  let assert Ok(expired) = graph.poll_job(handle, reference)
+  let assert Ok(_) = graph.poll_job(handle, reference)
+  let assert Ok(expired) = graph.snapshot(handle)
   expired.status
   |> should.equal(graph.Expired(due, graph.JobDetached(reference)))
   expired.receipts |> should.equal([])
-  graph.poll_job(handle, reference) |> should.equal(Ok(expired))
+  graph.poll_job(handle, reference) |> should.equal(Ok(expired.status))
 }
 
 pub fn owned_expiration_keeps_its_cause_and_cleanup_across_restart_test() {
@@ -332,15 +334,15 @@ pub fn owned_expiration_keeps_its_cause_and_cleanup_across_restart_test() {
       "receipt",
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   memory.advance(60_001)
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(pending) =
     graph.await(handle, within: duration.milliseconds(5000))
-  pending.status
+  pending
   |> should.equal(graph.CancellingJob(
     reference,
     job.RequestAccepted,
@@ -358,7 +360,8 @@ pub fn owned_expiration_keeps_its_cause_and_cleanup_across_restart_test() {
       build(restored, fn(_) { Ok(job.Completed(42)) }),
       support.id("owned-deadline"),
     )
-  let assert Ok(done) = graph.poll_job(handle, reference)
+  let assert Ok(_) = graph.poll_job(handle, reference)
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Expired(due, graph.AfterResult))
   let assert [receipt] = done.receipts
   receipt.output_json |> should.equal("42")

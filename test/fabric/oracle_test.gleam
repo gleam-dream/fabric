@@ -155,12 +155,12 @@ fn plain(content: String) -> String {
   }
 }
 
-fn observe(run: fabric.Run(context), probe: Probe) -> Observed {
+fn observe(run: fabric.Run(context, String), probe: Probe) -> Observed {
   let assert Ok(snapshot) = fabric.snapshot(run)
   observe_snapshot(snapshot, probe)
 }
 
-fn observe_snapshot(snapshot: run.Snapshot, probe: Probe) -> Observed {
+fn observe_snapshot(snapshot: run.Snapshot(String), probe: Probe) -> Observed {
   let statuses =
     list.map(snapshot.actions, fn(action) {
       #(action.call.id, case action.state {
@@ -262,7 +262,7 @@ fn run_scenario(
   rules: fn(List(String)) -> Reply,
   tools: List(tool.Tool(Nil)),
   max_turns: Int,
-) -> #(fabric.Run(Nil), run.Status) {
+) -> #(fabric.Run(Nil, String), run.Status(String)) {
   let agent =
     agent.new("agent", oracle_model(probe, rules), tools, policy.always_allow())
     |> agent.with_max_turns(max_turns)
@@ -409,7 +409,7 @@ fn pay_needs_review(
   }
 }
 
-fn hitl_agent(probe: Probe) -> agent.Agent(Nil) {
+fn hitl_agent(probe: Probe) -> agent.Agent(Nil, String) {
   let rules = fn(seen: List(String)) {
     case seen {
       [] ->
@@ -429,7 +429,10 @@ fn hitl_agent(probe: Probe) -> agent.Agent(Nil) {
 }
 
 /// Runs until the pause and observes it as a HITL fixture does.
-fn paused(run: fabric.Run(Nil), probe: Probe) -> #(Pause, run.PendingApproval) {
+fn paused(
+  run: fabric.Run(Nil, String),
+  probe: Probe,
+) -> #(Pause, run.PendingApproval) {
   let assert Ok(run.Suspended([pending], [])) =
     fabric.await(run, within: duration.milliseconds(5000))
   let observed = observe(run, probe)
@@ -590,7 +593,7 @@ pub type Task {
 /// BeamWeaver's `task` tool as a Fabric delegation: its description is the
 /// child's prompt and the child's final text its result. Starting the
 /// child needs a review, as `interrupt_on: %{"task" => true}` does.
-fn delegation_agent(probe: Probe) -> agent.Agent(Nil) {
+fn delegation_agent(probe: Probe) -> agent.Agent(Nil, String) {
   let task_codec = {
     use subagent_type <- codec.field(
       "subagent_type",
@@ -621,7 +624,6 @@ fn delegation_agent(probe: Probe) -> agent.Agent(Nil) {
     tool.define("task", "Start a sub-agent", task_codec, codec.string()),
     to: researcher,
     prompt: fn(task: Task) { task.description },
-    output: fn(text) { Ok(text) },
   )
   |> support.agent
 }
@@ -707,7 +709,7 @@ fn recipe_scenario(probe, rules, tools, max_turns) {
       correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Completed(raw) = done.status
+  let assert graph.Completed(raw) = done
   let assert Ok(state) = record.decode(raw)
   controller.snapshot(state)
 }

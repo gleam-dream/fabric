@@ -68,12 +68,7 @@ pub fn a_child_is_recovered_beneath_a_live_foreign_parent_test() {
       [scripted.gated_tool(body)],
       policy.always_allow(),
     )
-    |> agent.with_sub_agent(
-      research,
-      to: researcher,
-      prompt: fn(x) { x },
-      output: Ok,
-    )
+    |> agent.with_sub_agent(research, to: researcher, prompt: fn(x) { x })
     |> support.agent
   let assert Ok(root) =
     fabric.start(
@@ -130,7 +125,7 @@ fn await_free(backend, id, tries) {
   }
 }
 
-fn child_completed(root: fabric.Run(Nil), tries: Int) -> Nil {
+fn child_completed(root: fabric.Run(Nil, String), tries: Int) -> Nil {
   let assert Ok(snapshot) = fabric.snapshot(root)
   case
     list.any(snapshot.actions, fn(action) {
@@ -184,12 +179,7 @@ pub fn a_stopping_child_is_recovered_beneath_a_live_cancelling_parent_test() {
   let assert Ok(call) = testing.call(research, "r", "topic")
   let parent =
     agent.new("parent", scripted.plan([call]), [], policy.always_allow())
-    |> agent.with_sub_agent(
-      research,
-      to: researcher,
-      prompt: fn(x) { x },
-      output: Ok,
-    )
+    |> agent.with_sub_agent(research, to: researcher, prompt: fn(x) { x })
     |> support.agent
   let assert Ok(root) =
     fabric.start(

@@ -101,7 +101,7 @@ pub fn scheduled_observation_reuses_one_work_grant_and_waits_for_backend_time_te
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(_) = waiting.status
+  let assert graph.AwaitingJob(_) = waiting
   scan(runs, build).recovered |> should.equal(1)
   probe.entries(calls) |> should.equal(["observe"])
   nodes.holder(memory.backend, id) |> should.equal(backend.Free)
@@ -146,7 +146,7 @@ pub fn polling_intervals_are_bounded_and_part_of_definition_compatibility_test()
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert graph.AwaitingJob(reference) = waiting
   let changed =
     runtime(runs, 2000, fn(_) { panic as "changed contract must not observe" })
   let assert Error(graph.IncompatibleDefinition(_)) = graph.open(changed, id)
@@ -170,7 +170,7 @@ pub fn a_failed_observer_keeps_a_retry_claim_until_expiry_and_recovers_after_sto
     })
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert graph.AwaitingJob(reference) = waiting
   scan(runs, fn(runs) {
     runtime(runs, 1000, fn(_) { Error("service unavailable") })
   }).failed
@@ -239,7 +239,7 @@ pub fn discovery_of_a_parent_does_not_poll_an_unclaimed_job_early_test() {
   let _ = scan(runs, build)
   let _ = scan(runs, build)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status |> should.equal(graph.Completed(42))
+  done |> should.equal(graph.Completed(42))
   probe.entries(calls) |> should.equal(["observe", "observe"])
 }
 
@@ -289,7 +289,7 @@ pub fn each_new_visit_is_eligible_without_waiting_for_the_previous_interval_test
   scan(runs, build) |> should.equal(o.Sweep(1, 1, 0, 0))
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert graph.AwaitingJob(reference) = waiting
   reference.activation |> should.equal(2)
   scan(runs, build).claimed |> should.equal(1)
   let assert Ok(done) = graph.snapshot(handle)
@@ -337,7 +337,7 @@ pub fn discovery_rechecks_a_claim_released_after_its_initial_read_test() {
     graph.start(build(runs), id, "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(_) = waiting.status
+  let assert graph.AwaitingJob(_) = waiting
   scan(runs, fn(runs) {
     probe.record(race, "armed")
     build(runs)
@@ -368,7 +368,7 @@ pub fn losing_a_scan_releases_its_local_observation_without_releasing_the_claim_
     graph.start(build(runs), id, "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(_) = waiting.status
+  let assert graph.AwaitingJob(_) = waiting
   let assert Ok(started) =
     sweeper.start(
       runs,

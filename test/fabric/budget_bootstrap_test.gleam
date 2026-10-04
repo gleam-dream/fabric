@@ -184,13 +184,13 @@ fn fixture(runs, kind, initialized, calls) {
         },
         fn() {
           case graph.await(handle, within: duration.milliseconds(2000)) {
-            Ok(snapshot) -> snapshot.status == graph.Completed(1)
+            Ok(status) -> status == graph.Completed(1)
             Error(_) -> False
           }
         },
         fn() {
           case graph.await(handle, within: duration.milliseconds(2000)) {
-            Ok(snapshot) -> snapshot.status == graph.Unattended
+            Ok(status) -> status == graph.Unattended
             Error(_) -> False
           }
         },
@@ -201,7 +201,7 @@ fn fixture(runs, kind, initialized, calls) {
         },
         fn() {
           case graph.await(handle, within: duration.milliseconds(2000)) {
-            Ok(graph.Snapshot(status: graph.Cancelled(_), ..)) -> True
+            Ok(graph.Cancelled(_)) -> True
             _ -> False
           }
         },

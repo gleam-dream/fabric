@@ -247,7 +247,7 @@ pub fn prompt(
 pub fn settle(
   registry: Registry(context),
   name: String,
-  outcome: run.Outcome,
+  outcome: run.Outcome(String),
 ) -> Result(Outcome, Nil) {
   case dict.get(registry.tools, name) {
     Ok(tool) ->

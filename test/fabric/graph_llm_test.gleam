@@ -112,7 +112,8 @@ pub fn a_structured_decision_retains_native_answer_raw_output_and_usage_test() {
       "review this",
       correlation: None,
     )
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   done.status
   |> should.equal(
     graph.Completed(llm.Receipt(
@@ -147,8 +148,8 @@ pub fn saved_structured_receipt_is_reused_after_store_process_loss_test() {
         )
       #(runs, handle)
     })
-  let assert Ok(before) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(before) = graph.snapshot(handle)
   let assert graph.Completed(_) = before.status
   restart.crash(owner, runs)
   let restored =
@@ -156,7 +157,8 @@ pub fn saved_structured_receipt_is_reused_after_store_process_loss_test() {
       runtime(support.directory(dir), fake),
       support.id("saved-decision"),
     )
-  let assert Ok(after) = graph.recover(restored)
+  let assert Ok(_) = graph.recover(restored)
+  let assert Ok(after) = graph.snapshot(restored)
   after.status |> should.equal(before.status)
   after.receipts |> should.equal(before.receipts)
   list.length(fake_provider.bodies(fake)) |> should.equal(1)
@@ -185,7 +187,7 @@ pub fn policy_approval_precedes_the_provider_request_test() {
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingApproval(approval) = waiting.status
+  let assert graph.AwaitingApproval(approval) = waiting
   fake_provider.bodies(fake) |> should.equal([])
   graph.approve(
     handle,
@@ -195,7 +197,7 @@ pub fn policy_approval_precedes_the_provider_request_test() {
   )
   |> should.be_ok
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Completed(_) = done.status
+  let assert graph.Completed(_) = done
   list.length(fake_provider.bodies(fake)) |> should.equal(1)
   fake_provider.stop(fake)
 }
@@ -223,8 +225,8 @@ pub fn refusal_and_output_limit_are_distinct_from_a_valid_answer_test() {
         "draft",
         correlation: None,
       )
-    let assert Ok(done) =
-      graph.await(handle, within: duration.milliseconds(5000))
+    let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+    let assert Ok(done) = graph.snapshot(handle)
     done.status
     |> should.equal(
       graph.Completed(llm.Receipt("review-model", example.1, example.2)),
@@ -252,8 +254,8 @@ pub fn invalid_output_interrupted_transport_and_http_failures_never_route_or_ret
         "draft",
         correlation: None,
       )
-    let assert Ok(blocked) =
-      graph.await(handle, within: duration.milliseconds(5000))
+    let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+    let assert Ok(blocked) = graph.snapshot(handle)
     let assert graph.Blocked(_, graph.EffectUncertain(detail)) = blocked.status
     string.contains(detail, example.1) |> should.be_true
     string.contains(detail, "private response body") |> should.be_false
@@ -292,7 +294,8 @@ pub fn tool_catalog_is_rejected_before_network_io_test() {
       "draft",
       correlation: None,
     )
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   let assert graph.Failed(graph.OperationFailed(detail)) = done.status
   string.contains(detail, "cannot declare tools") |> should.be_true
   done.receipts |> should.equal([])
@@ -322,8 +325,8 @@ pub fn preparation_and_proven_unsent_failures_are_definite_test() {
         "draft",
         correlation: None,
       )
-    let assert Ok(done) =
-      graph.await(handle, within: duration.milliseconds(5000))
+    let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+    let assert Ok(done) = graph.snapshot(handle)
     let assert graph.Failed(graph.OperationFailed(_)) = done.status
     done.receipts |> should.equal([])
   })
@@ -454,7 +457,7 @@ pub fn openai_projection_uses_the_output_schema_and_preserves_actual_sse_usage_t
       correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status
+  done
   |> should.equal(
     graph.Completed(llm.Receipt(
       "review-model",

@@ -2,18 +2,23 @@
 //// transcript, tools and approvals. The graph owns its child attachment.
 ////
 //// ```gleam
+//// let assert Ok(agent) =
+////   agent.new("researcher", model, tools, policy)
+////   |> agent.with_answer(summary_codec)
+////   |> agent.build
 //// let assert Ok(researcher) =
 ////   graph_agent.new(
 ////     run.DefinitionId("research", 1),
 ////     agent,
 ////     input: topic_codec,
-////     output: summary_codec,
 ////     prompt: fn(topic) { "Research " <> topic.name },
-////     answer: parse_summary,
 ////   )
 ////   |> graph_agent.runtime(runs, context: fn(_run) { ctx })
 //// let node = definition.node(id, graph_agent.as_operation(researcher), ..)
 //// ```
+////
+//// The operation's output is the agent's answer: its type and codec are
+//// the agent's (`agent.with_answer`; `String` for a plain agent).
 ////
 //// The child agent run inherits its graph parent's correlation and family
 //// root, so its events join the graph's.
@@ -23,6 +28,7 @@ import fabric/agent as worker
 import fabric/graph
 import fabric/graph/child
 import fabric/graph/operation
+import fabric/internal/answer as answers
 import fabric/internal/checked_agent
 import fabric/internal/controller
 import fabric/internal/family
@@ -51,31 +57,26 @@ import json/blueprint/codec.{type Codec}
 pub opaque type Definition(context, input, output) {
   Definition(
     identity: run.DefinitionId,
-    agent: worker.Agent(context),
+    agent: worker.Agent(context, output),
     input: Codec(input),
-    output: Codec(output),
     prompt: fn(input) -> String,
-    answer: fn(String) -> Result(output, String),
   )
 }
 
 /// `agent` as the operation `identity`: the child run's prompt is
-/// `prompt(input)`, and its completed answer becomes the operation's output
-/// through `answer` (an `Error(reason)` is an invalid result the parent must
-/// reconcile). Version `identity` when the prompt, the reply's meaning or
-/// the deployed agent changes. Codecs describe native values, not provider
-/// output schemas. Prompt and answer callbacks must be pure: recovery and
-/// observation may call them again. Only the agent runner performs model
-/// and tool effects.
+/// `prompt(input)`, and its completed answer is the operation's output,
+/// encoded with the agent's answer codec. A stored answer that codec does
+/// not read is an invalid result the parent must reconcile. Version
+/// `identity` when the prompt, the answer's meaning or the deployed agent
+/// changes. `prompt` must be pure: recovery and observation may call it
+/// again. Only the agent runner performs model and tool effects.
 pub fn new(
   identity: run.DefinitionId,
-  agent: worker.Agent(context),
+  agent: worker.Agent(context, output),
   input input: Codec(input),
-  output output: Codec(output),
   prompt prompt: fn(input) -> String,
-  answer answer: fn(String) -> Result(output, String),
 ) -> Definition(context, input, output) {
-  Definition(identity:, agent:, input:, output:, prompt:, answer:)
+  Definition(identity:, agent:, input:, prompt:)
 }
 
 pub opaque type Runtime(context, input, output) {
@@ -134,8 +135,8 @@ pub fn as_operation(
   runtime: Runtime(context, input, output),
 ) -> operation.Operation(parent_context, input, output) {
   let runs = runtime.store
-  let answer = runtime.definition.answer
-  let output = runtime.definition.output
+  let answer = checked_agent.answer(runtime.definition.agent)
+  let output = answers.codec(answer)
   managed.agent(
     runtime.definition.identity,
     runtime.definition.input,
@@ -150,10 +151,10 @@ pub fn as_operation(
         case progress {
           child.Succeeded(text) if mode == child_driver.Observe ->
             case
-              answer(text)
+              answers.decode(answer, text)
               |> result.try(fn(value) {
                 codec.encode_json(output, value)
-                |> result.map_error(string.inspect)
+                |> result.map_error(codec.describe_encode_error)
               })
             {
               Ok(encoded) -> child.Succeeded(encoded)
@@ -178,7 +179,7 @@ pub fn child(
   parent: graph.Handle(parent_context, state, answer),
   activation: Int,
   runtime: Runtime(context, input, output),
-) -> Result(fabric.Run(context), OpenError) {
+) -> Result(fabric.Run(context, output), OpenError) {
   use _ <- result.try(
     case
       store_core.pid(graph_handle.store(parent)),

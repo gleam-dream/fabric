@@ -51,7 +51,8 @@ fn runtime(runs, request, recovery) {
 }
 
 fn poll(handle, reference, left) {
-  let assert Ok(snapshot) = graph.poll_job(handle, reference)
+  let assert Ok(_) = graph.poll_job(handle, reference)
+  let assert Ok(snapshot) = graph.snapshot(handle)
   case snapshot.status, left {
     graph.Completed(_), _ -> snapshot
     graph.AwaitingJob(_), n if n > 0 -> {
@@ -82,7 +83,7 @@ pub fn cancellation_requires_approval_and_acknowledgment_is_not_confirmation_tes
     graph.start(runtime, id("gated-stop-flow"), receipt, correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingApproval(approval) = waiting.status
+  let assert graph.AwaitingApproval(approval) = waiting
   client.read(support.url(), receipt) |> should.equal(Ok(client.Queued))
   let assert Ok(_) =
     graph.approve(
@@ -91,8 +92,8 @@ pub fn cancellation_requires_approval_and_acknowledgment_is_not_confirmation_tes
       reviewer: as_reviewer("reviewer"),
       context: Nil,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert [ack] = waiting.receipts
   codec.decode_json(client.cancel_reply_codec(), ack.output_json)
@@ -120,7 +121,7 @@ pub fn cancellation_requires_approval_and_acknowledgment_is_not_confirmation_tes
       correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status |> should.equal(graph.Failed(graph.Denied("not owned")))
+  done |> should.equal(graph.Failed(graph.Denied("not owned")))
   client.read(support.url(), denied_receipt) |> should.equal(Ok(client.Queued))
 }
 
@@ -137,7 +138,7 @@ pub fn a_saved_cancellation_request_reconnects_without_requesting_again_test() {
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert graph.AwaitingJob(reference) = waiting
   support.crash(owner, runs)
   let handle =
     open_graph(
@@ -149,10 +150,10 @@ pub fn a_saved_cancellation_request_reconnects_without_requesting_again_test() {
       id("saved-stop-flow"),
     )
   let assert Ok(recovered) = graph.recover(handle)
-  recovered.status |> should.equal(waiting.status)
+  recovered |> should.equal(waiting)
   let done = poll(handle, reference, 100)
   done.status |> should.equal(graph.Completed(client.Stopped))
-  graph.poll_job(handle, reference) |> should.equal(Ok(done))
+  graph.poll_job(handle, reference) |> should.equal(Ok(done.status))
   support.remove_dir(directory)
 }
 
@@ -193,8 +194,8 @@ pub fn lost_stop_acknowledgment_replays_only_under_the_service_idempotency_contr
       id("replayed-stop"),
     )
   let assert Ok(_) = graph.recover(handle)
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert [ack] = waiting.receipts
   ack.attempt |> should.equal(2)
@@ -219,13 +220,13 @@ pub fn an_unrepeatable_stop_request_remains_uncertain_until_reconciled_test() {
       id("unrepeatable-stop"),
     )
   let assert Ok(blocked) = graph.recover(handle)
-  let assert graph.Blocked(reference, graph.EffectUncertain(_)) = blocked.status
+  let assert graph.Blocked(reference, graph.EffectUncertain(_)) = blocked
   let assert Ok(encoded) =
     codec.encode_json(client.cancel_reply_codec(), client.StopRequested)
   let assert Ok(_) = graph.reconcile(handle, reference, encoded)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert graph.AwaitingJob(reference) = waiting
   poll(handle, reference, 100).status
   |> should.equal(graph.Completed(client.Stopped))
   support.remove_dir(directory)
@@ -248,7 +249,7 @@ pub fn a_returned_transport_error_never_claims_cancellation_or_automatic_replay_
     )
   let assert Ok(blocked) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Blocked(reference, graph.EffectUncertain(_)) = blocked.status
+  let assert graph.Blocked(reference, graph.EffectUncertain(_)) = blocked
   let handle =
     open_graph(
       runtime(
@@ -261,13 +262,13 @@ pub fn a_returned_transport_error_never_claims_cancellation_or_automatic_replay_
       id("uncertain-stop-flow"),
     )
   let assert Ok(recovered) = graph.recover(handle)
-  recovered.status |> should.equal(blocked.status)
+  recovered |> should.equal(blocked)
   let assert Ok(encoded) =
     codec.encode_json(client.cancel_reply_codec(), client.StopRequested)
   let assert Ok(_) = graph.reconcile(handle, reference, encoded)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert graph.AwaitingJob(reference) = waiting
   poll(handle, reference, 100).status
   |> should.equal(graph.Completed(client.Stopped))
 }
@@ -294,7 +295,8 @@ pub fn completion_that_won_before_stop_is_returned_without_erasing_the_artifact_
       receipt,
       correlation: None,
     )
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(client.Finished(digest)))
   list.length(done.receipts) |> should.equal(1)
   client.artifact(support.url(), receipt)
@@ -310,7 +312,8 @@ fn request_owned(_, receipt) {
 }
 
 fn poll_owned(handle, reference, left) {
-  let assert Ok(snapshot) = graph.poll_job(handle, reference)
+  let assert Ok(_) = graph.poll_job(handle, reference)
+  let assert Ok(snapshot) = graph.snapshot(handle)
   case snapshot.status, left {
     graph.Cancelled(_), _ -> snapshot
     graph.CancellingJob(..), n if n > 0 -> {
@@ -331,14 +334,14 @@ pub fn owned_cancellation_reconnects_to_the_real_terminal_outcome_after_restart_
       demo.Submitting(client.Request("never published", 5000)),
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert demo.Accepted(receipt) = waiting.value
   let assert Ok(_) = graph.cancel(handle)
   let assert Ok(pending) =
     graph.await(handle, within: duration.milliseconds(5000))
-  pending.status
+  pending
   |> should.equal(graph.CancellingJob(
     reference,
     job.RequestAccepted,
@@ -354,7 +357,7 @@ pub fn owned_cancellation_reconnects_to_the_real_terminal_outcome_after_restart_
     )
   let handle = open_graph(rt, id("owned-real-stop"))
   let assert Ok(recovered) = graph.recover(handle)
-  recovered.status |> should.equal(pending.status)
+  recovered |> should.equal(pending)
   poll_owned(handle, reference, 100).status
   |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
   client.read(support.url(), receipt) |> should.equal(Ok(client.Cancelled))
@@ -382,7 +385,7 @@ pub fn an_interrupted_owned_request_is_resolved_by_real_observation_without_repl
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert graph.AwaitingJob(reference) = waiting
   let assert Ok(_) = graph.cancel(handle)
   process.receive(accepted, 5000) |> should.equal(Ok(Nil))
   support.crash(owner, runs)
@@ -399,7 +402,7 @@ pub fn an_interrupted_owned_request_is_resolved_by_real_observation_without_repl
     _,
     job.RequestUncertain(_),
     operation.CancellationRequested,
-  ) = recovered.status
+  ) = recovered
   poll_owned(handle, reference, 100).status
   |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
   support.remove_dir(directory)
@@ -413,8 +416,8 @@ pub fn a_completed_owned_job_keeps_its_artifact_when_local_cancellation_wins_tes
       demo.Submitting(client.Request("already published", 0)),
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert demo.Accepted(receipt) = waiting.value
   let digest = completed(receipt, 100)

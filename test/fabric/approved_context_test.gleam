@@ -104,7 +104,7 @@ fn two_turns(first: List(model.ToolCall)) -> model.Model {
 fn paying_agent_spec(
   probe: Probe,
   first: List(model.ToolCall),
-) -> agent.Spec(String) {
+) -> agent.Spec(String, String) {
   agent.new(
     "agent",
     two_turns(first),
@@ -113,7 +113,10 @@ fn paying_agent_spec(
   )
 }
 
-fn paying_agent(probe: Probe, first: List(model.ToolCall)) -> Agent(String) {
+fn paying_agent(
+  probe: Probe,
+  first: List(model.ToolCall),
+) -> Agent(String, String) {
   support.agent(paying_agent_spec(probe, first))
 }
 
@@ -124,10 +127,10 @@ fn acts(probe: Probe) -> List(String) {
 }
 
 fn approve(
-  run: fabric.Run(String),
+  run: fabric.Run(String, String),
   pending: run.PendingApproval,
   who: String,
-) -> Result(run.Status, fabric.Error) {
+) -> Result(run.Status(String), fabric.Error) {
   fabric.approve(
     run,
     pending.reference,
@@ -264,7 +267,8 @@ pub type Summary {
   Summary(summary: String)
 }
 
-fn research() -> tool.Definition(Topic, Summary) {
+/// The summary is the researcher's plain answer.
+fn research() -> tool.Definition(Topic, String) {
   tool.define(
     "research",
     "Delegate research on a topic to a researcher.",
@@ -276,9 +280,9 @@ fn research() -> tool.Definition(Topic, Summary) {
     },
     {
       use summary <- codec.field("summary", codec.string(), get: fn(summary) {
-        summary.summary
+        summary
       })
-      codec.success(Summary(summary))
+      codec.success(summary)
     },
   )
 }
@@ -290,7 +294,7 @@ fn research_call() -> model.ToolCall {
 
 /// A parent that delegates research (behind an approval) and then writes
 /// a note; the researcher writes a note of its own and answers.
-fn delegating(probe: Probe) -> Agent(String) {
+fn delegating(probe: Probe) -> Agent(String, String) {
   let researcher =
     agent.new(
       "researcher",
@@ -305,12 +309,9 @@ fn delegating(probe: Probe) -> Agent(String) {
     [note_tool(probe, "parent note")],
     gate(probe, "policy"),
   )
-  |> agent.with_sub_agent(
-    research(),
-    to: researcher,
-    prompt: fn(topic: Topic) { topic.topic },
-    output: fn(text) { Ok(Summary(text)) },
-  )
+  |> agent.with_sub_agent(research(), to: researcher, prompt: fn(topic: Topic) {
+    topic.topic
+  })
   |> support.agent
 }
 

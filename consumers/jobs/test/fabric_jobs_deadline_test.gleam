@@ -83,8 +83,8 @@ pub fn a_restarted_sweeper_expires_and_stops_a_real_owned_job_test() {
       demo.Submitting(client.Request("never published after expiry", 5000)),
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   let assert demo.Accepted(receipt) = waiting.value
@@ -126,8 +126,8 @@ pub fn a_lost_deadline_stop_acknowledgment_is_observed_without_repeating_the_req
       demo.Submitting(client.Request("expired lost acknowledgment", 5000)),
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   storage.advance(60_001)
@@ -151,7 +151,7 @@ pub fn a_lost_deadline_stop_acknowledgment_is_observed_without_repeating_the_req
     _,
     job.RequestUncertain(_),
     operation.DeadlineReached(saved_due),
-  ) = recovered.status
+  ) = recovered
   saved_due |> should.equal(due)
   settle(runs, build, id("deadline-lost-stop")).status
   |> should.equal(graph.Expired(due, graph.JobStopped(reference)))

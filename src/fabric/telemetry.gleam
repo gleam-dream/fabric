@@ -358,8 +358,11 @@ pub type RunCancelled {
   RunCancelled(run: String, root: String, correlation: Correlation)
 }
 
+/// How a run ended (`run.Outcome`). This union may grow.
 pub type OutcomeKind {
   Completed
+  /// The final answer did not decode with the agent's answer codec.
+  AnswerInvalid
   Refused
   OutputLimited
   BudgetExhausted
@@ -761,6 +764,7 @@ pub fn run_finished() -> Event(RunTotals, RunFinished) {
           "outcome",
           [
             Completed,
+            AnswerInvalid,
             Refused,
             OutputLimited,
             BudgetExhausted,
@@ -871,6 +875,7 @@ fn refusal_name(refusal: SettlementRefusal) -> String {
 fn outcome_name(outcome: OutcomeKind) -> String {
   case outcome {
     Completed -> "completed"
+    AnswerInvalid -> "answer_invalid"
     Refused -> "refused"
     OutputLimited -> "output_limited"
     BudgetExhausted -> "budget_exhausted"

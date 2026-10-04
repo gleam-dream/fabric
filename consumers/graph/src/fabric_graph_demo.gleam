@@ -27,8 +27,8 @@ fn infallible(_error: Nil) -> tool.Failure {
 
 pub fn execute(limit: Int) -> graph.Snapshot(Int, Int) {
   let handle = start_with_reviewer(limit, scripted_reviewer())
-  let assert Ok(snapshot) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(snapshot) = graph.snapshot(handle)
   snapshot
 }
 
@@ -93,7 +93,8 @@ pub fn execute_batch(
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
   let assert Ok(id) = run.parse_id("batch-demo")
   let assert Ok(handle) = graph.start(runtime, id, initial, correlation: None)
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   done
 }
 
@@ -109,8 +110,10 @@ pub fn start_manual(
   )
 }
 
-/// The same boolean decision is supplied by an ordinary managed agent. This
-/// model is scripted; the graph binding does not depend on its producer.
+/// The same boolean decision is supplied by an ordinary managed agent whose
+/// typed answer (`agent.with_answer`) is the decision: the operation's
+/// output codec is the agent's. This model is scripted; the graph binding
+/// does not depend on its producer.
 pub fn execute_agent(limit: Int) -> graph.Snapshot(Int, Int) {
   let runs = store.in_memory(process.new_name("agent-review-demo"))
   let assert Ok(Nil) = store.start(runs)
@@ -120,32 +123,33 @@ pub fn execute_agent(limit: Int) -> graph.Snapshot(Int, Int) {
       let assert Ok(revision) = int.parse(prompt)
       Ok(model.FinalAnswer(
         case revision >= 3 {
-          True -> "approve"
-          False -> "revise"
+          True -> "{\"approve\":true}"
+          False -> "{\"approve\":false}"
         },
         None,
       ))
     })
+  let verdict = {
+    use approve <- codec.field("approve", codec.bool(), get: fn(approve) {
+      approve
+    })
+    codec.success(approve)
+  }
   let assert Ok(agent) =
-    agent.new("reviewer", model, [], policy.always_allow()) |> agent.build
+    agent.new("reviewer", model, [], policy.always_allow())
+    |> agent.with_answer(verdict)
+    |> agent.build
   let assert Ok(reviewer) =
     agent_node.new(
       run.DefinitionId("agent-reviewer", 1),
       agent,
       input: codec.int(),
-      output: codec.bool(),
       prompt: int.to_string,
-      answer: fn(answer) {
-        case answer {
-          "approve" -> Ok(True)
-          "revise" -> Ok(False)
-          _ -> Error("expected approve or revise")
-        }
-      },
     )
     |> agent_node.runtime(runs, context: fn(_) { Nil })
   let handle = start_on(runs, limit, agent_node.as_operation(reviewer))
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   done
 }
 

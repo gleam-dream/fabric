@@ -38,10 +38,10 @@ import sinal/correlation
 /// that process takes the store and, through it, the runner down.
 fn start_owned(
   dir: String,
-  agent: Agent(context),
+  agent: Agent(context, String),
   context: context,
   prompt: String,
-) -> #(Pid, Store, fabric.Run(context)) {
+) -> #(Pid, Store, fabric.Run(context, String)) {
   let #(owner, #(store, run)) =
     restart.owned(fn() {
       let store = support.directory(dir)
@@ -75,18 +75,18 @@ fn reopen(dir: String) -> Store {
   store
 }
 
-fn states(run: fabric.Run(context)) -> List(run.ActionState) {
+fn states(run: fabric.Run(context, String)) -> List(run.ActionState) {
   let assert Ok(snapshot) = fabric.snapshot(run)
   list.map(snapshot.actions, fn(action) { action.state })
 }
 
-fn incarnation(run: fabric.Run(context)) -> Int {
+fn incarnation(run: fabric.Run(context, String)) -> Int {
   let assert Ok(snapshot) = fabric.snapshot(run)
   snapshot.incarnation
 }
 
 /// Three calls to the gated tool, run one at a time.
-fn three_slow(probe: Probe) -> Agent(Nil) {
+fn three_slow(probe: Probe) -> Agent(Nil, String) {
   agent.new(
     "agent",
     scripted.plan([
@@ -384,7 +384,7 @@ fn transfer_call() -> model.ToolCall {
   scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":10}")
 }
 
-fn paying_agent(tools: List(tool.Tool(Nil))) -> Agent(Nil) {
+fn paying_agent(tools: List(tool.Tool(Nil))) -> Agent(Nil, String) {
   agent.new(
     "agent",
     scripted.plan([transfer_call()]),
@@ -500,7 +500,7 @@ pub fn recovery_reports_a_run_that_does_not_exist_test() {
 
 // --- runner loss ---------------------------------------------------------------
 
-fn one_slow(probe: Probe) -> Agent(Nil) {
+fn one_slow(probe: Probe) -> Agent(Nil, String) {
   agent.new(
     "agent",
     scripted.plan([scripted.slow("a", "a")]),
@@ -642,7 +642,7 @@ fn waiting_in_fabric(awaiter: Pid) -> Nil {
 // --- several stores over one directory ------------------------------------------
 
 /// Both calls need an approval.
-fn two_reviewed(probe: Probe) -> Agent(Nil) {
+fn two_reviewed(probe: Probe) -> Agent(Nil, String) {
   agent.new(
     "agent",
     scripted.plan([scripted.slow("p", "p"), scripted.slow("q", "q")]),

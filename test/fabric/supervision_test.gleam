@@ -18,7 +18,7 @@ import gleam/otp/static_supervisor
 import gleam/time/duration
 import gleeunit/should
 
-fn one_slow(probe: Probe) -> Agent(Nil) {
+fn one_slow(probe: Probe) -> Agent(Nil, String) {
   agent.new(
     "agent",
     scripted.plan([scripted.slow("a", "a")]),

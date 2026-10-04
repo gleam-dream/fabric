@@ -39,7 +39,7 @@ fn paying_tool(probe: Probe) -> tool.Tool(Nil) {
   )
 }
 
-fn spec(probe: Probe) -> agent.Spec(Nil) {
+fn spec(probe: Probe) -> agent.Spec(Nil, String) {
   agent.new(
     "expiring",
     scripted.plan([
@@ -57,7 +57,7 @@ fn spec(probe: Probe) -> agent.Spec(Nil) {
 }
 
 /// An agent whose approval requests expire after `milliseconds`.
-fn expiring(probe: Probe, milliseconds: Int) -> agent.Agent(Nil) {
+fn expiring(probe: Probe, milliseconds: Int) -> agent.Agent(Nil, String) {
   spec(probe)
   |> agent.with_approval_expiry(After(duration.milliseconds(milliseconds)))
   |> support.agent
@@ -65,8 +65,8 @@ fn expiring(probe: Probe, milliseconds: Int) -> agent.Agent(Nil) {
 
 fn start(
   runs,
-  desk: agent.Agent(Nil),
-) -> #(fabric.Run(Nil), run.PendingApproval) {
+  desk: agent.Agent(Nil, String),
+) -> #(fabric.Run(Nil, String), run.PendingApproval) {
   let assert Ok(handle) =
     fabric.start(
       runs,
@@ -92,7 +92,7 @@ fn after_deadline(pending: run.PendingApproval) -> Nil {
 }
 
 /// The run ended without paying: the model saw the expiry.
-fn ended_unpaid(handle: fabric.Run(Nil), probe: Probe) -> Nil {
+fn ended_unpaid(handle: fabric.Run(Nil, String), probe: Probe) -> Nil {
   let assert Ok(run.Finished(run.Completed(answer))) =
     fabric.await(handle, within: duration.seconds(5))
   string.contains(answer, "expired") |> should.be_true

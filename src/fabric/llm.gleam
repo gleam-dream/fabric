@@ -20,6 +20,16 @@
 //// any other model. Names outside the tool-name grammar, duplicate call ids,
 //// and bounds still fail the turn in llm_wire.
 ////
+//// An agent with a typed answer (`agent.with_answer`) puts its schema on
+//// every `model.Request` (`request.answer`); the adapter asks the provider
+//// for it with `llm_wire.with_output`, named `answer`, as OpenAI's and
+//// Anthropic's JSON Schema output format or Google's response schema.
+//// llm_wire validates the reply against the schema; a final text that does
+//// not match is still returned as the `FinalAnswer`, so that Fabric ends
+//// the run with `run.AnswerInvalid` and keeps the text. A schema the
+//// provider cannot take (OpenAI's and Anthropic's need an object at the
+//// root) fails the turn as `model.InvalidRequest`.
+////
 //// A failed call becomes a `model.ModelError` whose kind follows
 //// `llm_wire.advise`: a failure llm_wire says another attempt may help is
 //// `RateLimited` (HTTP 429 or a rate-limit code), `TimedOut` (a timer or
@@ -72,13 +82,35 @@ fn call(
   use messages <- result.try(wire_messages(request))
   let wire_request =
     llm_wire.request(model_id, messages) |> llm_wire.with_tools(tools)
+  let client = http_gun.with_correlation(client, request.correlation)
+  case request.answer {
+    None -> execute(client, config, wire_request)
+    Some(schema) ->
+      llm_wire.with_output(
+        wire_request,
+        answer_name,
+        contract.value_codec(contract.from_schema(schema)),
+      )
+      |> execute(client, config, _)
+  }
+}
+
+/// The name of the answer's output format, which providers require.
+const answer_name = "answer"
+
+/// Runs one turn. The answer's text is the `FinalAnswer`, whatever its
+/// decoded `output`: Fabric reads it with the agent's own codec.
+fn execute(
+  client: http_gun.Client,
+  config: llm_wire.Config,
+  wire_request: llm_wire.Request(output),
+) -> Result(Reply, ModelError) {
   use prepared <- result.try(
     llm_wire.prepare(config, wire_request)
     |> result.map_error(fn(error) {
       model.error(model.InvalidRequest, error.describe_prepare_error(error))
     }),
   )
-  let client = http_gun.with_correlation(client, request.correlation)
   case llm_wire.run(client, prepared) {
     Ok(llm_wire.Answer(text:, usage:, ..)) ->
       Ok(model.FinalAnswer(text, usage_of(usage)))
@@ -88,6 +120,13 @@ fn call(
       Ok(model.Truncated(partial_text, usage_of(usage)))
     Ok(llm_wire.Refused(reason:, usage:)) ->
       Ok(model.Refusal(reason, usage_of(usage)))
+    // A final answer outside the schema is the model's answer all the
+    // same: Fabric ends the run with `AnswerInvalid` and keeps the text.
+    Error(llm_wire.Failure(
+      error: error.InvalidOutput(raw_output:, ..),
+      usage:,
+      ..,
+    )) -> Ok(model.FinalAnswer(raw_output, usage_of(usage)))
     Error(failure) -> Error(failure_of(failure))
   }
 }

@@ -1,14 +1,16 @@
 //// Pure agent configuration.
 ////
-//// A `Spec` describes an agent: its name, model, tools, policy, and the
-//// bounds of its runs, set with the `with_*` functions. `build` checks it
-//// once and reports every problem at once; only `build` makes the `Agent`
-//// that `fabric.start`, `fabric.open` and `fabric.recover` take, so a run
-//// never starts under an invalid agent. Building starts nothing.
+//// A `Spec` describes an agent: its name, model, tools, policy, its final
+//// answer, and the bounds of its runs, set with the `with_*` functions.
+//// `build` checks it once and reports every problem at once; only `build`
+//// makes the `Agent` that `fabric.start`, `fabric.open` and
+//// `fabric.recover` take, so a run never starts under an invalid agent.
+//// Building starts nothing.
 ////
 //// ```gleam
 //// let assert Ok(desk) =
 ////   agent.new("desk", model, [refund_tool], policy)
+////   |> agent.with_answer(resolution_codec)
 ////   |> agent.with_max_turns(6)
 ////   |> agent.with_approval_expiry(run.After(duration.hours(24)))
 ////   |> agent.build
@@ -34,8 +36,14 @@
 ////
 //// A timeout that may be unbounded is a `run.Timeout`: `run.Infinity` must
 //// be asked for.
+////
+//// An agent's final answer is its model's text (`Spec(context, String)`)
+//// until `with_answer` gives it a codec: the model is then asked for that
+//// schema, and a run completes with the decoded value
+//// (`run.Completed(answer)`) or ends with `run.AnswerInvalid`.
 
 import fabric/budget
+import fabric/internal/answer.{type Answer} as answers
 import fabric/internal/budget/model as reservations
 import fabric/internal/checked_agent.{type Admitted, Admitted}
 import fabric/internal/registry
@@ -52,9 +60,11 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/time/duration.{type Duration}
+import json/blueprint/codec.{type Codec}
 
-/// An agent's description, checked by `build`.
-pub opaque type Spec(context) {
+/// An agent's description, checked by `build`. `answer` is the type of its
+/// final answer: `String` until `with_answer`.
+pub opaque type Spec(context, answer) {
   Spec(
     identity: DefinitionId,
     model: Model,
@@ -62,7 +72,8 @@ pub opaque type Spec(context) {
     policy: Policy(context),
     system_prompt: Option(String),
     /// The sub-agent each delegation starts, by delegation name.
-    children: List(#(String, Agent(context))),
+    children: List(#(String, checked_agent.Admitted(context))),
+    answer: Answer(answer),
     max_turns: Int,
     max_concurrency: Int,
     token_budget: Option(Int),
@@ -79,9 +90,10 @@ pub opaque type Spec(context) {
   )
 }
 
-/// A checked agent. Only `build` makes one.
-pub type Agent(context) =
-  checked_agent.Agent(context)
+/// A checked agent whose runs end with an `answer`. Only `build` makes
+/// one.
+pub type Agent(context, answer) =
+  checked_agent.Agent(context, answer)
 
 /// Why `build` refused a spec. This union may grow: match the variants you
 /// handle and keep a catch-all, or use `describe_config_error`.
@@ -91,6 +103,8 @@ pub type ConfigError {
   InvalidToolName(String)
   /// The tool's input codec has no JSON Schema to declare to the model.
   ToolSchemaUnavailable(String)
+  /// The answer codec (`with_answer`) has no JSON Schema to give the model.
+  AnswerSchemaUnavailable
   /// The name is empty or the version is not positive.
   InvalidIdentity(name: String, version: Int)
   /// A bound is outside `minimum..maximum` (both included). Durations are
@@ -168,7 +182,7 @@ pub fn new(
   model: Model,
   tools: List(Tool(context)),
   policy: Policy(context),
-) -> Spec(context) {
+) -> Spec(context, String) {
   Spec(
     identity: DefinitionId(name, 1),
     model:,
@@ -176,6 +190,7 @@ pub fn new(
     policy:,
     system_prompt: None,
     children: [],
+    answer: answers.text(),
     max_turns: 8,
     max_concurrency: 4,
     token_budget: None,
@@ -194,42 +209,63 @@ pub fn new(
 
 /// Changes the version a run records. Change it when a change to the agent
 /// must not continue older runs.
-pub fn with_version(spec: Spec(context), version: Int) -> Spec(context) {
+pub fn with_version(
+  spec: Spec(context, answer),
+  version: Int,
+) -> Spec(context, answer) {
   Spec(..spec, identity: DefinitionId(spec.identity.name, version))
 }
 
-pub fn with_system_prompt(spec: Spec(context), text: String) -> Spec(context) {
+pub fn with_system_prompt(
+  spec: Spec(context, answer),
+  text: String,
+) -> Spec(context, answer) {
   Spec(..spec, system_prompt: Some(text))
 }
 
 /// Model attempts per run, counting the first request and every retry.
 /// Default 8.
-pub fn with_max_turns(spec: Spec(context), turns: Int) -> Spec(context) {
+pub fn with_max_turns(
+  spec: Spec(context, answer),
+  turns: Int,
+) -> Spec(context, answer) {
   Spec(..spec, max_turns: turns)
 }
 
 /// Tool bodies of one run that execute at the same time. Default 4.
-pub fn with_max_concurrency(spec: Spec(context), tools: Int) -> Spec(context) {
+pub fn with_max_concurrency(
+  spec: Spec(context, answer),
+  tools: Int,
+) -> Spec(context, answer) {
   Spec(..spec, max_concurrency: tools)
 }
 
 /// Input plus output tokens per run, as the provider reports them. A reply
 /// without usage then stops the run with `run.BudgetUnverifiable`, which
 /// is why there is no default.
-pub fn with_token_budget(spec: Spec(context), tokens: Int) -> Spec(context) {
+pub fn with_token_budget(
+  spec: Spec(context, answer),
+  tokens: Int,
+) -> Spec(context, answer) {
   Spec(..spec, token_budget: Some(tokens))
 }
 
 /// Sub-agent runs one run starts, at most 999. A delegation beyond it is
 /// refused before the policy, and the model sees why. Default 4.
-pub fn with_max_children(spec: Spec(context), children: Int) -> Spec(context) {
+pub fn with_max_children(
+  spec: Spec(context, answer),
+  children: Int,
+) -> Spec(context, answer) {
   Spec(..spec, max_children: children)
 }
 
 /// Levels of sub-agents below a run of this agent, at most 16 (1: its
 /// children may not delegate in turn). A child is bounded by its own
 /// setting and by what its parent has left. Default 1.
-pub fn with_max_depth(spec: Spec(context), levels: Int) -> Spec(context) {
+pub fn with_max_depth(
+  spec: Spec(context, answer),
+  levels: Int,
+) -> Spec(context, answer) {
   Spec(..spec, max_depth: levels)
 }
 
@@ -237,9 +273,9 @@ pub fn with_max_depth(spec: Spec(context), levels: Int) -> Spec(context) {
 /// in time has failed: the run stops closed. The policy runs in its own
 /// process. Default 5 s.
 pub fn with_policy_timeout(
-  spec: Spec(context),
+  spec: Spec(context, answer),
   timeout: Duration,
-) -> Spec(context) {
+) -> Spec(context, answer) {
   Spec(..spec, policy_timeout: timeout)
 }
 
@@ -249,9 +285,9 @@ pub fn with_policy_timeout(
 /// longer, up to 10 minutes. Every attempt still counts against the turn
 /// limit, and a cancelled run does not wait. Default 200 ms.
 pub fn with_model_retry_delay(
-  spec: Spec(context),
+  spec: Spec(context, answer),
   delay: Duration,
-) -> Spec(context) {
+) -> Spec(context, answer) {
   Spec(..spec, model_retry_delay: delay)
 }
 
@@ -260,9 +296,9 @@ pub fn with_model_retry_delay(
 /// example held by a synchronous telemetry handler) refuses the command
 /// with `fabric.RunnerBusy`, and never applies it later. Default 5 s.
 pub fn with_command_timeout(
-  spec: Spec(context),
+  spec: Spec(context, answer),
   timeout: Duration,
-) -> Spec(context) {
+) -> Spec(context, answer) {
   Spec(..spec, command_timeout: timeout)
 }
 
@@ -273,9 +309,9 @@ pub fn with_command_timeout(
 /// `fabric/llm` is never cut short by it. `run.Infinity` leaves a model call
 /// unbounded.
 pub fn with_model_timeout(
-  spec: Spec(context),
+  spec: Spec(context, answer),
   timeout: Timeout,
-) -> Spec(context) {
+) -> Spec(context, answer) {
   Spec(..spec, model_timeout: timeout)
 }
 
@@ -287,9 +323,9 @@ pub fn with_model_timeout(
 /// it for one tool. Sub-agent runs are bounded by their own limits instead.
 /// Default 60 s; `run.Infinity` leaves tool bodies unbounded.
 pub fn with_tool_timeout(
-  spec: Spec(context),
+  spec: Spec(context, answer),
   timeout: Timeout,
-) -> Spec(context) {
+) -> Spec(context, answer) {
   Spec(..spec, tool_timeout: timeout)
 }
 
@@ -297,7 +333,10 @@ pub fn with_tool_timeout(
 /// keeps: a result is stored and sent to the model on every later turn. A
 /// larger result stops the run with `run.OutputEncodingFailed`, naming this
 /// limit; the tool's effect has happened. Default 1 MiB.
-pub fn with_max_result_bytes(spec: Spec(context), bytes: Int) -> Spec(context) {
+pub fn with_max_result_bytes(
+  spec: Spec(context, answer),
+  bytes: Int,
+) -> Spec(context, answer) {
   Spec(..spec, max_result_bytes: bytes)
 }
 
@@ -316,9 +355,9 @@ pub fn with_max_result_bytes(spec: Spec(context), bytes: Int) -> Spec(context) {
 /// `run.Infinity` never expires. Requests stored without a deadline never
 /// expire.
 pub fn with_approval_expiry(
-  spec: Spec(context),
+  spec: Spec(context, answer),
   expiry: Timeout,
-) -> Spec(context) {
+) -> Spec(context, answer) {
   Spec(..spec, approval_expiry: expiry)
 }
 
@@ -329,10 +368,50 @@ pub fn with_approval_expiry(
 /// starts a root run: a sub-agent shares its root's. The store must write
 /// agent records of version 7 or later (`fabric.FamilyBudgetUnsupported`).
 pub fn with_family_budget(
-  spec: Spec(context),
+  spec: Spec(context, answer),
   limits: budget.Limits,
-) -> Spec(context) {
+) -> Spec(context, answer) {
   Spec(..spec, family_budget: Some(limits))
+}
+
+/// Gives the agent a typed final answer. The model is asked for
+/// `answer`'s JSON Schema (`model.Request.answer`, which `fabric/llm` sends
+/// as the provider's structured output format), and Fabric decodes the
+/// model's final text with `answer` before it commits the run's end: a run
+/// completes with the decoded value (`run.Completed(value)`), or ends with
+/// `run.AnswerInvalid(raw:, reason:)` when the text does not decode. The
+/// run stores the text, so the stored record is the same as for a plain
+/// agent.
+///
+/// Providers constrain an answer best when it is a JSON object: give a
+/// record codec. `build` refuses a codec without a schema
+/// (`AnswerSchemaUnavailable`).
+pub fn with_answer(
+  spec: Spec(context, String),
+  answer: Codec(answer),
+) -> Spec(context, answer) {
+  Spec(
+    identity: spec.identity,
+    model: spec.model,
+    tools: spec.tools,
+    policy: spec.policy,
+    system_prompt: spec.system_prompt,
+    children: spec.children,
+    answer: answers.typed(answer),
+    max_turns: spec.max_turns,
+    max_concurrency: spec.max_concurrency,
+    token_budget: spec.token_budget,
+    max_children: spec.max_children,
+    max_depth: spec.max_depth,
+    policy_timeout: spec.policy_timeout,
+    model_retry_delay: spec.model_retry_delay,
+    command_timeout: spec.command_timeout,
+    model_timeout: spec.model_timeout,
+    tool_timeout: spec.tool_timeout,
+    max_result_bytes: spec.max_result_bytes,
+    approval_expiry: spec.approval_expiry,
+    family_budget: spec.family_budget,
+  )
 }
 
 /// Lets the model delegate to a sub-agent: a call to `definition` (declared
@@ -347,26 +426,25 @@ pub fn with_family_budget(
 /// run's pending approvals (their references name the child run), and
 /// cancelling this run cancels it.
 ///
-/// When the child completes, `output(answer)` parses its answer into the
-/// call's output; an `Error(text)` is a definite failure whose `text` the
-/// model sees. A child that ended otherwise (refused, cancelled, out of
-/// budget, failed) is a definite failure that names how it ended. A child
-/// that ended with effects of unknown status (for example cancelled while a
+/// The child's answer is the call's output: `definition`'s output type is
+/// the child's answer type (`with_answer`, or `String` for a plain child),
+/// and its output codec encodes the result the model sees. A child that
+/// ended otherwise (its answer invalid, refused, cancelled, out of budget,
+/// failed) is a definite failure that names how it ended. A child that
+/// ended with effects of unknown status (for example cancelled while a
 /// tool ran) makes the call an uncertain effect however it ended.
 pub fn with_sub_agent(
-  spec: Spec(context),
+  spec: Spec(context, answer),
   definition: tool.Definition(input, output),
-  to child: Agent(context),
+  to child: Agent(context, output),
   prompt prompt: fn(input) -> String,
-  output output: fn(String) -> Result(output, String),
-) -> Spec(context) {
+) -> Spec(context, answer) {
+  let child_answer = checked_agent.answer(child)
+  let child = checked_agent.admitted(child)
   let delegation =
-    core_tool.delegation(
-      definition,
-      checked_agent.admitted(child).identity,
-      prompt,
-      output:,
-    )
+    core_tool.delegation(definition, child.identity, prompt, output: fn(raw) {
+      answers.decode(child_answer, raw)
+    })
   Spec(
     ..spec,
     tools: list.append(spec.tools, [delegation]),
@@ -376,8 +454,11 @@ pub fn with_sub_agent(
 
 /// Checks `spec` and reports every problem at once. A sub-agent was checked
 /// by its own `build`.
-pub fn build(spec: Spec(context)) -> Result(Agent(context), List(ConfigError)) {
-  admit(spec) |> result.map(checked_agent.new)
+pub fn build(
+  spec: Spec(context, answer),
+) -> Result(Agent(context, answer), List(ConfigError)) {
+  admit(spec)
+  |> result.map(checked_agent.new(_, spec.answer))
 }
 
 /// One line naming the problem and the setter that changes it.
@@ -390,6 +471,8 @@ pub fn describe_config_error(error: ConfigError) -> String {
       <> " does not match ^[a-zA-Z0-9_-]{1,64}$, which providers require"
     ToolSchemaUnavailable(name) ->
       "the input codec of the tool " <> name <> " has no JSON Schema"
+    AnswerSchemaUnavailable ->
+      "the answer codec given to agent.with_answer has no JSON Schema"
     InvalidIdentity(name, version) ->
       "the agent identity "
       <> name
@@ -435,7 +518,9 @@ fn setter(limit: Limit) -> String {
   }
 }
 
-fn admit(spec: Spec(context)) -> Result(Admitted(context), List(ConfigError)) {
+fn admit(
+  spec: Spec(context, answer),
+) -> Result(Admitted(context), List(ConfigError)) {
   let registry =
     registry.new(spec.tools)
     |> result.map_error(list.map(_, tool_error))
@@ -485,6 +570,10 @@ fn admit(spec: Spec(context)) -> Result(Admitted(context), List(ConfigError)) {
         _ -> Error(Nil)
       }
     })
+  let #(answer_schema, problems) = case answers.schema(spec.answer) {
+    Ok(schema) -> #(schema, problems)
+    Error(Nil) -> #(None, [AnswerSchemaUnavailable, ..problems])
+  }
   let problems = case spec.identity {
     DefinitionId(name, version) if name == "" || version < 1 -> [
       InvalidIdentity(name, version),
@@ -500,6 +589,8 @@ fn admit(spec: Spec(context)) -> Result(Admitted(context), List(ConfigError)) {
         registry:,
         policy: spec.policy,
         system_prompt: spec.system_prompt,
+        answer_schema:,
+        check_answer: answers.check(spec.answer),
         max_turns: spec.max_turns,
         max_concurrency: spec.max_concurrency,
         token_budget: spec.token_budget,
@@ -511,9 +602,7 @@ fn admit(spec: Spec(context)) -> Result(Admitted(context), List(ConfigError)) {
         max_result_bytes: spec.max_result_bytes,
         approval_expiry: timeout(spec.approval_expiry),
         family_budget: spec.family_budget,
-        children: spec.children
-          |> list.map(fn(entry) { #(entry.0, checked_agent.admitted(entry.1)) })
-          |> dict.from_list,
+        children: dict.from_list(spec.children),
         max_children: spec.max_children,
         max_depth: spec.max_depth,
       ))

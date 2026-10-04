@@ -84,6 +84,7 @@ fn request() -> model.Request {
     system: None,
     messages: [model.UserMessage("hi")],
     tools: [],
+    answer: None,
   )
 }
 

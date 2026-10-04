@@ -96,7 +96,8 @@ pub fn public_runtime_executes_a_typed_bounded_generation_review_loop_test() {
     )
   let assert Ok(handle) =
     graph.start(runtime, run_id("loop"), 0, correlation: None)
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   done.value |> should.equal(3)
   done.status |> should.equal(graph.Completed(3))
   list.map(done.receipts, fn(receipt) { receipt.activation })
@@ -129,7 +130,8 @@ pub fn a_shared_work_budget_bounds_graph_cycles_before_the_next_body_test() {
       0,
       correlation: None,
     )
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   done.status
   |> should.equal(graph.Failed(graph.FamilyBudget(budget.WorkLimit(3))))
   done.value |> should.equal(2)
@@ -149,7 +151,7 @@ pub fn a_shared_work_budget_bounds_graph_cycles_before_the_next_body_test() {
     )
   let assert Ok(stopped) =
     graph.await(zero, within: duration.milliseconds(5000))
-  stopped.status
+  stopped
   |> should.equal(graph.Failed(graph.FamilyBudget(budget.WorkLimit(0))))
   probe.entries(calls) |> should.equal(["generate", "generate"])
 }
@@ -185,7 +187,7 @@ pub fn graph_approval_after_restart_reuses_its_reserved_work_unit_test() {
     })
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingApproval(approval) = waiting.status
+  let assert graph.AwaitingApproval(approval) = waiting
   restart.crash(owner, runs)
   let runtime =
     graph.new(spec, support.directory(dir), fn(_) { Nil }, fn(_, _) {
@@ -201,7 +203,7 @@ pub fn graph_approval_after_restart_reuses_its_reserved_work_unit_test() {
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status
+  done
   |> should.equal(graph.Failed(graph.FamilyBudget(budget.WorkLimit(1))))
   probe.entries(calls) |> should.equal(["generate"])
   restart.remove_dir(dir)
@@ -229,8 +231,8 @@ pub fn a_saved_decision_survives_process_loss_without_repeating_its_body_test() 
         graph.start(runtime, run_id("saved-decision"), 0, correlation: None)
       #(runs, handle)
     })
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingApproval(approval) = waiting.status
   let assert Some(action) = waiting.current
   support.node(action) |> should.equal("review")
@@ -251,7 +253,7 @@ pub fn a_saved_decision_survives_process_loss_without_repeating_its_body_test() 
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status |> should.equal(graph.Completed(3))
+  done |> should.equal(graph.Completed(3))
   probe.entries(ledger) |> list.length |> should.equal(3)
   restart.remove_dir(dir)
 }
@@ -282,11 +284,11 @@ pub fn an_interrupted_effect_blocks_recovery_until_reconciled_test() {
     })
   let handle = support.open_graph(runtime, run_id("interrupted"))
   let assert Ok(blocked) = graph.recover(handle)
-  let assert graph.Blocked(reference, _) = blocked.status
+  let assert graph.Blocked(reference, _) = blocked
   probe.entries(ledger) |> should.equal(["effect"])
   let assert Ok(_) = graph.reconcile(handle, reference, "3")
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status |> should.equal(graph.Completed(3))
+  done |> should.equal(graph.Completed(3))
   probe.entries(ledger) |> should.equal(["effect"])
   restart.remove_dir(dir)
 }
@@ -340,7 +342,7 @@ pub fn approval_uses_fresh_context_and_passes_it_to_the_admitted_body_test() {
     graph.start(runtime, run_id("approval-context"), 0, correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingApproval(approval) = waiting.status
+  let assert graph.AwaitingApproval(approval) = waiting
   probe.record(context, "promoted")
   let assert Ok(_) =
     graph.approve(
@@ -350,7 +352,7 @@ pub fn approval_uses_fresh_context_and_passes_it_to_the_admitted_body_test() {
       context: "publisher",
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status |> should.equal(graph.Completed(1))
+  done |> should.equal(graph.Completed(1))
   probe.entries(body) |> should.equal(["publisher"])
 }
 
@@ -370,7 +372,8 @@ pub fn cancel_stops_a_started_body_and_preserves_uncertainty_test() {
     graph.start(runtime, run_id("cancel"), 0, correlation: None)
   let assert Ok(pid) = process.receive(worker, 1000)
   let assert Ok(_) = graph.cancel(handle)
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   let assert graph.Cancelled(graph.Unresolved(_, _)) = done.status
   restart.gone(pid)
   done.receipts |> should.equal([])
@@ -424,7 +427,7 @@ pub fn denial_and_a_crashed_policy_never_enter_the_operation_test() {
   let assert Ok(handle) =
     graph.start(denied, run_id("denied"), 0, correlation: None)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
-  done.status |> should.equal(graph.Failed(graph.Denied("no permission")))
+  done |> should.equal(graph.Failed(graph.Denied("no permission")))
   let broken =
     graph.new(effect(ledger), support.store(), fn(_) { Nil }, fn(_, _) {
       panic as "policy crashed"
@@ -432,7 +435,7 @@ pub fn denial_and_a_crashed_policy_never_enter_the_operation_test() {
   let assert Ok(handle) =
     graph.start(broken, run_id("policy-crashed"), 0, correlation: None)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
-  let assert graph.Failed(graph.PolicyFailed(_)) = done.status
+  let assert graph.Failed(graph.PolicyFailed(_)) = done
   probe.entries(ledger) |> should.equal([])
 }
 
@@ -449,11 +452,13 @@ pub fn runtime_stops_cycles_at_the_saved_activation_bound_test() {
     })
   let assert Ok(handle) =
     graph.start(runtime, run_id("bounded"), -1, correlation: None)
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Exhausted)
   done.receipts |> list.length |> should.equal(6)
   probe.entries(ledger) |> list.length |> should.equal(3)
-  let assert Ok(restored) = graph.recover(handle)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(restored) = graph.snapshot(handle)
   restored |> should.equal(done)
 }
 
@@ -469,11 +474,11 @@ pub fn an_unconfirmed_start_fence_never_releases_the_body_test() {
     graph.start(runtime, run_id("fence-refused"), 0, correlation: None)
   let assert Ok(stopped) =
     graph.await(handle, within: duration.milliseconds(1000))
-  stopped.status |> should.equal(graph.Unattended)
+  stopped |> should.equal(graph.Unattended)
   probe.entries(ledger) |> should.equal([])
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
-  done.status |> should.equal(graph.Completed(1))
+  done |> should.equal(graph.Completed(1))
   probe.entries(ledger) |> should.equal(["effect"])
 }
 
@@ -488,7 +493,7 @@ pub fn lost_write_acknowledgements_do_not_repeat_an_effect_test() {
   let assert Ok(handle) =
     graph.start(runtime, run_id("lost-ack"), 0, correlation: None)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
-  done.status |> should.equal(graph.Completed(1))
+  done |> should.equal(graph.Completed(1))
   probe.entries(ledger) |> should.equal(["effect"])
 }
 
@@ -511,7 +516,7 @@ pub fn cancellation_during_a_held_policy_withdraws_the_pending_command_test() {
   let assert Ok(_) = graph.cancel(handle)
   probe.release(held)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
-  done.status |> should.equal(graph.Cancelled(graph.BeforeStart))
+  done |> should.equal(graph.Cancelled(graph.BeforeStart))
   probe.entries(ledger) |> should.equal([])
 }
 
@@ -543,7 +548,7 @@ pub fn operation_timeout_blocks_with_uncertainty_and_kills_the_body_test() {
   let assert Ok(body) = process.receive(started, 1000)
   let assert Ok(blocked) =
     graph.await(handle, within: duration.milliseconds(1000))
-  let assert graph.Blocked(_, graph.EffectUncertain(_)) = blocked.status
+  let assert graph.Blocked(_, graph.EffectUncertain(_)) = blocked
   restart.gone(body)
 }
 
@@ -583,11 +588,12 @@ pub fn cancelled_reconciliation_retains_output_without_calling_a_broken_route_te
     graph.start(runtime, run_id("bad-result"), 0, correlation: None)
   let assert Ok(blocked) =
     graph.await(handle, within: duration.milliseconds(1000))
-  let assert graph.Blocked(_, graph.InvalidResult("1", _)) = blocked.status
+  let assert graph.Blocked(_, graph.InvalidResult("1", _)) = blocked
   let assert Ok(_) = graph.cancel(handle)
   let assert Ok(cancelled) = graph.snapshot(handle)
   let assert graph.Cancelled(graph.Unresolved(reference, _)) = cancelled.status
-  let assert Ok(done) = graph.reconcile(handle, reference, "1")
+  let assert Ok(_) = graph.reconcile(handle, reference, "1")
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Cancelled(graph.AfterResult))
   done.value |> should.equal(0)
   let assert [receipt] = done.receipts
@@ -645,7 +651,7 @@ pub fn replay_after_process_loss_is_bounded_and_keeps_the_logical_identity_test(
     })
   let assert Ok(blocked) =
     graph.recover(support.open_graph(runtime, run_id("replay")))
-  let assert graph.Blocked(_, graph.EffectUncertain(_)) = blocked.status
+  let assert graph.Blocked(_, graph.EffectUncertain(_)) = blocked
   probe.entries(gate) |> should.equal(["1:1", "1:2"])
   restart.remove_dir(dir)
 }
@@ -684,7 +690,7 @@ pub fn a_draining_graph_finishes_its_body_and_hands_off_the_saved_successor_test
   saved.receipts |> list.length |> should.equal(1)
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status |> should.equal(graph.Completed(3))
+  done |> should.equal(graph.Completed(3))
   probe.entries(ledger) |> list.length |> should.equal(3)
   restart.remove_dir(dir)
 }
@@ -718,12 +724,12 @@ pub fn a_live_foreign_lease_is_not_taken_by_graph_recovery_test() {
       graph.id(handle),
     )
   let assert Ok(snapshot) = graph.recover(elsewhere)
-  snapshot.status |> should.equal(graph.Working)
+  snapshot |> should.equal(graph.Working)
   nodes.revision(memory.backend, graph.id(handle)) |> should.equal(revision)
   probe.release(held)
   let assert Ok(done) =
     graph.await(elsewhere, within: duration.milliseconds(1000))
-  done.status |> should.equal(graph.Completed(1))
+  done |> should.equal(graph.Completed(1))
   probe.entries(ledger) |> should.equal(["body"])
 }
 
@@ -739,9 +745,9 @@ pub fn a_start_fence_that_lands_late_is_reconciled_without_running_the_body_test
     graph.start(runtime, run_id("late-fence"), 0, correlation: None)
   let assert Ok(stopped) =
     graph.await(handle, within: duration.milliseconds(1000))
-  stopped.status |> should.equal(graph.Unattended)
+  stopped |> should.equal(graph.Unattended)
   let assert Ok(recovered) = graph.recover(handle)
-  let assert graph.Blocked(_, graph.EffectUncertain(_)) = recovered.status
+  let assert graph.Blocked(_, graph.EffectUncertain(_)) = recovered
   probe.entries(ledger) |> should.equal([])
 }
 
@@ -761,7 +767,7 @@ pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
     graph.start(runtime, run_id("new-requirement"), 0, correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(1000))
-  let assert graph.AwaitingApproval(first) = waiting.status
+  let assert graph.AwaitingApproval(first) = waiting
   probe.record(requirements, "changed")
   let assert Error(graph.RequirementChanged(second)) =
     graph.approve(
@@ -790,7 +796,7 @@ pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
       context: 1,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
-  done.status |> should.equal(graph.Completed(1))
+  done |> should.equal(graph.Completed(1))
   probe.entries(ledger) |> should.equal(["effect"])
 }
 
@@ -866,7 +872,7 @@ pub fn losing_a_lease_kills_the_graph_body_before_recovery_test() {
       graph.id(handle),
     )
   let assert Ok(blocked) = graph.recover(handle)
-  let assert graph.Blocked(_, graph.EffectUncertain(_)) = blocked.status
+  let assert graph.Blocked(_, graph.EffectUncertain(_)) = blocked
   Nil
 }
 
@@ -896,7 +902,7 @@ pub fn concurrent_starts_of_one_identity_release_one_body_test() {
   |> should.equal(1)
   let handle = support.open_graph(runtime, run_id("same-run"))
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
-  done.status |> should.equal(graph.Completed(1))
+  done |> should.equal(graph.Completed(1))
   probe.entries(ledger) |> should.equal(["effect"])
 }
 
@@ -917,17 +923,17 @@ pub fn an_uncommitted_routing_decision_does_not_admit_its_successor_test() {
     })
   let assert Ok(handle) =
     graph.start(runtime, run_id("completion-refused"), 0, correlation: None)
-  let assert Ok(stopped) =
-    graph.await(handle, within: duration.milliseconds(1000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(1000))
+  let assert Ok(stopped) = graph.snapshot(handle)
   stopped.status |> should.equal(graph.Unattended)
   stopped.value |> should.equal(0)
   stopped.receipts |> should.equal([])
   probe.entries(admissions) |> should.equal(["generate"])
   let assert Ok(blocked) = graph.recover(handle)
-  let assert graph.Blocked(reference, _) = blocked.status
+  let assert graph.Blocked(reference, _) = blocked
   let assert Ok(_) = graph.reconcile(handle, reference, "1")
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
-  done.status |> should.equal(graph.Completed(3))
+  done |> should.equal(graph.Completed(3))
   probe.entries(ledger) |> list.length |> should.equal(3)
 }
 
@@ -1012,8 +1018,8 @@ pub fn restart_uses_the_saved_branch_even_when_the_decision_producer_changes_its
         )
       #(runs, handle)
     })
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(1000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(1000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingApproval(approval) = waiting.status
   let assert [choice] = waiting.receipts
   choice.output_json |> should.equal("false")
@@ -1033,7 +1039,7 @@ pub fn restart_uses_the_saved_branch_even_when_the_decision_producer_changes_its
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
-  done.status |> should.equal(graph.Completed("left"))
+  done |> should.equal(graph.Completed("left"))
   probe.entries(decisions) |> should.equal(["called"])
   probe.entries(branches) |> should.equal(["left"])
   restart.remove_dir(dir)

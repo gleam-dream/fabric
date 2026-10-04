@@ -21,7 +21,7 @@ import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
-fn start(desk: agent.Agent(Nil)) -> fabric.Run(Nil) {
+fn start(desk: agent.Agent(Nil, String)) -> fabric.Run(Nil, String) {
   let assert Ok(handle) =
     fabric.start(
       support.store(),
@@ -125,7 +125,7 @@ pub fn build_refuses_bounds_a_timer_cannot_hold_test() {
 }
 
 fn should_fail_with(
-  built: Result(agent.Agent(c), List(agent.ConfigError)),
+  built: Result(agent.Agent(c, String), List(agent.ConfigError)),
   errors: List(agent.ConfigError),
 ) -> Nil {
   case built {

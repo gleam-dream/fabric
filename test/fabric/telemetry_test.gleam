@@ -388,12 +388,9 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
   let assert Ok(call) = testing.call(research, "r", Topic("gleam"))
   let parent =
     agent.new("lead", scripted.plan([call]), [], policy.always_allow())
-    |> agent.with_sub_agent(
-      research,
-      to: researcher,
-      prompt: fn(topic: Topic) { topic.topic },
-      output: fn(text) { Ok(text) },
-    )
+    |> agent.with_sub_agent(research, to: researcher, prompt: fn(topic: Topic) {
+      topic.topic
+    })
     |> support.agent
   let dir = restart.temp_dir()
   let #(owner, #(old, run)) =
@@ -540,7 +537,7 @@ fn entered_by(
   }
 }
 
-fn weather_agent_spec() -> agent.Spec(Nil) {
+fn weather_agent_spec() -> agent.Spec(Nil, String) {
   agent.new(
     "agent",
     scripted.plan([scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}")]),
@@ -549,7 +546,7 @@ fn weather_agent_spec() -> agent.Spec(Nil) {
   )
 }
 
-fn weather_agent() -> agent.Agent(Nil) {
+fn weather_agent() -> agent.Agent(Nil, String) {
   support.agent(weather_agent_spec())
 }
 

@@ -105,7 +105,7 @@ pub fn deadline_configuration_is_bounded_and_part_of_definition_compatibility_te
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingSignal(reference) = waiting.status
+  let assert graph.AwaitingSignal(reference) = waiting
   // Another deadline is another stored contract: the run does not open
   // under it, and the wait is unchanged.
   let changed =
@@ -140,17 +140,18 @@ pub fn interrupted_arming_recovers_once_without_repeating_policy_test() {
       1,
       correlation: None,
     )
-  let assert Ok(interrupted) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(interrupted) = graph.snapshot(handle)
   interrupted.status |> should.equal(graph.Unattended)
   interrupted.deadline |> should.equal(None)
   let assert Ok(_) = graph.recover(handle)
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingSignal(_) = waiting.status
   let assert Some(_) = waiting.deadline
   probe.count(calls, "policy") |> should.equal(1)
-  let assert Ok(unchanged) = graph.recover(handle)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(unchanged) = graph.snapshot(handle)
   unchanged.deadline |> should.equal(waiting.deadline)
   unchanged.revision |> should.equal(waiting.revision)
 }
@@ -173,8 +174,8 @@ pub fn a_clock_failure_refuses_delivery_but_allows_explicit_cancellation_test() 
       1,
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingSignal(reference) = waiting.status
   probe.record(calls, "offline")
   graph.deliver(handle, reference, answer(), True)
@@ -196,11 +197,12 @@ pub fn a_delivery_that_crosses_the_deadline_during_acceptance_cannot_route_test(
     })
   let assert Ok(handle) =
     graph.start(spec, id("deadline-slow-route"), 1, correlation: None)
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Some(due) = waiting.deadline
-  let assert Ok(expired) = graph.deliver(handle, reference, answer(), True)
+  let assert Ok(_) = graph.deliver(handle, reference, answer(), True)
+  let assert Ok(expired) = graph.snapshot(handle)
   expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
   expired.receipts |> should.equal([])
 }
@@ -241,8 +243,8 @@ pub fn due_discovery_expires_a_wait_after_store_loss_without_manual_delivery_tes
       1,
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert Some(due) = waiting.deadline
   scan(runs).claimed |> should.equal(0)
   memory.advance(60_001)
@@ -271,13 +273,14 @@ pub fn a_clock_correction_releases_the_claim_without_resetting_the_due_time_test
       1,
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert Some(due) = waiting.deadline
   memory.advance(60_001)
   store_core.claim_ready(runs, 1) |> should.equal(Ok(["deadline-correction"]))
   memory.advance(-120_000)
-  let assert Ok(early) = graph.recover(handle)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(early) = graph.snapshot(handle)
   early.status |> should.equal(waiting.status)
   early.deadline |> should.equal(waiting.deadline)
   nodes.holder(memory.backend, id("deadline-correction"))
@@ -286,7 +289,7 @@ pub fn a_clock_correction_releases_the_claim_without_resetting_the_due_time_test
   memory.advance(120_001)
   store_core.claim_ready(runs, 1) |> should.equal(Ok(["deadline-correction"]))
   let assert Ok(expired) = graph.recover(handle)
-  expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
+  expired |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
 }
 
 pub fn an_expiration_commit_wins_against_an_in_progress_delivery_test() {
@@ -300,8 +303,8 @@ pub fn an_expiration_commit_wins_against_an_in_progress_delivery_test() {
     })
   let assert Ok(handle) =
     graph.start(spec, id("deadline-race"), 1, correlation: None)
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   let reply = process.new_subject()
@@ -310,7 +313,8 @@ pub fn an_expiration_commit_wins_against_an_in_progress_delivery_test() {
   })
   let held = probe.arrival(route)
   memory.advance(60_001)
-  let assert Ok(expired) = graph.recover(handle)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(expired) = graph.snapshot(handle)
   expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
   probe.release(held)
   let assert Ok(Error(graph.RunEnded)) = process.receive(reply, 5000)
@@ -326,8 +330,8 @@ pub fn overdue_waits_expire_after_restart_without_a_signal_or_runner_test() {
   let spec = runtime(runs, fn(_, _) { Ok(policy.Allow) })
   let assert Ok(handle) =
     graph.start(spec, id("deadline-restart"), 7, correlation: None)
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   let assert Ok(row) = store_core.get(runs, "deadline-restart")
@@ -340,7 +344,8 @@ pub fn overdue_waits_expire_after_restart_without_a_signal_or_runner_test() {
       runtime(restored, fn(_, _) { Ok(policy.Allow) }),
       id("deadline-restart"),
     )
-  let assert Ok(expired) = graph.recover(handle)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(expired) = graph.snapshot(handle)
   expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
   expired.receipts |> should.equal([])
   let assert Error(graph.RunEnded) =
@@ -356,8 +361,8 @@ pub fn approval_does_not_start_the_clock_and_revisits_get_new_deadlines_test() {
     })
   let assert Ok(handle) =
     graph.start(spec, id("deadline-approval"), 0, correlation: None)
-  let assert Ok(pending) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(pending) = graph.snapshot(handle)
   let assert graph.AwaitingApproval(approval) = pending.status
   // The approval request's own deadline (7 days); the wait's clock has not
   // started.
@@ -365,15 +370,16 @@ pub fn approval_does_not_start_the_clock_and_revisits_get_new_deadlines_test() {
   let assert Ok(now) = store.now(runs)
   { expires > now + 6 * 24 * 60 * 60 * 1000 } |> should.be_true
   memory.advance(120_000)
-  let assert Ok(approved) =
+  let assert Ok(_) =
     graph.approve(
       handle,
       approval,
       reviewer: support.reviewer("reviewer"),
       context: Nil,
     )
-  let assert Ok(first) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(approved) = graph.snapshot(handle)
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(first) = graph.snapshot(handle)
   let assert graph.AwaitingSignal(reference) = first.status
   let assert Some(due) = first.deadline
   let assert Ok(now) = store.now(runs)
@@ -383,7 +389,7 @@ pub fn approval_does_not_start_the_clock_and_revisits_get_new_deadlines_test() {
   let assert Ok(_) = graph.deliver(handle, reference, answer(), False)
   let assert Ok(pending) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingApproval(approval) = pending.status
+  let assert graph.AwaitingApproval(approval) = pending
   let assert Ok(_) =
     graph.approve(
       handle,
@@ -391,11 +397,12 @@ pub fn approval_does_not_start_the_clock_and_revisits_get_new_deadlines_test() {
       reviewer: support.reviewer("reviewer"),
       context: Nil,
     )
-  let assert Ok(second) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(second) = graph.snapshot(handle)
   let assert Some(next_due) = second.deadline
   should.be_true(next_due >= due + 10_000)
-  let assert Ok(duplicate) = graph.deliver(handle, reference, answer(), False)
+  let assert Ok(_) = graph.deliver(handle, reference, answer(), False)
+  let assert Ok(duplicate) = graph.snapshot(handle)
   duplicate.revision |> should.equal(second.revision)
   duplicate.deadline |> should.equal(second.deadline)
 }
@@ -410,12 +417,13 @@ pub fn late_delivery_commits_expiration_without_accepting_the_result_test() {
       1,
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingSignal(reference) = waiting.status
   let assert Some(due) = waiting.deadline
   memory.advance(60_001)
-  let assert Ok(expired) = graph.deliver(handle, reference, answer(), True)
+  let assert Ok(_) = graph.deliver(handle, reference, answer(), True)
+  let assert Ok(expired) = graph.snapshot(handle)
   expired.status |> should.equal(graph.Failed(graph.DeadlineExpired(due)))
   expired.receipts |> should.equal([])
 }

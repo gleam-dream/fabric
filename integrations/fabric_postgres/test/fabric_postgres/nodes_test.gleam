@@ -67,7 +67,7 @@ fn holder(schema: String, id: run.RunId) -> Result(#(String, Bool), Nil) {
   }
 }
 
-fn incarnation(run: fabric.Run(Nil)) -> Int {
+fn incarnation(run: fabric.Run(Nil, String)) -> Int {
   let assert Ok(snapshot) = fabric.snapshot(run)
   snapshot.incarnation
 }

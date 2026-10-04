@@ -33,7 +33,7 @@ pub fn fresh_idle_stores_are_ready_before_their_first_renewal_test() {
   )
 }
 
-fn slow(bodies: probe.Probe) -> agent.Agent(Nil) {
+fn slow(bodies: probe.Probe) -> agent.Agent(Nil, String) {
   agent.new(
     "readiness",
     scripted.plan([scripted.slow("body", "body")]),

@@ -22,7 +22,7 @@ import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
 
-fn observed(snapshot: run.Snapshot) {
+fn observed(snapshot: run.Snapshot(String)) {
   #(
     snapshot.status,
     snapshot.turns_used,
@@ -55,7 +55,8 @@ fn candidate(worker) {
       recipe.initial(worker, Nil, "go"),
       correlation: None,
     )
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   let assert graph.Completed(raw) = done.status
   let assert Ok(state) = record.decode(raw)
   #(controller.snapshot(state), done)
@@ -212,8 +213,8 @@ pub fn an_agent_approval_cannot_be_replaced_by_approval_of_the_batch_test() {
       recipe.initial(worker, False, "go"),
       correlation: None,
     )
-  let assert Ok(done) =
-    graph.await(candidate, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(candidate, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(candidate)
   let assert graph.Failed(graph.OperationFailed(reason)) = done.status
   string.contains(reason, "per-action approval") |> should.be_true
   let assert Ok(inner) = record.decode(done.value)
@@ -302,8 +303,8 @@ pub fn a_batch_receipt_loses_the_individual_success_that_the_agent_retains_test(
       support.id("batch-loss"),
     )
   graph.recover(handle) |> should.be_ok
-  let assert Ok(saved) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(saved) = graph.snapshot(handle)
   let assert graph.Blocked(_, graph.EffectUncertain(_)) = saved.status
   let assert Ok(inner) = record.decode(saved.value)
   let assert controller.Acting(_, [first, second]) = inner.phase
@@ -332,7 +333,8 @@ pub fn canceling_a_batch_exposes_only_scope_uncertainty_test() {
   probe.release(probe.arrival(calls))
   probe.arrival(calls).name |> should.equal("second")
   graph.cancel(handle) |> should.be_ok
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   let assert graph.Cancelled(graph.Unresolved(_, _)) = done.status
   let assert Ok(inner) = record.decode(done.value)
   let assert controller.Acting(_, [first, second]) = inner.phase

@@ -112,7 +112,8 @@ pub fn a_real_mcp_operation_returns_a_native_result_and_retained_receipt_test() 
       Increment("apple", 3),
       correlation: None,
     )
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   let assert graph.Completed(receipt) = done.status
   receipt.server |> should.equal("warehouse")
   receipt.tool |> should.equal("counter/add")
@@ -144,7 +145,7 @@ pub fn policy_holds_the_real_effect_until_approval_test() {
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingApproval(approval) = waiting.status
+  let assert graph.AwaitingApproval(approval) = waiting
   read(connection, "approved") |> should.equal(0)
   graph.approve(
     handle,
@@ -154,7 +155,7 @@ pub fn policy_holds_the_real_effect_until_approval_test() {
   )
   |> should.be_ok
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Completed(receipt) = done.status
+  let assert graph.Completed(receipt) = done
   receipt.value |> should.equal(5)
   read(connection, "approved") |> should.equal(5)
 }
@@ -181,8 +182,9 @@ pub fn changed_contracts_and_server_identity_refuse_before_the_tool_effect_test(
           Increment("refused", 3),
           correlation: None,
         )
-      let assert Ok(done) =
+      let assert Ok(_) =
         graph.await(handle, within: duration.milliseconds(5000))
+      let assert Ok(done) = graph.snapshot(handle)
       let assert graph.Failed(graph.OperationFailed(_)) = done.status
       done.receipts |> should.equal([])
       read(connection, "refused") |> should.equal(0)
@@ -200,7 +202,7 @@ pub fn changed_contracts_and_server_identity_refuse_before_the_tool_effect_test(
       correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Failed(graph.OperationFailed(_)) = done.status
+  let assert graph.Failed(graph.OperationFailed(_)) = done
   read(connection, "refused") |> should.equal(0)
   client.stop(other)
 }
@@ -225,7 +227,7 @@ pub fn optional_output_schema_description_updates_and_paged_catalogs_work_test()
         )
       let assert Ok(done) =
         graph.await(handle, within: duration.milliseconds(5000))
-      let assert graph.Completed(receipt) = done.status
+      let assert graph.Completed(receipt) = done
       receipt.value |> should.equal(2)
       Nil
     },
@@ -255,7 +257,7 @@ pub fn optional_output_schema_description_updates_and_paged_catalogs_work_test()
       correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Completed(receipt) = done.status
+  let assert graph.Completed(receipt) = done
   receipt.value |> should.equal(6)
 }
 
@@ -280,8 +282,9 @@ pub fn post_call_errors_remain_uncertain_without_routes_or_retries_test() {
           Increment("committed", 1),
           correlation: None,
         )
-      let assert Ok(blocked) =
+      let assert Ok(_) =
         graph.await(handle, within: duration.milliseconds(5000))
+      let assert Ok(blocked) = graph.snapshot(handle)
       let assert graph.Blocked(_, graph.EffectUncertain(_)) = blocked.status
       blocked.receipts |> should.equal([])
       graph.recover(handle) |> should.be_ok
@@ -311,8 +314,8 @@ pub fn a_saved_receipt_recovers_without_a_live_connection_after_store_loss_test(
       process.receive_forever(process.new_subject())
     })
   let #(runs, handle) = process.receive_forever(ready)
-  let assert Ok(before) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(before) = graph.snapshot(handle)
   let assert graph.Completed(_) = before.status
   process.kill(owner)
   let assert Ok(Nil) = store.stop(runs)
@@ -324,7 +327,8 @@ pub fn a_saved_receipt_recovers_without_a_live_connection_after_store_loss_test(
       runtime(connection, tool, directory(dir <> "/records"), allow),
       id("saved"),
     )
-  let assert Ok(after) = graph.recover(restored)
+  let assert Ok(_) = graph.recover(restored)
+  let assert Ok(after) = graph.snapshot(restored)
   after.status |> should.equal(before.status)
   after.receipts |> should.equal(before.receipts)
   let assert Ok(observer) = client.start("observer", settings(dir))
@@ -345,8 +349,8 @@ pub fn graph_cancellation_stops_waiting_but_retains_the_unresolved_effect_test()
     )
   await_count(observer, "cancelled", 1, 100)
   graph.cancel(handle) |> should.be_ok
-  let assert Ok(cancelled) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(cancelled) = graph.snapshot(handle)
   let assert graph.Cancelled(graph.Unresolved(_, _)) = cancelled.status
   cancelled.receipts |> should.equal([])
   await_count(observer, "cancelled/cancelled", 1, 100)
@@ -366,8 +370,8 @@ pub fn output_conversion_failure_preserves_the_actual_effect_test() {
       Increment("once", 1),
       correlation: None,
     )
-  let assert Ok(blocked) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(blocked) = graph.snapshot(handle)
   let assert graph.Blocked(_, graph.EffectUncertain(_)) = blocked.status
   blocked.receipts |> should.equal([])
   read(connection, "once") |> should.equal(1)
@@ -405,7 +409,7 @@ pub fn protocol_content_is_preserved_for_the_application_converter_test() {
       correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Completed(receipt) = done.status
+  let assert graph.Completed(receipt) = done
   let assert Ok(raw) =
     codec.encode(fabric_mcp.receipt_codec(tool, codec.int(), convert), receipt)
   codec.decode(fabric_mcp.receipt_codec(tool, codec.int(), convert), raw)
@@ -457,7 +461,7 @@ pub fn incompatible_native_input_and_corrupt_receipts_are_rejected_test() {
       correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Completed(receipt) = done.status
+  let assert graph.Completed(receipt) = done
   let receipt_codec = fabric_mcp.receipt_codec(tool, codec.int(), value)
   codec.encode(receipt_codec, fabric_mcp.Receipt(..receipt, value: 3))
   |> should.be_error

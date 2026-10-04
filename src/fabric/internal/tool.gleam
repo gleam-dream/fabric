@@ -81,7 +81,7 @@ pub type Kind {
     /// Decodes the arguments and builds the sub-agent's prompt.
     prompt: fn(String) -> Result(String, String),
     /// The sub-agent's outcome as this call's result.
-    settle: fn(run.Outcome) -> Outcome,
+    settle: fn(run.Outcome(String)) -> Outcome,
   )
 }
 
@@ -107,8 +107,8 @@ pub fn handler(
 
 /// A tool whose call starts a sub-agent run of `agent` (see
 /// `agent.with_sub_agent`): `prompt` builds the sub-agent's prompt from the
-/// decoded input, and `output` parses a completed sub-agent's answer into
-/// this call's output (an `Error` is a definite failure the model sees).
+/// decoded input, and `output` reads a completed sub-agent's stored answer
+/// as this call's output (an `Error` is a definite failure the model sees).
 /// Any other outcome is a definite failure that names it.
 pub fn delegation(
   definition: Definition(input, output),
@@ -145,7 +145,7 @@ pub fn delegation(
 /// A sub-agent's end as its delegation's result: a completed answer parsed
 /// by `parse`, or a definite failure that names how the sub-agent ended.
 fn delegated(
-  outcome: run.Outcome,
+  outcome: run.Outcome(String),
   parse: fn(String) -> Result(output, String),
   output: Codec(output),
 ) -> Outcome {
@@ -156,8 +156,11 @@ fn delegated(
     run.Completed(text) ->
       case parse(text) {
         Ok(value) -> encode(output, value)
-        Error(message) -> explain(message)
+        Error(message) ->
+          explain("the sub-agent's answer is invalid: " <> message)
       }
+    run.AnswerInvalid(reason:, ..) ->
+      explain("the sub-agent's answer is invalid: " <> reason)
     run.Refused(reason) -> explain("the sub-agent refused: " <> reason)
     run.OutputLimited(_) ->
       explain("the sub-agent's answer exceeded its output limit")

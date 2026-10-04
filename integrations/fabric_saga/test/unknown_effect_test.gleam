@@ -63,7 +63,7 @@ fn model_once() -> model.Model {
 
 fn start(
   workflow: saga.Workflow(String, String, Failure, Nil),
-) -> fabric.Run(Nil) {
+) -> fabric.Run(Nil, String) {
   let tool =
     fabric_saga.tool(
       definition(),

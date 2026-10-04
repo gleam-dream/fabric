@@ -34,25 +34,31 @@ pub fn five_activations_stop_before_the_last_review_test() {
   list.length(done.receipts) |> should.equal(5)
 }
 
+/// The agent's typed answer is the decision: its codec, an object around
+/// the boolean, encodes the reviewer's receipts.
 pub fn a_managed_agent_supplies_the_same_native_boolean_decision_test() {
   let done = fabric_graph_demo.execute_agent(6)
   done.status |> should.equal(graph.Completed(3))
   list.map(done.receipts, fn(receipt) { receipt.output_json })
-  |> should.equal(["1", "false", "2", "false", "3", "true"])
+  |> should.equal([
+    "1", "{\"approve\":false}", "2", "{\"approve\":false}", "3",
+    "{\"approve\":true}",
+  ])
 }
 
 pub fn a_human_signal_can_supply_the_same_native_decision_contract_test() {
   let #(handle, decision) = fabric_graph_demo.start_manual(6)
-  let assert Ok(first) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(first) = graph.snapshot(handle)
   let assert graph.AwaitingSignal(reference) = first.status
   first.value |> should.equal(1)
   let assert Ok(_) = graph.deliver(handle, reference, decision, False)
-  let assert Ok(second) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(second) = graph.snapshot(handle)
   let assert graph.AwaitingSignal(reference) = second.status
   second.value |> should.equal(2)
-  let assert Ok(done) = graph.deliver(handle, reference, decision, True)
+  let assert Ok(_) = graph.deliver(handle, reference, decision, True)
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(2))
   list.map(done.receipts, fn(receipt) { receipt.activation })
   |> should.equal([1, 2, 3, 4])

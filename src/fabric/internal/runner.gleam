@@ -111,6 +111,8 @@ pub fn setup(
       system: admitted.system_prompt,
       approval_expiry: admitted.approval_expiry,
       clock: store_clock(store),
+      answer: admitted.answer_schema,
+      check_answer: admitted.check_answer,
     ),
     model: admitted.model,
     max_concurrency: admitted.max_concurrency,

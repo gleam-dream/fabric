@@ -122,7 +122,7 @@ pub fn starting_again_with_the_same_id_is_already_started_test() {
 }
 
 fn should_be_already_started(
-  started: Result(fabric.Run(Nil), fabric.Error),
+  started: Result(fabric.Run(Nil, String), fabric.Error),
   id: run.RunId,
 ) -> Nil {
   case started {
@@ -286,12 +286,7 @@ pub fn a_sub_agent_carries_its_parents_correlation_test() {
       [],
       policy.always_allow(),
     )
-    |> agent.with_sub_agent(
-      research,
-      to: child,
-      prompt: fn(topic) { topic },
-      output: fn(answer) { Ok(answer) },
-    )
+    |> agent.with_sub_agent(research, to: child, prompt: fn(topic) { topic })
     |> support.agent
   let ticket = correlation.from_key("ticket-family")
   let assert Ok(handle) =
@@ -329,12 +324,7 @@ pub fn a_families_events_carry_its_root_test() {
       policy.always_allow(),
     )
     |> agent.with_max_depth(2)
-    |> agent.with_sub_agent(
-      research,
-      to: child,
-      prompt: fn(topic) { topic },
-      output: fn(answer) { Ok(answer) },
-    )
+    |> agent.with_sub_agent(research, to: child, prompt: fn(topic) { topic })
     |> support.agent
   }
   let leaf =
@@ -416,6 +406,8 @@ pub fn a_sub_agents_record_keeps_its_root_test() {
       system: None,
       approval_expiry: None,
       clock: fn() { 0 },
+      answer: None,
+      check_answer: fn(_) { Ok(Nil) },
     )
   let #(root, _) =
     controller.start(
@@ -461,6 +453,8 @@ pub fn the_record_keeps_only_a_chosen_correlation_test() {
         system: None,
         approval_expiry: None,
         clock: fn() { 0 },
+        answer: None,
+        check_answer: fn(_) { Ok(Nil) },
       ),
       "plain-run",
       run.DefinitionId("desk", 1),

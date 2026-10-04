@@ -9,11 +9,17 @@
 //// let assert Ok(handle) =
 ////   graph.start(runtime, id: run.new_id(), initial: draft, correlation: None)
 //// case graph.await(handle, within: duration.seconds(5)) {
-////   Ok(graph.Snapshot(status: graph.AwaitingApproval(pending), ..)) ->
+////   Ok(graph.AwaitingApproval(pending)) ->
 ////     graph.approve(handle, pending, reviewer:, context: Ctx(user:))
 ////   ...
 //// }
 //// ```
+////
+//// `await` and every command (`approve`, `reject`, `deliver`, `reconcile`,
+//// `poll_job`, `cancel`, `recover`) return the run's `Status`, as the
+//// agent runtime's do; `snapshot` reads the whole record (the state value,
+//// receipts, deadline). `status_kind` classifies a status by what the
+//// caller does next.
 ////
 //// A run handle starts no process by itself. Waiting approvals, unresolved
 //// effects and completed runs live as stored data. `recover` reconnects work
@@ -154,7 +160,8 @@ pub type Cancellation {
   Unresolved(reference: Reconciliation, problem: Problem)
 }
 
-/// A run's status. This union may grow: keep a catch-all.
+/// A run's status. This union may grow: branch on `status_kind`, and match
+/// the variants you handle with a catch-all.
 pub type Status(answer) {
   Working
   /// Work exists but this store knows no owner and no live foreign lease.
@@ -173,6 +180,74 @@ pub type Status(answer) {
   Exhausted
   Cancelled(Cancellation)
   Expired(due: Int, disposition: Cancellation)
+}
+
+/// A stable classification of `Status`, by what the caller does next.
+pub type StatusKind {
+  /// Work is in flight, or the run waits on something that settles
+  /// without the caller: an operation, a job, a child, a fork, a stop in
+  /// progress (`Working`, `AwaitingJob`, `CancellingJob`, `Child`, `Fork`,
+  /// `CancellingChild`). `await` it. A job without a schedule is observed
+  /// with `poll_job`, and a child or fork may itself wait for input (open
+  /// it with `child` or `branch`).
+  Active
+  /// Work is in flight and nothing drives it (`Unattended`): `recover` it
+  /// once its previous owner is known to be gone.
+  NeedsRecovery
+  /// The run waits for the application: an answer (`AwaitingApproval`), a
+  /// signal (`AwaitingSignal`) or a reconciliation (`Blocked`).
+  NeedsInput
+  /// The run has ended (`Completed`, `Failed`, `Exhausted`, `Cancelled`,
+  /// `Expired`). A cancelled run may still name an effect to reconcile.
+  Ended
+}
+
+pub fn status_kind(status: Status(answer)) -> StatusKind {
+  case status {
+    Working
+    | AwaitingJob(_)
+    | CancellingJob(..)
+    | Child(..)
+    | Fork(..)
+    | CancellingChild(..) -> Active
+    Unattended -> NeedsRecovery
+    AwaitingApproval(_) | AwaitingSignal(_) | Blocked(..) -> NeedsInput
+    Completed(_) | Failed(_) | Exhausted | Cancelled(_) | Expired(..) -> Ended
+  }
+}
+
+/// One line for logs; it names the answer only by its presence.
+pub fn describe_status(status: Status(answer)) -> String {
+  case status {
+    Working -> "working"
+    Unattended -> "work in flight with no runner"
+    AwaitingApproval(reference) ->
+      "awaiting approval of activation "
+      <> int.to_string(reference.activation)
+      <> " ("
+      <> reference.requirement.name
+      <> ")"
+    AwaitingSignal(reference) ->
+      "awaiting the signal " <> reference.contract.name
+    AwaitingJob(reference) ->
+      "awaiting the job of activation " <> int.to_string(reference.activation)
+    CancellingJob(reference, _, _) ->
+      "cancelling the job of activation " <> int.to_string(reference.activation)
+    Child(reference, _) ->
+      "waiting for the child run " <> run.id_to_string(reference.child)
+    Fork(_, _) -> "waiting for a fork"
+    CancellingChild(reference, _) ->
+      "cancelling the child run " <> run.id_to_string(reference.child)
+    Blocked(reference, _) ->
+      "blocked on activation "
+      <> int.to_string(reference.activation)
+      <> ", which needs reconciling"
+    Completed(_) -> "completed"
+    Failed(failure) -> "failed: " <> describe_failure(failure)
+    Exhausted -> "out of activations"
+    Cancelled(_) -> "cancelled"
+    Expired(due, _) -> "expired at " <> int.to_string(due)
+  }
 }
 
 /// Where an activation's accepted result led.
@@ -1301,15 +1376,23 @@ pub fn snapshot(
   view
 }
 
+/// The run's status, read through its current definition.
+fn status(
+  handle: Handle(context, state, answer),
+) -> Result(Status(answer), Error) {
+  snapshot(handle) |> result.map(fn(snapshot) { snapshot.status })
+}
+
 /// Waits up to `within` for completion, approval, reconciliation or
-/// unattended work. At the deadline a still-working snapshot is returned; a
-/// `within` of zero (or less) reads the snapshot now. It never recovers a
-/// run, but an approval request whose deadline passed is expired first, and
-/// the snapshot shows the failed run.
+/// unattended work, and returns the run's status. At the deadline a
+/// still-working status is returned; a `within` of zero (or less) reads the
+/// status now. It never recovers a run, but an approval request whose
+/// deadline passed is expired first, and the status shows the failed run.
+/// `snapshot` reads the whole record (the state value, receipts, deadline).
 pub fn await(
   handle: Handle(context, state, answer),
   within within: Duration,
-) -> Result(Snapshot(state, answer), Error) {
+) -> Result(Status(answer), Error) {
   let within = int.max(0, duration.to_milliseconds(within))
   let watcher = process.new_subject()
   let id = run.id_to_string(graph_handle.id(handle))
@@ -1327,7 +1410,7 @@ pub fn await(
     id,
     watcher,
   )
-  outcome
+  result.map(outcome, fn(snapshot) { snapshot.status })
 }
 
 fn attend(
@@ -1431,7 +1514,7 @@ fn now() -> Int
 /// approval request whose deadline passed expires.
 pub fn recover(
   handle: Handle(context, state, answer),
-) -> Result(Snapshot(state, answer), Error) {
+) -> Result(Status(answer), Error) {
   let runtime = graph_handle.runtime(handle)
   use _ <- result.try(
     runner.recover(
@@ -1443,7 +1526,7 @@ pub fn recover(
     )
     |> result.map_error(from_runner),
   )
-  snapshot(handle)
+  status(handle)
 }
 
 /// Inspect an admitted job wait once. Pending progress leaves its record
@@ -1454,7 +1537,7 @@ pub fn recover(
 pub fn poll_job(
   handle: Handle(context, state, answer),
   reference: job.Reference,
-) -> Result(Snapshot(state, answer), Error) {
+) -> Result(Status(answer), Error) {
   use _ <- result.try(case reference.run == graph_handle.id(handle) {
     True -> Ok(Nil)
     False -> Error(WrongReference)
@@ -1470,11 +1553,11 @@ pub fn poll_job(
     )
     |> result.map_error(from_runner),
   )
-  snapshot(handle)
+  status(handle)
 }
 
 /// Cancels the run, and its managed children through the store, and
-/// returns its snapshot right after the cancellation was committed.
+/// returns its status right after the cancellation was committed.
 /// Cancellation does not require the currently deployed definition to fit the
 /// record. A lost or unresponsive owner is fenced by a committed cancellation;
 /// effects whose results were not saved remain explicitly unresolved.
@@ -1484,7 +1567,7 @@ pub fn poll_job(
 /// that has ended is `RunEnded`.
 pub fn cancel(
   handle: Handle(context, state, answer),
-) -> Result(Snapshot(state, answer), Error) {
+) -> Result(Status(answer), Error) {
   let runtime = graph_handle.runtime(handle)
   use _ <- result.try(
     runner.cancel(
@@ -1496,7 +1579,7 @@ pub fn cancel(
     )
     |> result.map_error(from_runner),
   )
-  snapshot(handle)
+  status(handle)
 }
 
 /// Cancels the stored run `id` with no definition: for a run that cannot
@@ -1555,8 +1638,9 @@ pub fn approve(
   reference: ApprovalRef,
   reviewer reviewer: Reviewer,
   context context: context,
-) -> Result(Snapshot(state, answer), Error) {
+) -> Result(Status(answer), Error) {
   answer_approval(handle, reference, Approving(reviewer, context), 3)
+  |> result.map(fn(snapshot) { snapshot.status })
 }
 
 /// Rejects the run's waiting approval request: the operation does not run
@@ -1569,8 +1653,9 @@ pub fn reject(
   reference: ApprovalRef,
   reason reason: String,
   reviewer reviewer: Reviewer,
-) -> Result(Snapshot(state, answer), Error) {
+) -> Result(Status(answer), Error) {
   answer_approval(handle, reference, Rejecting(reviewer, reason), 3)
+  |> result.map(fn(snapshot) { snapshot.status })
 }
 
 type Answering(context) {
@@ -1582,14 +1667,14 @@ type Answering(context) {
 /// value for an already consumed reference is acknowledged without routing
 /// again. A conflicting value is `SignalConflict`; a wait the run moved past
 /// is `StaleReference`. A due wait instead commits and returns
-/// `Failed(DeadlineExpired(due))`; that snapshot acknowledges expiration,
+/// `Failed(DeadlineExpired(due))`; that status acknowledges expiration,
 /// not acceptance of the supplied value.
 pub fn deliver(
   handle: Handle(context, state, answer),
   reference: SignalReference,
   contract: signal.Signal(value),
   value: value,
-) -> Result(Snapshot(state, answer), Error) {
+) -> Result(Status(answer), Error) {
   use _ <- result.try(case signal.identity(contract) == reference.contract {
     True -> Ok(Nil)
     False -> Error(WrongReference)
@@ -1613,8 +1698,9 @@ pub fn deliver_json(
   handle: Handle(context, state, answer),
   reference: SignalReference,
   output_json: String,
-) -> Result(Snapshot(state, answer), Error) {
+) -> Result(Status(answer), Error) {
   deliver_with(handle, reference, output_json, 3)
+  |> result.map(fn(snapshot) { snapshot.status })
 }
 
 fn signal_matches(
@@ -1905,8 +1991,9 @@ pub fn reconcile(
   handle: Handle(context, state, answer),
   reference: Reconciliation,
   content: String,
-) -> Result(Snapshot(state, answer), Error) {
+) -> Result(Status(answer), Error) {
   reconcile_with(handle, reference, content, 3)
+  |> result.map(fn(snapshot) { snapshot.status })
 }
 
 fn reconcile_with(

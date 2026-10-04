@@ -83,14 +83,27 @@ pub fn desk_policy(
   }
 }
 
+/// The desk's final answer, typed: the model is asked for its JSON Schema,
+/// and a run completes with the decoded value.
+pub type Resolution {
+  Resolution(summary: String)
+}
+
+pub fn resolution_codec() -> codec.Codec(Resolution) {
+  use summary <- codec.field("summary", codec.string(), get: fn(r) { r.summary })
+  codec.success(Resolution(summary:))
+}
+
 /// An agent is described, then built once: `build` reports every problem.
 /// A provider's model comes from `fabric/llm.model(client, settings, model_id)`,
-/// given the application's started HTTP Gun client.
+/// given the application's started HTTP Gun client. Without `with_answer`
+/// the answer is the model's text (`Agent(Context, String)`).
 pub fn desk(
   model: Model,
   pay: fn(Transfer) -> Result(Receipt, TransferError),
-) -> Result(Agent(Context), List(agent.ConfigError)) {
+) -> Result(Agent(Context, Resolution), List(agent.ConfigError)) {
   agent.new("desk", model, [transfer_tool(pay)], desk_policy)
+  |> agent.with_answer(resolution_codec())
   |> agent.with_max_turns(6)
   |> agent.with_token_budget(20_000)
   |> agent.build
@@ -123,7 +136,7 @@ pub fn supervise(path: String) -> Result(store.Store, actor.StartError) {
 /// call of the run; `None` derives it from the id.
 pub fn start_payment(
   runs: store.Store,
-  desk: Agent(Context),
+  desk: Agent(Context, Resolution),
   context: Context,
   prompt: String,
 ) -> Result(String, fabric.Error) {
@@ -162,14 +175,16 @@ pub fn reviewer_of(
 /// stored record. An approval checks the policy again with the context
 /// passed here, and one that comes after the request expired (7 days by
 /// default, `agent.with_approval_expiry`) is `fabric.ApprovalExpired`.
+/// Every command returns the run's status, as `await` does; a finished
+/// run's is `run.Finished(run.Completed(Resolution(..)))`.
 pub fn review(
   runs: store.Store,
-  desk: Agent(Context),
+  desk: Agent(Context, Resolution),
   context: Context,
   reviewer: reviewer.Reviewer,
   stored_id: String,
   verdict: Verdict,
-) -> Result(run.Status, fabric.Error) {
+) -> Result(run.Status(Resolution), fabric.Error) {
   use id <- result.try(
     run.parse_id(stored_id)
     |> result.replace_error(fabric.RunNotFound),
@@ -198,10 +213,10 @@ pub fn review(
 /// alone while another node holds its lease.
 pub fn resume(
   runs: store.Store,
-  desk: Agent(Context),
+  desk: Agent(Context, Resolution),
   context: Context,
   stored_id: String,
-) -> Result(fabric.Run(Context), fabric.Error) {
+) -> Result(fabric.Run(Context, Resolution), fabric.Error) {
   use id <- result.try(
     run.parse_id(stored_id)
     |> result.replace_error(fabric.RunNotFound),
@@ -217,16 +232,21 @@ pub type Summary {
   Summary(text: String)
 }
 
+pub fn summary_codec() -> codec.Codec(Summary) {
+  use text <- codec.field("summary", codec.string(), get: fn(s) { s.text })
+  codec.success(Summary(text:))
+}
+
 /// A sub-agent is a typed delegation whose start the policy gates like a
 /// tool (`action.target` is `policy.StartAgent(..)`). Its approvals surface
 /// in the parent's status, cancelling the parent cancels it, and
-/// recovering the parent recovers it. `output` parses a completed
-/// sub-agent's answer; any other ending is a definite failure the model
-/// sees.
+/// recovering the parent recovers it. The researcher's typed answer is the
+/// delegation's output (`Summary`); any other ending is a definite failure
+/// the model sees.
 pub fn front_desk(
   model: Model,
-  researcher: Agent(Context),
-) -> Result(Agent(Context), List(agent.ConfigError)) {
+  researcher: Agent(Context, Summary),
+) -> Result(Agent(Context, String), List(agent.ConfigError)) {
   let research =
     tool.define(
       "research",
@@ -235,18 +255,12 @@ pub fn front_desk(
         use name <- codec.field("topic", codec.string(), get: fn(t) { t.name })
         codec.success(Topic(name:))
       },
-      {
-        use text <- codec.field("summary", codec.string(), get: fn(s) { s.text })
-        codec.success(Summary(text:))
-      },
+      summary_codec(),
     )
   agent.new("front-desk", model, [], desk_policy)
-  |> agent.with_sub_agent(
-    research,
-    to: researcher,
-    prompt: fn(topic) { topic.name },
-    output: fn(answer) { Ok(Summary(answer)) },
-  )
+  |> agent.with_sub_agent(research, to: researcher, prompt: fn(topic) {
+    topic.name
+  })
   |> agent.build
 }
 

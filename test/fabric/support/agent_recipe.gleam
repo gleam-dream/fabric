@@ -25,7 +25,7 @@ import gleam/string
 import json/blueprint/codec
 
 pub fn initial(
-  worker: agent.Agent(context),
+  worker: agent.Agent(context, String),
   context: context,
   prompt: String,
 ) -> String {
@@ -50,7 +50,7 @@ pub fn initial(
 
 pub fn runtime(
   runs: store.Store,
-  worker: agent.Agent(context),
+  worker: agent.Agent(context, String),
   context: fn(run.RunId) -> context,
 ) -> graph.Runtime(context, String, String) {
   let config = checked_agent.admitted(worker)
@@ -76,6 +76,7 @@ pub fn runtime(
               system: env.system,
               messages: state.transcript,
               tools: registry.declarations(env.registry),
+              answer: env.answer,
             )
           use reply <- result.try(
             model_port.call(config.model, request)
@@ -205,6 +206,8 @@ fn env(
     config.system_prompt,
     approval_expiry: None,
     clock: fn() { 0 },
+    answer: None,
+    check_answer: fn(_) { Ok(Nil) },
   )
 }
 

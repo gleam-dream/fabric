@@ -62,8 +62,8 @@ pub fn replacing_decision_production_preserves_typed_graph_routes_test() {
     let assert Ok(id) = run.parse_id("decision-consumer")
     let assert Ok(handle) =
       graph.start(runtime, id, "2 + 2 = 4", correlation: None)
-    let assert Ok(done) =
-      graph.await(handle, within: duration.milliseconds(5000))
+    let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+    let assert Ok(done) = graph.snapshot(handle)
     done.status |> should.equal(graph.Completed(example.1))
     let assert [review, terminal] = done.receipts
     terminal.node |> should.equal(example.2)

@@ -93,7 +93,8 @@ pub fn an_http_classifier_batch_retains_native_answers_models_usage_and_rubric_t
       "2 + 2 = 4",
       correlation: None,
     )
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   let assert graph.Completed(receipt) = done.status
   receipt.requested_model |> should.equal("jev-latest")
   receipt.resolved_model |> should.equal("protocol-fixture-only")
@@ -125,7 +126,7 @@ pub fn approval_precedes_request_construction_and_the_http_call_test() {
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingApproval(approval) = waiting.status
+  let assert graph.AwaitingApproval(approval) = waiting
   support.stats(url, "calls") |> should.equal(0)
   graph.approve(
     handle,
@@ -135,7 +136,7 @@ pub fn approval_precedes_request_construction_and_the_http_call_test() {
   )
   |> should.be_ok
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Completed(_) = done.status
+  let assert graph.Completed(_) = done
   support.stats(url, "calls") |> should.equal(1)
   Nil
 }
@@ -150,8 +151,8 @@ pub fn malformed_results_rate_limits_and_lost_replies_never_route_or_retry_test(
         "sample",
         correlation: None,
       )
-    let assert Ok(blocked) =
-      graph.await(handle, within: duration.milliseconds(5000))
+    let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+    let assert Ok(blocked) = graph.snapshot(handle)
     let assert graph.Blocked(_, graph.EffectUncertain(detail)) = blocked.status
     string.contains(detail, "private diagnostic body") |> should.be_false
     string.contains(detail, "test-key") |> should.be_false
@@ -177,7 +178,7 @@ pub fn an_unsent_request_is_a_definite_failure_test() {
       correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Failed(graph.OperationFailed(_)) = done.status
+  let assert graph.Failed(graph.OperationFailed(_)) = done
   support.stats(url, "calls") |> should.equal(0)
   Nil
 }
@@ -193,7 +194,8 @@ pub fn cancellation_closes_local_work_and_preserves_remote_uncertainty_test() {
     )
   await_stat(url, "calls", 1, 100)
   graph.cancel(handle) |> should.be_ok
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   let assert graph.Cancelled(graph.Unresolved(_, _)) = done.status
   await_stat(url, "disconnected", 1, 100)
   done.receipts |> should.equal([])
@@ -218,15 +220,16 @@ pub fn recovery_after_store_loss_reuses_the_receipt_with_the_server_stopped_test
       process.receive_forever(process.new_subject())
     })
   let #(runs, handle) = process.receive_forever(ready)
-  let assert Ok(before) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(before) = graph.snapshot(handle)
   let assert graph.Completed(_) = before.status
   support.stats(url, "calls") |> should.equal(1)
   process.kill(owner)
   let assert Ok(Nil) = store.stop(runs)
   support.stop(server)
   let handle = open_graph(runtime(directory(path), config, allow), id("saved"))
-  let assert Ok(after) = graph.recover(handle)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(after) = graph.snapshot(handle)
   after.status |> should.equal(before.status)
   after.receipts |> should.equal(before.receipts)
   support.remove_dir(path)
@@ -242,7 +245,7 @@ pub fn corrupt_receipts_and_changed_question_meaning_cannot_restore_test() {
       correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Completed(receipt) = done.status
+  let assert graph.Completed(receipt) = done
   let codec = fabric_typesafe.receipt_codec(questions())
   codec.encode(
     codec,

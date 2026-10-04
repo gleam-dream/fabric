@@ -296,7 +296,7 @@ pub fn a_graph_wait_is_neither_unattended_work_nor_a_budget_run_test() {
       correlation: None,
     )
   let assert Ok(snapshot) = graph.await(handle, within: duration.seconds(30))
-  let assert graph.AwaitingSignal(reference) = snapshot.status
+  let assert graph.AwaitingSignal(reference) = snapshot
   let assert Ok(waiting) = fabric_postgres.stats(settings)
   waiting.waiting.count |> should.equal(1)
   waiting.unattended.count |> should.equal(0)

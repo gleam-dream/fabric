@@ -21,7 +21,6 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/result
 import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
@@ -32,11 +31,7 @@ fn runtime(runs, worker) {
       run.DefinitionId("integer-agent", 1),
       worker,
       input: codec.int(),
-      output: codec.int(),
       prompt: fn(n) { "number: " <> int.to_string(n) },
-      answer: fn(text) {
-        int.parse(text) |> result.replace_error("expected an integer reply")
-      },
     )
     |> node.runtime(runs, context: fn(_) { Nil })
   runtime
@@ -76,6 +71,7 @@ fn fixed(text, calls) {
     [],
     policy.always_allow(),
   )
+  |> agent.with_answer(codec.int())
   |> support.agent
 }
 
@@ -96,7 +92,7 @@ pub fn graph_and_managed_agent_share_one_work_and_child_budget_test() {
       correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status |> should.equal(graph.Completed(42))
+  done |> should.equal(graph.Completed(42))
   probe.entries(calls) |> should.equal(["model"])
   let assert Ok(blocked) =
     graph.start(
@@ -137,7 +133,7 @@ pub fn a_zero_child_budget_refuses_a_managed_agent_before_creating_it_test() {
       correlation: None,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status
+  done
   |> should.equal(graph.Failed(graph.FamilyBudget(budget.ChildLimit(0))))
   store_core.get(runs, attachment.reserved_id("no-children", 1))
   |> should.equal(Error(backend.NotFound))
@@ -196,6 +192,7 @@ fn reviewed(body) {
     [scripted.gated_tool(body)],
     fn(_: Nil, _) { Ok(policy.RequireApproval(run.Requirement("review", 1))) },
   )
+  |> agent.with_answer(codec.int())
   |> support.agent
 }
 
@@ -221,7 +218,8 @@ pub fn a_graph_owns_an_ordinary_agent_and_accepts_its_typed_reply_test() {
       41,
       correlation: None,
     )
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(42))
   let assert [receipt] = done.receipts
   receipt.output_json |> should.equal("42")
@@ -251,8 +249,7 @@ pub fn every_agent_approval_is_visible_and_wakes_an_idle_graph_test() {
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Child(reference, child.AgentInput(approvals, [])) =
-    waiting.status
+  let assert graph.Child(reference, child.AgentInput(approvals, [])) = waiting
   list.length(approvals) |> should.equal(2)
   idle(runs, graph.id(handle), 100) |> should.be_true
   let assert Ok(agent) = node.child(handle, reference.activation, runtime)
@@ -269,7 +266,7 @@ pub fn every_agent_approval_is_visible_and_wakes_an_idle_graph_test() {
   probe.release(probe.arrival(body))
   probe.release(probe.arrival(body))
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status |> should.equal(graph.Completed(42))
+  done |> should.equal(graph.Completed(42))
 }
 
 pub fn agent_approval_and_attachment_survive_store_restart_test() {
@@ -291,8 +288,7 @@ pub fn agent_approval_and_attachment_survive_store_restart_test() {
     })
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Child(reference, child.AgentInput(approvals, [])) =
-    waiting.status
+  let assert graph.Child(reference, child.AgentInput(approvals, [])) = waiting
   idle(runs, graph.id(handle), 100) |> should.be_true
   restart.crash(owner, runs)
   let runs = support.directory(dir)
@@ -314,7 +310,7 @@ pub fn agent_approval_and_attachment_survive_store_restart_test() {
   probe.release(probe.arrival(body))
   probe.release(probe.arrival(body))
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status |> should.equal(graph.Completed(42))
+  done |> should.equal(graph.Completed(42))
   let assert Ok(snapshot) = fabric.snapshot(agent)
   snapshot.turns_used |> should.equal(2)
   restart.remove_dir(dir)
@@ -333,10 +329,10 @@ pub fn canceling_an_agent_approval_starts_no_tool_and_settles_the_graph_test() {
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Child(reference, child.AgentInput(approvals, [])) =
-    waiting.status
+  let assert graph.Child(reference, child.AgentInput(approvals, [])) = waiting
   let assert Ok(_) = graph.cancel(handle)
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Cancelled(graph.ChildSettled(reference)))
   let assert Ok(agent) = node.child(handle, reference.activation, runtime)
   fabric.await(agent, within: duration.milliseconds(1000))
@@ -360,14 +356,15 @@ pub fn an_invalid_agent_reply_is_retained_without_repeating_its_model_test() {
       41,
       correlation: None,
     )
-  let assert Ok(blocked) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(blocked) = graph.snapshot(handle)
   let assert graph.Blocked(_, graph.InvalidResult(output, _)) = blocked.status
   output |> should.equal("not an integer")
   blocked.receipts |> should.equal([])
   let assert Ok(agent) = node.child(handle, 1, runtime)
-  fabric.await(agent, within: duration.milliseconds(1000))
-  |> should.equal(Ok(run.Finished(run.Completed("not an integer"))))
+  // The agent's own run ends on its invalid answer, keeping the text.
+  let assert Ok(run.Finished(run.AnswerInvalid(raw: "not an integer", ..))) =
+    fabric.await(agent, within: duration.milliseconds(1000))
   let assert Ok(_) = graph.recover(handle)
   probe.entries(calls) |> should.equal(["model"])
 }
@@ -387,7 +384,7 @@ pub fn agent_handles_and_dispatch_refuse_a_different_store_test() {
     )
   let assert Ok(stopped) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Failed(graph.PolicyFailed(_)) = stopped.status
+  let assert graph.Failed(graph.PolicyFailed(_)) = stopped
   probe.entries(calls) |> should.equal([])
   node.child(handle, 1, runtime) |> should.be_error
 }
@@ -402,6 +399,7 @@ pub fn canceling_a_running_agent_retains_uncertain_tool_effects_test() {
       [scripted.gated_tool(body)],
       policy.always_allow(),
     )
+    |> agent.with_answer(codec.int())
     |> support.agent
   let runtime = runtime(runs, worker)
   let assert Ok(handle) =
@@ -413,7 +411,8 @@ pub fn canceling_a_running_agent_retains_uncertain_tool_effects_test() {
     )
   let _started = probe.arrival(body)
   let assert Ok(_) = graph.cancel(handle)
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   let assert graph.Cancelled(graph.ChildUnresolved(reference, _)) = done.status
   done.receipts |> should.equal([])
   let assert Ok(agent) = node.child(handle, reference.activation, runtime)
@@ -423,7 +422,7 @@ pub fn canceling_a_running_agent_retains_uncertain_tool_effects_test() {
   let assert run.Uncertain(_) = action.state
   probe.entries(body) |> should.equal(["start:charge"])
   let assert Ok(still_cancelled) = graph.recover(handle)
-  still_cancelled.status |> should.equal(done.status)
+  still_cancelled |> should.equal(done.status)
   // Inspect through the actual store as well: the parent's result is not a
   // manufactured success while the child owns an uncertain operation.
   let assert Ok(_) = store_core.get(runs, run.id_to_string(reference.child))
@@ -434,7 +433,8 @@ pub fn canceling_a_running_agent_retains_uncertain_tool_effects_test() {
       run.ActionRef(reference.child, action.id),
       "charge confirmed",
     )
-  let assert Ok(settled) = graph.recover(handle)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(settled) = graph.snapshot(handle)
   settled.status |> should.equal(graph.Cancelled(graph.ChildSettled(reference)))
   settled.value |> should.equal(done.value)
   settled.receipts |> should.equal(done.receipts)
@@ -469,6 +469,7 @@ pub fn agent_uncertainty_is_reconciled_in_the_child_before_graph_routing_test() 
       [scripted.crashing_tool(effects)],
       policy.always_allow(),
     )
+    |> agent.with_answer(codec.int())
     |> support.agent
   let runtime = runtime(runs, worker)
   let assert Ok(handle) =
@@ -478,15 +479,15 @@ pub fn agent_uncertainty_is_reconciled_in_the_child_before_graph_routing_test() 
       41,
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.Child(reference, child.AgentInput([], [uncertain])) =
     waiting.status
   waiting.receipts |> should.equal([])
   let assert Ok(agent) = node.child(handle, reference.activation, runtime)
   let assert Ok(_) = fabric.reconcile(agent, uncertain.reference, "42")
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status |> should.equal(graph.Completed(42))
+  done |> should.equal(graph.Completed(42))
   probe.entries(effects) |> should.equal(["crash:charge"])
 }
 
@@ -514,10 +515,10 @@ fn delegating(child, children, depth) {
     tool.define("delegate", "Delegate", codec.int(), codec.int()),
     child,
     fn(n) { int.to_string(n) },
-    fn(text) { int.parse(text) |> result.replace_error("integer expected") },
   )
   |> agent.with_max_children(children)
   |> agent.with_max_depth(depth)
+  |> agent.with_answer(codec.int())
   |> support.agent
 }
 
@@ -531,6 +532,7 @@ pub fn canceled_delegated_agent_evidence_survives_restart_and_settles_outward_te
       [scripted.gated_tool(body)],
       policy.always_allow(),
     )
+    |> agent.with_answer(codec.int())
     |> support.agent
   let worker = delegating(delegating(leaf, 1, 2), 1, 2)
   let #(owner, #(runs, handle)) =
@@ -548,8 +550,8 @@ pub fn canceled_delegated_agent_evidence_survives_restart_and_settles_outward_te
     })
   let _started = probe.arrival(body)
   let assert Ok(_) = graph.cancel(handle)
-  let assert Ok(before) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(before) = graph.snapshot(handle)
   let assert graph.Cancelled(graph.ChildUnresolved(reference, _)) =
     before.status
   let leaf_id = support.child_id(support.child_id(reference.child, 1), 1)
@@ -571,9 +573,10 @@ pub fn canceled_delegated_agent_evidence_survives_restart_and_settles_outward_te
   // The parent must observe each saved child; a leaf write alone does not
   // claim that the entire family is already settled.
   let assert Ok(unresolved) = graph.recover(handle)
-  unresolved.status |> should.equal(before.status)
+  unresolved |> should.equal(before.status)
   let assert Ok(_) = fabric.settle_stored(runs, reference.child)
-  let assert Ok(after) = graph.recover(handle)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(after) = graph.snapshot(handle)
   after.status |> should.equal(graph.Cancelled(graph.ChildSettled(reference)))
   after.value |> should.equal(before.value)
   after.receipts |> should.equal(before.receipts)
@@ -627,7 +630,7 @@ pub fn nested_graphs_observe_an_agents_own_delegated_family_test() {
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Child(_, child.AgentInput(approvals, [])) = waiting.status
+  let assert graph.Child(_, child.AgentInput(approvals, [])) = waiting
   list.length(approvals) |> should.equal(2)
   idle(runs, graph.id(handle), 100) |> should.be_true
   let assert Ok(inner_handle) = graph.child(handle, 1, inner)
@@ -646,7 +649,7 @@ pub fn nested_graphs_observe_an_agents_own_delegated_family_test() {
   probe.release(probe.arrival(body))
   probe.release(probe.arrival(body))
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status |> should.equal(graph.Completed(142))
+  done |> should.equal(graph.Completed(142))
 }
 
 pub fn lost_start_and_completion_acknowledgements_reuse_the_agent_test() {
@@ -664,6 +667,7 @@ pub fn lost_start_and_completion_acknowledgements_reuse_the_agent_test() {
       [],
       policy.always_allow(),
     )
+    |> agent.with_answer(codec.int())
     |> support.agent
   let runtime = runtime(runs, worker)
   let id = support.id("lost-agent-ack")
@@ -677,7 +681,8 @@ pub fn lost_start_and_completion_acknowledgements_reuse_the_agent_test() {
   let reply = probe.arrival(calls)
   flaky.arm_run(backend, id, [flaky.FailAfter])
   probe.release(reply)
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(42))
   list.length(done.receipts) |> should.equal(1)
   probe.entries(calls) |> should.equal(["model"])
@@ -701,9 +706,7 @@ pub fn cancellation_buries_a_reserved_agent_without_calling_prompt_or_context_te
       run.DefinitionId("integer-agent", 1),
       worker,
       input: codec.int(),
-      output: codec.int(),
       prompt: fn(_) { panic as "cancellation called prompt" },
-      answer: fn(_) { panic as "cancellation called answer" },
     )
     |> node.runtime(other, context: fn(_) {
       panic as "cancellation called context"
@@ -712,7 +715,7 @@ pub fn cancellation_buries_a_reserved_agent_without_calling_prompt_or_context_te
   let assert Ok(_) = graph.cancel(canceller)
   let assert Ok(done) =
     graph.await(canceller, within: duration.milliseconds(5000))
-  let assert graph.Cancelled(graph.ChildSettled(_)) = done.status
+  let assert graph.Cancelled(graph.ChildSettled(_)) = done
   flaky.release_held(backend)
   let assert Ok(agent) = node.child(handle, 1, runtime)
   fabric.await(agent, within: duration.milliseconds(1000))
@@ -732,11 +735,7 @@ pub fn agent_descendants_must_fit_ids_below_a_graph_reservation_test() {
     run.DefinitionId("deep", 1),
     deep,
     input: codec.int(),
-    output: codec.int(),
     prompt: int.to_string,
-    answer: fn(text) {
-      int.parse(text) |> result.replace_error("integer expected")
-    },
   )
   |> node.runtime(runs, context: fn(_) { Nil })
   |> should.equal(Error(node.ChildIdsTooLong(134, 128)))
@@ -748,11 +747,7 @@ pub fn agent_descendants_must_fit_ids_below_a_graph_reservation_test() {
     run.DefinitionId("narrow", 1),
     narrow,
     input: codec.int(),
-    output: codec.int(),
     prompt: int.to_string,
-    answer: fn(text) {
-      int.parse(text) |> result.replace_error("integer expected")
-    },
   )
   |> node.runtime(runs, context: fn(_) { Nil })
   |> should.be_ok
@@ -772,21 +767,20 @@ pub fn canceled_agent_settlement_does_not_call_the_reply_adapter_test() {
     )
   let assert Ok(blocked) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Blocked(_, graph.InvalidResult(_, _)) = blocked.status
+  let assert graph.Blocked(_, graph.InvalidResult(_, _)) = blocked
   let assert Ok(cancel_runtime) =
     node.new(
       run.DefinitionId("integer-agent", 1),
       worker,
       input: codec.int(),
-      output: codec.int(),
       prompt: int.to_string,
-      answer: fn(_) { panic as "settlement called answer" },
     )
     |> node.runtime(runs, context: fn(_) { panic as "settlement called context" })
   let canceller =
     support.open_graph(parent(runs, cancel_runtime), graph.id(handle))
   let assert Ok(_) = graph.cancel(canceller)
-  let assert Ok(done) = graph.recover(canceller)
+  let assert Ok(_) = graph.recover(canceller)
+  let assert Ok(done) = graph.snapshot(canceller)
   let assert graph.Cancelled(graph.ChildSettled(_)) = done.status
   done.receipts |> should.equal([])
   done.value |> should.equal(41)

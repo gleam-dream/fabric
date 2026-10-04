@@ -79,8 +79,8 @@ pub fn expiration_after_restart_cancels_the_same_signal_child_test() {
       41,
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.Child(reference, child.Signal(_)) = waiting.status
   let assert Some(due) = waiting.deadline
   parked(runs, graph.id(handle), 300)
@@ -96,7 +96,8 @@ pub fn expiration_after_restart_cancels_the_same_signal_child_test() {
       support.id("expiring-child"),
     )
   let assert Ok(_) = graph.recover(handle)
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Expired(due, graph.ChildSettled(reference)))
   done.receipts |> should.equal([])
   let assert Ok(child_handle) = graph.child(handle, reference.activation, leaf)
@@ -135,7 +136,8 @@ pub fn result_mapping_cannot_cross_the_child_deadline_test() {
       41,
       correlation: None,
     )
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   let assert graph.Expired(_, graph.ChildSettled(reference)) = done.status
   done.value |> should.equal(41)
   done.receipts |> should.equal([])
@@ -164,15 +166,14 @@ pub fn an_expired_agent_keeps_uncertain_effects_until_the_child_is_reconciled_te
       [scripted.crashing_tool(effects)],
       policy.always_allow(),
     )
+    |> agent.with_answer(codec.int())
     |> support.agent
   let assert Ok(child_runtime) =
     agent_node.new(
       run.DefinitionId("deadline-agent", 1),
       worker,
       input: codec.int(),
-      output: codec.int(),
       prompt: fn(_) { "run the operation" },
-      answer: fn(_) { Ok(42) },
     )
     |> agent_node.runtime(runs, context: fn(_) { Nil })
   let assert Ok(handle) =
@@ -182,8 +183,8 @@ pub fn an_expired_agent_keeps_uncertain_effects_until_the_child_is_reconciled_te
       41,
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.Child(reference, child.AgentInput([], [uncertain])) =
     waiting.status
   let assert Some(due) = waiting.deadline
@@ -200,7 +201,8 @@ pub fn an_expired_agent_keeps_uncertain_effects_until_the_child_is_reconciled_te
   metadata.settled |> should.be_false
   let assert Ok(_) =
     fabric.reconcile_stored(runs, uncertain.reference, "charge confirmed")
-  let assert Ok(settled) = graph.recover(handle)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(settled) = graph.snapshot(handle)
   settled.status
   |> should.equal(graph.Expired(due, graph.ChildSettled(reference)))
   probe.entries(effects) |> should.equal(["crash:charge"])
@@ -236,7 +238,7 @@ pub fn a_clock_failure_before_arming_starts_no_child_test() {
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  waiting.status |> should.equal(graph.Unattended)
+  waiting |> should.equal(graph.Unattended)
   let assert Ok(_) = graph.cancel(handle)
   let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Cancelled(graph.BeforeStart))
@@ -304,8 +306,8 @@ pub fn expired_reconciliation_keeps_the_child_result_without_calling_parent_mapp
       41,
       correlation: None,
     )
-  let assert Ok(blocked) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(blocked) = graph.snapshot(handle)
   let assert graph.Blocked(reference, graph.InvalidResult(_, _)) =
     blocked.status
   let assert Some(due) = blocked.deadline
@@ -374,8 +376,8 @@ pub fn a_sweeper_settles_nested_cleanup_after_expiration_without_a_working_clock
       41,
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.Child(reference, child.Job(_)) = waiting.status
   let assert Some(due) = waiting.deadline
   parked(runs, graph.id(handle), 300)
@@ -424,7 +426,7 @@ pub fn an_overdue_retained_wait_cannot_replace_a_missing_child_with_a_tombstone_
     graph.start(build(runs), support.id(root), 41, correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Child(reference, child.Signal(_)) = waiting.status
+  let assert graph.Child(reference, child.Signal(_)) = waiting
   parked(runs, graph.id(handle), 300)
   restart.crash(owner, runs)
   memory.advance(60_001)

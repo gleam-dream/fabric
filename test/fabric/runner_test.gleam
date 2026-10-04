@@ -22,7 +22,7 @@ import gleam/string
 import gleam/time/duration
 import gleeunit/should
 
-fn states(run: fabric.Run(Nil)) -> List(run.ActionState) {
+fn states(run: fabric.Run(Nil, String)) -> List(run.ActionState) {
   let assert Ok(snapshot) = fabric.snapshot(run)
   list.map(snapshot.actions, fn(action) { action.state })
 }

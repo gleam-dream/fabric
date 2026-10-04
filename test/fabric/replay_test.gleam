@@ -42,7 +42,7 @@ fn read_call() {
   scripted.call("r", "read", "{\"x\":\"value\"}")
 }
 
-fn run(desk: agent.Agent(Nil)) -> fabric.Run(Nil) {
+fn run(desk: agent.Agent(Nil, String)) -> fabric.Run(Nil, String) {
   let assert Ok(handle) =
     fabric.start(
       support.store(),
@@ -55,7 +55,7 @@ fn run(desk: agent.Agent(Nil)) -> fabric.Run(Nil) {
   handle
 }
 
-fn desk(tool: tool.Tool(Nil)) -> agent.Agent(Nil) {
+fn desk(tool: tool.Tool(Nil)) -> agent.Agent(Nil, String) {
   agent.new(
     "reader",
     scripted.plan([read_call()]),
@@ -65,7 +65,7 @@ fn desk(tool: tool.Tool(Nil)) -> agent.Agent(Nil) {
   |> support.agent
 }
 
-fn replays(handle: fabric.Run(Nil)) -> List(Int) {
+fn replays(handle: fabric.Run(Nil, String)) -> List(Int) {
   let assert Ok(snapshot) = fabric.snapshot(handle)
   list.map(snapshot.actions, fn(action) { action.replays })
 }

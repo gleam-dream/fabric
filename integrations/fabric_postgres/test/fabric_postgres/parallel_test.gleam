@@ -135,7 +135,7 @@ pub fn all_branch_revisions_are_claimed_once_and_swept_after_store_loss_test() {
       let assert Ok(handle) =
         graph.start(mapped(runs), id, [1, 2, 3], correlation: None)
       let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
-      let assert graph.Fork(_, _) = waiting.status
+      let assert graph.Fork(_, _) = waiting
       Nil
     })
   idle(backend, "pg-parallel", 3000)

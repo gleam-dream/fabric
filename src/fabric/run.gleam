@@ -126,7 +126,10 @@ pub type Requirement {
   Requirement(name: String, version: Int)
 }
 
-pub type Status {
+/// A run's status. `answer` is the agent's answer type
+/// (`agent.with_answer`): `String` for a plain agent, and for commands that
+/// read the store without an agent (`fabric.cancel_stored`).
+pub type Status(answer) {
   /// A model call or a tool is in flight, driven by a runner.
   Working
   /// Work is in flight but no runner known to this store drives it: its
@@ -138,7 +141,7 @@ pub type Status {
   /// Nothing is in flight and the run cannot continue without outside
   /// input: approvals to answer or uncertain effects to reconcile.
   Suspended(approvals: List(PendingApproval), uncertain: List(UncertainAction))
-  Finished(Outcome)
+  Finished(Outcome(answer))
 }
 
 /// Identifies one approval request. `revision` is unique within the run and
@@ -210,8 +213,17 @@ pub type UncertainAction {
   UncertainAction(reference: ActionRef, tool: String, evidence: String)
 }
 
-pub type Outcome {
-  Completed(text: String)
+/// How a run ended. This union may grow: keep a catch-all.
+pub type Outcome(answer) {
+  /// The model's final answer, read with the agent's answer codec
+  /// (`agent.with_answer`), or its text for a plain agent.
+  Completed(answer: answer)
+  /// The model's final answer is not one the agent's codec reads: `raw` is
+  /// the text it sent, `reason` the codec's complaint. A run ends this way
+  /// when the model answers so; a stored run reads this way when the agent
+  /// that reads it has another codec than the one it completed under (a run
+  /// stored before `with_answer`, say). Its effects have happened.
+  AnswerInvalid(raw: String, reason: String)
   Refused(reason: String)
   OutputLimited(partial_text: String)
   /// A limit was reached. Outstanding tool calls are kept as `NotStarted`.
@@ -279,7 +291,8 @@ pub type ActionState {
   Reconciled(content: String)
   /// A finished parent's uncertain delegation was settled from the child's
   /// saved outcome. This is evidence only, never a model-visible tool result.
-  ChildSettled(outcome: Outcome)
+  /// Its answer is the child's stored text.
+  ChildSettled(outcome: Outcome(String))
   /// Withdrawn before it started (cancellation, a budget, or a host failure).
   NotStarted
   /// A sub-agent run (`ActionRecord.child`) is working on it; its outcome
@@ -316,7 +329,8 @@ pub type TokenUsage {
   TokenUsage(input_tokens: Int, output_tokens: Int, unreported_replies: Int)
 }
 
-pub type Snapshot {
+/// A run as stored. Read it by label: Fabric may add fields.
+pub type Snapshot(answer) {
   Snapshot(
     run: RunId,
     agent: DefinitionId,
@@ -325,7 +339,7 @@ pub type Snapshot {
     incarnation: Int,
     /// The action or graph activation that owns this run; `None` for a root.
     parent: Option(Parent),
-    status: Status,
+    status: Status(answer),
     turns_used: Int,
     max_turns: Int,
     usage: TokenUsage,

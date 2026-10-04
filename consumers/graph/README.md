@@ -18,7 +18,8 @@ the same; the graph waits as stored data between decisions.
 
 `execute_agent` instead supplies the boolean through an ordinary managed agent.
 Its versioned `fabric/graph/agent` definition (`graph_agent.new`) builds a prompt from the native
-revision and converts `approve`/`revise` replies into `Bool`. The same state,
+revision; the agent's typed answer (`agent.with_answer`, an `{"approve": bool}`
+object) is the `Bool` decision, and its codec encodes the receipts. The same state,
 routes and six-activation bound produce the same three-draft result. Every
 review visit owns a separate durable agent run; this is not a blocking tool
 wrapper. The model is scripted here; the separate
