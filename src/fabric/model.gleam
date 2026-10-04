@@ -86,8 +86,10 @@ pub type ToolSpec {
 /// `answer` is the schema of the agent's final answer (`agent.with_answer`),
 /// `None` for a plain text answer. A model that can constrain its output
 /// asks the provider for it, as `fabric/llm` does; Fabric checks a
-/// `FinalAnswer` against the agent's codec either way, and a text it refuses
-/// ends the run as `run.AnswerInvalid`.
+/// `FinalAnswer` against the agent's codec either way. A text it refuses
+/// gets a corrective turn (`agent.with_answer_attempts`): the next request
+/// holds the refused answer and a user message that says why and repeats
+/// the schema. The run ends as `run.AnswerInvalid` when no attempt is left.
 pub type Request {
   Request(
     run: RunId,

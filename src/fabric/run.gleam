@@ -219,8 +219,10 @@ pub type Outcome(answer) {
   /// (`agent.with_answer`), or its text for a plain agent.
   Completed(answer: answer)
   /// The model's final answer is not one the agent's codec reads: `raw` is
-  /// the text it sent, `reason` the codec's complaint. A run ends this way
-  /// when the model answers so; a stored run reads this way when the agent
+  /// the text it sent last, `reason` the codec's complaint. A run ends this
+  /// way when the model answers so on its last answer attempt
+  /// (`agent.with_answer_attempts`) or with no turn or token left for a
+  /// correction; a stored run reads this way when the agent
   /// that reads it has another codec than the one it completed under (a run
   /// stored before `with_answer`, say). Its effects have happened.
   AnswerInvalid(raw: String, reason: String)

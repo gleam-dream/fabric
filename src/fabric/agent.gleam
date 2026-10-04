@@ -32,6 +32,7 @@
 //// | tool body | 60 s | `with_tool_timeout`, `tool.with_timeout` |
 //// | tool result | 1 MiB | `with_max_result_bytes` |
 //// | approval request | 7 days | `with_approval_expiry` |
+//// | final answers a typed answer may take | 2 (one corrective turn) | `with_answer_attempts` |
 //// | family budget | none (opt-in) | `with_family_budget` |
 ////
 //// A timeout that may be unbounded is a `run.Timeout`: `run.Infinity` must
@@ -40,7 +41,9 @@
 //// An agent's final answer is its model's text (`Spec(context, String)`)
 //// until `with_answer` gives it a codec: the model is then asked for that
 //// schema, and a run completes with the decoded value
-//// (`run.Completed(answer)`) or ends with `run.AnswerInvalid`.
+//// (`run.Completed(answer)`). An answer that does not decode gets one
+//// corrective turn by default (`with_answer_attempts`); the run ends with
+//// `run.AnswerInvalid` when that answer does not decode either.
 
 import fabric/budget
 import fabric/internal/answer.{type Answer} as answers
@@ -74,6 +77,7 @@ pub opaque type Spec(context, answer) {
     /// The sub-agent each delegation starts, by delegation name.
     children: List(#(String, checked_agent.Admitted(context))),
     answer: Answer(answer),
+    answer_attempts: Int,
     max_turns: Int,
     max_concurrency: Int,
     token_budget: Option(Int),
@@ -153,11 +157,15 @@ pub type Limit {
   SettleWithin
   /// `tool.with_replay`'s attempts, at most 100.
   ReplayAttempts
+  /// `with_answer_attempts`, at most 100.
+  AnswerAttempts
 }
 
 const max_children_limit = 999
 
 const max_depth_limit = 16
+
+const max_answer_attempts = 100
 
 /// The longest timer the runtime can set, in milliseconds: a longer wait
 /// crashes the process that waits.
@@ -191,6 +199,7 @@ pub fn new(
     system_prompt: None,
     children: [],
     answer: answers.text(),
+    answer_attempts: 2,
     max_turns: 8,
     max_concurrency: 4,
     token_budget: None,
@@ -378,10 +387,11 @@ pub fn with_family_budget(
 /// `answer`'s JSON Schema (`model.Request.answer`, which `fabric/llm` sends
 /// as the provider's structured output format), and Fabric decodes the
 /// model's final text with `answer` before it commits the run's end: a run
-/// completes with the decoded value (`run.Completed(value)`), or ends with
-/// `run.AnswerInvalid(raw:, reason:)` when the text does not decode. The
-/// run stores the text, so the stored record is the same as for a plain
-/// agent.
+/// completes with the decoded value (`run.Completed(value)`). A text that
+/// does not decode gets a corrective turn (`with_answer_attempts`, one by
+/// default), and the run ends with `run.AnswerInvalid(raw:, reason:)` when
+/// the last attempt does not decode either. The run stores the text, so the
+/// stored record is the same as for a plain agent.
 ///
 /// Providers constrain an answer best when it is a JSON object: give a
 /// record codec. `build` refuses a codec without a schema
@@ -398,6 +408,7 @@ pub fn with_answer(
     system_prompt: spec.system_prompt,
     children: spec.children,
     answer: answers.typed(answer),
+    answer_attempts: spec.answer_attempts,
     max_turns: spec.max_turns,
     max_concurrency: spec.max_concurrency,
     token_budget: spec.token_budget,
@@ -412,6 +423,28 @@ pub fn with_answer(
     approval_expiry: spec.approval_expiry,
     family_budget: spec.family_budget,
   )
+}
+
+/// How many final answers a run asks the model for, in all, before it
+/// gives up on a typed answer (`with_answer`). When the model's final text
+/// does not decode, the run does not end at once: the text stays in the
+/// transcript, and the model gets one more turn with a message that says
+/// why the answer was refused and repeats the answer's JSON Schema. That
+/// turn is a model attempt like any other: it counts against
+/// `with_max_turns` and `with_token_budget`, and it is stored, so a
+/// recovered run goes on with it. The run ends with
+/// `run.AnswerInvalid(raw:, reason:)`, for the last answer, when the
+/// attempts or the budget run out.
+///
+/// Default 2 (one corrective turn); 1 ends the run on the first refused
+/// answer. `build` refuses fewer than 1 or more than 100
+/// (`InvalidLimit(AnswerAttempts, ..)`). A plain agent's answer is its text
+/// and is never refused.
+pub fn with_answer_attempts(
+  spec: Spec(context, answer),
+  attempts: Int,
+) -> Spec(context, answer) {
+  Spec(..spec, answer_attempts: attempts)
 }
 
 /// Lets the model delegate to a sub-agent: a call to `definition` (declared
@@ -515,6 +548,7 @@ fn setter(limit: Limit) -> String {
     FamilyDepth -> "budget.with_depth"
     SettleWithin -> "tool.bind_settling's settle_within (ms)"
     ReplayAttempts -> "tool.with_replay"
+    AnswerAttempts -> "agent.with_answer_attempts"
   }
 }
 
@@ -551,6 +585,7 @@ fn admit(
     #(ModelTimeout, timeout(spec.model_timeout), 1, longest_timer),
     #(ToolTimeout, timeout(spec.tool_timeout), 1, longest_timer),
     #(MaxResultBytes, Some(spec.max_result_bytes), 1, largest),
+    #(AnswerAttempts, Some(spec.answer_attempts), 1, max_answer_attempts),
     #(ApprovalExpiry, timeout(spec.approval_expiry), 1, largest),
     #(FamilyWork, family(fn(limits) { limits.work }), 0, largest),
     #(FamilyChildren, family(fn(limits) { limits.children }), 0, largest),
@@ -591,6 +626,7 @@ fn admit(
         system_prompt: spec.system_prompt,
         answer_schema:,
         check_answer: answers.check(spec.answer),
+        answer_attempts: spec.answer_attempts,
         max_turns: spec.max_turns,
         max_concurrency: spec.max_concurrency,
         token_budget: spec.token_budget,

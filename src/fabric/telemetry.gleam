@@ -236,6 +236,9 @@ pub type TurnResult {
   /// Tool or delegation calls.
   ToolRequest
   FinalAnswer
+  /// A final answer the answer codec refused (`agent.with_answer`): the
+  /// model is called again with a correction (`agent.with_answer_attempts`).
+  AnswerRejected
   Refusal
   Truncated
   /// A retryable failure; the model is called again.
@@ -536,6 +539,7 @@ pub fn model_turn() -> Event(Option(Usage), ModelTurn) {
         [
           ToolRequest,
           FinalAnswer,
+          AnswerRejected,
           Refusal,
           Truncated,
           Retry,
@@ -838,6 +842,7 @@ fn turn_result_name(result: TurnResult) -> String {
   case result {
     ToolRequest -> "tool_request"
     FinalAnswer -> "final_answer"
+    AnswerRejected -> "answer_rejected"
     Refusal -> "refusal"
     Truncated -> "truncated"
     Retry -> "retry"

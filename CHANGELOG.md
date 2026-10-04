@@ -11,6 +11,28 @@ Wave 5 is described with before/after snippets in
 [docs/migration-wave-5.md](docs/migration-wave-5.md), round 5 in
 [docs/migration-round-5.md](docs/migration-round-5.md).
 
+### Wave 5, a corrective answer turn, Relay and docs (slice F4)
+
+#### Added
+
+- A corrective answer turn. A final answer the answer codec refuses no
+  longer ends the run at once: the model gets one more turn whose request
+  holds the refused answer and a user message naming the codec's complaint
+  and the answer's JSON Schema. The turn counts against the turn and token
+  budgets and is stored like any turn, so a recovered run goes on with it.
+  `agent.with_answer_attempts(spec, n)` sets the final answers a run asks
+  for in all (default 2; 1 restores the old behaviour); `build` checks 1 to
+  100 (`agent.AnswerAttempts`).
+- `telemetry.TurnResult.AnswerRejected` (`"answer_rejected"`) for a model
+  turn whose answer was refused and corrected.
+
+#### Changed
+
+- **Breaking (behaviour):** a typed agent whose model answers badly makes
+  one more model call before it ends with `run.AnswerInvalid`, whose `raw`
+  is the last answer.
+- **Breaking:** `telemetry.TurnResult` and `agent.Limit` gain a variant.
+
 ### Wave 5, typed answers (slice F3)
 
 #### Added

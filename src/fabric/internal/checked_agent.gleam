@@ -45,6 +45,9 @@ pub type Admitted(context) {
     answer_schema: Option(codec.Schema),
     /// The check a final answer passes before the run commits it.
     check_answer: fn(String) -> Result(Nil, String),
+    /// How many final answers a run asks for in all
+    /// (`agent.with_answer_attempts`).
+    answer_attempts: Int,
     max_turns: Int,
     max_concurrency: Int,
     token_budget: Option(Int),

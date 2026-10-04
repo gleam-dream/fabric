@@ -1031,3 +1031,41 @@ is no status to read. Dependents: none in `oversight/apps` uses
 `NeedsRecovery` (`Unattended`: recover it), `NeedsInput` (an approval, a
 signal or a reconciliation) and `Ended`; `graph.describe_status` gives one
 line for logs. Additive.
+
+## Slice F4: a corrective answer turn, Relay and docs
+
+Slice F4 gives a refused typed answer a corrective turn, replaces
+`fabric_mcp` with `fabric_relay`, and reorders the README around the common
+path. Stored records keep their format: a corrective turn is an assistant
+turn and a user message in the transcript, which every reader of record
+versions 1 to 7 already reads. The fixture
+`test/fixtures/records/answer-correction-pending.json` (written by this
+slice, `answer_retry_test`) holds a run whose corrective turn was in flight
+when its runner was lost; `recover` issues that turn again.
+
+### A refused answer gets a corrective turn
+
+```gleam
+// Before: the first answer the codec refused ended the run
+Ok(run.Finished(run.AnswerInvalid(raw:, reason:)))   // after one model call
+
+// After: the model is told why and asked again, once by default
+agent.new("desk", model, tools, policy)
+|> agent.with_answer(resolution_codec)
+|> agent.with_answer_attempts(2)   // the default; 1 ends on the first refusal
+|> agent.build
+```
+
+The corrective request holds the refused answer as an assistant turn and a
+user message: `Your final answer could not be read: <reason>` and the
+answer's JSON Schema. It is a model attempt like any other: it counts
+against `with_max_turns` and `with_token_budget`, and with no turn or token
+left the run ends with `AnswerInvalid` (not `BudgetExhausted`). The count of
+refused answers is read from the stored transcript, so a recovered run does
+not get its attempts back. `telemetry.model_turn` reports the refused turn
+as `AnswerRejected`; an exhaustive `case` on `telemetry.TurnResult` or
+`agent.Limit` adds an arm.
+
+Dependents: none in `oversight/apps` uses `with_answer` yet (the apps are
+migrated to slice F3 afterwards); a test that counts model calls on a refused
+answer counts two, or sets `with_answer_attempts(1)`.

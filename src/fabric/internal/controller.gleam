@@ -10,6 +10,7 @@
 ////
 //// ```text
 //// AwaitingModel(turn) --reply--> Acting(batch) | Ended
+//// AwaitingModel(turn) --answer refused, attempts left--> AwaitingModel(turn + 1)
 //// Acting(batch)       --all model-visible--> AwaitingModel(turn + 1)
 //// Acting(batch)       --cancel or host fault, tools or children active--> Stopping
 //// Stopping            --tools stopped, settlements in, children ended--> Ended
@@ -64,6 +65,7 @@ import gleam/result
 import gleam/set
 import gleam/time/timestamp.{type Timestamp}
 import json/blueprint/codec
+import json/blueprint/value
 import sinal/correlation.{type Correlation}
 
 // --- vocabulary ----------------------------------------------------------------
@@ -73,8 +75,10 @@ import sinal/correlation.{type Correlation}
 /// Unix milliseconds that deadlines are judged by: the store's clock
 /// (`store.now`), never the stepping node's. `answer` is the schema of the
 /// final answer given to the model, and `check_answer` the check a final
-/// answer passes before the run completes with it (`AnswerInvalid`
-/// otherwise).
+/// answer passes before the run completes with it. `answer_attempts` is how
+/// many final answers the run asks for in all: an answer the check refuses
+/// gets a corrective turn while attempts and the turn and token budgets
+/// last, and ends the run as `AnswerInvalid` once they do not.
 pub type Env(context) {
   Env(
     registry: Registry(context),
@@ -85,6 +89,7 @@ pub type Env(context) {
     clock: fn() -> Int,
     answer: Option(codec.Schema),
     check_answer: fn(String) -> Result(Nil, String),
+    answer_attempts: Int,
   )
 }
 
@@ -1177,19 +1182,40 @@ fn model_replied(
 ) -> #(State, List(Effect)) {
   let state = State(..state, usage: add_usage(state.usage, reply_usage(reply)))
   case reply {
-    model.FinalAnswer(text, _) -> #(
-      State(
-        ..state,
-        transcript: list.append(state.transcript, [
-          model.AssistantMessage(model.AssistantTurn(text, [], None)),
-        ]),
-        phase: Ended(case env.check_answer(text) {
-          Ok(Nil) -> run.Completed(text)
-          Error(reason) -> run.AnswerInvalid(raw: text, reason:)
-        }),
-      ),
-      [],
-    )
+    model.FinalAnswer(text, usage) -> {
+      let rejected = rejected_answers(state.transcript)
+      let state =
+        State(
+          ..state,
+          transcript: list.append(state.transcript, [
+            model.AssistantMessage(model.AssistantTurn(text, [], None)),
+          ]),
+        )
+      case env.check_answer(text) {
+        Ok(Nil) -> #(State(..state, phase: Ended(run.Completed(text))), [])
+        Error(reason) ->
+          case
+            rejected + 1 < env.answer_attempts,
+            continuation_blocked(state, usage)
+          {
+            True, None ->
+              State(
+                ..state,
+                transcript: list.append(state.transcript, [
+                  model.UserMessage(correction(env, reason)),
+                ]),
+              )
+              |> call_model(env, _)
+            _, _ -> #(
+              State(
+                ..state,
+                phase: Ended(run.AnswerInvalid(raw: text, reason:)),
+              ),
+              [],
+            )
+          }
+      }
+    }
     model.Refusal(reason, _) -> #(
       State(..state, phase: Ended(run.Refused(reason))),
       [],
@@ -1201,6 +1227,31 @@ fn model_replied(
     model.ToolRequest(assistant, usage) ->
       tools_requested(env, state, turn, assistant, usage)
   }
+}
+
+/// How many final answers of this run the answer check refused: each one
+/// stays in the transcript as an assistant turn without calls, followed by
+/// its correction, while an accepted answer ends the run. The count is read
+/// from the stored transcript, so a recovered run continues it.
+fn rejected_answers(transcript: List(Message)) -> Int {
+  list.count(transcript, fn(message) {
+    case message {
+      model.AssistantMessage(model.AssistantTurn(calls: [], ..)) -> True
+      _ -> False
+    }
+  })
+}
+
+/// The message that asks the model to answer again: why its answer was
+/// refused, and the schema its answer must match.
+fn correction(env: Env(context), reason: String) -> String {
+  let schema = case env.answer {
+    Some(schema) ->
+      "\nReply with only a JSON value that matches this JSON Schema: "
+      <> value.to_string(codec.schema_value(schema))
+    None -> ""
+  }
+  "Your final answer could not be read: " <> reason <> schema
 }
 
 fn tools_requested(

@@ -408,6 +408,7 @@ pub fn a_sub_agents_record_keeps_its_root_test() {
       clock: fn() { 0 },
       answer: None,
       check_answer: fn(_) { Ok(Nil) },
+      answer_attempts: 1,
     )
   let #(root, _) =
     controller.start(
@@ -455,6 +456,7 @@ pub fn the_record_keeps_only_a_chosen_correlation_test() {
         clock: fn() { 0 },
         answer: None,
         check_answer: fn(_) { Ok(Nil) },
+        answer_attempts: 1,
       ),
       "plain-run",
       run.DefinitionId("desk", 1),
