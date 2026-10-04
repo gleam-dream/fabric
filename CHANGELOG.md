@@ -45,6 +45,17 @@ Wave 5 is described with before/after snippets in
 - **Breaking:** `integrations/fabric_mcp`, its stdio client and its Python
   service tests. Use `fabric_relay` over `relay/client`.
 
+#### Documentation
+
+- The README opens with the common path (usage, then the defaults table,
+  which gains the answer attempts), lists the integrations in one table, and
+  moves status and scope to the end. It records that the graph runtime
+  ships in Fabric 1.0 (release decision 2) and that durability ownership
+  (decision 1) is open, and states that `check.py full` runs the PostgreSQL
+  suite.
+- Every integration has a CHANGELOG; `fabric_saga` and `fabric_relay` have
+  a README.
+
 ### Wave 5, typed answers (slice F3)
 
 #### Added

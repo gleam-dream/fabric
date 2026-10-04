@@ -2,60 +2,12 @@
 
 A bounded, typed LLM agent and agentic graph runtime for Gleam: typed application operations, an explicit policy gate, pure controllers, and supervised runners with cancellation. It consumes llm_wire for providers and json_blueprint for codecs. Saga workflows remain an optional integration.
 
-Status: slice 1 (bounded agent execution), slice 2a (durable pause, approval, resume, cancellation, and restart), slice 2b (approval-gated sub-agents, Sinal observations, and Saga workflows as tools), the public API ergonomics pass (a built agent, one policy gate, typed run ids, a named supervisable store), and the first production-runtime slices (timer limits; runners supervised under the store's subtree, drained and handed off on shutdown; the leased store contract for several nodes sharing one database, with an in-memory test backend, the PostgreSQL adapter, and automatic recovery of expired leases) implemented; see [docs/PLAN.md](docs/PLAN.md), [docs/CAPABILITIES.md](docs/CAPABILITIES.md) and [docs/ORACLE.md](docs/ORACLE.md). Design: see [fabric-design.md](https://github.com/gleam-dream/oversight/blob/master/fabric-design.md) in [gleam-dream/oversight](https://github.com/gleam-dream/oversight). Not yet published to Hex.
-
-Behavioural oracle: BeamWeaver (partial migration of its agent loop).
-
-Serial agentic graphs are available through `fabric/graph`: typed operations,
-conditional routing, bounded cycles, durable records, approval, recovery,
-reconciliation, typed durable signals, managed subgraphs and managed ordinary
-agents with idle/nested waits. `fabric/graph/agent` binds a native input,
-prompt and typed reply conversion to the existing agent runner.
-See the [runnable public graph consumer](consumers/graph/README.md)
-and [graph implementation tracker](docs/implementation/graph-flow/wave-tracker.md).
-The [external-job consumer](consumers/jobs/README.md) proves durable submission,
-receipt recovery and retained read-only job observation against a separate local
-service. `operation.await_job` retains the receipt without holding a runner;
-`graph.poll_job` records completion. Opt in with `job.with_poll_interval` to let
-the registered sweeper observe due jobs on a leased store, including after
-restart. Canceling a read-only binding detaches observation. `operation.own_job`
-instead admits cancellation ownership: `graph.cancel` saves intent, fences the
-stop request, and exposes `CancellingJob` until an observation confirms a terminal
-outcome. Acknowledgments and uncertain requests survive restart. Completion after
-local cancellation is retained without routing success.
-Terminal agent uncertainty settlement, complete-family PostgreSQL retention and
-shared work/child/depth budgets are implemented. Registered graph sweeping recovers
-expired work and changed idle dependencies after local wakeups are lost.
-Signal, job, managed-child and fork deadlines survive restart and retain
-expiration separately from owned cleanup. Typed pairs and bounded maps retain
-private member results and join them in input order, including after restart.
-`fabric/graph/llm` binds a structured LLM decision to an ordinary graph activity,
-retaining typed answers, raw JSON and usage without a chat continuation. See the
-[decision consumer](consumers/decision/README.md) and
-[adapter contract](docs/implementation/graph-flow/decision-adapters.md).
-The optional [MCP package](integrations/fabric_mcp/README.md) binds discovered
-tool schemas and native values to policy-gated operations, retaining original
-responses and restoring saved results without replay. Its stdio client and graph
-binding are exercised against a real local service.
-The optional [TypeSafe package](integrations/fabric_typesafe/README.md) provides
-non-generative yes/no, enum and rubric-score decisions with durable typed receipts.
-Its protocol tests, shared routing consumer and actual OpenAI/TypeSafe
-[validation](docs/implementation/graph-flow/completion-audit.md) pass. The [agent-recipe evaluation](docs/implementation/graph-flow/agent-recipe-evaluation.md)
-retains ordinary agents as managed graph nodes, preserving per-tool approval,
-recovery and cancellation while sharing execution mechanisms.
-
-The [writing consumer](consumers/writing/README.md) composes real source and
-artifact tools with generation, interchangeable LLM/TypeSafe review, bounded
-revision and durable approval. Its tests exercise restart and an interrupted
-save; an explicit live runner compares both reviewers on the same frozen cases
-and verifies a full workflow across separate VMs.
-
-Dependencies on `llm_wire`, `http_gun`, `json_blueprint`, and `sinal` are path dependencies (`../llm_wire`, `../http_gun`, `../json_blueprint`, `../sinal`); check out the sibling repositories next to this one. The LLM adapters take the application's started `http_gun.Client`; Fabric never starts or stops one. The optional Saga integration, `integrations/fabric_saga`, is a separate package that also needs `../saga`.
-
-Run all maintained packages, consumers and local service/database checks with
-`nix develop -c python3 scripts/check.py full`. See [verification](docs/VERIFICATION.md)
-for fast iteration, logs and the prepared CI profile. Library publication and
-hosted CI activation remain deferred.
+Start with [Usage](#usage): one agent with a typed tool, an approval, a
+durable store, a typed answer and recovery, then the [defaults](#defaults)
+every run gets. The [graph runtime](#graph-runs) (`fabric/graph`) and the
+[integrations](#integrations) (MCP over Relay, Saga workflows, PostgreSQL,
+TypeSafe classifiers) follow. Fabric is not yet published to Hex; see
+[Status and scope](#status-and-scope).
 
 ## Usage
 
@@ -358,6 +310,7 @@ and tool timeouts, and the answers it waits for.
 | Bound                                         | Default                         | Change it with                                           | When it is reached                                                       |
 | --------------------------------------------- | ------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------ |
 | Model attempts per run                        | 8                               | `agent.with_max_turns`                                   | the run ends `BudgetExhausted(TurnLimit(8))`                             |
+| Final answers per run, for a typed answer     | 2 (one corrective turn)         | `agent.with_answer_attempts`                             | the run ends `AnswerInvalid`; each answer spends a model attempt         |
 | One model call                                | 600 s                           | `agent.with_model_timeout`                               | the call stops; a retryable `model.TimedOut` that spends a turn          |
 | One tool body                                 | 60 s                            | `agent.with_tool_timeout`, `tool.with_timeout`           | the body stops; uncertain, or started again (`tool.with_replay`)         |
 | Tool result size                              | 1 MiB                           | `agent.with_max_result_bytes`                            | the run fails with `OutputEncodingFailed`, naming the limit              |
@@ -395,8 +348,11 @@ a graph runtime setter panics with its name.
 request carries the codec's JSON Schema (`model.Request.answer`), which
 `fabric/llm` sends as the provider's structured output format, and a run
 completes with the decoded value: `run.Completed(Resolution(..))`. A final
-text the codec does not read ends the run with `run.AnswerInvalid(raw:,
-reason:)`, keeping the text. Without `with_answer` the answer is the
+text the codec does not read gets one corrective turn by default: the model
+is told why and given the schema again, within the run's turn and token
+budgets (`agent.with_answer_attempts`). When that answer does not decode
+either, the run ends with `run.AnswerInvalid(raw:, reason:)`, keeping the
+text. Without `with_answer` the answer is the
 model's text (`Agent(context, String)`). A sub-agent's answer is its
 delegation's output, and a graph agent's is its operation's output. A run
 stores the text the model sent, so a run stored before its agent had a
@@ -515,8 +471,8 @@ store's subtree and then its sweeper, so the order cannot be wrong. It scans exp
 at boot and periodically,
 rebuilds context from the root run id, and recovers each eligible family
 member under its own lease. A live parent learns a child’s stored outcome
-even when another node recovered the child. Running tools become uncertain
-and are never replayed. See the [PostgreSQL setup](integrations/fabric_postgres/README.md#automatic-recovery)
+even when another node recovered the child. Running tools become uncertain,
+unless they are replayable (`tool.with_replay`). See the [PostgreSQL setup](integrations/fabric_postgres/README.md#automatic-recovery)
 for shutdown order and recovery limits. The [operations runbook](docs/OPERATIONS.md)
 covers readiness, database statistics, shutdown summaries, recovery procedures,
 rolling upgrades and retention.
@@ -615,15 +571,6 @@ PostgreSQL retention follows saved graph and agent attachments. It preserves
 whole families with unresolved effects or missing children, and prunes them
 together only after settlement. See the [migration and refresh procedure](integrations/fabric_postgres/README.md#pruning).
 
-A Saga workflow is one typed tool too, from the separate package
-`integrations/fabric_saga`: `fabric_saga.tool(definition, workflow,
-execution.config(), input:, explain:, rollback_within:)`. `input` builds the
-workflow's input from the run's context, the `tool.Call` and the tool's
-input, and each Saga run carries the Fabric run's correlation. A cancelled
-call waits up to `rollback_within` for Saga's rollback: every completed step
-undone is a definite failure, anything left in place an uncertain effect.
-`consumers/app` uses it.
-
 Telemetry: attach Sinal handlers to the events of `fabric/telemetry`.
 They run in the committing process unless the application routes `[fabric]`
 through a `sinal/forwarder` (`forwarder.route` at start, `forwarder.unroute`
@@ -632,32 +579,76 @@ call Fabric should run there.
 
 `consumers/app` is a complete external application using public imports only.
 
+## Integrations
+
+Each integration is a separate package under `integrations/`, so Fabric
+itself depends on none of them.
+
+| Package                                                   | What it adds                                                                                                                                                                                                                                                                  |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [fabric_relay](integrations/fabric_relay/README.md)       | MCP over [Relay](https://github.com/gleam-dream/relay): `fabric_relay.tool(definition, peer:)`, `discover` and `operation` call MCP tools from agents and graphs; `serve` publishes an agent as an MCP tool, and a retried call with an idempotency key reaches the same run. |
+| [fabric_saga](integrations/fabric_saga/README.md)         | A Saga workflow as one typed tool: `fabric_saga.tool(definition, workflow, execution.config(), input:, explain:, rollback_within:)`. A cancelled call waits up to `rollback_within` for Saga's rollback. `consumers/app` uses it.                                             |
+| [fabric_postgres](integrations/fabric_postgres/README.md) | The leased PostgreSQL backend, its migrations, discovery refresh and pruning of finished run families.                                                                                                                                                                        |
+| [fabric_typesafe](integrations/fabric_typesafe/README.md) | Non-generative yes/no, choice and rubric decisions from TypeSafe as graph operations with durable typed receipts.                                                                                                                                                             |
+
+The [writing consumer](consumers/writing/README.md) composes real source and
+artifact tools with generation, interchangeable LLM and TypeSafe review,
+bounded revision and durable approval; the
+[graph](consumers/graph/README.md), [decision](consumers/decision/README.md)
+and [external-job](consumers/jobs/README.md) consumers exercise the graph
+runtime from public imports.
+
+## Status and scope
+
+Fabric is not yet published to Hex. It depends on its siblings `llm_wire`,
+`http_gun`, `json_blueprint` and `sinal` through path dependencies
+(`../llm_wire`, ...); check out those repositories next to this one. The LLM
+adapters take the application's started `http_gun.Client`; Fabric never
+starts or stops one. Each integration names its own siblings (`../relay`,
+`../saga`).
+
+The agent runtime covers bounded execution, durable pause, approval, resume,
+cancellation and restart, sub-agents, telemetry, a supervised store with
+drained shutdown, and leased stores for several nodes sharing one database
+with automatic recovery of expired leases. The graph runtime covers typed
+operations, conditional routing, bounded cycles, approvals, typed durable
+signals, external jobs, managed subgraphs and agents, typed pairs and
+bounded maps, and durable deadlines. See [docs/PLAN.md](docs/PLAN.md),
+[docs/CAPABILITIES.md](docs/CAPABILITIES.md) and
+[docs/ORACLE.md](docs/ORACLE.md); the behavioural oracle is BeamWeaver (a
+partial migration of its agent loop).
+
+The design is [fabric-design.md](https://github.com/gleam-dream/oversight/blob/master/fabric-design.md)
+in [gleam-dream/oversight](https://github.com/gleam-dream/oversight). The
+graph runtime stays in Fabric and ships in Fabric 1.0 (release decision 2);
+which package owns durable execution across Grind, Saga and Fabric is still
+open (release decision 1). [Remaining work](docs/REMAINING.md) lists
+operations, the later Grind integration and release work.
+
 ## Development
+
+```sh
+nix develop -c python3 scripts/check.py full
+```
+
+runs every check: formatting (`nix flake check`), the gate's own tests, and
+for every package (the core, each integration, consumer and experiment) its
+format check, its build with warnings as errors and its tests. That includes
+the PostgreSQL suite, which `integrations/fabric_postgres/scripts/test-postgres.sh`
+runs against a temporary cluster it starts and removes (it never uses an
+existing database), and the external-job service tests. `check.py fast`
+checks the core only. See [verification](docs/VERIFICATION.md) for logs and
+the prepared CI profile.
+
+For one package at a time:
 
 ```sh
 nix develop
 gleam format --check src test
 gleam build --warnings-as-errors
-gleam test
-(cd consumers/app && gleam test)
-(cd integrations/fabric_saga && gleam test)
-nix flake check
-```
-
-The PostgreSQL package has a separate gate. Its script starts and removes
-its own temporary cluster; it never uses an existing database:
-
-```sh
-(cd integrations/fabric_postgres && gleam format --check src test && gleam build --warnings-as-errors)
+gleam test                                   # the core; no PostgreSQL
+(cd integrations/fabric_relay && gleam test)
 integrations/fabric_postgres/scripts/test-postgres.sh
 ```
 
-`scripts/check.py full`, and its prepared `ci` profile, run this PostgreSQL
-gate with the other packages. The root `gleam test` runs no PostgreSQL
-tests, and `nix flake check` checks formatting across the repository and
-starts no database. The packages use
-sibling path dependencies; see the tested revisions in [PLAN](docs/PLAN.md#tested-sibling-revisions).
-
-Production slices S1–S6 are complete. [Remaining work](docs/REMAINING.md)
-lists S7 operations, the later Grind integration, retained features and
-release work, with optional improvements kept separate.
+The tested sibling revisions are in [PLAN](docs/PLAN.md#tested-sibling-revisions).
