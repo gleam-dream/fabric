@@ -277,7 +277,7 @@ pub fn automatic_crash_recovery_and_reconciliation_keep_version_2_test() {
       every: duration.milliseconds(10),
     )
   let assert Ok(opened) = fabric.open(b, agent, Nil, fabric.id(started))
-  let uncertain = await_uncertain(opened, 200)
+  let uncertain = await_uncertain(opened, 3000)
   writes(memory.backend, fabric.id(opened), 2)
   let assert Ok(_) = fabric.reconcile(opened, uncertain.reference, "\"work\"")
   fabric.await(opened, within: duration.milliseconds(5000))

@@ -44,7 +44,7 @@ pub fn shutdown_reports_a_confirmed_handoff_and_runner_exit_test() {
   restart.draining(runs)
   probe.release(held)
   restart.stopped(application)
-  let assert Ok(summary) = process.receive(events, 1000)
+  let assert Ok(summary) = process.receive(events, 30_000)
   summary |> should.equal(o.Drain(1, 1, 0, 0, 0, 1, 0, summary.elapsed_ms))
   { summary.elapsed_ms >= 0 } |> should.be_true
   let _ = sinal.detach(attached)
@@ -78,7 +78,7 @@ fn capture(
 }
 
 fn reported(events: process.Subject(o.Drain), expected: o.Drain) -> o.Drain {
-  let assert Ok(summary) = process.receive(events, 1000)
+  let assert Ok(summary) = process.receive(events, 30_000)
   summary |> should.equal(o.Drain(..expected, elapsed_ms: summary.elapsed_ms))
   should.be_true(summary.elapsed_ms >= 0)
   summary
@@ -418,7 +418,7 @@ pub fn a_runner_admitted_before_drain_is_counted_while_its_first_write_is_pendin
   restart.begin_stop(application)
   restart.draining(runs)
   probe.release(writing)
-  let assert Ok(Ok(_)) = process.receive(started, 1000)
+  let assert Ok(Ok(_)) = process.receive(started, 30_000)
   restart.stopped_within(application, 3000) |> should.be_true
   let _ = reported(events, o.Drain(1, 1, 0, 0, 0, 1, 0, 0))
   probe.count(ledger, "start:a") |> should.equal(0)

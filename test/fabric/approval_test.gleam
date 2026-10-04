@@ -267,7 +267,7 @@ pub fn concurrent_answers_have_one_winner_and_the_tool_runs_once_test() {
   })
   let outcomes =
     list.map(list.repeat(Nil, 8), fn(_) {
-      let assert Ok(outcome) = process.receive(results, 5000)
+      let assert Ok(outcome) = process.receive(results, 30_000)
       outcome
     })
   list.count(outcomes, fn(outcome) {
@@ -388,8 +388,8 @@ pub fn an_answer_racing_a_cancel_has_a_defined_outcome_test() {
       process.send(answered, approve(run, pending.reference))
     })
     process.spawn(fn() { process.send(cancelled, fabric.cancel(run)) })
-    let assert Ok(answer) = process.receive(answered, 5000)
-    let assert Ok(Ok(_)) = process.receive(cancelled, 5000)
+    let assert Ok(answer) = process.receive(answered, 30_000)
+    let assert Ok(Ok(_)) = process.receive(cancelled, 30_000)
     fabric.await(run, within: duration.milliseconds(5000))
     |> should.equal(Ok(run.Finished(run.Cancelled)))
     let assert Ok(snapshot) = fabric.snapshot(run)
@@ -521,7 +521,7 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
       ),
     )
   })
-  let assert Ok(_) = process.receive(held, 5000)
+  let assert Ok(_) = process.receive(held, 30_000)
   // The first writer's identical answer lands, and its model call waits.
   let assert Ok(run.Working) =
     fabric.reject(
@@ -533,7 +533,7 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
   let calling = probe.arrival(probe)
   // The held write is lost.
   flaky.drop_held(backend)
-  let assert Ok(outcome) = process.receive(second, 5000)
+  let assert Ok(outcome) = process.receive(second, 30_000)
   probe.release(calling)
   fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("done"))))

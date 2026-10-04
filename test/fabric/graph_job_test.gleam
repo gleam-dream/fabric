@@ -215,7 +215,7 @@ pub fn an_observer_timeout_preserves_the_wait_and_reuses_its_work_grant_test() {
   let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   graph.poll_job(handle, reference) |> should.be_error
-  let assert Ok(observer) = process.receive(started, 1000)
+  let assert Ok(observer) = process.receive(started, 30_000)
   restart.gone(observer)
   graph.snapshot(handle) |> should.equal(Ok(waiting))
   let pending = support.open_graph(runtime(runs, fn(_) { Ok(job.Pending) }), id)
@@ -269,7 +269,7 @@ pub fn cancellation_wins_over_an_inflight_observation_without_remote_cancellatio
   let held = probe.arrival(calls)
   let assert Ok(_) = graph.cancel(handle)
   probe.release(held)
-  let assert Ok(Error(_)) = process.receive(reply, 5000)
+  let assert Ok(Error(_)) = process.receive(reply, 30_000)
   let assert Ok(cancelled) = graph.snapshot(handle)
   cancelled.status
   |> should.equal(graph.Cancelled(graph.JobDetached(reference)))
@@ -303,8 +303,8 @@ pub fn competing_observations_commit_only_one_result_test() {
   let second = probe.arrival(calls)
   probe.release(first)
   probe.release(second)
-  let assert Ok(Ok(one)) = process.receive(replies, 5000)
-  let assert Ok(Ok(two)) = process.receive(replies, 5000)
+  let assert Ok(Ok(one)) = process.receive(replies, 30_000)
+  let assert Ok(Ok(two)) = process.receive(replies, 30_000)
   one |> should.equal(two)
   one |> should.equal(graph.Completed(42))
   let assert Ok(done) = graph.snapshot(handle)

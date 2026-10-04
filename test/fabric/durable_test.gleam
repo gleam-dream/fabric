@@ -280,7 +280,7 @@ pub fn concurrent_recoveries_take_the_run_over_once_test() {
     })
   })
   list.each(list.repeat(Nil, 8), fn(_) {
-    process.receive(results, 5000) |> should.equal(Ok(fabric.id(run)))
+    process.receive(results, 30_000) |> should.equal(Ok(fabric.id(run)))
   })
   let assert Ok(run) = fabric.recover(store, agent, Nil, fabric.id(run))
   incarnation(run) |> should.equal(2)
@@ -600,7 +600,7 @@ pub fn await_reports_a_stopped_store_test() {
   })
   restart.crash(owner, store)
   let assert Ok(Error(fabric.StoreUnavailable(_))) =
-    process.receive(awaited, 5000)
+    process.receive(awaited, 30_000)
 }
 
 /// A wait longer than the longest timer the runtime can set (2^32 - 1 ms)

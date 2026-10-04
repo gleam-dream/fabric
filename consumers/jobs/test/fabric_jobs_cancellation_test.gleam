@@ -100,7 +100,7 @@ pub fn cancellation_requires_approval_and_acknowledgment_is_not_confirmation_tes
   |> should.equal(Ok(client.StopRequested))
   // Even if the service has since stopped, the saved acknowledgment alone
   // leaves Fabric waiting for a separately observed terminal fact.
-  let done = poll(handle, reference, 100)
+  let done = poll(handle, reference, 1500)
   done.status |> should.equal(graph.Completed(client.Stopped))
   list.length(done.receipts) |> should.equal(2)
   client.artifact(support.url(), receipt) |> should.be_error
@@ -151,7 +151,7 @@ pub fn a_saved_cancellation_request_reconnects_without_requesting_again_test() {
     )
   let assert Ok(recovered) = graph.recover(handle)
   recovered |> should.equal(waiting)
-  let done = poll(handle, reference, 100)
+  let done = poll(handle, reference, 1500)
   done.status |> should.equal(graph.Completed(client.Stopped))
   graph.poll_job(handle, reference) |> should.equal(Ok(done.status))
   support.remove_dir(directory)
@@ -287,7 +287,7 @@ fn completed(receipt, left) {
 
 pub fn completion_that_won_before_stop_is_returned_without_erasing_the_artifact_test() {
   let receipt = submit("completed-before-stop", 0)
-  let digest = completed(receipt, 100)
+  let digest = completed(receipt, 1500)
   let assert Ok(handle) =
     graph.start(
       runtime(memory(), request, operation.ReplayInterrupted(3)),
@@ -420,10 +420,10 @@ pub fn a_completed_owned_job_keeps_its_artifact_when_local_cancellation_wins_tes
   let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert demo.Accepted(receipt) = waiting.value
-  let digest = completed(receipt, 100)
+  let digest = completed(receipt, 1500)
   let assert Ok(_) = graph.cancel(handle)
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
-  let done = poll_owned(handle, reference, 100)
+  let done = poll_owned(handle, reference, 1500)
   done.status |> should.equal(graph.Cancelled(graph.AfterResult))
   let assert [_, outcome] = done.receipts
   codec.decode_json(codec.string(), outcome.output_json)

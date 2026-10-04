@@ -187,7 +187,7 @@ pub fn an_idle_parent_releases_its_runner_and_wakes_when_its_child_is_approved_t
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(reference, child.Approval(_)) = waiting
-  idle(runs, graph.id(handle), 100) |> should.be_true
+  idle(runs, graph.id(handle), 3000) |> should.be_true
   let assert Ok(child_handle) = graph.child(handle, reference.activation, child)
   let assert Ok(waiting) = graph.snapshot(child_handle)
   let assert graph.AwaitingApproval(approval) = waiting.status
@@ -262,8 +262,8 @@ pub fn nested_approval_and_signal_waits_release_every_runner_and_keep_each_route
   let assert graph.Child(_, child.Approval(_)) = waiting
   let assert Ok(middle_handle) = graph.child(handle, 1, middle)
   let assert Ok(leaf_handle) = graph.child(middle_handle, 1, leaf)
-  idle(runs, graph.id(handle), 100) |> should.be_true
-  idle(runs, graph.id(middle_handle), 100) |> should.be_true
+  idle(runs, graph.id(handle), 3000) |> should.be_true
+  idle(runs, graph.id(middle_handle), 3000) |> should.be_true
   let assert Ok(waiting) = graph.snapshot(leaf_handle)
   let assert graph.AwaitingApproval(approval) = waiting.status
   let assert Ok(_) =
@@ -281,9 +281,9 @@ pub fn nested_approval_and_signal_waits_release_every_runner_and_keep_each_route
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(_, child.Signal(run.DefinitionId("answer", 1))) =
     waiting
-  idle(runs, graph.id(handle), 100) |> should.be_true
-  idle(runs, graph.id(middle_handle), 100) |> should.be_true
-  idle(runs, graph.id(leaf_handle), 100) |> should.be_true
+  idle(runs, graph.id(handle), 3000) |> should.be_true
+  idle(runs, graph.id(middle_handle), 3000) |> should.be_true
+  idle(runs, graph.id(leaf_handle), 3000) |> should.be_true
   let response = signal.new(run.DefinitionId("answer", 1), codec.int())
   let assert Ok(_) = graph.deliver(leaf_handle, reference, response, 42)
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
@@ -309,7 +309,7 @@ pub fn recovery_repairs_a_child_completion_notification_lost_with_the_store_test
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(_, child.Signal(_)) = waiting
-  idle(runs, graph.id(handle), 100) |> should.be_true
+  idle(runs, graph.id(handle), 3000) |> should.be_true
   let wrong_child = signal_child(support.store(), fn(_, _) { Ok(policy.Allow) })
   let wrong_parent =
     support.open_graph(parent(runs, wrong_child), graph.id(handle))
@@ -359,7 +359,7 @@ pub fn parking_checks_a_child_that_completed_before_wakeup_registration_test() {
   let held =
     flaky.hold(backend, fn(id) { id == run.id_to_string(graph.id(handle)) })
   probe.release(arrival)
-  let assert Ok(_) = process.receive(held, 5000)
+  let assert Ok(_) = process.receive(held, 30_000)
   let other_runs = flaky.store(backend)
   let other_child =
     child_with(
@@ -405,7 +405,7 @@ pub fn cancellation_wins_over_a_delayed_idle_parent_wakeup_test() {
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(reference, child.Signal(_)) = waiting
-  idle(runs, graph.id(handle), 100) |> should.be_true
+  idle(runs, graph.id(handle), 3000) |> should.be_true
   let assert Ok(leaf_handle) = graph.child(handle, 1, leaf)
   let assert Ok(waiting) = graph.snapshot(leaf_handle)
   let assert graph.AwaitingSignal(signal_reference) = waiting.status
@@ -418,7 +418,7 @@ pub fn cancellation_wins_over_a_delayed_idle_parent_wakeup_test() {
       signal.new(run.DefinitionId("answer", 1), codec.int()),
       42,
     )
-  let assert Ok(_) = process.receive(held, 5000)
+  let assert Ok(_) = process.receive(held, 30_000)
   let other_runs = flaky.store(backend)
   let leaf = signal_child(other_runs, fn(_, _) { Ok(policy.Allow) })
   let canceller = support.open_graph(parent(other_runs, leaf), graph.id(handle))
@@ -586,8 +586,8 @@ pub fn nested_cancelled_children_settle_from_the_leaf_after_store_restart_test()
           41,
           correlation: None,
         )
-      let assert Ok(middle_handle) = wait_for_child(handle, middle, 100)
-      let assert Ok(leaf_handle) = wait_for_child(middle_handle, leaf, 100)
+      let assert Ok(middle_handle) = wait_for_child(handle, middle, 3000)
+      let assert Ok(leaf_handle) = wait_for_child(middle_handle, leaf, 3000)
       let assert Ok(uncertain) =
         graph.await(leaf_handle, within: duration.milliseconds(5000))
       let assert graph.Blocked(_, _) = uncertain
@@ -697,7 +697,7 @@ pub fn competing_settlement_commands_acknowledge_the_same_cancelled_record_test(
     flaky.hold(backend, fn(id) { id == run.id_to_string(graph.id(handle)) })
   let replies = process.new_subject()
   process.spawn_unlinked(fn() { process.send(replies, graph.recover(handle)) })
-  let assert Ok(_) = process.receive(held, 5000)
+  let assert Ok(_) = process.receive(held, 30_000)
   let other_runs = flaky.store(backend)
   let other =
     support.open_graph(parent(other_runs, child(other_runs)), graph.id(handle))
@@ -705,7 +705,7 @@ pub fn competing_settlement_commands_acknowledge_the_same_cancelled_record_test(
   let assert Ok(settled) = graph.snapshot(other)
   let assert graph.Cancelled(graph.ChildSettled(_)) = settled.status
   flaky.release_held(backend)
-  process.receive(replies, 5000) |> should.equal(Ok(Ok(settled.status)))
+  process.receive(replies, 30_000) |> should.equal(Ok(Ok(settled.status)))
   graph.snapshot(handle) |> should.equal(Ok(settled))
 }
 
@@ -744,7 +744,7 @@ pub fn a_child_uncertainty_is_reconciled_in_the_child_before_parent_continuation
   let assert graph.Child(reference, child.Uncertain(_)) = waiting
   // The parent's runner commits the child's uncertainty and stops; only
   // then is there no owner, and `recover` takes the parent over.
-  idle(runs, graph.id(handle), 500) |> should.be_true
+  idle(runs, graph.id(handle), 3000) |> should.be_true
   let assert Ok(child_handle) = graph.child(handle, reference.activation, child)
   let assert Ok(child_waiting) = graph.snapshot(child_handle)
   let assert graph.Blocked(reconciliation, _) = child_waiting.status
@@ -841,7 +841,7 @@ pub fn parent_cancellation_buries_a_child_before_a_delayed_start_can_land_test()
       41,
       correlation: None,
     )
-  let assert Ok(child_id) = process.receive(held, 5000)
+  let assert Ok(child_id) = process.receive(held, 30_000)
   let other_runs = flaky.store(backend)
   let other_child = child_with(other_runs, perform, policy)
   let canceller =

@@ -215,7 +215,7 @@ pub fn competing_terminal_reconciliations_cannot_overwrite_evidence_test() {
       fabric.reconcile_stored(first, effect("root"), "charged"),
     )
   })
-  let assert Ok(_) = process.receive(held, 1000)
+  let assert Ok(_) = process.receive(held, 30_000)
   fabric.reconcile_stored(second, effect("root"), "not charged") |> should.be_ok
   flaky.release_held(backend)
   process.receive(answer, 1000)

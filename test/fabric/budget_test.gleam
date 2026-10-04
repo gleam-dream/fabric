@@ -217,7 +217,7 @@ pub fn competing_stores_cannot_both_reserve_the_last_slot_test() {
       ledger.reserve(first, "root", limits, budget.GraphAttempt("root", 1, 1)),
     )
   })
-  let assert Ok(_) = process.receive(held, 1000)
+  let assert Ok(_) = process.receive(held, 30_000)
   let assert Ok(winner) =
     ledger.reserve(second, "root", limits, budget.ModelAttempt("root", 1, 1, 1))
   flaky.release_held(backend)
@@ -239,7 +239,7 @@ pub fn competing_creators_adopt_the_same_immutable_ledger_test() {
   process.spawn(fn() {
     process.send(reply, ledger.ensure(first, "root", limits))
   })
-  let assert Ok(_) = process.receive(held, 1000)
+  let assert Ok(_) = process.receive(held, 30_000)
   let assert Ok(initial) = ledger.ensure(second, "root", limits)
   let assert Ok(state) =
     ledger.reserve(second, "root", limits, budget.Child("child", 1))

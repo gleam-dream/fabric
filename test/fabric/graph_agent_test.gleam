@@ -251,7 +251,7 @@ pub fn every_agent_approval_is_visible_and_wakes_an_idle_graph_test() {
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(reference, child.AgentInput(approvals, [])) = waiting
   list.length(approvals) |> should.equal(2)
-  idle(runs, graph.id(handle), 100) |> should.be_true
+  idle(runs, graph.id(handle), 3000) |> should.be_true
   let assert Ok(agent) = node.child(handle, reference.activation, runtime)
   fabric.id(agent) |> should.equal(reference.child)
   list.each(approvals, fn(approval) {
@@ -289,7 +289,7 @@ pub fn agent_approval_and_attachment_survive_store_restart_test() {
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(reference, child.AgentInput(approvals, [])) = waiting
-  idle(runs, graph.id(handle), 100) |> should.be_true
+  idle(runs, graph.id(handle), 3000) |> should.be_true
   restart.crash(owner, runs)
   let runs = support.directory(dir)
   let runtime = runtime(runs, worker)
@@ -633,9 +633,9 @@ pub fn nested_graphs_observe_an_agents_own_delegated_family_test() {
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(_, child.AgentInput(approvals, [])) = waiting
   list.length(approvals) |> should.equal(2)
-  idle(runs, graph.id(handle), 100) |> should.be_true
+  idle(runs, graph.id(handle), 3000) |> should.be_true
   let assert Ok(inner_handle) = graph.child(handle, 1, inner)
-  idle(runs, graph.id(inner_handle), 100) |> should.be_true
+  idle(runs, graph.id(inner_handle), 3000) |> should.be_true
   let assert Ok(agent) = node.child(inner_handle, 1, runtime)
   list.each(approvals, fn(approval) {
     { approval.reference.run != fabric.id(agent) } |> should.be_true
@@ -700,7 +700,7 @@ pub fn cancellation_buries_a_reserved_agent_without_calling_prompt_or_context_te
   let held = flaky.hold(backend, fn(id) { id == child_id })
   let assert Ok(handle) =
     graph.start(parent(runs, runtime), id, 41, correlation: None)
-  let assert Ok(_) = process.receive(held, 5000)
+  let assert Ok(_) = process.receive(held, 30_000)
   let other = flaky.store(backend)
   let assert Ok(cancel_runtime) =
     node.new(

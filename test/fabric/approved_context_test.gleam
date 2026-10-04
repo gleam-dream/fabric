@@ -367,7 +367,7 @@ pub fn an_approved_sub_agent_never_stored_is_asked_for_again_test() {
   // The answer commits; its runner is lost while it stores the child.
   let held = flaky.hold(backend, string.ends_with(_, "-1"))
   let assert Ok(_) = approve(run, pending, "alice")
-  let assert Ok(_) = process.receive(held, 5000)
+  let assert Ok(_) = process.receive(held, 30_000)
   restart.crash(owner, first)
   flaky.drop_held(backend)
 

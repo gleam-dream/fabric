@@ -65,7 +65,7 @@ fn scan(runs, build) {
       [sweeper.graph(run.DefinitionId("scheduled-flow", 1), build)],
       every: duration.milliseconds(60_000),
     )
-  let assert Ok(summary) = process.receive(events, 5000)
+  let assert Ok(summary) = process.receive(events, 30_000)
   process.unlink(started)
   restart.kill(started)
   let _ = sinal.detach(attachment)

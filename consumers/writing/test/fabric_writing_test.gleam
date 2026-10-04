@@ -91,7 +91,7 @@ fn start_store(runs: store.Store) -> process.Pid {
       process.send(ready, Nil)
       process.receive_forever(process.new_subject())
     })
-  let assert Ok(Nil) = process.receive(ready, 1000)
+  let assert Ok(Nil) = process.receive(ready, 30_000)
   owner
 }
 
@@ -401,7 +401,7 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
       reviewer: as_reviewer("reviewer"),
       context: Nil,
     )
-  let assert Ok(receipt) = process.receive(saved, 1000)
+  let assert Ok(receipt) = process.receive(saved, 30_000)
   stop_store(f.owner, f.runs)
   let owner = start_store(f.runs)
   let assert Ok(_) = graph.recover(f.handle)

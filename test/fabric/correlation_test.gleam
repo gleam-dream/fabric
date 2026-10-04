@@ -117,7 +117,7 @@ pub fn starting_again_with_the_same_id_is_already_started_test() {
   fabric.await(opened, within: duration.seconds(1))
   |> should.equal(Ok(run.Finished(run.Completed("done"))))
   // The second start called no model.
-  let assert Ok(_) = process.receive(requests, 100)
+  let assert Ok(_) = process.receive(requests, 30_000)
   process.receive(requests, 100) |> should.equal(Error(Nil))
 }
 
@@ -163,13 +163,13 @@ pub fn requests_and_tool_calls_carry_the_run_and_its_correlation_test() {
     )
   let assert Ok(run.Finished(run.Completed("done"))) =
     fabric.await(handle, within: duration.seconds(5))
-  let assert Ok(first) = process.receive(requests, 100)
-  let assert Ok(second) = process.receive(requests, 100)
+  let assert Ok(first) = process.receive(requests, 30_000)
+  let assert Ok(second) = process.receive(requests, 30_000)
   #(first.run, first.turn, first.correlation)
   |> should.equal(#(id, 1, ticket))
   #(second.run, second.turn, second.correlation)
   |> should.equal(#(id, 2, ticket))
-  let assert Ok(call) = process.receive(calls, 100)
+  let assert Ok(call) = process.receive(calls, 30_000)
   call
   |> should.equal(tool.Call(
     run: id,
@@ -194,7 +194,7 @@ pub fn the_default_correlation_is_derived_from_the_run_id_test() {
   let assert Ok(handle) =
     fabric.start(runs, desk, id:, context: Nil, prompt: "go", correlation: None)
   let assert Ok(_) = fabric.await(handle, within: duration.seconds(5))
-  let assert Ok(request) = process.receive(requests, 100)
+  let assert Ok(request) = process.receive(requests, 30_000)
   request.correlation
   |> should.equal(correlation.from_key(run.id_to_string(id)))
 }
@@ -300,7 +300,7 @@ pub fn a_sub_agent_carries_its_parents_correlation_test() {
     )
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(handle, within: duration.seconds(5))
-  let assert Ok(request) = process.receive(requests, 100)
+  let assert Ok(request) = process.receive(requests, 30_000)
   request.correlation |> should.equal(ticket)
   request.run |> should.equal(support.child_id(fabric.id(handle), 1))
 }

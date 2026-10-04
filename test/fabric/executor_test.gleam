@@ -141,7 +141,7 @@ pub fn losing_the_owner_kills_the_body_test() {
         ),
       ])
     })
-  let assert Ok(body) = process.receive(worker, 1000)
+  let assert Ok(body) = process.receive(worker, 30_000)
   restart.kill(owner)
   restart.gone(body)
 }

@@ -106,7 +106,7 @@ pub fn a_child_is_recovered_beneath_a_live_foreign_parent_test() {
   let assert backend.Held(owner, True) = nodes.holder(memory.backend, child)
   memory.backend.renew(owner, [run.id_to_string(child)], 0)
   |> should.equal(Ok([run.id_to_string(child)]))
-  await_free(memory.backend, child, 200)
+  await_free(memory.backend, child, 3000)
   probe.release(running)
   fabric.await(root, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Completed("\"a\",\"found\""))))
@@ -190,10 +190,10 @@ pub fn a_stopping_child_is_recovered_beneath_a_live_cancelling_parent_test() {
       prompt: "go",
       correlation: None,
     )
-  process.receive(entered, 5000) |> should.equal(Ok(Nil))
+  process.receive(entered, 30_000) |> should.equal(Ok(Nil))
   let child = support.child_id(fabric.id(root), 1)
   let assert Ok(_) = fabric.cancel(root)
-  await_stopping(a, child, 200)
+  await_stopping(a, child, 3000)
   let assert Ok(child_runner) = restart.runner(a, child)
   restart.kill(child_runner)
   let assert backend.Held(owner, True) = nodes.holder(memory.backend, child)

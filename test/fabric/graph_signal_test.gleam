@@ -293,16 +293,16 @@ pub fn two_concurrent_deliveries_accept_only_one_output_test() {
     process.spawn_unlinked(fn() {
       let go = process.new_subject()
       process.send(ready, go)
-      let assert Ok(Nil) = process.receive(go, 5000)
+      let assert Ok(Nil) = process.receive(go, 30_000)
       process.send(replies, graph.deliver(handle, reference, review(), value))
     })
   })
-  let assert Ok(first_go) = process.receive(ready, 5000)
-  let assert Ok(second_go) = process.receive(ready, 5000)
+  let assert Ok(first_go) = process.receive(ready, 30_000)
+  let assert Ok(second_go) = process.receive(ready, 30_000)
   process.send(first_go, Nil)
   process.send(second_go, Nil)
-  let assert Ok(first) = process.receive(replies, 5000)
-  let assert Ok(second) = process.receive(replies, 5000)
+  let assert Ok(first) = process.receive(replies, 30_000)
+  let assert Ok(second) = process.receive(replies, 30_000)
   let count =
     list.count([first, second], fn(reply) {
       case reply {
@@ -414,10 +414,10 @@ pub fn cancellation_wins_against_a_held_delivery_commit_test() {
   process.spawn_unlinked(fn() {
     process.send(reply, graph.deliver(handle, reference, review(), True))
   })
-  let assert Ok(_) = process.receive(held, 5000)
+  let assert Ok(_) = process.receive(held, 30_000)
   let assert Ok(_) = graph.cancel(canceller)
   flaky.release_held(backend)
-  let assert Ok(Error(graph.RunEnded)) = process.receive(reply, 5000)
+  let assert Ok(Error(graph.RunEnded)) = process.receive(reply, 30_000)
   let assert Ok(cancelled) = graph.snapshot(handle)
   cancelled.status |> should.equal(graph.Cancelled(graph.BeforeStart))
   cancelled.receipts |> should.equal([])

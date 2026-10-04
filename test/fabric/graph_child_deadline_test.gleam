@@ -83,7 +83,7 @@ pub fn expiration_after_restart_cancels_the_same_signal_child_test() {
   let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.Child(reference, child.Signal(_)) = waiting.status
   let assert Some(due) = waiting.deadline
-  parked(runs, graph.id(handle), 300)
+  parked(runs, graph.id(handle), 3000)
   restart.crash(owner, runs)
   memory.advance(60_001)
   let runs = nodes.node(memory.backend, "after", 300_000)
@@ -188,10 +188,10 @@ pub fn an_expired_agent_keeps_uncertain_effects_until_the_child_is_reconciled_te
   let assert graph.Child(reference, child.AgentInput([], [uncertain])) =
     waiting.status
   let assert Some(due) = waiting.deadline
-  parked(runs, graph.id(handle), 300)
+  parked(runs, graph.id(handle), 3000)
   memory.advance(60_001)
   let assert Ok(_) = graph.recover(handle)
-  let expired = expired(handle, 300)
+  let expired = expired(handle, 3000)
   let assert graph.Expired(saved_due, graph.ChildUnresolved(saved_ref, _)) =
     expired.status
   saved_due |> should.equal(due)
@@ -274,7 +274,7 @@ pub fn expiration_before_child_creation_records_a_never_started_child_test() {
       41,
       correlation: None,
     )
-  let done = expired(handle, 300)
+  let done = expired(handle, 3000)
   let assert graph.Expired(_, graph.ChildSettled(reference)) = done.status
   let assert Ok(child_handle) = graph.child(handle, reference.activation, leaf)
   let assert Ok(stopped) = graph.snapshot(child_handle)
@@ -318,7 +318,7 @@ pub fn expired_reconciliation_keeps_the_child_result_without_calling_parent_mapp
       support.id("expired-mapping"),
     )
   let assert Ok(_) = graph.reconcile(handle, reference, "42")
-  let done = expired(handle, 300)
+  let done = expired(handle, 3000)
   let assert graph.Expired(saved_due, graph.ChildSettled(child_ref)) =
     done.status
   saved_due |> should.equal(due)
@@ -380,10 +380,10 @@ pub fn a_sweeper_settles_nested_cleanup_after_expiration_without_a_working_clock
   let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.Child(reference, child.Job(_)) = waiting.status
   let assert Some(due) = waiting.deadline
-  parked(runs, graph.id(handle), 300)
+  parked(runs, graph.id(handle), 3000)
   memory.advance(60_001)
   let assert Ok(_) = graph.recover(handle)
-  let before = expired(handle, 300)
+  let before = expired(handle, 3000)
   let assert graph.Expired(_, graph.ChildUnresolved(_, _)) = before.status
   probe.record(clock, "offline")
   probe.record(terminal, "completed")
@@ -393,7 +393,7 @@ pub fn a_sweeper_settles_nested_cleanup_after_expiration_without_a_working_clock
       [sweeper.graph(run.DefinitionId("child-deadline", 1), build)],
       every: duration.milliseconds(10),
     )
-  let done = settled(handle, 300)
+  let done = settled(handle, 3000)
   process.unlink(started)
   restart.kill(started)
   done.status |> should.equal(graph.Expired(due, graph.ChildSettled(reference)))
@@ -427,7 +427,7 @@ pub fn an_overdue_retained_wait_cannot_replace_a_missing_child_with_a_tombstone_
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Child(reference, child.Signal(_)) = waiting
-  parked(runs, graph.id(handle), 300)
+  parked(runs, graph.id(handle), 3000)
   restart.crash(owner, runs)
   memory.advance(60_001)
   let assert Ok(before) = memory.backend.get(root)

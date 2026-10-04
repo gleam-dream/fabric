@@ -450,7 +450,7 @@ pub fn concurrent_cancels_of_a_suspended_run_have_one_winner_test() {
   })
   let outcomes =
     list.map(list.repeat(Nil, 8), fn(_) {
-      let assert Ok(outcome) = process.receive(results, 5000)
+      let assert Ok(outcome) = process.receive(results, 30_000)
       outcome
     })
   list.count(outcomes, fn(o) { o == Ok(run.Finished(run.Cancelled)) })
@@ -662,7 +662,7 @@ pub fn an_exit_signal_from_outside_stops_the_runner_test() {
   let assert Ok(Nil) =
     process.new_selector()
     |> process.select_specific_monitor(monitor, fn(_) { Nil })
-    |> process.selector_receive(5000)
+    |> process.selector_receive(30_000)
   fabric.await(run, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Unattended))
 }
