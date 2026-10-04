@@ -121,17 +121,28 @@ fn runs() -> store.Store {
 fn desk_server(
   service: fabric_relay.Service(String, Nil, Question, Answer),
 ) -> server.Server(String) {
-  server.new([fabric_relay.serve(ask(), service)])
+  server.new([fabric_relay.serve(service)])
 }
 
+/// The input's type comes from the definition: `start` needs no
+/// annotation.
 fn served(runs, desk) {
-  fabric_relay.service(runs, desk, start: fn(call, question: Question) {
-    Ok(fabric_relay.start(
-      Nil,
-      prompt: question.text,
-      principal: relay_tool.context(call),
-    ))
+  fabric_relay.service(ask(), runs:, agent: desk, start: fn(call, question) {
+    fabric_relay.start(Nil, prompt: question.text)
+    |> fabric_relay.with_principal(relay_tool.context(call))
   })
+}
+
+/// The run a block's `_meta` names.
+fn meta_run(blocks: List(content.ContentBlock)) -> Option(String) {
+  case blocks {
+    [content.TextContent(meta:, ..), ..] ->
+      case list.key_find(meta, "io.github.gleam-dream/run-id") {
+        Ok(value.String(id)) -> Some(id)
+        _ -> None
+      }
+    _ -> None
+  }
 }
 
 /// The `error` and `run_id` of an `isError` result.
@@ -167,22 +178,54 @@ pub fn a_call_answers_with_the_runs_typed_answer_test() {
   let peer =
     testing.connect(desk_server(service), "ada")
     |> client.with_correlation(correlation.from_key("ticket-12"))
-  let assert Ok(client.Succeeded(answer, _)) =
+  let assert Ok(client.Succeeded(answer, blocks)) =
     client.call(peer, ask(), Question("hello"))
   answer |> should.equal(Answer("done: hello"))
-  // The run took the call's correlation.
-  let assert Ok(Turn(correlation:, ..)) = process.receive(turns, 100)
+  // The run took the call's correlation, and the answer names the run.
+  let assert Ok(Turn(run: id, correlation:, ..)) = process.receive(turns, 100)
   correlation |> should.equal(correlation.from_key("ticket-12"))
+  meta_run(blocks) |> should.equal(Some(run.id_to_string(id)))
+  let assert [content.TextContent(text:, ..)] = blocks
+  text |> should.equal("{\"answer\":\"done: hello\"}")
+}
+
+/// A `start` that names no principal runs a keyed call for `anonymous`.
+pub fn a_call_without_a_principal_runs_for_anonymous_test() {
+  let turns = process.new_subject()
+  let service =
+    fabric_relay.service(
+      ask(),
+      runs: runs(),
+      agent: desk(desk_model(turns, False, 0)),
+      start: fn(_call, question) {
+        fabric_relay.start(Nil, prompt: question.text)
+      },
+    )
+  let assert Ok(client.Succeeded(_, blocks)) =
+    testing.connect(desk_server(service), "ada")
+    |> client.with_idempotency_key("k-1")
+    |> client.call(ask(), Question("hello"))
+  meta_run(blocks)
+  |> should.equal(
+    Some(
+      run.id_to_string(fabric_relay.run_id(
+        ask(),
+        principal: fabric_relay.anonymous,
+        key: "k-1",
+      )),
+    ),
+  )
 }
 
 pub fn start_refuses_a_call_with_its_own_result_test() {
   let turns = process.new_subject()
   let service =
     fabric_relay.service(
-      runs(),
-      desk(desk_model(turns, False, 0)),
+      ask(),
+      runs: runs(),
+      agent: desk(desk_model(turns, False, 0)),
       start: fn(_call, _question) {
-        Error(relay_tool.error_message("not your desk"))
+        fabric_relay.refuse(relay_tool.error_message("not your desk"))
       },
     )
   let assert Ok(client.ToolFailed([content.TextContent(text:, ..)], _)) =
@@ -207,6 +250,8 @@ pub fn a_retried_call_reaches_the_same_run_test() {
   let expected = fabric_relay.run_id(ask(), principal: "ada", key: "order-1001")
   refusal(first)
   |> should.equal(#("awaiting_approval", Some(run.id_to_string(expected))))
+  let assert Ok(client.ToolFailed(blocks, _)) = first
+  meta_run(blocks) |> should.equal(Some(run.id_to_string(expected)))
   let assert Ok(approvals) = list.key_find(facts(first), "approvals")
   approvals
   |> should.equal(
