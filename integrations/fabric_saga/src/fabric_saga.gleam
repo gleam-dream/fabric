@@ -18,7 +18,7 @@
 //// | `Completed(output)` | the output |
 //// | `Failed` by a typed error (`StepFailed`, or a retry limit whose last attempt returned one), past the deadline, or by an output crash; no unknown effect (so no error its step marks with `unknown_when`); nothing left in place (no undo or cleanup that returned an error, no step without an undo, none held) | a definite failure the model sees: `explain(error)` (or the missed deadline, or the output that could not be computed) |
 //// | `Cancelled`, with the same conditions | a definite failure the model sees: the workflow was cancelled and every completed step undone |
-//// | anything else: `CompletedWithUnknownEffects`, an unknown effect of any action, an effect left in place, a crash or timeout cause, `Unresolved` (the default end of a step whose `unknown_when` error has no decision to settle it; `saga.on_unknown(step, saga.RollBack)` ends it `Failed` instead), a lost run | an uncertain effect whose evidence summarizes Saga's report (outcome kinds, actions and step addresses, never application data) |
+//// | anything else: `CompletedWithUnknownEffects`, an unknown effect of any action, an effect left in place, a crash or timeout cause, `Unresolved` (the default end of a step whose `unknown_when` error has no decision to settle it; `saga.on_unknown(step, saga.RollBack)` ends it `Failed` instead), a lost run | an uncertain effect whose evidence summarizes Saga's report (outcome kinds, actions and step addresses, never application data); for `Unresolved`, it also renders the error the step held its effects on with `explain` |
 ////
 //// Cancelling the Fabric run (or any stop of the tool's task) cancels the
 //// Saga run: the workflow is started by the tool's task, which owns it, and
@@ -52,8 +52,11 @@ import saga/execution
 /// call's run and action (an idempotency key); a workflow that needs only
 /// the tool's input passes `fn(_, _, input) { input }`. Each call's Saga run
 /// carries the Fabric run's correlation (`execution.with_correlation`), so
-/// its events join the run's. `explain` renders a step's typed error for the
-/// model. When the call's task is stopped, Fabric waits up to
+/// its events join the run's; a step reads it with `saga.correlation_of(key)`
+/// (in `saga.effect`, `undo` and `compensate`) and passes it to its own
+/// clients. `explain` renders a step's typed error for the model, and the
+/// error a step held its effects on (`Unresolved`) in the uncertain effect's
+/// evidence for the person who reconciles it. When the call's task is stopped, Fabric waits up to
 /// `rollback_within` for Saga's outcome (its settle window and the undo steps
 /// it runs) before recording an uncertain effect. Saga checks the
 /// configuration when a call starts the workflow: a configuration it refuses
