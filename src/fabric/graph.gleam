@@ -3,9 +3,10 @@
 //// runs in the same supervised store as ordinary Fabric agents.
 ////
 //// ```gleam
-//// let runtime =
+//// let assert Ok(runtime) =
 ////   graph.new(publishing, runs, context: fn(_run) { Ctx(user:) }, policy:)
 ////   |> graph.with_operation_timeout(run.After(duration.minutes(5)))
+////   |> graph.build
 //// let assert Ok(handle) =
 ////   graph.start(runtime, id: run.new_id(), initial: draft, correlation: None)
 //// case graph.await(handle, within: duration.seconds(5)) {
@@ -44,6 +45,12 @@
 //// | family budget | none (opt-in) | `with_family_budget` |
 ////
 //// Deadlines are set and judged by the store's clock (`store.now`).
+////
+//// A bound may come from configuration, so a setter only stores it; `build`
+//// checks every bound and reports every problem at once
+//// (`InvalidLimit(limit:, value:, minimum:, maximum:)`, as `agent.build`
+//// does). Only `build` makes the `Runtime` that `start`, `open` and the
+//// composition functions take.
 
 import fabric
 import fabric/budget
@@ -70,6 +77,7 @@ import fabric/internal/graph/record
 import fabric/internal/graph/runner
 import fabric/internal/graph/runtime as graph_runtime
 import fabric/internal/graph/signal as signal_contract
+import fabric/internal/limit as bounds
 import fabric/internal/run_id
 import fabric/internal/store as store_core
 import fabric/policy.{type Policy}
@@ -88,10 +96,48 @@ import gleam/time/duration.{type Duration}
 import json/blueprint/codec
 import sinal/correlation.{type Correlation}
 
-/// A graph definition bound to its store, context and policy. Build one
-/// with `new`.
+/// A graph definition bound to its store, context and policy, with its
+/// bounds; `build` checks it. Make one with `new` and the `with_*` setters.
+pub opaque type Spec(context, state, answer) {
+  Spec(
+    runtime: graph_runtime.Runtime(context, state, answer),
+    callback_timeout: Duration,
+    operation_timeout: run.Timeout,
+    command_timeout: Duration,
+    approval_expiry: run.Timeout,
+    family_budget: Option(budget.Limits),
+  )
+}
+
+/// A checked runtime: what `start`, `open`, `as_subgraph`, `both` and `map`
+/// take. Only `build` makes one.
 pub type Runtime(context, state, answer) =
   graph_runtime.Runtime(context, state, answer)
+
+/// Why `build` refused a spec. This union may grow: match the variants you
+/// handle and keep a catch-all, or use `describe_config_error`.
+pub type ConfigError {
+  /// A bound is outside `minimum..maximum` (both included), as for
+  /// `agent.InvalidLimit`. Durations are in milliseconds.
+  InvalidLimit(limit: Limit, value: Int, minimum: Int, maximum: Int)
+}
+
+/// A bound `build` checks, named after its setter. This union may grow.
+pub type Limit {
+  /// At most 2^32 - 1 ms, the longest timer the runtime can set, like the
+  /// operation and command timeouts.
+  CallbackTimeout
+  OperationTimeout
+  CommandTimeout
+  /// At most 2^53 - 1 ms, as for agents: the deadline is stored, not timed.
+  ApprovalExpiry
+  /// `budget.limits(work:)`.
+  FamilyWork
+  /// `budget.with_children`.
+  FamilyChildren
+  /// `budget.with_depth`, at most 63.
+  FamilyDepth
+}
 
 /// A handle on one graph run, for the runtime it was started or opened
 /// with. It holds no process.
@@ -446,14 +492,12 @@ pub fn describe_error(error: Error) -> String {
   }
 }
 
-/// The longest timer the runtime can set, in milliseconds.
-const longest_timer = 4_294_967_295
-
-/// Binds `definition` to `store`. `context` builds the live context of the
-/// run it is given, for each admission, recovery and job observation; the
-/// admitted body receives that same context (an approved one, the context
-/// its answer was checked with). `policy` gates every operation, as for
-/// agents: it sees `policy.Activation(..)` as the action's step and
+/// Binds `definition` to `store`, with the default bounds (see the module
+/// documentation); `build` checks it. `context` builds the live context of
+/// the run it is given, for each admission, recovery and job observation;
+/// the admitted body receives that same context (an approved one, the
+/// context its answer was checked with). `policy` gates every operation, as
+/// for agents: it sees `policy.Activation(..)` as the action's step and
 /// `policy.RunOperation(..)` as its target. Callbacks and operations are
 /// bounded separately; pure selection and acceptance must contain no
 /// effects.
@@ -462,7 +506,7 @@ pub fn new(
   store: store.Store,
   context context: fn(run.RunId) -> context,
   policy policy: Policy(context),
-) -> Runtime(context, state, answer) {
+) -> Spec(context, state, answer) {
   // Keep child runtimes in one deployed callback. The ordinary callbacks
   // capture the parent's codecs and routes, without copying descendant trees.
   let compiled.Detached(definition, child, fork) =
@@ -520,17 +564,27 @@ pub fn new(
       fork: fn(activation) { fork(activation.prepared) },
     )
   }
-  graph_runtime.new(
-    definition,
-    store,
-    work_with(context),
-    fn(given) { work_with(fn(_) { given }) },
-    runner.Options(
-      callback_timeout: 1000,
-      operation_timeout: Some(60_000),
-      command_timeout: 1000,
-      approval_expiry: Some(604_800_000),
-    ),
+  // `build` replaces these options with the checked bounds of the spec.
+  let runtime =
+    graph_runtime.new(
+      definition,
+      store,
+      work_with(context),
+      fn(given) { work_with(fn(_) { given }) },
+      runner.Options(
+        callback_timeout: 1,
+        operation_timeout: None,
+        command_timeout: 1,
+        approval_expiry: None,
+      ),
+    )
+  Spec(
+    runtime:,
+    callback_timeout: duration.seconds(1),
+    operation_timeout: run.After(duration.seconds(60)),
+    command_timeout: duration.seconds(1),
+    approval_expiry: run.After(duration.hours(24 * 7)),
+    family_budget: None,
   )
 }
 
@@ -566,103 +620,47 @@ fn action(
   )
 }
 
-/// `duration` in milliseconds, from 1 ms to the longest timer, or a panic
-/// naming `setter`: a bound written in source code that is out of range is
-/// a bug.
-fn checked(duration: Duration, setter: String) -> Int {
-  let ms = duration.to_milliseconds(duration)
-  case ms > 0 && ms <= longest_timer {
-    True -> ms
-    False ->
-      panic as {
-        "graph."
-        <> setter
-        <> ": "
-        <> int.to_string(ms)
-        <> " ms is outside 1..4294967295"
-      }
-  }
-}
-
-fn checked_timeout(timeout: run.Timeout, setter: String) -> Option(Int) {
-  case timeout {
-    run.Infinity -> None
-    run.After(duration) -> Some(checked(duration, setter))
-  }
-}
-
 /// Bounds one call of the definition's pure callbacks (context, selection,
-/// acceptance, validation); default 1 s. From 1 ms to 2^32 - 1 ms: another
-/// value is a bug and panics.
+/// acceptance, validation); default 1 s, from 1 ms to 2^32 - 1 ms.
 pub fn with_callback_timeout(
-  runtime: Runtime(context, state, answer),
+  spec: Spec(context, state, answer),
   timeout: Duration,
-) -> Runtime(context, state, answer) {
-  let options = graph_runtime.options(runtime)
-  graph_runtime.with_options(
-    runtime,
-    runner.Options(
-      ..options,
-      callback_timeout: checked(timeout, "with_callback_timeout"),
-    ),
-  )
+) -> Spec(context, state, answer) {
+  Spec(..spec, callback_timeout: timeout)
 }
 
-/// Bounds one admitted activity body; default 60 s. A body still running
-/// then is stopped and its effect is uncertain (`Blocked`). `run.Infinity`
-/// lets a body run as long as it needs. A duration outside 1 ms..2^32 - 1
-/// ms is a bug and panics.
+/// Bounds one admitted activity body; default 60 s, from 1 ms to 2^32 - 1
+/// ms. A body still running then is stopped and its effect is uncertain
+/// (`Blocked`). `run.Infinity` lets a body run as long as it needs.
 pub fn with_operation_timeout(
-  runtime: Runtime(context, state, answer),
+  spec: Spec(context, state, answer),
   timeout: run.Timeout,
-) -> Runtime(context, state, answer) {
-  let options = graph_runtime.options(runtime)
-  graph_runtime.with_options(
-    runtime,
-    runner.Options(
-      ..options,
-      operation_timeout: checked_timeout(timeout, "with_operation_timeout"),
-    ),
-  )
+) -> Spec(context, state, answer) {
+  Spec(..spec, operation_timeout: timeout)
 }
 
 /// How long a command (`cancel`) waits for the run's live runner to take
-/// it; default 1 s. From 1 ms to 2^32 - 1 ms: another value is a bug and
-/// panics.
+/// it; default 1 s, from 1 ms to 2^32 - 1 ms.
 pub fn with_command_timeout(
-  runtime: Runtime(context, state, answer),
+  spec: Spec(context, state, answer),
   timeout: Duration,
-) -> Runtime(context, state, answer) {
-  let options = graph_runtime.options(runtime)
-  graph_runtime.with_options(
-    runtime,
-    runner.Options(
-      ..options,
-      command_timeout: checked(timeout, "with_command_timeout"),
-    ),
-  )
+) -> Spec(context, state, answer) {
+  Spec(..spec, command_timeout: timeout)
 }
 
 /// How long an approval request this runtime issues waits for an answer;
-/// default 7 days. Its deadline is stored with the request (by the store's
-/// clock) and shown as `Snapshot.deadline`. After it the request expires:
-/// the run fails with `ExpiredApproval`, and a late `approve` or `reject` is
-/// refused with `ApprovalExpired`. Whoever touches the run next expires
-/// it: an answer, `await`, `recover`, or on a leased store the sweeper.
-/// `run.Infinity` never expires; requests stored without a deadline never
-/// expire. A duration outside 1 ms..2^32 - 1 ms is a bug and panics.
+/// default 7 days, at least 1 ms. Its deadline is stored with the request
+/// (by the store's clock) and shown as `Snapshot.deadline`. After it the
+/// request expires: the run fails with `ExpiredApproval`, and a late
+/// `approve` or `reject` is refused with `ApprovalExpired`. Whoever touches
+/// the run next expires it: an answer, `await`, `recover`, or on a leased
+/// store the sweeper. `run.Infinity` never expires; requests stored without
+/// a deadline never expire.
 pub fn with_approval_expiry(
-  runtime: Runtime(context, state, answer),
+  spec: Spec(context, state, answer),
   expiry: run.Timeout,
-) -> Runtime(context, state, answer) {
-  let options = graph_runtime.options(runtime)
-  graph_runtime.with_options(
-    runtime,
-    runner.Options(
-      ..options,
-      approval_expiry: checked_timeout(expiry, "with_approval_expiry"),
-    ),
-  )
+) -> Spec(context, state, answer) {
+  Spec(..spec, approval_expiry: expiry)
 }
 
 /// One budget shared by every root run this runtime starts and all its
@@ -670,19 +668,116 @@ pub fn with_approval_expiry(
 /// stored with the root. A new attempt spends new work capacity;
 /// acknowledging an existing reservation never spends twice. The store
 /// must write agent records of version 7 or later (`start` is then
-/// `FamilyBudgetUnsupported`). Limits outside their bounds (negative, or a
-/// depth over 63) are a bug and panic.
+/// `FamilyBudgetUnsupported`). `build` checks the limits: none negative,
+/// a depth of at most 63.
 pub fn with_family_budget(
-  runtime: Runtime(context, state, answer),
+  spec: Spec(context, state, answer),
   limits: budget.Limits,
-) -> Runtime(context, state, answer) {
-  case reservations.new(limits) {
-    Ok(_) -> graph_runtime.with_family_budget(runtime, limits)
-    Error(_) ->
-      panic as {
-        "graph.with_family_budget: limits outside their bounds: "
-        <> string.inspect(limits)
-      }
+) -> Spec(context, state, answer) {
+  Spec(..spec, family_budget: Some(limits))
+}
+
+/// Checks `spec` and reports every problem at once. Building starts
+/// nothing.
+///
+/// ```gleam
+/// case graph.new(publishing, runs, context:, policy:) |> graph.build {
+///   Ok(runtime) -> runtime
+///   Error(errors) -> panic as graph.describe_config_errors(errors)
+/// }
+/// ```
+pub fn build(
+  spec: Spec(context, state, answer),
+) -> Result(Runtime(context, state, answer), List(ConfigError)) {
+  let ms = duration.to_milliseconds
+  let timeout = fn(timeout) {
+    case timeout {
+      run.After(within) -> Some(ms(within))
+      run.Infinity -> None
+    }
+  }
+  let problems =
+    bounds.check(
+      [
+        bounds.Bound(
+          CallbackTimeout,
+          Some(ms(spec.callback_timeout)),
+          1,
+          bounds.longest_timer,
+        ),
+        bounds.Bound(
+          OperationTimeout,
+          timeout(spec.operation_timeout),
+          1,
+          bounds.longest_timer,
+        ),
+        bounds.Bound(
+          CommandTimeout,
+          Some(ms(spec.command_timeout)),
+          1,
+          bounds.longest_timer,
+        ),
+        bounds.Bound(
+          ApprovalExpiry,
+          timeout(spec.approval_expiry),
+          1,
+          bounds.largest,
+        ),
+        ..bounds.family(
+          spec.family_budget,
+          work: FamilyWork,
+          children: FamilyChildren,
+          depth: FamilyDepth,
+        )
+      ],
+      InvalidLimit,
+    )
+  case problems {
+    [_, ..] -> Error(problems)
+    [] -> {
+      let runtime =
+        graph_runtime.with_options(
+          spec.runtime,
+          runner.Options(
+            callback_timeout: ms(spec.callback_timeout),
+            operation_timeout: timeout(spec.operation_timeout),
+            command_timeout: ms(spec.command_timeout),
+            approval_expiry: timeout(spec.approval_expiry),
+          ),
+        )
+      Ok(case spec.family_budget {
+        Some(limits) -> graph_runtime.with_family_budget(runtime, limits)
+        None -> runtime
+      })
+    }
+  }
+}
+
+/// One line naming the problem and the setter that changes it.
+pub fn describe_config_error(error: ConfigError) -> String {
+  case error {
+    InvalidLimit(limit, value, minimum, maximum) ->
+      bounds.describe(setter(limit), value, minimum, maximum)
+  }
+}
+
+/// One line for every problem `build` reported, in its order, joined with
+/// `"; "`.
+pub fn describe_config_errors(errors: List(ConfigError)) -> String {
+  errors
+  |> list.map(describe_config_error)
+  |> string.join("; ")
+}
+
+fn setter(limit: Limit) -> String {
+  case limit {
+    CallbackTimeout -> "graph.with_callback_timeout (ms)"
+    OperationTimeout -> "graph.with_operation_timeout (ms)"
+    CommandTimeout -> "graph.with_command_timeout (ms)"
+    ApprovalExpiry -> "graph.with_approval_expiry (ms)"
+    FamilyWork -> "budget.limits(work:)"
+    FamilyChildren -> "budget.with_children"
+    FamilyDepth -> "budget.with_depth"
   }
 }
 
@@ -839,8 +934,9 @@ pub fn both(
 
 /// Run a bounded list of managed children and join native answers in input order.
 /// Empty input succeeds; oversized input is refused before any child reservation.
-/// Waiting and uncertain members keep their concurrency slots. Bounds below
-/// 1 are a bug and panic.
+/// Waiting and uncertain members keep their concurrency slots.
+/// `definition.build` refuses bounds below 1
+/// (`operation.InvalidLimit(MaxMembers, ..)`, `Concurrency`).
 pub fn map(
   identity: run.DefinitionId,
   child: Runtime(child_context, child_state, child_answer),
@@ -851,16 +947,6 @@ pub fn map(
   List(child_state),
   Result(List(child_answer), fork.Failure),
 ) {
-  case maximum > 0 && concurrency > 0 {
-    True -> Nil
-    False ->
-      panic as {
-        "graph.map: max_members and concurrency must be at least 1, not "
-        <> int.to_string(maximum)
-        <> " and "
-        <> int.to_string(concurrency)
-      }
-  }
   let child_input = compiled.state_codec(graph_runtime.definition(child))
   let child_output = compiled.answer_codec(graph_runtime.definition(child))
   let input = codec.list(child_input)

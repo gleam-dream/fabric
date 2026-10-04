@@ -53,6 +53,8 @@ fn runtime(runs, every, read) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 fn scan(runs, build) {
@@ -89,7 +91,7 @@ pub fn scheduled_observation_reuses_one_work_grant_and_waits_for_backend_time_te
   let id = support.id("scheduled-job")
   let assert Ok(handle) =
     graph.start(
-      graph.with_family_budget(
+      support.budgeted(
         build(runs),
         budget.limits(work: 1)
           |> budget.with_children(1)
@@ -131,7 +133,14 @@ pub fn polling_intervals_are_bounded_and_part_of_definition_compatibility_test()
   |> should.not_equal([])
   job.with_poll_interval(observer, duration.milliseconds(4_294_967_296))
   |> support.observer_problems
-  |> should.not_equal([])
+  |> should.equal([
+    operation.InvalidLimit(
+      operation.PollInterval,
+      4_294_967_296,
+      1,
+      4_294_967_295,
+    ),
+  ])
   job.with_poll_interval(observer, duration.milliseconds(4_294_967_295))
   |> support.observer_problems
   |> should.equal([])
@@ -223,6 +232,8 @@ pub fn discovery_of_a_parent_does_not_poll_an_unclaimed_job_early_test() {
         |> definition.with_max_activations(1),
       )
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+    |> should.be_ok
   }
   let id = support.id("nested-job-root")
   let assert Ok(handle) =
@@ -282,6 +293,8 @@ pub fn each_new_visit_is_eligible_without_waiting_for_the_previous_interval_test
         |> definition.with_max_activations(2),
       )
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+    |> should.be_ok
   }
   let assert Ok(handle) =
     graph.start(build(runs), support.id("poll-cycle"), 0, correlation: None)

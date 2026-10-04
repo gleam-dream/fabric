@@ -346,9 +346,12 @@ is a `run.Timeout` (`run.After(duration)` or `run.Infinity`). Every deadline
 is set and judged by the store's clock (`store.now`), so every node judges
 it alike. An approval request or a graph wait stores its deadline
 (`run.PendingApproval.expires`, `graph.Snapshot.deadline`); one stored
-before deadlines had defaults keeps none and never expires. A bound written
-in source code that is out of range is a bug: `agent.build` reports it, and
-a graph runtime setter panics with its name.
+before deadlines had defaults keeps none and never expires. A bound may
+come from configuration, so a setter only stores it: `agent.build`,
+`graph.build`, `definition.build` and `fabric_relay.serve` report every
+bound out of range at once, each as `InvalidLimit(limit:, value:, minimum:,
+maximum:)` naming its setter (`describe_config_errors`,
+`definition.describe_build_errors`).
 
 ### Typed answers
 
@@ -413,9 +416,10 @@ current context, a context built from the run id, and one classified
 `graph.Error`.
 
 ```gleam
-let runtime =
+let assert Ok(runtime) =
   graph.new(publishing, runs, context: fn(_run) { ctx }, policy:)
   |> graph.with_approval_expiry(run.After(duration.hours(48)))
+  |> graph.build   // Result(Runtime, List(graph.ConfigError))
 let assert Ok(handle) =
   graph.start(runtime, id: run.new_id(), initial: draft, correlation: None)
 let assert Ok(graph.AwaitingApproval(pending)) =
@@ -510,7 +514,7 @@ See the [rollout procedure](integrations/fabric_postgres/README.md#record-versio
 for compatibility and rollback limits.
 
 Use `agent.with_family_budget(spec, limits)` (checked by `agent.build`) or
-`graph.with_family_budget(runtime, limits)` to bound the whole family of
+`graph.with_family_budget(spec, limits)` (checked by `graph.build`) to bound the whole family of
 every root run the agent or runtime starts.
 For example, `budget.limits(work: 40) |> budget.with_children(6) |> budget.with_depth(3)`
 allows up to 40 work admissions and six children, at most three levels below

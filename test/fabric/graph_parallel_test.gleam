@@ -2,7 +2,6 @@ import fabric/graph
 import fabric/graph/definition
 import fabric/graph/fork
 import fabric/graph/operation
-import fabric/internal/executor
 import fabric/internal/graph/controller
 import fabric/internal/graph/record
 import fabric/internal/store as store_core
@@ -15,7 +14,6 @@ import fabric/tool
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/result
 import gleam/string
 import gleam/time/duration
 import gleeunit/should
@@ -72,6 +70,8 @@ fn member_with_policy(
       |> definition.with_max_activations(1),
     )
   graph.new(definition, runs, fn(_) { Nil }, policy)
+  |> graph.build
+  |> should.be_ok
 }
 
 fn paired(
@@ -111,6 +111,8 @@ fn paired_with(
       |> definition.with_max_activations(1),
     )
   graph.new(definition, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 fn mapped(
@@ -152,6 +154,8 @@ fn mapped(
       |> definition.with_max_activations(1),
     )
   graph.new(definition, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 // G9, F1–F4: later members start only when a slot settles; results stay ordered.
@@ -204,17 +208,17 @@ pub fn map_validates_bounds_and_handles_empty_and_oversized_input_test() {
       process.send(started, n)
       Ok(n)
     })
-  // Bounds written in source code below 1 are a bug: the binding panics.
-  executor.rescue(fn() {
-    graph.map(run.DefinitionId("map", 1), child, max_members: 0, concurrency: 1)
-  })
-  |> result.is_error
-  |> should.be_true
-  executor.rescue(fn() {
-    graph.map(run.DefinitionId("map", 1), child, max_members: 2, concurrency: 0)
-  })
-  |> result.is_error
-  |> should.be_true
+  // Bounds may come from configuration: `definition.build` reports them.
+  graph.map(run.DefinitionId("map", 1), child, max_members: 0, concurrency: 1)
+  |> support.operation_problems
+  |> should.equal([
+    operation.InvalidLimit(operation.MaxMembers, 0, 1, 9_007_199_254_740_991),
+  ])
+  graph.map(run.DefinitionId("map", 1), child, max_members: 2, concurrency: 0)
+  |> support.operation_problems
+  |> should.equal([
+    operation.InvalidLimit(operation.Concurrency, 0, 1, 9_007_199_254_740_991),
+  ])
   let runtime = mapped(runs, child, 2, 1)
   let assert Ok(empty) =
     graph.start(runtime, support.id("map-empty"), [], correlation: None)

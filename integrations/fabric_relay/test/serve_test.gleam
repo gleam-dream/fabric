@@ -121,7 +121,8 @@ fn runs() -> store.Store {
 fn desk_server(
   service: fabric_relay.Service(String, Nil, Question, Answer),
 ) -> server.Server(String) {
-  server.new([fabric_relay.serve(service)])
+  let assert Ok(assistant) = fabric_relay.serve(service)
+  server.new([assistant])
 }
 
 /// The input's type comes from the definition: `start` needs no
@@ -328,6 +329,32 @@ pub fn a_keyed_run_keeps_working_for_the_retry_test() {
   let assert Ok(client.Succeeded(Answer("done: slow"), _)) =
     client.call(peer, ask(), Question("slow"))
   count(turns) |> should.equal(1)
+}
+
+/// A wait may come from configuration: `serve` reports one out of range
+/// instead of panicking.
+pub fn serve_reports_a_wait_out_of_range_test() {
+  let desk = desk(desk_model(process.new_subject(), False, 0))
+  let assert Error(errors) =
+    served(runs(), desk)
+    |> fabric_relay.with_wait(duration.milliseconds(0))
+    |> fabric_relay.serve
+  errors
+  |> should.equal([
+    fabric_relay.InvalidLimit(fabric_relay.Wait, 0, 1, 4_294_967_295),
+  ])
+  fabric_relay.describe_config_errors(errors)
+  |> should.equal("fabric_relay.with_wait (ms) is 0, outside 1..4294967295")
+  let assert Error([
+    fabric_relay.InvalidLimit(fabric_relay.Wait, 4_294_967_296, ..),
+  ]) =
+    served(runs(), desk)
+    |> fabric_relay.with_wait(duration.milliseconds(4_294_967_296))
+    |> fabric_relay.serve
+  let assert Ok(_) =
+    served(runs(), desk)
+    |> fabric_relay.with_wait(duration.milliseconds(4_294_967_295))
+    |> fabric_relay.serve
 }
 
 /// A call without a key owns its run: when the wait ends, the run is

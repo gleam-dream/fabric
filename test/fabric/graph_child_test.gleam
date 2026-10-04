@@ -63,7 +63,7 @@ fn child_with(
       )
       |> definition.with_max_activations(1),
     )
-  graph.new(spec, runs, fn(_) { Nil }, policy)
+  graph.new(spec, runs, fn(_) { Nil }, policy) |> graph.build |> should.be_ok
 }
 
 fn parent(
@@ -98,6 +98,8 @@ fn parent_with(
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 pub fn a_managed_subgraph_returns_a_native_answer_with_a_retained_child_record_test() {
@@ -240,7 +242,7 @@ fn signal_child(
       )
       |> definition.with_max_activations(1),
     )
-  graph.new(spec, runs, fn(_) { Nil }, policy)
+  graph.new(spec, runs, fn(_) { Nil }, policy) |> graph.build |> should.be_ok
 }
 
 pub fn nested_approval_and_signal_waits_release_every_runner_and_keep_each_route_test() {

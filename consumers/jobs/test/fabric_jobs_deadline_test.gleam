@@ -73,12 +73,14 @@ pub fn a_restarted_sweeper_expires_and_stops_a_real_owned_job_test() {
   let #(owner, runs) = support.owned(fn() { leased(storage.backend) })
   let assert Ok(handle) =
     graph.start(
-      graph.with_family_budget(
-        demo.deadline_runtime(runs, submit, stop, support.url(), 60_000),
-        budget.limits(work: 2)
+      demo.deadline_spec(runs, submit, stop, support.url(), 60_000)
+        |> graph.with_family_budget(
+          budget.limits(work: 2)
           |> budget.with_children(1)
           |> budget.with_depth(1),
-      ),
+        )
+        |> graph.build
+        |> should.be_ok,
       id("deadline-real-job"),
       demo.Submitting(client.Request("never published after expiry", 5000)),
       correlation: None,

@@ -358,6 +358,8 @@ fn one_node_graph(runs: store.Store, inventory: client.Client, tool) {
   graph.new(spec, runs, context: fn(_) { Context(inventory) }, policy: fn(_, _) {
     Ok(policy.Allow)
   })
+  |> graph.build
+  |> should.be_ok
 }
 
 pub fn a_graph_operation_calls_the_tool_with_the_runs_correlation_test() {

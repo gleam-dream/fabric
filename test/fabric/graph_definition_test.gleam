@@ -180,7 +180,11 @@ pub fn construction_rejects_invalid_bounds_identity_and_destinations_test() {
   graph.build(spec([node, node]))
   |> should.equal(Error([graph.DuplicateNode(id("counter"))]))
   graph.build(spec([node]) |> graph.with_max_activations(0))
-  |> should.equal(Error([graph.InvalidActivationLimit(0)]))
+  |> should.equal(
+    Error([
+      graph.InvalidLimit(graph.MaxActivations, 0, 1, 9_007_199_254_740_991),
+    ]),
+  )
   graph.build(spec_of(run.DefinitionId("", 1), id("counter"), [node]))
   |> should.equal(Error([graph.InvalidIdentity(run.DefinitionId("", 1))]))
   graph.build(spec_of(identity, id("missing"), [node]))
@@ -220,15 +224,27 @@ pub fn construction_rejects_invalid_bounds_identity_and_destinations_test() {
   problems
   |> should.equal([
     graph.InvalidIdentity(run.DefinitionId("", 0)),
-    graph.InvalidActivationLimit(0),
+    graph.InvalidLimit(graph.MaxActivations, 0, 1, 9_007_199_254_740_991),
     graph.MissingEntry(id("counter")),
     graph.InvalidNodeId(" "),
-    graph.InvalidOperation(id(" "), operation.InvalidAttemptBound(0)),
+    graph.InvalidOperation(
+      id(" "),
+      operation.InvalidLimit(operation.ReplayAttempts, 0, 1, 100),
+    ),
     graph.InvalidOperation(id(" "), operation.DeadlineRequiresWait),
   ])
   list.map(problems, graph.describe_build_error)
   |> list.all(fn(line) { line != "" })
   |> should.be_true
+  graph.describe_build_errors(problems)
+  |> should.equal(
+    "the identity  version 0 needs a name and a positive version; "
+    <> "definition.with_max_activations is 0, outside 1..9007199254740991; "
+    <> "the entry node counter does not exist; "
+    <> "the node id \" \" is blank; "
+    <> "the operation of the node  : operation.with_replay is 0, outside 1..100; "
+    <> "the operation of the node  : operation.with_deadline applies to waits only; an activity is bounded by graph.with_operation_timeout",
+  )
 }
 
 pub fn manifest_is_order_independent_and_detects_declared_contract_changes_test() {

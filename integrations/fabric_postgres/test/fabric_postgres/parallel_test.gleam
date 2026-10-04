@@ -45,6 +45,8 @@ fn leaf(runs: store.Store) -> graph.Runtime(Nil, Int, Int) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 fn mapped(runs: store.Store) -> graph.Runtime(Nil, List(Int), List(Int)) {
@@ -82,6 +84,8 @@ fn mapped(runs: store.Store) -> graph.Runtime(Nil, List(Int), List(Int)) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 fn start_store(settings: fabric_postgres.Settings) -> store.Store {

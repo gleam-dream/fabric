@@ -63,12 +63,18 @@ pub fn runtime(
       )
       |> definition.with_max_activations(2),
     )
-  let runtime =
+  // The bounds could come from configuration: `build` reports every one
+  // out of range instead of panicking.
+  case
     graph.new(spec, runs, context, fn(_, _) { Ok(policy.Allow) })
     |> graph.with_callback_timeout(duration.milliseconds(5000))
     |> graph.with_operation_timeout(run.After(duration.milliseconds(30_000)))
     |> graph.with_command_timeout(duration.milliseconds(1000))
-  runtime
+    |> graph.build
+  {
+    Ok(runtime) -> runtime
+    Error(errors) -> panic as graph.describe_config_errors(errors)
+  }
 }
 
 fn finish(

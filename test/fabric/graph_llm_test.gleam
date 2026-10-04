@@ -96,7 +96,7 @@ fn runtime_with(
       )
       |> definition.with_max_activations(1),
     )
-  graph.new(spec, runs, fn(_) { Nil }, policy)
+  graph.new(spec, runs, fn(_) { Nil }, policy) |> graph.build |> should.be_ok
 }
 
 pub fn a_structured_decision_retains_native_answer_raw_output_and_usage_test() {

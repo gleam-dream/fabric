@@ -85,7 +85,7 @@ fn runtime(
       )
       |> definition.with_max_activations(1),
     )
-  graph.new(spec, runs, fn(_) { config }, policy)
+  graph.new(spec, runs, fn(_) { config }, policy) |> graph.build |> should.be_ok
 }
 
 pub fn an_http_classifier_batch_retains_native_answers_models_usage_and_rubric_test() {

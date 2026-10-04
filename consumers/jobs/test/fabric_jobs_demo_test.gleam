@@ -28,15 +28,17 @@ pub fn a_restarted_sweeper_observes_the_real_job_without_manual_polling_test() {
   let #(owner, #(runs, handle)) =
     support.owned(fn() {
       let runs = leased(storage.backend, "before")
-      let runtime = demo.scheduled_runtime(runs, send, support.url())
+      let assert Ok(runtime) =
+        demo.scheduled_spec(runs, send, support.url())
+        |> graph.with_family_budget(
+          budget.limits(work: 2)
+          |> budget.with_children(1)
+          |> budget.with_depth(1),
+        )
+        |> graph.build
       let assert Ok(handle) =
         graph.start(
-          graph.with_family_budget(
-            runtime,
-            budget.limits(work: 2)
-              |> budget.with_children(1)
-              |> budget.with_depth(1),
-          ),
+          runtime,
           id("scheduled-real-job"),
           demo.Submitting(client.Request("scheduled result", 1000)),
           correlation: None,

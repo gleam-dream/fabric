@@ -1387,3 +1387,143 @@ tool not published with `serve`). Nothing breaks: the `_meta` key stays.
 
 Dependents: `oversight/apps/tool_hub/test/tool_hub_test.gleam` reads the
 raw key and can switch to `run_of`.
+
+## Round 6: bounds are checked by a build step
+
+A bound often comes from runtime configuration, so an out-of-range value
+gets a typed error (release decision 4), not a panic. The agent runtime
+already worked so: its setters store, and `agent.build` reports every
+problem at once as `InvalidLimit(limit:, value:, minimum:, maximum:)`. The
+graph runtime, `graph.map` and `fabric_relay.with_wait` panicked instead.
+They now follow the agent, with the same error shape and
+`describe_config_error(s)`. This supersedes the panicking setters of
+[A graph runtime](#a-graph-runtime-context-from-the-run-id-setters-family-budget).
+
+Kept as panics, because each value is a definition written in source code
+and wrong in every run, never configuration:
+
+- `run.id_from_parts(prefix, ..)` with a prefix that is not 1 to 32 ASCII
+  letters and digits: the prefix names a kind of work in code.
+- `fabric_relay.tool`, `operation` and `service` given a content-only Relay
+  definition: the definition is code, and `discovered` serves listed tools.
+
+Graph definition bugs (a duplicate or blank node, an unknown destination, a
+missing entry, a bad identity) were already typed errors of
+`definition.build`, and stay so.
+
+### `graph.build` makes the runtime; the setters only store
+
+```gleam
+// Before: `new` returned the runtime and a setter panicked out of range
+let runtime =
+  graph.new(publishing, runs, context: fn(_run) { ctx }, policy:)
+  |> graph.with_operation_timeout(run.After(config.operation_timeout))
+  |> graph.with_family_budget(budget.limits(work: config.work))
+
+// After
+let assert Ok(runtime) =
+  graph.new(publishing, runs, context: fn(_run) { ctx }, policy:)
+  |> graph.with_operation_timeout(run.After(config.operation_timeout))
+  |> graph.with_family_budget(budget.limits(work: config.work))
+  |> graph.build
+// or, reporting every problem:
+case graph.build(spec) {
+  Ok(runtime) -> runtime
+  Error(errors) -> panic as graph.describe_config_errors(errors)
+}
+```
+
+| Before                                                        | After                                                                                               |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `graph.new(..) -> Runtime`                                    | `graph.new(..) -> Spec`; `graph.build(Spec) -> Result(Runtime, List(ConfigError))`                  |
+| `with_callback_timeout(Runtime, Duration) -> Runtime`, panics | `with_callback_timeout(Spec, Duration) -> Spec`; `InvalidLimit(CallbackTimeout, ..)`                |
+| `with_operation_timeout(Runtime, Timeout)`, panics            | `with_operation_timeout(Spec, Timeout)`; `InvalidLimit(OperationTimeout, ..)`                       |
+| `with_command_timeout(Runtime, Duration)`, panics             | `with_command_timeout(Spec, Duration)`; `InvalidLimit(CommandTimeout, ..)`                          |
+| `with_approval_expiry(Runtime, Timeout)`, panics over 2^32 ms | `with_approval_expiry(Spec, Timeout)`; 1 ms to 2^53 - 1 ms, as for agents                           |
+| `with_family_budget(Runtime, Limits)`, panics                 | `with_family_budget(Spec, Limits)`; `InvalidLimit(FamilyWork \| FamilyChildren \| FamilyDepth, ..)` |
+| (none)                                                        | `graph.ConfigError`, `graph.Limit`, `describe_config_error`, `describe_config_errors`               |
+
+`build` reports the bounds in the order above; durations are in
+milliseconds. The approval expiry is a stored deadline, not a timer, so it
+now takes the agent's range; every other bound keeps its range. The
+defaults are unchanged. `Runtime` is still what `start`, `open`,
+`as_subgraph`, `both`, `map`, `branch`, `child` and `sweeper.graph` take,
+and only `build` makes one, so a run never starts under unchecked bounds.
+
+A test that builds its runtime in a helper and sets a budget per test can
+return the `Spec` from the helper (`fabric/graph`'s tests do both).
+
+Dependents: none outside this repository (no `oversight/apps` package and
+no sibling imports `fabric/graph`). Inside it, every graph test, the
+fabric_postgres, fabric_relay and fabric_typesafe graph tests and the
+`graph`, `decision`, `jobs` and `writing` consumers are migrated; the
+`jobs` consumer gains `scheduled_spec` and `deadline_spec`.
+
+### `graph.map` bounds are reported by `definition.build`
+
+```gleam
+// Before: a panic at the call
+graph.map(id, child, max_members: config.batch, concurrency: config.parallel)
+
+// After: the same call; a bound below 1 is reported when the definition is built
+definition.build(spec)
+// Error([InvalidOperation(node, operation.InvalidLimit(operation.MaxMembers, 0, 1, 9007199254740991))])
+```
+
+Dependents: none outside this repository.
+
+### Range problems of a definition have the agent's shape
+
+```gleam
+// Before
+definition.InvalidActivationLimit(0)
+operation.InvalidAttemptBound(0)
+operation.InvalidDeadline(duration)
+operation.InvalidPollInterval(duration)
+
+// After
+definition.InvalidLimit(definition.MaxActivations, 0, 1, 9_007_199_254_740_991)
+operation.InvalidLimit(operation.ReplayAttempts, 0, 1, 100)
+operation.InvalidLimit(operation.Deadline, ms, 1, 4_294_967_295)
+operation.InvalidLimit(operation.PollInterval, ms, 1, 4_294_967_295)
+// and, new: operation.MaxMembers, operation.Concurrency (`graph.map`)
+definition.describe_build_errors(errors)  // added, as agent.describe_config_errors
+```
+
+`operation.with_replay` now takes at most 100 attempts, as
+`tool.with_replay` does, and `definition.with_max_activations` at most
+2^53 - 1; both were unbounded above. `ReplayRequiresActivity` and
+`DeadlineRequiresWait` are unchanged. Every line of
+`definition.describe_build_error` names the setter, the value and the
+range, as the agent's does.
+
+Dependents: none outside this repository.
+
+### `fabric_relay.serve` checks the wait
+
+```gleam
+// Before: `with_wait` panicked out of range
+server.new([
+  fabric_relay.service(ask_assistant(), runs:, agent:, start:)
+  |> fabric_relay.with_wait(config.budget)
+  |> fabric_relay.serve,
+])
+
+// After
+use assistant <- result.try(
+  fabric_relay.service(ask_assistant(), runs:, agent:, start:)
+  |> fabric_relay.with_wait(config.budget)
+  |> fabric_relay.serve   // Result(Tool, List(fabric_relay.ConfigError))
+  |> result.map_error(fabric_relay.describe_config_errors),
+)
+server.new([assistant])
+```
+
+`fabric_relay.ConfigError` is `InvalidLimit(limit: Wait, value:, minimum:,
+maximum:)` with `describe_config_error(s)`; the range is still 1 ms to
+2^32 - 1 ms.
+
+Dependents: `oversight/apps/tool_hub/src/tool_hub/assistant.gleam`
+(`server.new([fabric_relay.serve(service)])`, with `with_wait` fed from its
+`budget` setting) breaks at compile time: `serve` returns a `Result`. Its
+surrounding function already returns a `Result`, so a `result.try` fits.

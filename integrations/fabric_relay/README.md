@@ -61,6 +61,7 @@ retried by the model.
 
 ```gleam
 import fabric_relay
+import gleam/result
 import relay/server
 import relay/tool as relay_tool
 
@@ -68,17 +69,24 @@ pub fn ask_assistant() -> relay_tool.Definition(Question, Answer) {
   relay_tool.define("ask_assistant", question_codec(), answer_codec())
 }
 
-pub fn mcp(runs, assistant) -> server.Server(Principal) {
-  server.new([
+pub fn mcp(runs, assistant, wait) -> Result(server.Server(Principal), String) {
+  use tool <- result.try(
     fabric_relay.service(ask_assistant(), runs:, agent: assistant, start: fn(call, question) {
       let principal = relay_tool.context(call)
       fabric_relay.start(context_for(principal), prompt: question.text)
       |> fabric_relay.with_principal(principal.subject)
     })
-    |> fabric_relay.serve,
-  ])
+    |> fabric_relay.with_wait(wait)
+    |> fabric_relay.serve
+    |> result.map_error(fabric_relay.describe_config_errors),
+  )
+  Ok(server.new([tool]))
 }
 ```
+
+`serve` checks the service's bounds, since they may come from
+configuration, and reports every one out of range at once
+(`fabric_relay.InvalidLimit(Wait, ..)`).
 
 The definition comes first, so `start`'s input type is known without an
 annotation. `start` returns the run's `Start`; `fabric_relay.refuse(error)`

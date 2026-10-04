@@ -282,10 +282,12 @@ pub fn a_graph_wait_is_neither_unattended_work_nor_a_budget_run_test() {
     )
   let runtime =
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(id) = run.parse_id("graph-stats")
   let assert Ok(handle) =
     graph.start(
-      graph.with_family_budget(
+      support.budgeted(
         runtime,
         budget.limits(work: 1)
           |> budget.with_children(1)

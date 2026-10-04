@@ -69,6 +69,8 @@ fn runtime_with(runs, owned, polling, read, request, accept) {
       |> definition.with_max_activations(1),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }
 
 pub fn ownership_can_be_cancelled_even_when_arming_cannot_read_the_clock_test() {
@@ -324,7 +326,7 @@ pub fn owned_expiration_keeps_its_cause_and_cleanup_across_restart_test() {
   }
   let assert Ok(handle) =
     graph.start(
-      graph.with_family_budget(
+      support.budgeted(
         build(runs, fn(_) { Ok(job.Pending) }),
         budget.limits(work: 1)
           |> budget.with_children(1)

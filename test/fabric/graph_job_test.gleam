@@ -22,12 +22,23 @@ import gleeunit/should
 import json/blueprint/codec
 
 fn runtime(runs, read) {
-  runtime_with(runs, read, fn(_, _) { Ok(policy.Allow) }, fn(receipt, output) {
-    Ok(definition.Finish(receipt, output))
-  })
+  runtime_spec(runs, read) |> graph.build |> should.be_ok
+}
+
+fn runtime_spec(runs, read) {
+  runtime_with_spec(
+    runs,
+    read,
+    fn(_, _) { Ok(policy.Allow) },
+    fn(receipt, output) { Ok(definition.Finish(receipt, output)) },
+  )
 }
 
 fn runtime_with(runs, read, gate, accept) {
+  runtime_with_spec(runs, read, gate, accept) |> graph.build |> should.be_ok
+}
+
+fn runtime_with_spec(runs, read, gate, accept) {
   let output = codec.integer_between(0, 100)
   let observer =
     job.observe(
@@ -190,8 +201,8 @@ pub fn an_observer_timeout_preserves_the_wait_and_reuses_its_work_grant_test() {
   let runs = support.store()
   let id = support.id("job-timeout")
   let started = process.new_subject()
-  let slow =
-    runtime(runs, fn(_) {
+  let slow_spec =
+    runtime_spec(runs, fn(_) {
       process.send(started, process.self())
       process.sleep_forever()
       Ok(job.Pending)
@@ -201,12 +212,14 @@ pub fn an_observer_timeout_preserves_the_wait_and_reuses_its_work_grant_test() {
     |> graph.with_command_timeout(duration.milliseconds(1000))
   let assert Ok(handle) =
     graph.start(
-      graph.with_family_budget(
-        slow,
-        budget.limits(work: 1)
+      slow_spec
+        |> graph.with_family_budget(
+          budget.limits(work: 1)
           |> budget.with_children(1)
           |> budget.with_depth(1),
-      ),
+        )
+        |> graph.build
+        |> should.be_ok,
       id,
       "receipt",
       correlation: None,
@@ -358,6 +371,8 @@ pub fn managed_parents_park_while_their_child_observes_a_job_test() {
     )
   let parent =
     graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+    |> should.be_ok
   let assert Ok(handle) =
     graph.start(parent, support.id("nested-job"), "receipt", correlation: None)
   let assert Ok(waiting) =
@@ -421,4 +436,6 @@ fn with_successor(runs, read, calls) {
       |> definition.with_max_activations(2),
     )
   graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.build
+  |> should.be_ok
 }

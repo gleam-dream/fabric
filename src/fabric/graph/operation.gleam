@@ -21,7 +21,7 @@ import fabric/run
 import fabric/tool
 import gleam/result
 import gleam/string
-import gleam/time/duration.{type Duration}
+
 import json/blueprint/codec.{type Codec}
 import sinal/correlation.{type Correlation}
 
@@ -73,19 +73,33 @@ pub type Kind {
 pub type Operation(context, input, output) =
   contract.Operation(context, input, output, Kind, Recovery, Invocation, Error)
 
-/// A setting of an operation that `definition.build` refuses.
+/// A setting of an operation that `definition.build` refuses. This union
+/// may grow: match the variants you handle and keep a catch-all, or use
+/// `definition.describe_build_error`.
 pub type ConfigurationError {
-  /// `with_replay` with fewer than one attempt.
-  InvalidAttemptBound(Int)
+  /// A bound is outside `minimum..maximum` (both included), as for
+  /// `agent.InvalidLimit`. Durations are in milliseconds.
+  InvalidLimit(limit: Limit, value: Int, minimum: Int, maximum: Int)
   /// `with_replay` on an operation that is not an activity.
   ReplayRequiresActivity
-  /// A `with_deadline` duration under 1 ms or over 2^32 - 1 ms.
-  InvalidDeadline(Duration)
   /// `with_deadline` on an activity: its body is bounded by the runtime's
   /// operation timeout instead (`graph.with_operation_timeout`).
   DeadlineRequiresWait
-  /// A `job.with_poll_interval` under 1 ms or over 2^32 - 1 ms.
-  InvalidPollInterval(Duration)
+}
+
+/// A bound of an operation that `definition.build` checks, named after its
+/// setter. This union may grow.
+pub type Limit {
+  /// `with_replay`'s attempts, 1 to 100.
+  ReplayAttempts
+  /// `with_deadline`, 1 ms to 2^32 - 1 ms.
+  Deadline
+  /// `job.with_poll_interval`, 1 ms to 2^32 - 1 ms.
+  PollInterval
+  /// `graph.map`'s `max_members`, at least 1.
+  MaxMembers
+  /// `graph.map`'s `concurrency`, at least 1.
+  Concurrency
 }
 
 pub type Error {
@@ -224,8 +238,8 @@ pub fn kind(operation: Operation(context, input, output)) -> Kind {
 /// starts in all, when its runner was lost while it ran (a restart, a lost
 /// node). Use it only for a body whose effect is safe to repeat (keyed by
 /// `Invocation.run` and `activation`). `definition.build` refuses it on any
-/// other kind of operation (`ReplayRequiresActivity`) and with fewer than
-/// one attempt (`InvalidAttemptBound`).
+/// other kind of operation (`ReplayRequiresActivity`) and outside 1 to 100
+/// attempts (`InvalidLimit(ReplayAttempts, ..)`).
 pub fn with_replay(
   operation: Operation(context, input, output),
   max_attempts: Int,
@@ -252,7 +266,7 @@ pub fn identity(
 /// without one (before waits had a default, or under `run.Infinity`) keeps
 /// none. Seven days set explicitly is the default. `definition.build`
 /// refuses a deadline on an activity (`DeadlineRequiresWait`) or out of
-/// range (`InvalidDeadline`).
+/// range (`InvalidLimit(Deadline, ..)`).
 pub fn with_deadline(
   operation: Operation(context, input, output),
   within: run.Timeout,
