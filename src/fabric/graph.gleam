@@ -2095,6 +2095,8 @@ fn answer_approval(
               ))
             Error(runner.BudgetUnavailable(reason)) ->
               Error(StoreUnavailable(reason))
+            // An ancestor closed after the ancestry check above.
+            Error(runner.AncestorStopping) -> Error(RunEnded)
           }
       })
       use #(next, effects) <- result.try(
