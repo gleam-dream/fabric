@@ -1723,6 +1723,11 @@ clean working tree; the wave is pushed only after every package passes:
 | sinal          | `44c5395` | Direct dependency (`fabric/observation`); `measurement_fields`                   |
 | saga           | `2ee5e0a` | Dependency of `integrations/fabric_saga` and the consumer only; not of Fabric    |
 
+The wave 5 slice F4 gate on 2026-10-03 (`fabric_relay` and the corrective
+answer turn) passed against llm_wire `2c32d5e`, http_gun `4a6eeb0`,
+json_blueprint `07e64fc`, sinal `44c5395`, saga `9a0b1d8` and relay
+`b83486b`, a dependency of `integrations/fabric_relay` only, not of Fabric.
+
 The follow-up builder migration gate on 2026-10-02 (the Sinal record builder
 and the json_blueprint `get:` getters) passed against llm_wire `ea7c90b`,
 http_gun `056536b`, json_blueprint `bb4da39`, sinal `6de2b69` and saga
