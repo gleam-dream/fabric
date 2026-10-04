@@ -389,8 +389,8 @@ pub fn a_disconnect_cancels_an_unkeyed_run_test() {
     client.http("http://127.0.0.1:" <> int.to_string(http.port(mcp)) <> "/")
   let assert Ok(peer) =
     config |> client.with_timeout(duration.seconds(1)) |> client.connect
-  let assert Error(client.TimedOut(_)) =
-    client.call(peer, ask(), Question("slow"))
+  let assert Error(error) = client.call(peer, ask(), Question("slow"))
+  let assert client.TimedOut(_) = client.reason(error)
   let assert Ok(Turn(run: id, ..)) = process.receive(turns, 30_000)
   let assert Ok(handle) = fabric.open(runs, desk, Nil, id)
   fabric.await(handle, within: duration.seconds(30))

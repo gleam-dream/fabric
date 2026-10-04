@@ -38,6 +38,7 @@ fn agent_root() {
     Some(budget.Declaration(limits(), False)),
     correlation.from_key("root"),
     "root",
+    True,
   )
 }
 

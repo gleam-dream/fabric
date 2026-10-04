@@ -388,7 +388,8 @@ fn collect_roots(
 
 /// A sub-agent's record stores its root; a root's does not, so its bytes
 /// are as before. A sub-agent record written before roots were stored
-/// reads its parent as its root.
+/// decodes its parent as its root, not exactly, until a read of the store
+/// derives it (`legacy_root_test`).
 pub fn a_sub_agents_record_keeps_its_root_test() {
   let desk =
     agent.new(
@@ -431,7 +432,7 @@ pub fn a_sub_agents_record_keeps_its_root_test() {
   decoded.root |> should.equal("root-run")
   let without = string.replace(encoded, ",\"root\":\"root-run\"", "")
   let assert Ok(old) = record.decode(without)
-  old.root |> should.equal("middle-run")
+  #(old.root, old.root_exact) |> should.equal(#("middle-run", False))
 }
 
 /// A caller's correlation is stored with the run: a later reader decodes it.

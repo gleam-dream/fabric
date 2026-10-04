@@ -930,6 +930,7 @@ pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
       family_budget: None,
       correlation: correlation.from_key("run-stopping"),
       root: "run-stopping",
+      root_exact: True,
     )
   let assert Ok(1) =
     store_core.insert(

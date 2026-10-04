@@ -66,6 +66,9 @@
 //// | `run_taken_over` | `[fabric, run, take_over]` | a recovery through a
 //// leased store took over a run whose lease another owner held, after the
 //// commit (with `run_recovered`) |
+//// | `root_inferred` | `[fabric, run, root, infer]` | a reader could not
+//// derive the exact root of a sub-agent or child record written before
+//// roots were stored (see below) |
 //// | `lease_lost` | `[fabric, lease, lose]` | a leased store killed a
 //// runner whose lease it lost (`Revoked`) or could no longer renew in time
 //// (`Unrenewed`) |
@@ -135,7 +138,22 @@
 //// for a sub-agent run, so a sub-agent's events join its root's. A
 //// sub-agent run's events carry its root's correlation too. The same
 //// correlation reaches the model's requests and the tools' calls, so their
-//// own events join the run's. A graph run's events, its `lease_lost`
+//// own events join the run's.
+////
+//// A sub-agent or graph child record written before roots were stored
+//// names only its parent. A reader of the store derives its root from the
+//// stored ancestors, following parent links (at most 64, without
+//// repeats) up to a root run or to the first ancestor that stores its
+//// root; the run's next commit stores the derived root, so the walk is paid
+//// once. When an ancestor's record is missing or unreadable, or the chain
+//// repeats or is too long, the root is the topmost ancestor that could be
+//// read (the parent when none could): the reader emits `root_inferred`,
+//// the run's events carry that root, and its record stores none, so a
+//// later reader derives it again. An unavailable store fails the read
+//// instead: no root is inferred from it. `root_inferred` describes no
+//// commit; the reading process emits it each time it reads such a record.
+////
+//// A graph run's events, its `lease_lost`
 //// included, carry the correlation given to `graph.start` (or derived from
 //// its id) and its family's root; a graph's child runs, managed agents
 //// included, inherit both.
@@ -222,6 +240,32 @@ pub type LeaseLost {
     owner: String,
     reason: LeaseLoss,
     root: String,
+    correlation: Correlation,
+  )
+}
+
+/// Why a reader could not derive the exact root of a record written before
+/// roots were stored.
+pub type RootProblem {
+  /// The record of `ancestor` is missing.
+  AncestorMissing
+  /// The record of `ancestor` cannot be decoded, or names another run.
+  AncestorUnreadable
+  /// The chain of parent runs reaches `ancestor` a second time.
+  AncestryCycle
+  /// The chain of parent runs is longer than a family can be; `ancestor`
+  /// is the first one beyond the bound.
+  AncestryTooLong
+}
+
+/// A reader took `root`, the topmost ancestor it could read, as the root of
+/// `run`, whose record stores none, because of `problem` at `ancestor`.
+pub type RootInferred {
+  RootInferred(
+    run: String,
+    root: String,
+    ancestor: String,
+    problem: RootProblem,
     correlation: Correlation,
   )
 }
@@ -503,6 +547,39 @@ pub fn lease_lost() -> Event(Nil, LeaseLost) {
     })
     fields.success(LeaseLost(run:, owner:, reason:, root:, correlation:))
   })
+}
+
+pub fn root_inferred() -> Event(Nil, RootInferred) {
+  event(["run", "root", "infer"], fields.empty(), {
+    use run <- fields.include(fields.string("run"), get: fn(m: RootInferred) {
+      m.run
+    })
+    use root <- fields.include(fields.string("root"), get: fn(m) { m.root })
+    use ancestor <- fields.include(fields.string("ancestor"), get: fn(m) {
+      m.ancestor
+    })
+    use problem <- fields.include(
+      fields.enum(
+        "problem",
+        [AncestorMissing, AncestorUnreadable, AncestryCycle, AncestryTooLong],
+        root_problem_name,
+      ),
+      get: fn(m) { m.problem },
+    )
+    use correlation <- fields.include(correlation.required_field(), get: fn(m) {
+      m.correlation
+    })
+    fields.success(RootInferred(run:, root:, ancestor:, problem:, correlation:))
+  })
+}
+
+fn root_problem_name(problem: RootProblem) -> String {
+  case problem {
+    AncestorMissing -> "ancestor_missing"
+    AncestorUnreadable -> "ancestor_unreadable"
+    AncestryCycle -> "ancestry_cycle"
+    AncestryTooLong -> "ancestry_too_long"
+  }
 }
 
 fn lease_loss_name(reason: LeaseLoss) -> String {

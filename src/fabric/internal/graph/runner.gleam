@@ -91,13 +91,16 @@ pub fn deadline_for(
   }
 }
 
-/// The correlation and root a child of the run `parent` inherits: the
-/// parent's, read from its record (derived from the parent's id when it
-/// cannot be read).
-pub fn lineage(runs: store.Store, parent: String) -> #(Correlation, String) {
+/// The correlation and root a child of the run `parent` inherits, and
+/// whether that root is exact: the parent's, read from its record (derived
+/// from the parent's id, not exact, when it cannot be read).
+pub fn lineage(
+  runs: store.Store,
+  parent: String,
+) -> #(Correlation, String, Bool) {
   case load_raw(runs, parent) {
-    Ok(#(_, state)) -> #(state.correlation, state.root)
-    Error(_) -> #(correlation.from_key(parent), parent)
+    Ok(#(_, state)) -> #(state.correlation, state.root, state.root_exact)
+    Error(_) -> #(correlation.from_key(parent), parent, False)
   }
 }
 
@@ -153,7 +156,19 @@ pub fn load_raw(
     False ->
       Error(Unreadable(record.Corrupt("record belongs to a different run")))
   })
-  Ok(#(entry, state))
+  // A child record written before roots were stored: its root is derived
+  // from its ancestors (`ancestry.settle_root`).
+  use #(root, root_exact) <- result.map(
+    ancestry.settle_root(
+      runs,
+      id,
+      state.parent,
+      #(state.root, state.root_exact),
+      state.correlation,
+    )
+    |> result.map_error(StoreFailed),
+  )
+  #(entry, g.State(..state, root:, root_exact:))
 }
 
 pub type AdmissionError {

@@ -1167,7 +1167,7 @@ fn reserved_child(
         compiled.prepare(graph_runtime.definition(runtime), initial)
         |> result.map_error(IncompatibleDefinition),
       )
-      let #(correlation, root) =
+      let #(correlation, root, root_exact) =
         runner.lineage(graph_runtime.store(runtime), parent.run)
       use #(state, effects) <- result.try(
         control.start_correlated(
@@ -1181,7 +1181,11 @@ fn reserved_child(
         |> result.map_error(rejected),
       )
       let state =
-        control.State(..state, parent: Some(attachment.parent(parent)))
+        control.State(
+          ..state,
+          parent: Some(attachment.parent(parent)),
+          root_exact:,
+        )
       use #(state, effects) <- result.try(
         case reservation == child_driver.Cancel {
           True -> control.cancel_abandoned(state) |> result.map_error(rejected)

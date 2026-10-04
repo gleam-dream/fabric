@@ -253,7 +253,8 @@ fn cancel(
     }
     Error(runner.NotFound) -> {
       let agent = checked_agent.admitted(runtime.definition.agent)
-      let #(correlation, root) = graph_runner.lineage(runtime.store, parent.run)
+      let #(correlation, root, root_exact) =
+        graph_runner.lineage(runtime.store, parent.run)
       let tombstone =
         controller.State(
           run: id,
@@ -276,6 +277,7 @@ fn cancel(
           family_budget: None,
           correlation:,
           root:,
+          root_exact:,
         )
       use encoded <- result.try(
         store_core.encode(runtime.store, tombstone)
@@ -334,7 +336,8 @@ fn start(
       }
     }
     Error(runner.NotFound) -> {
-      let #(correlation, root) = graph_runner.lineage(runtime.store, parent.run)
+      let #(correlation, root, root_exact) =
+        graph_runner.lineage(runtime.store, parent.run)
       let #(initial, effects) =
         runner.root_state(setup, id, prompt, correlation)
       let initial =
@@ -342,6 +345,7 @@ fn start(
           ..initial,
           parent: Some(attachment.parent(parent)),
           root:,
+          root_exact:,
         )
       use _ <- result.try(
         case runner.ancestors_open(runtime.store, id, initial.parent) {

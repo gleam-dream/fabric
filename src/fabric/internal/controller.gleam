@@ -158,8 +158,15 @@ pub type State {
     /// the run id (`correlation.from_key(run)`).
     correlation: Correlation,
     /// The id of the family's root run: the run itself for a root, its
-    /// root's for a sub-agent run. A record stores it only for a sub-agent.
+    /// root's for a sub-agent run. A record stores it only for a sub-agent,
+    /// and only when it is exact.
     root: String,
+    /// Whether `root` is exact. A sub-agent record written before roots were
+    /// stored decodes as `False`, with its parent as its root, until a
+    /// reader derives the root from its stored ancestors
+    /// (`ancestry.resolve_root`); it stays `False` when an ancestor cannot be
+    /// read, with the topmost readable ancestor as its root.
+    root_exact: Bool,
   )
 }
 
@@ -305,6 +312,7 @@ pub fn start_correlated(
       family_budget: None,
       correlation:,
       root:,
+      root_exact: True,
     )
   call_model(env, state)
 }
@@ -1930,6 +1938,7 @@ pub fn never_started(
     family_budget: None,
     correlation: parent.correlation,
     root: parent.root,
+    root_exact: parent.root_exact,
   )
 }
 

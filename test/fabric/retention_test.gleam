@@ -35,6 +35,7 @@ fn agent_state(id, parent, actions) {
       Some(run.AgentParent(run: parent, ..)) -> run.id_to_string(parent)
       _ -> id
     },
+    True,
   )
 }
 
