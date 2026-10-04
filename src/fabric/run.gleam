@@ -5,6 +5,7 @@ import fabric/budget
 import fabric/internal/run_id
 import fabric/model.{type Message, type ModelError, type ToolCall}
 import fabric/reviewer.{type Reviewer}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option}
 import gleam/string
@@ -235,6 +236,40 @@ pub type Outcome(answer) {
   BudgetUnverifiable(turn: Int)
   Cancelled
   Failed(HostFailure)
+}
+
+/// One line for logs and for a caller that reports why a run did not
+/// complete, such as an MCP tool that served the run.
+pub fn describe_outcome(outcome: Outcome(answer)) -> String {
+  case outcome {
+    Completed(_) -> "the run completed"
+    AnswerInvalid(reason:, ..) ->
+      "the model's final answer is invalid: " <> reason
+    Refused(reason) -> "the model refused: " <> reason
+    OutputLimited(_) -> "the model's reply reached its output limit"
+    BudgetExhausted(TurnLimit(limit)) ->
+      "the run used all of its " <> int.to_string(limit) <> " model attempts"
+    BudgetExhausted(TokenLimit(limit, used)) ->
+      "the run used "
+      <> int.to_string(used)
+      <> " tokens of its budget of "
+      <> int.to_string(limit)
+    BudgetExhausted(FamilyLimit(_)) -> "the run family's shared budget is spent"
+    BudgetUnverifiable(turn) ->
+      "the provider reported no token usage for model attempt "
+      <> int.to_string(turn)
+      <> ", so the token budget cannot be enforced"
+    Cancelled -> "the run was cancelled"
+    Failed(PolicyFailed(reason:, ..)) -> "the policy failed: " <> reason
+    Failed(OutputEncodingFailed(detail:, ..)) ->
+      "a tool's result could not be recorded: " <> detail
+    Failed(ToolChanged(detail:, ..)) ->
+      "a tool changed after its call was admitted: " <> detail
+    Failed(ModelFailed(error)) ->
+      "the model failed: " <> model.describe_error(error)
+    Failed(ModelProtocolViolation(reason)) ->
+      "the model broke the protocol: " <> reason
+  }
 }
 
 /// The run-wide budget that ended a run.
