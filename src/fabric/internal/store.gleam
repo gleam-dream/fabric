@@ -239,7 +239,7 @@ pub fn start(store: Store) -> Result(Nil, StoreError) {
       process.send(started, result.replace(subtree, Nil))
       case subtree {
         Error(_) -> Nil
-        Ok(_) -> keep(caller, stop)
+        Ok(started) -> keep(caller, stop, started.pid)
       }
     })
   let monitor = process.monitor(keeper)
@@ -316,7 +316,7 @@ fn await_earlier_factory(name: Name(Message)) -> Nil {
 
 /// Holds a started subtree until `caller` exits or `stop` is asked for, then
 /// stops it; exits with the subtree if it stops first.
-fn keep(caller: Pid, stop: Subject(Nil)) -> Nil {
+fn keep(caller: Pid, stop: Subject(Nil), subtree: Pid) -> Nil {
   let exit =
     process.new_selector()
     |> process.select_trapped_exits(Some)
@@ -331,7 +331,12 @@ fn keep(caller: Pid, stop: Subject(Nil)) -> Nil {
     }
     Some(exit) ->
       case exit.pid == caller, exit.reason {
-        True, _ -> exit_shutdown()
+        // The keeper outlives the subtree: once the processes linked to a
+        // dead caller are gone, so is the store, and its name is free.
+        True, _ -> {
+          shut_down(subtree)
+          exit_shutdown()
+        }
         False, process.Normal -> exit_shutdown()
         False, process.Killed -> process.kill(process.self())
         False, process.Abnormal(reason) -> exit_with(reason)
@@ -347,6 +352,11 @@ type Starter {
 
 @external(erlang, "fabric_ffi", "exit_shutdown")
 fn exit_shutdown() -> Nil
+
+/// Stops the supervisor `pid`, which this process started, as its parent
+/// does, and waits until it has stopped.
+@external(erlang, "fabric_ffi", "shut_down")
+fn shut_down(pid: Pid) -> Nil
 
 @external(erlang, "erlang", "exit")
 fn exit_with(reason: dynamic.Dynamic) -> Nil

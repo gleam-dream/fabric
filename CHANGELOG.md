@@ -11,6 +11,16 @@ Wave 5 is described with before/after snippets in
 [docs/migration-wave-5.md](docs/migration-wave-5.md), round 5 in
 [docs/migration-round-5.md](docs/migration-round-5.md).
 
+### Wave 5, gate reliability
+
+#### Fixed
+
+- A store started with `store.start` whose caller died could still hold
+  its name after every process linked to the caller had exited: the
+  keeper exited at once and left the store's process to notice the death.
+  The keeper now stops the store's subtree and waits for it first, so a
+  node that waits for those links can start a store under the same name.
+
 ### Wave 5, leftovers (slice F6)
 
 #### Added
