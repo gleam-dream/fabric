@@ -95,25 +95,15 @@
 //// }
 //// ```
 
-import fabric/internal/clock
+import fabric/internal/approvers as core
 import fabric/reviewer.{type Reviewer}
-import fabric/run.{type Requirement, type Timeout, After, Infinity}
-import gleam/erlang/reference.{type Reference}
+import fabric/run.{type Requirement, type Timeout}
 import gleam/int
-import gleam/string
-import gleam/time/duration
 
 /// A verifier of credentials that answer approval requests. Make one with
 /// `new`.
-pub opaque type Approvers(credential) {
-  Approvers(
-    name: String,
-    /// Minted by `new`: what tells these approvers from any other.
-    key: Reference,
-    verify: fn(credential, Requirement) -> Result(Reviewer, Denial),
-    proof_lifetime: Timeout,
-  )
-}
+pub type Approvers(credential) =
+  core.Approvers(credential, Denial)
 
 /// Why `verify` refused a credential. The three cases are the
 /// classification: an application maps them to 401, 403 and 503.
@@ -130,15 +120,8 @@ pub type Denial {
 
 /// Evidence that `check` verified a credential for one requirement. Only
 /// `check` makes one.
-pub opaque type Proof {
-  Proof(
-    verifier: String,
-    key: Reference,
-    requirement: Requirement,
-    reviewer: Reviewer,
-    checked_at: Int,
-  )
-}
+pub type Proof =
+  core.Proof
 
 /// Why an answer refused a proof. This union may grow: keep a catch-all,
 /// or use `describe_proof_error`.
@@ -158,7 +141,7 @@ pub type ProofError {
 }
 
 /// The longest name, in bytes.
-pub const max_name_bytes = 64
+pub const max_name_bytes = core.max_name_bytes
 
 /// Approvers named `name` (stored with every answer they verify, as
 /// `run.Approval.verifier`), which verify a credential with `verify`.
@@ -176,23 +159,8 @@ pub fn new(
   name: String,
   verify: fn(credential, Requirement) -> Result(Reviewer, Denial),
 ) -> Approvers(credential) {
-  case string.byte_size(name) {
-    bytes if bytes >= 1 && bytes <= max_name_bytes ->
-      Approvers(
-        name:,
-        key: reference.new(),
-        verify:,
-        proof_lifetime: After(duration.seconds(default_lifetime_seconds)),
-      )
-    _ ->
-      panic as {
-        "approvers.new: the name must be 1 to 64 bytes: "
-        <> string.inspect(name)
-      }
-  }
+  core.new(name, verify)
 }
-
-const default_lifetime_seconds = 60
 
 /// How long a proof from `check` stays good for an answer, judged by the
 /// approvers of the agent or runtime that receives it. A proof is made
@@ -204,11 +172,11 @@ pub fn with_proof_lifetime(
   approvers: Approvers(credential),
   lifetime: Timeout,
 ) -> Approvers(credential) {
-  Approvers(..approvers, proof_lifetime: lifetime)
+  core.with_proof_lifetime(approvers, lifetime)
 }
 
 pub fn name(approvers: Approvers(credential)) -> String {
-  approvers.name
+  core.name(approvers)
 }
 
 /// Verifies `credential` for an answer to a request that waits for
@@ -220,57 +188,22 @@ pub fn check(
   credential: credential,
   requirement: Requirement,
 ) -> Result(Proof, Denial) {
-  case approvers.verify(credential, requirement) {
-    Ok(reviewer) ->
-      Ok(Proof(
-        verifier: approvers.name,
-        key: approvers.key,
-        requirement:,
-        reviewer:,
-        checked_at: clock.now(),
-      ))
-    Error(denial) -> Error(denial)
-  }
-}
-
-/// What an answer does with a proof: the reviewer it names, when these
-/// approvers made it, for `requirement`, within the proof lifetime. Fabric
-/// calls it for every answer; an application that holds a proof rarely
-/// needs it.
-pub fn accept(
-  approvers: Approvers(credential),
-  proof: Proof,
-  requirement: Requirement,
-) -> Result(Reviewer, ProofError) {
-  let age = clock.now() - proof.checked_at
-  case proof.key == approvers.key {
-    False -> Error(OtherApprovers(proof.verifier))
-    True ->
-      case proof.requirement == requirement, approvers.proof_lifetime {
-        False, _ -> Error(OtherRequirement(proof.requirement, requirement))
-        True, After(lifetime) ->
-          case duration.to_milliseconds(lifetime) {
-            lifetime if age > lifetime -> Error(ProofExpired(age:, lifetime:))
-            _ -> Ok(proof.reviewer)
-          }
-        True, Infinity -> Ok(proof.reviewer)
-      }
-  }
+  core.check(approvers, credential, requirement)
 }
 
 /// The reviewer `verify` returned.
 pub fn reviewer(proof: Proof) -> Reviewer {
-  proof.reviewer
+  core.reviewer(proof)
 }
 
 /// The name of the approvers that made the proof.
 pub fn verifier(proof: Proof) -> String {
-  proof.verifier
+  core.verifier(proof)
 }
 
 /// The requirement the proof was checked for.
 pub fn requirement(proof: Proof) -> Requirement {
-  proof.requirement
+  core.requirement(proof)
 }
 
 /// One line for logs.

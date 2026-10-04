@@ -1731,8 +1731,6 @@ Result(Reviewer, Denial)`. `verify` runs in the caller of `check`.
   classification (401, 403, 503), so there is no `denial_kind`.
 - `Proof` is opaque, made only by `check`, and read with `reviewer`,
   `verifier` and `requirement`.
-- `accept(approvers, proof, requirement)` is what an answer does with a
-  proof; Fabric calls it, and an application rarely needs it.
 - `ProofError` is `NoApprovers`, `OtherApprovers(verifier)`,
   `OtherRequirement(proof:, request:)` or `ProofExpired(age:, lifetime:)`,
   with `describe_proof_error`.
