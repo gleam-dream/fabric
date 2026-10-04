@@ -978,6 +978,19 @@ type LeasedRequest {
 /// the VM. Its process stops when the process that called this exits. Its
 /// clock is UTC system time, moved forward by `advance`.
 pub fn leased_memory() -> LeasedMemory {
+  leased_memory_on(system_time_ms)
+}
+
+/// A `leased_memory` whose clock stands still unless `advance` moves it:
+/// no lease expires by the passing of time, so a test that must not depend
+/// on how fast the machine runs moves the clock itself.
+@internal
+pub fn frozen_leased_memory() -> LeasedMemory {
+  let start = system_time_ms()
+  leased_memory_on(fn() { start })
+}
+
+fn leased_memory_on(clock: fn() -> Int) -> LeasedMemory {
   let ready = process.new_subject()
   let owner = process.self()
   process.spawn_unlinked(fn() {
@@ -989,7 +1002,7 @@ pub fn leased_memory() -> LeasedMemory {
         Error(Nil)
       })
     process.send(ready, subject)
-    leased_loop(requests, dict.new(), 0)
+    leased_loop(requests, dict.new(), 0, clock)
   })
   let subject = process.receive_forever(ready)
   LeasedMemory(
@@ -1032,13 +1045,14 @@ fn leased_loop(
   requests: process.Selector(Result(LeasedRequest, Nil)),
   rows: Dict(String, Row),
   offset: Int,
+  clock: fn() -> Int,
 ) -> Nil {
   case process.selector_receive_forever(requests) {
     Error(Nil) -> Nil
     Ok(request) -> {
       let #(rows, offset) =
-        leased_serve(request, rows, system_time_ms() + offset, offset)
-      leased_loop(requests, rows, offset)
+        leased_serve(request, rows, clock() + offset, offset)
+      leased_loop(requests, rows, offset, clock)
     }
   }
 }
