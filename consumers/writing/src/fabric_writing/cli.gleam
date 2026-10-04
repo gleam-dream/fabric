@@ -70,7 +70,14 @@ pub fn main() -> Nil {
         llm_metadata,
       )
     "typesafe" -> {
-      let assert Ok(settings) = client.new(required("TYPESAFE_API_KEY"))
+      // The classifier posts through the same client, bounded to the
+      // 20-second request it had before.
+      let assert Ok(settings) =
+        client.new(
+          http
+            |> http_gun.with_timeout(http_config.After(duration.seconds(20))),
+          key: required("TYPESAFE_API_KEY"),
+        )
       let model =
         environment("FABRIC_CLASSIFIER_MODEL") |> result.unwrap("jev-latest")
       dispatch(

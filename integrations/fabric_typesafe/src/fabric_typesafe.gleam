@@ -5,11 +5,12 @@ import fabric/run
 import fabric/tool
 import fabric_typesafe/client
 import fabric_typesafe/internal/batch
+import fabric_typesafe/internal/transport
 import fabric_typesafe/internal/wire
 import fabric_typesafe/question
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import json/blueprint/codec
@@ -36,6 +37,8 @@ pub type Receipt(answer) {
 
 /// The builder describes one request after policy admission. It must be pure;
 /// credentials belong in the returned live configuration, never the state.
+/// The request goes through the configuration's HTTP Gun client view, tagged
+/// with the graph run's correlation (`operation.Invocation.correlation`).
 pub fn new(
   identity: run.DefinitionId,
   input: codec.Codec(input),
@@ -46,18 +49,18 @@ pub fn new(
     identity,
     input,
     receipt_codec(questions),
-    fn(context, _, input) {
+    fn(context, invocation: operation.Invocation, input) {
       let #(config, request) = request(context, input)
       use raw <- result.try(
         prepare(questions, request)
         |> result.map_error(tool.Explain),
       )
       use response <- result.try(
-        client.post(config, raw)
+        transport.post(config, raw, Some(invocation.correlation))
         |> result.map_error(fn(error) {
           case error {
-            client.BeforeSend(reason) -> tool.Explain(reason)
-            client.AfterSend(reason) -> tool.Uncertain(reason)
+            transport.BeforeSend(reason) -> tool.Explain(reason)
+            transport.AfterSend(reason) -> tool.Uncertain(reason)
           }
         }),
       )

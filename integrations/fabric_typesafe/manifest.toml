@@ -31,8 +31,10 @@ packages = [
 [requirements]
 fabric = { path = "../.." }
 gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }
+gleam_http = { version = ">= 4.0.0 and < 5.0.0" }
 gleam_stdlib = { version = ">= 0.70.0 and < 2.0.0" }
 gleam_time = { version = ">= 1.11.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
-gun = { version = ">= 2.6.0 and < 3.0.0" }
+http_gun = { path = "../../../http_gun" }
 json_blueprint = { path = "../../../json_blueprint" }
+sinal = { path = "../../../sinal" }

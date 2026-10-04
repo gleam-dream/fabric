@@ -1,60 +1,30 @@
-//// One bounded HTTP request. Configuration is live context, never a receipt.
+//// The live configuration of a classifier operation: the caller's HTTP Gun
+//// client, the API key and the endpoint. It is context, never a receipt.
+////
+//// The request goes through the client view the caller passes to `new`,
+//// so its timeouts, body and header limits, destination policy and
+//// telemetry are HTTP Gun's: bound a request with `http_gun.with_timeout`
+//// or `with_deadline` on the view, and its response with
+//// `http_gun.with_body_limit` or the client's configuration. Each request
+//// is tagged with the graph run's correlation. HTTP Gun never retries,
+//// follows a redirect or decompresses.
 
-import gleam/bit_array
+import fabric_typesafe/internal/transport.{Config, Endpoint}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
-import gleam/time/duration.{type Duration}
 import gleam/uri
+import http_gun
 
-pub type Bounds {
-  Bounds(
-    /// The whole request's deadline, from 1 ms to 1 hour.
-    timeout: Duration,
-    request_bytes: Int,
-    response_bytes: Int,
-    header_bytes: Int,
-  )
-}
+/// A classifier's live configuration. `string.inspect` of one never prints
+/// the API key.
+pub type Config =
+  transport.Config
 
-/// 20 s, 1 MiB each way and 16 KiB of headers.
-pub fn bounds() -> Bounds {
-  Bounds(duration.seconds(20), 1_048_576, 1_048_576, 16_384)
-}
-
-/// The bounds as the transport reads them, with the timeout in
-/// milliseconds.
-type Wire {
-  WireBounds(
-    timeout: Int,
-    request_bytes: Int,
-    response_bytes: Int,
-    header_bytes: Int,
-  )
-}
-
-type Endpoint {
-  Endpoint(host: String, port: Int, path: String, tls: Bool)
-}
-
-/// The API key is kept as a closure, so `string.inspect` of a `Config`, and
-/// crash reports or logs that contain one, print a function reference
-/// instead of the key.
-pub opaque type Config {
-  Config(key: fn() -> String, endpoint: Endpoint, bounds: Bounds)
-}
-
-pub type Error {
-  BeforeSend(String)
-  AfterSend(String)
-}
-
-pub type Response {
-  Response(status: Int, headers: List(#(String, String)), body: String)
-}
-
-pub fn new(key: String) -> Result(Config, String) {
+/// A configuration that posts to TypeSafe's System One API
+/// (`https://api.typesafe.ai/v1/systemone`) through `http` with `key`.
+pub fn new(http: http_gun.Client, key key: String) -> Result(Config, String) {
   use Nil <- result.map(
     case
       string.trim(key) != ""
@@ -68,33 +38,15 @@ pub fn new(key: String) -> Result(Config, String) {
     },
   )
   Config(
+    http,
     fn() { key },
     Endpoint("api.typesafe.ai", 443, "/v1/systemone", True),
-    bounds(),
   )
-}
-
-pub fn with_bounds(config: Config, bounds: Bounds) -> Result(Config, String) {
-  use Nil <- result.map(
-    case
-      duration.to_milliseconds(bounds.timeout) > 0
-      && duration.to_milliseconds(bounds.timeout) <= 3_600_000
-      && bounds.request_bytes > 0
-      && bounds.request_bytes <= 10_485_760
-      && bounds.response_bytes > 0
-      && bounds.response_bytes <= 10_485_760
-      && bounds.header_bytes >= 1024
-      && bounds.header_bytes <= 131_072
-    {
-      True -> Ok(Nil)
-      False -> Error("invalid classifier transport bounds")
-    },
-  )
-  Config(..config, bounds: bounds)
 }
 
 /// Remote endpoints require TLS. Plain HTTP is restricted to explicit loopback
-/// endpoints for protocol testing. Redirects are never followed.
+/// endpoints for protocol testing, and HTTP Gun admits it only when every
+/// address the host resolves to is loopback. Redirects are never followed.
 pub fn with_endpoint(config: Config, url: String) -> Result(Config, String) {
   use Nil <- result.try(
     case
@@ -145,40 +97,3 @@ pub fn with_endpoint(config: Config, url: String) -> Result(Config, String) {
       )
   }
 }
-
-pub fn post(config: Config, body: String) -> Result(Response, Error) {
-  use Nil <- result.try(
-    case
-      bit_array.byte_size(bit_array.from_string(body))
-      <= config.bounds.request_bytes
-    {
-      True -> Ok(Nil)
-      False -> Error(BeforeSend("classifier request exceeds byte limit"))
-    },
-  )
-  send(
-    config.endpoint.host,
-    config.endpoint.port,
-    config.endpoint.path,
-    config.endpoint.tls,
-    config.key(),
-    body,
-    WireBounds(
-      duration.to_milliseconds(config.bounds.timeout),
-      config.bounds.request_bytes,
-      config.bounds.response_bytes,
-      config.bounds.header_bytes,
-    ),
-  )
-}
-
-@external(erlang, "fabric_typesafe_http", "request")
-fn send(
-  host: String,
-  port: Int,
-  path: String,
-  tls: Bool,
-  key: String,
-  body: String,
-  bounds: Wire,
-) -> Result(Response, Error)
