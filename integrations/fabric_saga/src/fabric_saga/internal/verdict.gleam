@@ -33,9 +33,17 @@
 //// carries no typed error to explain. `RetrySuperseded(_, Returned(error))`
 //// is judged like `RetryLimitReached`.
 ////
-//// The summary names outcome kinds, actions and step addresses only: never
-//// a step's typed error, output, or crash reason, which may carry
-//// application data.
+//// `Unresolved` carries the error the step held its effects on (the error
+//// `saga.unknown_when` marked, or a recovery decision's `Hold(evidence)`).
+//// The evidence renders it with `explain`, the application's own wording,
+//// after the held step: `the workflow held the effects of step refund
+//// unresolved: <explain(error)>`, so the person who reconciles the call
+//// reads what the step reported.
+////
+//// Saga's report (`summary`) names outcome kinds, actions and step
+//// addresses only: never a step's typed error, output, or crash reason,
+//// which may carry application data. `explain` renders the held error
+//// alone; no other typed error reaches the evidence.
 
 import gleam/int
 import gleam/list
@@ -61,12 +69,13 @@ pub fn classify(
   case outcome {
     execution.Completed(output) -> Ok(output)
     execution.CompletedWithUnknownEffects(..) -> Error(unknown(effects, report))
-    execution.Unresolved(step, _, settlement) ->
+    execution.Unresolved(step, evidence, settlement) ->
       Error(unknown(
         [
           "the workflow held the effects of step "
             <> saga.address_to_string(step)
-            <> " unresolved",
+            <> " unresolved: "
+            <> explain(evidence),
           ..list.append(effects, left_in_place(settlement))
         ],
         report,

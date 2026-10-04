@@ -276,7 +276,9 @@ pub fn a_crashed_undo_is_uncertain_test() {
 /// `saga.unknown_when`. With no decision to settle it, Saga ends the run
 /// `Unresolved` and undoes nothing, and names the attempt among its unknown
 /// effects, so the call is an uncertain effect a person reconciles, never a
-/// definite failure the model could retry into a second refund (SD-1).
+/// definite failure the model could retry into a second refund (SD-1). The
+/// evidence renders the error the step held its effects on with `explain`,
+/// so the person who reconciles the refund reads what the provider said.
 pub fn a_refund_the_provider_may_have_taken_is_uncertain_test() {
   let reports = process.new_subject()
   let refund =
@@ -298,14 +300,11 @@ pub fn a_refund_the_provider_may_have_taken_is_uncertain_test() {
   |> should.be_true
   string.contains(
     uncertain.evidence,
-    "the workflow held the effects of step refund unresolved",
+    "the workflow held the effects of step refund unresolved: typed error: PaymentOutcomeUnknown;",
   )
   |> should.be_true
   string.contains(uncertain.evidence, "Saga reported unresolved at refund")
   |> should.be_true
-  string.contains(uncertain.evidence, "typed error:") |> should.be_false
-  string.contains(uncertain.evidence, "PaymentOutcomeUnknown")
-  |> should.be_false
   next(reports) |> should.equal("refund sent")
 }
 

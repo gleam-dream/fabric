@@ -281,14 +281,59 @@ pub fn a_cancellation_that_left_a_step_held_is_uncertain_test() {
 
 // --- Unresolved ---------------------------------------------------------------
 
+/// The evidence names the held step and renders the error it held its
+/// effects on with `explain`; Saga's report stays free of it.
 pub fn an_unresolved_workflow_is_uncertain_test() {
   let settlement =
     execution.Settlement(..clean(), undone: [], held: [at("charge")])
-  verdict.classify(
-    execution.Unresolved(at("charge"), "hold", settlement),
-    explain,
+  let assert Error(verdict.Unknown(evidence)) =
+    verdict.classify(
+      execution.Unresolved(at("charge"), "hold", settlement),
+      explain,
+    )
+  evidence
+  |> should.equal(
+    "the workflow's effects are not known: the workflow held the effects of step charge unresolved: explained hold; held charge (Saga reported unresolved at charge)",
   )
-  |> uncertain("held the effects of step charge unresolved")
+}
+
+/// A recovery decision's `Hold(evidence)` ends the run `Unresolved` with
+/// that evidence, which `explain` renders after the unknown effects.
+pub fn a_held_decision_renders_its_evidence_test() {
+  let settlement =
+    execution.Settlement(
+      ..with_unknown([
+        effect(
+          "refund",
+          execution.StepAttempt(1),
+          execution.ActionReturnedUnknown,
+        ),
+      ]),
+      undone: [],
+      held: [at("refund")],
+    )
+  let assert Error(verdict.Unknown(evidence)) =
+    verdict.classify(
+      execution.Unresolved(at("refund"), "provider timeout", settlement),
+      explain,
+    )
+  string.contains(
+    evidence,
+    "held the effects of step refund unresolved: explained provider timeout",
+  )
+  |> should.be_true
+  string.contains(
+    evidence,
+    "attempt 1 of step refund returned an error after which its effect is unknown",
+  )
+  |> should.be_true
+  verdict.summary(execution.Unresolved(
+    at("refund"),
+    "provider timeout",
+    settlement,
+  ))
+  |> string.contains("provider timeout")
+  |> should.be_false
 }
 
 // --- evidence -----------------------------------------------------------------

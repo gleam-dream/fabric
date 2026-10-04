@@ -507,3 +507,39 @@ pub fn the_workflow_gets_the_call_and_the_runs_correlation_test() {
   string.contains(text, "FL-Porto-c1") |> should.be_true
   process.receive(seen, 1000) |> should.equal(Ok(ticket))
 }
+
+/// A step reads the Fabric run's correlation from its `EffectKey`
+/// (`saga.correlation_of`), to pass on to the clients it calls.
+pub fn a_step_reads_the_runs_correlation_test() {
+  let seen = process.new_subject()
+  let book =
+    saga.effect("book", fn(trip: Trip, key) -> Result(Itinerary, TripError) {
+      process.send(seen, saga.correlation_of(key))
+      Ok(Itinerary("FL-" <> trip.city, "HT-" <> trip.city, "CH-1"))
+    })
+  let trip =
+    fabric_saga.tool(
+      trip_definition(),
+      saga.define("book", saga.perform(_, book)),
+      execution.config(),
+      input: fn(_, _, input) { input },
+      explain: fn(_) { "failed" },
+      rollback_within: duration.seconds(5),
+    )
+  let assert Ok(agent) =
+    agent.new("traveller", traveller("Porto"), [trip], policy.always_allow())
+    |> agent.build
+  let ticket = correlation.from_key("trip-ticket")
+  let assert Ok(handle) =
+    fabric.start(
+      watched.memory(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "book",
+      correlation: Some(ticket),
+    )
+  let assert Ok(run.Finished(run.Completed(_))) =
+    fabric.await(handle, within: duration.seconds(5))
+  process.receive(seen, 1000) |> should.equal(Ok(ticket))
+}
