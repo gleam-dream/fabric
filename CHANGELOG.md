@@ -38,7 +38,7 @@ Wave 5 is described with before/after snippets in
 #### Added
 
 - `fabric/approvers`: `Approvers(credential)`, `new(name, verify)`,
-  `with_proof_lifetime` (default 60 s), `name`, `check`, `accept`, the
+  `with_proof_lifetime` (default 60 s), `name`, `check`, the
   opaque `Proof` with `reviewer`, `verifier` and `requirement`, `Denial`
   (`NotAuthenticated`, `NotAuthorized`, `Unavailable`) with
   `describe_denial`, and `ProofError` (`NoApprovers`, `OtherApprovers`,
