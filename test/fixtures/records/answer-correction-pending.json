@@ -1,0 +1,48 @@
+{
+  "format": "fabric.run",
+  "version": 7,
+  "write": "b321de93544667a9d8adfbb905d610a6",
+  "run": "run-answer-correction",
+  "agent": {
+    "name": "forecaster",
+    "version": 1
+  },
+  "incarnation": 1,
+  "parent": null,
+  "depth": 0,
+  "limits": {
+    "max_turns": 8,
+    "token_budget": null,
+    "max_children": 4,
+    "max_depth": 1
+  },
+  "turns_used": 2,
+  "usage": {
+    "input_tokens": 3,
+    "output_tokens": 4,
+    "unreported_replies": 0
+  },
+  "transcript": [
+    {
+      "tag": "user",
+      "text": "weather in Paris?"
+    },
+    {
+      "tag": "assistant",
+      "text": "sunny, probably",
+      "calls": [],
+      "data": null
+    },
+    {
+      "tag": "user",
+      "text": "Your final answer could not be read: invalid JSON at line 1, column 1: unexpected character\nReply with only a JSON value that matches this JSON Schema: {\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"sunny\":{\"type\":\"boolean\"}},\"required\":[\"city\",\"sunny\"],\"additionalProperties\":false}"
+    }
+  ],
+  "history": [],
+  "approvals_issued": 0,
+  "phase": {
+    "tag": "awaiting_model",
+    "turn": 2
+  },
+  "family_budget": null
+}

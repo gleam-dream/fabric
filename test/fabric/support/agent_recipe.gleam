@@ -208,6 +208,7 @@ fn env(
     clock: fn() { 0 },
     answer: None,
     check_answer: fn(_) { Ok(Nil) },
+    answer_attempts: 1,
   )
 }
 

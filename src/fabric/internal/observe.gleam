@@ -116,7 +116,7 @@ fn model_turn(before: Option(State), after: State) -> Nil {
     Some(before) if before.incarnation == after.incarnation ->
       case before.phase {
         controller.AwaitingModel(turn) ->
-          case turn_result(turn, after) {
+          case turn_result(turn, before, after) {
             Some(result) ->
               emit(
                 o.model_turn(),
@@ -152,6 +152,7 @@ fn turn_usage(
       list.length(after.transcript) > list.length(before.transcript)
     o.ToolRequest
     | o.FinalAnswer
+    | o.AnswerRejected
     | o.Refusal
     | o.Truncated
     | o.ProtocolViolation -> True
@@ -170,10 +171,16 @@ fn turn_usage(
 
 /// What the attempt `turn` produced, judged by where the run went; `None`
 /// when the attempt is still in flight or was cancelled.
-fn turn_result(turn: Int, after: State) -> Option(o.TurnResult) {
+fn turn_result(turn: Int, before: State, after: State) -> Option(o.TurnResult) {
   case after.phase {
     controller.AwaitingModel(next) if next == turn -> None
-    controller.AwaitingModel(_) -> Some(o.Retry)
+    // A refused answer and its correction joined the transcript; a failed
+    // attempt adds nothing.
+    controller.AwaitingModel(_) ->
+      case list.length(after.transcript) > list.length(before.transcript) {
+        True -> Some(o.AnswerRejected)
+        False -> Some(o.Retry)
+      }
     controller.Acting(..) | controller.Stopping(..) -> Some(o.ToolRequest)
     controller.Ended(run.Completed(_))
     | controller.Ended(run.AnswerInvalid(..)) -> Some(o.FinalAnswer)

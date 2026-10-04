@@ -25,8 +25,9 @@
 //// for it with `llm_wire.with_output`, named `answer`, as OpenAI's and
 //// Anthropic's JSON Schema output format or Google's response schema.
 //// llm_wire validates the reply against the schema; a final text that does
-//// not match is still returned as the `FinalAnswer`, so that Fabric ends
-//// the run with `run.AnswerInvalid` and keeps the text. A schema the
+//// not match is still returned as the `FinalAnswer`, so that Fabric asks
+//// the model to correct it (`agent.with_answer_attempts`) or ends the run
+//// with `run.AnswerInvalid`, keeping the text. A schema the
 //// provider cannot take (OpenAI's and Anthropic's need an object at the
 //// root) fails the turn as `model.InvalidRequest`.
 ////
@@ -121,7 +122,8 @@ fn execute(
     Ok(llm_wire.Refused(reason:, usage:)) ->
       Ok(model.Refusal(reason, usage_of(usage)))
     // A final answer outside the schema is the model's answer all the
-    // same: Fabric ends the run with `AnswerInvalid` and keeps the text.
+    // same: Fabric asks for a correction or ends the run with
+    // `AnswerInvalid`, keeping the text.
     Error(llm_wire.Failure(
       error: error.InvalidOutput(raw_output:, ..),
       usage:,

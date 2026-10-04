@@ -366,7 +366,8 @@ pub fn an_invalid_agent_reply_is_retained_without_repeating_its_model_test() {
   let assert Ok(run.Finished(run.AnswerInvalid(raw: "not an integer", ..))) =
     fabric.await(agent, within: duration.milliseconds(1000))
   let assert Ok(_) = graph.recover(handle)
-  probe.entries(calls) |> should.equal(["model"])
+  // Two answers (the default one corrective turn); recovery asks for none.
+  probe.entries(calls) |> should.equal(["model", "model"])
 }
 
 pub fn agent_handles_and_dispatch_refuse_a_different_store_test() {
@@ -784,5 +785,6 @@ pub fn canceled_agent_settlement_does_not_call_the_reply_adapter_test() {
   let assert graph.Cancelled(graph.ChildSettled(_)) = done.status
   done.receipts |> should.equal([])
   done.value |> should.equal(41)
-  probe.entries(calls) |> should.equal(["model"])
+  // The agent's two answers; settling the cancellation asks for none.
+  probe.entries(calls) |> should.equal(["model", "model"])
 }

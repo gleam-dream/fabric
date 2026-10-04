@@ -113,6 +113,7 @@ pub fn setup(
       clock: store_clock(store),
       answer: admitted.answer_schema,
       check_answer: admitted.check_answer,
+      answer_attempts: admitted.answer_attempts,
     ),
     model: admitted.model,
     max_concurrency: admitted.max_concurrency,

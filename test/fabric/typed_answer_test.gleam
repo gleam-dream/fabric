@@ -314,18 +314,22 @@ pub fn the_adapter_asks_the_provider_for_the_answer_schema_test() {
 }
 
 /// llm_wire refuses the text against the schema; the adapter still returns
-/// it, so the run ends with the text kept.
+/// it. The model is asked once more, with the correction in the second
+/// request, and the run ends with the last text kept.
 pub fn an_answer_outside_the_schema_keeps_its_text_test() {
-  let fake =
-    fake_provider.start([
-      testing.text("{\"city\":\"Paris\"}")
-      |> testing.with_usage(message.Usage(5, 6, 11))
-      |> testing.events_for(message.OpenAI, _),
-    ])
+  let reply =
+    testing.text("{\"city\":\"Paris\"}")
+    |> testing.with_usage(message.Usage(5, 6, 11))
+    |> testing.events_for(message.OpenAI, _)
+  let fake = fake_provider.start([reply, reply])
   let #(handle, status) = finish(openai_forecaster(fake), "weather in Paris?")
   let assert run.Finished(run.AnswerInvalid(raw: "{\"city\":\"Paris\"}", ..)) =
     status
   let assert Ok(snapshot) = fabric.snapshot(handle)
-  snapshot.usage |> should.equal(run.TokenUsage(5, 6, 0))
+  snapshot.usage |> should.equal(run.TokenUsage(10, 12, 0))
+  snapshot.turns_used |> should.equal(2)
+  let assert [_, second] = fake_provider.bodies(fake)
+  string.contains(second, "Your final answer could not be read")
+  |> should.be_true
   fake_provider.stop(fake)
 }
