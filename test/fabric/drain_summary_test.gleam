@@ -53,7 +53,7 @@ pub fn shutdown_reports_a_confirmed_handoff_and_runner_exit_test() {
 @external(erlang, "erlang", "atom_to_binary")
 fn name_text(name: process.Name(a)) -> String
 
-fn slow(ledger: probe.Probe) -> agent.Agent(Nil) {
+fn slow(ledger: probe.Probe) -> agent.Agent(Nil, String) {
   agent.new(
     "agent",
     scripted.plan([scripted.slow("a", "a")]),

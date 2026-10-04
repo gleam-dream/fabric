@@ -178,7 +178,8 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
   let assert Ok(second) = process.receive(arrivals, 30_000)
   process.send(first, Nil)
   process.send(second, Nil)
-  let assert Ok(waiting) = graph.await(root, within: duration.seconds(30))
+  let assert Ok(_) = graph.await(root, within: duration.seconds(30))
+  let assert Ok(waiting) = graph.snapshot(root)
   let assert graph.Fork(_, _) = waiting.status
   let assert Some(due) = waiting.deadline
   let members =

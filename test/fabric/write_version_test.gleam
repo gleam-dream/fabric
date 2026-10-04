@@ -167,15 +167,10 @@ pub fn a_child_cancelled_before_storage_is_a_version_2_tombstone_test() {
   let assert Ok(call) = testing.call(research, "r", "topic")
   let parent =
     agent.new("parent", scripted.plan([call]), [], policy.always_allow())
-    |> agent.with_sub_agent(
-      research,
-      to: child,
-      prompt: fn(topic) {
-        probe.gate(prompt, "prompt")
-        topic
-      },
-      output: Ok,
-    )
+    |> agent.with_sub_agent(research, to: child, prompt: fn(topic) {
+      probe.gate(prompt, "prompt")
+      topic
+    })
     |> support.agent
   let assert Ok(root) =
     fabric.start(

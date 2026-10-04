@@ -125,7 +125,8 @@ pub fn the_database_expires_before_the_next_poll_and_retains_cleanup_across_rest
           "receipt",
           correlation: None,
         )
-      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+      let assert Ok(_) = graph.await(handle, within: duration.seconds(30))
+      let assert Ok(waiting) = graph.snapshot(handle)
       let _ = sweep(runs, build)
       waiting
     })

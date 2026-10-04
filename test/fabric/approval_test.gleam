@@ -60,7 +60,7 @@ fn transfer_call() -> model.ToolCall {
   scripted.call("t", "transfer_funds", "{\"to\":\"bob\",\"amount\":10}")
 }
 
-fn paying_agent(probe: Probe) -> Agent(Desk) {
+fn paying_agent(probe: Probe) -> Agent(Desk, String) {
   agent.new(
     "agent",
     scripted.plan([transfer_call()]),
@@ -70,7 +70,7 @@ fn paying_agent(probe: Probe) -> Agent(Desk) {
   |> support.agent
 }
 
-fn suspended(probe: Probe) -> #(fabric.Run(Desk), run.PendingApproval) {
+fn suspended(probe: Probe) -> #(fabric.Run(Desk, String), run.PendingApproval) {
   let assert Ok(run) =
     fabric.start(
       support.store(),
@@ -86,9 +86,9 @@ fn suspended(probe: Probe) -> #(fabric.Run(Desk), run.PendingApproval) {
 }
 
 fn approve(
-  run: fabric.Run(Desk),
+  run: fabric.Run(Desk, String),
   reference: run.ApprovalRef,
-) -> Result(run.Status, fabric.Error) {
+) -> Result(run.Status(String), fabric.Error) {
   fabric.approve(
     run,
     reference,

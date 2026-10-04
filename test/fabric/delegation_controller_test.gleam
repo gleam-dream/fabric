@@ -44,6 +44,8 @@ fn env() -> controller.Env(Nil) {
     system: None,
     approval_expiry: None,
     clock: fn() { 0 },
+    answer: None,
+    check_answer: fn(_) { Ok(Nil) },
   )
 }
 
@@ -155,8 +157,9 @@ pub fn a_child_end_is_mapped_by_the_delegation_test() {
   let assert [CallModel(2, _)] = effects
 }
 
-/// A completed answer the delegation cannot parse, and a child that ended
-/// without an answer, are definite failures the model sees.
+/// A completed answer the child's codec does not read, an invalid answer,
+/// and a child that ended without an answer, are definite failures the
+/// model sees.
 pub fn a_child_without_a_usable_answer_is_a_definite_failure_test() {
   let ended = fn(outcome) {
     let #(state, _) = acting([ask_call("a")], 4)
@@ -166,7 +169,13 @@ pub fn a_child_without_a_usable_answer_is_a_definite_failure_test() {
     action(state, "a").state
   }
   ended(run.Completed("?"))
-  |> should.equal(run.ToolFailed("{\"error\":\"no answer\"}"))
+  |> should.equal(run.ToolFailed(
+    "{\"error\":\"the sub-agent's answer is invalid: no answer\"}",
+  ))
+  ended(run.AnswerInvalid(raw: "?", reason: "expected an object"))
+  |> should.equal(run.ToolFailed(
+    "{\"error\":\"the sub-agent's answer is invalid: expected an object\"}",
+  ))
   ended(run.Refused("nope"))
   |> should.equal(run.ToolFailed("{\"error\":\"the sub-agent refused: nope\"}"))
   ended(run.BudgetExhausted(run.TurnLimit(3)))

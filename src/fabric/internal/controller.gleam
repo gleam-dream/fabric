@@ -63,6 +63,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
 import gleam/time/timestamp.{type Timestamp}
+import json/blueprint/codec
 import sinal/correlation.{type Correlation}
 
 // --- vocabulary ----------------------------------------------------------------
@@ -70,7 +71,10 @@ import sinal/correlation.{type Correlation}
 /// `approval_expiry` (milliseconds; `None`: never) sets the deadline of
 /// each approval request the run issues, and `clock` reads the time in UTC
 /// Unix milliseconds that deadlines are judged by: the store's clock
-/// (`store.now`), never the stepping node's.
+/// (`store.now`), never the stepping node's. `answer` is the schema of the
+/// final answer given to the model, and `check_answer` the check a final
+/// answer passes before the run completes with it (`AnswerInvalid`
+/// otherwise).
 pub type Env(context) {
   Env(
     registry: Registry(context),
@@ -79,6 +83,8 @@ pub type Env(context) {
     system: Option(String),
     approval_expiry: Option(Int),
     clock: fn() -> Int,
+    answer: Option(codec.Schema),
+    check_answer: fn(String) -> Result(Nil, String),
   )
 }
 
@@ -114,7 +120,7 @@ pub type Phase {
     reason: StopReason,
     tools_stopped: Bool,
   )
-  Ended(Outcome)
+  Ended(Outcome(String))
   /// A child run cancelled before it was ever stored, recorded by its
   /// cancelling parent (`never_started`) so that a start or recovery racing
   /// the cancellation finds it ended and never runs it. It reads as
@@ -190,7 +196,7 @@ pub type Event {
 pub type ChildResult {
   /// The child finished with `outcome`; `unknown_effects` when it left an
   /// effect of unknown status (an unreconciled uncertain action).
-  ChildFinished(outcome: Outcome, unknown_effects: Bool)
+  ChildFinished(outcome: Outcome(String), unknown_effects: Bool)
   /// The child's record cannot be read or continued.
   ChildLost(detail: String)
   /// The child was cancelled and is still stopping (it waits for a stopped
@@ -751,7 +757,7 @@ fn child_started(
 }
 
 type Settle =
-  fn(String, Outcome) -> Result(invocation.Outcome, Nil)
+  fn(String, Outcome(String)) -> Result(invocation.Outcome, Nil)
 
 fn settle_with(env: Env(context)) -> Settle {
   fn(name, outcome) { registry.settle(env.registry, name, outcome) }
@@ -1177,7 +1183,10 @@ fn model_replied(
         transcript: list.append(state.transcript, [
           model.AssistantMessage(model.AssistantTurn(text, [], None)),
         ]),
-        phase: Ended(run.Completed(text)),
+        phase: Ended(case env.check_answer(text) {
+          Ok(Nil) -> run.Completed(text)
+          Error(reason) -> run.AnswerInvalid(raw: text, reason:)
+        }),
       ),
       [],
     )
@@ -1254,7 +1263,7 @@ fn protocol_violation(calls: List(ToolCall)) -> Option(String) {
 fn continuation_blocked(
   state: State,
   usage: Option(model.Usage),
-) -> Option(Outcome) {
+) -> Option(Outcome(String)) {
   case state.limits.token_budget, usage {
     Some(_), None -> Some(run.BudgetUnverifiable(state.turns_used))
     Some(budget), Some(_) ->
@@ -1266,14 +1275,14 @@ fn continuation_blocked(
   }
 }
 
-fn turn_blocked(state: State) -> Option(Outcome) {
+fn turn_blocked(state: State) -> Option(Outcome(String)) {
   case state.turns_used >= state.limits.max_turns {
     True -> Some(run.BudgetExhausted(run.TurnLimit(state.limits.max_turns)))
     False -> None
   }
 }
 
-fn token_exhausted(state: State, budget: Int) -> Outcome {
+fn token_exhausted(state: State, budget: Int) -> Outcome(String) {
   run.BudgetExhausted(run.TokenLimit(budget, tokens_used(state.usage)))
 }
 
@@ -1520,7 +1529,7 @@ fn stop(
   #(stopped_when_idle(state, turn, actions, reason, !running), effects)
 }
 
-fn stop_outcome(reason: StopReason) -> Outcome {
+fn stop_outcome(reason: StopReason) -> Outcome(String) {
   case reason {
     CancelRequested -> run.Cancelled
     HostFault(failure) -> run.Failed(failure)
@@ -1587,6 +1596,7 @@ fn call_model(env: Env(context), state: State) -> #(State, List(Effect)) {
           system: env.system,
           messages: state.transcript,
           tools: offered_tools(env, state),
+          answer: env.answer,
         )
       #(State(..state, turns_used: turn, phase: AwaitingModel(turn)), [
         CallModel(turn, request),
@@ -1610,7 +1620,11 @@ fn offered_tools(env: Env(context), state: State) -> List(model.ToolSpec) {
   }
 }
 
-fn end(state: State, actions: List(ActionRecord), outcome: Outcome) -> State {
+fn end(
+  state: State,
+  actions: List(ActionRecord),
+  outcome: Outcome(String),
+) -> State {
   State(
     ..state,
     history: list.append(state.history, actions),
@@ -1889,7 +1903,7 @@ pub fn child_result(state: State) -> Result(ChildResult, Nil) {
 
 // --- read model ----------------------------------------------------------------
 
-pub fn status(state: State) -> Status {
+pub fn status(state: State) -> Status(String) {
   case state.phase {
     Ended(outcome) -> run.Finished(outcome)
     NeverStarted -> run.Finished(run.Cancelled)
@@ -1947,7 +1961,7 @@ fn in_flight(actions: List(ActionRecord)) -> Bool {
   })
 }
 
-pub fn snapshot(state: State) -> run.Snapshot {
+pub fn snapshot(state: State) -> run.Snapshot(String) {
   run.Snapshot(
     run: run_id.from_string(state.run),
     agent: state.agent,

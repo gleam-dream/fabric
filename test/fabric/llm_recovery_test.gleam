@@ -64,7 +64,7 @@ fn calculating_agent(
   settings: llm_wire.Config,
   ledger: probe.Probe,
   policy: policy.Policy(Nil),
-) -> agent.Agent(Nil) {
+) -> agent.Agent(Nil, String) {
   agent.new(
     "calculator",
     llm.model(client, settings, model_id()),
@@ -321,7 +321,7 @@ fn text_agent(
   client: http_gun.Client,
   settings: llm_wire.Config,
   max_turns: Int,
-) -> agent.Agent(Nil) {
+) -> agent.Agent(Nil, String) {
   agent.new(
     "text",
     llm.model(client, settings, model_id()),

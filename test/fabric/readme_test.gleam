@@ -4,13 +4,16 @@
 
 import fabric
 import fabric/agent.{type Agent}
+import fabric/model
 import fabric/readme_example.{
-  type Context, type Receipt, type Transfer, type TransferError, Approve,
-  Context, GatewayTimeout, Happened, Receipt, Reject,
+  type Context, type Receipt, type Resolution, type Transfer, type TransferError,
+  Approve, Context, GatewayTimeout, Happened, Receipt, Reject, Resolution,
 }
 import fabric/run
 import fabric/support/restart
 import fabric/support/scripted
+import gleam/json
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleam/time/duration
@@ -36,15 +39,31 @@ fn pay(transfer: Transfer) -> Result(Receipt, TransferError) {
   }
 }
 
-fn desk(amount: String) -> Agent(Context) {
+/// Asks for the transfer, then answers with a resolution naming every
+/// result it saw.
+fn desk(amount: String) -> Agent(Context, Resolution) {
+  let transfer =
+    scripted.call(
+      "t",
+      "transfer_funds",
+      "{\"to\":\"bob\",\"amount\":" <> amount <> "}",
+    )
   let model =
-    scripted.plan([
-      scripted.call(
-        "t",
-        "transfer_funds",
-        "{\"to\":\"bob\",\"amount\":" <> amount <> "}",
-      ),
-    ])
+    scripted.model(fn(messages) {
+      case scripted.results(messages) {
+        [] ->
+          model.ToolRequest(
+            model.AssistantTurn("", [transfer], None),
+            Some(model.Usage(10, 5)),
+          )
+        seen ->
+          json.object([
+            #("summary", json.string("final: " <> string.join(seen, " | "))),
+          ])
+          |> json.to_string
+          |> model.FinalAnswer(Some(model.Usage(20, 5)))
+      }
+    })
   let assert Ok(desk) = readme_example.desk(model, pay)
   desk
 }
@@ -70,7 +89,9 @@ pub fn the_readme_example_runs_test() {
     readme_example.review(runs, small, tess, tess_reviewer(), id, Approve)
   readme_example.review(runs, small, tess, tess_reviewer(), id, Approve)
   |> should.equal(
-    Ok(run.Finished(run.Completed("final: {\"receipt\":\"r-bob\"}"))),
+    Ok(
+      run.Finished(run.Completed(Resolution("final: {\"receipt\":\"r-bob\"}"))),
+    ),
   )
 
   // Rejected.
@@ -84,9 +105,9 @@ pub fn the_readme_example_runs_test() {
       id,
       Reject("not today"),
     )
-  let assert Ok(run.Finished(run.Completed(answer))) =
+  let assert Ok(run.Finished(run.Completed(Resolution(summary)))) =
     readme_example.review(runs, small, tess, tess_reviewer(), id, Approve)
-  string.contains(answer, "not today") |> should.be_true
+  string.contains(summary, "not today") |> should.be_true
 
   // Approved, and the gateway timed out after sending: reconciled.
   let large = desk("5000")
@@ -104,7 +125,7 @@ pub fn the_readme_example_runs_test() {
     )
   readme_example.review(runs, large, tess, tess_reviewer(), id, Approve)
   |> should.equal(
-    Ok(run.Finished(run.Completed("final: {\"receipt\":\"r-1\"}"))),
+    Ok(run.Finished(run.Completed(Resolution("final: {\"receipt\":\"r-1\"}")))),
   )
 
   // At boot: a finished run is reopened unchanged; a malformed id names
@@ -119,7 +140,11 @@ pub fn the_readme_example_runs_test() {
 
 pub fn the_readme_sub_agent_and_settling_tool_build_test() {
   let quiet = scripted.plan([])
-  let assert Ok(_front_desk) = readme_example.front_desk(quiet, desk("1"))
+  let assert Ok(researcher) =
+    agent.new("researcher", quiet, [], readme_example.desk_policy)
+    |> agent.with_answer(readme_example.summary_codec())
+    |> agent.build
+  let assert Ok(_front_desk) = readme_example.front_desk(quiet, researcher)
   let settling =
     readme_example.settling_transfer(fn(transfer, _settlement) { pay(transfer) })
   let assert Ok(_) =

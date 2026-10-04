@@ -50,8 +50,8 @@ pub fn approval_survives_restart_without_repeating_generation_or_review_test() {
       source,
       "Mention the opening date and price.",
     )
-  let assert Ok(before) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(before) = graph.snapshot(handle)
   let assert graph.AwaitingApproval(first) = before.status
   file.read(directory <> "/published/article-4.md") |> should.be_error
   stop_store(owner, runs)
@@ -73,7 +73,7 @@ pub fn approval_survives_restart_without_repeating_generation_or_review_test() {
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Completed(domain.Published(artifact)) = done.status
+  let assert graph.Completed(domain.Published(artifact)) = done
   file.read(artifact.path)
   |> should.equal(Ok("The library opens on 12 May, with free admission.\n"))
   graph.approve(handle, first, reviewer: as_reviewer("reviewer"), context: Nil)
@@ -234,8 +234,8 @@ pub fn revision_has_a_saved_counter_and_stops_after_three_drafts_test() {
       ],
       file.publisher,
     )
-  let assert Ok(done) =
-    graph.await(f.handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(f.handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(f.handle)
   done.status |> should.equal(graph.Completed(domain.RevisionLimit))
   let assert domain.Working(domain.Reviewing, saved) = done.value
   saved.generation |> should.equal(3)
@@ -259,12 +259,12 @@ pub fn rejection_and_rejected_human_approval_never_publish_test() {
   let f = fixture([draft("draft"), review(domain.Reject)], file.publisher)
   let assert Ok(done) =
     graph.await(f.handle, within: duration.milliseconds(5000))
-  done.status |> should.equal(graph.Completed(domain.Rejected))
+  done |> should.equal(graph.Completed(domain.Rejected))
   close(f)
   let f = fixture([draft("draft"), review(domain.Approve)], file.publisher)
   let assert Ok(waiting) =
     graph.await(f.handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingApproval(approval) = waiting.status
+  let assert graph.AwaitingApproval(approval) = waiting
   let assert Ok(_) =
     graph.reject(
       f.handle,
@@ -286,8 +286,9 @@ pub fn invalid_refused_and_incomplete_review_responses_cannot_publish_test() {
   ]
   |> list.each(fn(response) {
     let f = fixture([draft("draft"), Review(response)], file.publisher)
-    let assert Ok(done) =
+    let assert Ok(_) =
       graph.await(f.handle, within: duration.milliseconds(5000))
+    let assert Ok(done) = graph.snapshot(f.handle)
     let assert graph.Blocked(_, _) = done.status
     file.read(f.directory <> "/published/article-4.md") |> should.be_error
     done.receipts
@@ -310,7 +311,7 @@ pub fn a_corrected_draft_is_reviewed_before_approval_test() {
     )
   let assert Ok(waiting) =
     graph.await(f.handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingApproval(approval) = waiting.status
+  let assert graph.AwaitingApproval(approval) = waiting
   let assert Ok(_) =
     graph.approve(
       f.handle,
@@ -320,7 +321,7 @@ pub fn a_corrected_draft_is_reviewed_before_approval_test() {
     )
   let assert Ok(done) =
     graph.await(f.handle, within: duration.milliseconds(5000))
-  let assert graph.Completed(domain.Published(artifact)) = done.status
+  let assert graph.Completed(domain.Published(artifact)) = done
   file.read(artifact.path) |> should.equal(Ok("12 May; free admission\n"))
   close(f)
 }
@@ -339,7 +340,8 @@ pub fn absent_source_stops_before_a_provider_call_test() {
     )
   let assert Ok(handle) =
     fabric_writing.start(runtime, "absent", directory <> "/missing", "write")
-  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
   let assert graph.Failed(_) = done.status
   // The source activation failed, so no generation was ever started.
   done.receipts |> should.equal([])
@@ -391,7 +393,7 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
   let f = fixture([draft("approved draft"), review(domain.Approve)], publisher)
   let assert Ok(waiting) =
     graph.await(f.handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingApproval(approval) = waiting.status
+  let assert graph.AwaitingApproval(approval) = waiting
   let assert Ok(_) =
     graph.approve(
       f.handle,
@@ -405,7 +407,7 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
   let assert Ok(_) = graph.recover(f.handle)
   let assert Ok(recovered) =
     graph.await(f.handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingApproval(renewed) = recovered.status
+  let assert graph.AwaitingApproval(renewed) = recovered
   should.be_true(renewed != approval)
   graph.approve(
     f.handle,
@@ -423,7 +425,7 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
     )
   let assert Ok(done) =
     graph.await(f.handle, within: duration.milliseconds(5000))
-  let assert graph.Completed(domain.Published(after)) = done.status
+  let assert graph.Completed(domain.Published(after)) = done
   after |> should.equal(receipt)
   file.read(after.path) |> should.equal(Ok("approved draft\n"))
   close(Fixture(..f, owner:))

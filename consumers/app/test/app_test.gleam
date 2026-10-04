@@ -479,7 +479,7 @@ fn receive_until(
   }
 }
 
-fn librarian() -> Agent(app.Member) {
+fn librarian() -> Agent(app.Member, String) {
   let assert Ok(librarian) = app.librarian()
   librarian
 }

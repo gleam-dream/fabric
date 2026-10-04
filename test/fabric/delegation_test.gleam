@@ -40,7 +40,8 @@ pub type Summary {
   Summary(summary: String)
 }
 
-fn research() -> tool.Definition(Topic, Summary) {
+/// The summary is the researcher's plain answer.
+fn research() -> tool.Definition(Topic, String) {
   tool.define(
     "research",
     "Delegate research on a topic to a researcher.",
@@ -52,9 +53,9 @@ fn research() -> tool.Definition(Topic, Summary) {
     },
     {
       use summary <- codec.field("summary", codec.string(), get: fn(summary) {
-        summary.summary
+        summary
       })
-      codec.success(Summary(summary))
+      codec.success(summary)
     },
   )
 }
@@ -85,7 +86,7 @@ fn prompt(messages: List(model.Message)) -> String {
 }
 
 /// A researcher that answers at once.
-fn quick_researcher_spec(probe: Probe) -> agent.Spec(Nil) {
+fn quick_researcher_spec(probe: Probe) -> agent.Spec(Nil, String) {
   agent.new(
     "researcher",
     recorded(probe, "child", fn(messages) {
@@ -96,7 +97,7 @@ fn quick_researcher_spec(probe: Probe) -> agent.Spec(Nil) {
   )
 }
 
-fn quick_researcher(probe: Probe) -> Agent(Nil) {
+fn quick_researcher(probe: Probe) -> Agent(Nil, String) {
   support.agent(quick_researcher_spec(probe))
 }
 
@@ -106,7 +107,7 @@ fn working_researcher(
   calls: List(model.ToolCall),
   tools: List(tool.Tool(Nil)),
   policy: policy.Policy(Nil),
-) -> Agent(Nil) {
+) -> Agent(Nil, String) {
   agent.new(
     "researcher",
     recorded(probe, "child", fn(messages) {
@@ -124,9 +125,9 @@ fn working_researcher(
 fn delegating_spec(
   probe: Probe,
   calls: List(model.ToolCall),
-  child: Agent(Nil),
+  child: Agent(Nil, String),
   policy: policy.Policy(Nil),
-) -> agent.Spec(Nil) {
+) -> agent.Spec(Nil, String) {
   named_delegating_spec("agent", probe, calls, child, policy)
 }
 
@@ -134,9 +135,9 @@ fn named_delegating_spec(
   name: String,
   probe: Probe,
   calls: List(model.ToolCall),
-  child: Agent(Nil),
+  child: Agent(Nil, String),
   policy: policy.Policy(Nil),
-) -> agent.Spec(Nil) {
+) -> agent.Spec(Nil, String) {
   agent.new(
     name,
     recorded(probe, "parent", fn(messages) {
@@ -148,20 +149,17 @@ fn named_delegating_spec(
     [],
     policy,
   )
-  |> agent.with_sub_agent(
-    research(),
-    to: child,
-    prompt: fn(topic: Topic) { topic.topic },
-    output: fn(text) { Ok(Summary(text)) },
-  )
+  |> agent.with_sub_agent(research(), to: child, prompt: fn(topic: Topic) {
+    topic.topic
+  })
 }
 
 fn delegating(
   probe: Probe,
   calls: List(model.ToolCall),
-  child: Agent(Nil),
+  child: Agent(Nil, String),
   policy: policy.Policy(Nil),
-) -> Agent(Nil) {
+) -> Agent(Nil, String) {
   support.agent(delegating_spec(probe, calls, child, policy))
 }
 
@@ -218,9 +216,9 @@ fn transfer_call() -> model.ToolCall {
 
 fn start_owned(
   dir: String,
-  agent: Agent(Nil),
+  agent: Agent(Nil, String),
   prompt: String,
-) -> #(Pid, Store, fabric.Run(Nil)) {
+) -> #(Pid, Store, fabric.Run(Nil, String)) {
   let #(owner, #(store, run)) =
     restart.owned(fn() {
       let store = support.directory(dir)
@@ -247,19 +245,19 @@ fn reopen(dir: String) -> Store {
   store
 }
 
-fn only_action(run: fabric.Run(Nil)) -> run.ActionRecord {
+fn only_action(run: fabric.Run(Nil, String)) -> run.ActionRecord {
   let assert Ok(snapshot) = fabric.snapshot(run)
   let assert [action] = snapshot.actions
   action
 }
 
-fn child_of(run: fabric.Run(Nil)) -> fabric.Run(Nil) {
+fn child_of(run: fabric.Run(Nil, String)) -> fabric.Run(Nil, String) {
   let assert Some(id) = only_action(run).child
   let assert Ok(child) = fabric.child(run, id)
   child
 }
 
-fn child_states(child: fabric.Run(Nil)) -> List(run.ActionState) {
+fn child_states(child: fabric.Run(Nil, String)) -> List(run.ActionState) {
   let assert Ok(snapshot) = fabric.snapshot(child)
   list.map(snapshot.actions, fn(action) { action.state })
 }
@@ -367,7 +365,7 @@ pub fn a_rejected_sub_agent_never_starts_test() {
 
 /// A parent whose researcher pays, and the researcher's payments need an
 /// approval.
-fn paying_family(probe: Probe) -> Agent(Nil) {
+fn paying_family(probe: Probe) -> Agent(Nil, String) {
   delegating(
     probe,
     [research_call("r", "gleam")],
@@ -746,12 +744,9 @@ pub fn nested_delegation_is_bounded_by_the_root_depth_test() {
       [],
       policy.always_allow(),
     )
-    |> agent.with_sub_agent(
-      research(),
-      to: middle,
-      prompt: fn(topic: Topic) { topic.topic },
-      output: fn(text) { Ok(Summary(text)) },
-    )
+    |> agent.with_sub_agent(research(), to: middle, prompt: fn(topic: Topic) {
+      topic.topic
+    })
     |> agent.with_max_depth(max_depth)
     |> support.agent
   }
@@ -818,7 +813,6 @@ pub fn a_delegation_is_validated_with_its_child_test() {
     ),
     to: quick_researcher(probe),
     prompt: fn(city) { city },
-    output: fn(_) { Ok("") },
   )
   |> agent.build
   |> should.equal(Error([agent.DuplicateToolName("lookup_weather")]))
@@ -1012,7 +1006,7 @@ pub fn a_child_that_cannot_be_cancelled_can_no_longer_be_reconciled_test() {
 }
 
 /// A family whose child pays as soon as it runs.
-fn eager_family(probe: Probe) -> Agent(Nil) {
+fn eager_family(probe: Probe) -> Agent(Nil, String) {
   delegating(
     probe,
     [research_call("r", "gleam")],
@@ -1231,10 +1225,9 @@ pub fn cancelling_does_not_depend_on_the_current_delegations_test() {
       scripted.plan([]),
       [
         research()
-        |> tool.bind(
-          fn(_, _call, topic: Topic) { Ok(Summary(topic.topic)) },
-          fn(_: Nil) { tool.Explain("no") },
-        ),
+        |> tool.bind(fn(_, _call, topic: Topic) { Ok(topic.topic) }, fn(_: Nil) {
+          tool.Explain("no")
+        }),
       ],
       policy.always_allow(),
     )

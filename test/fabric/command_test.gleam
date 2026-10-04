@@ -78,7 +78,7 @@ pub fn a_runner_started_by_a_command_works_while_its_handlers_run_test() {
   process.receive(seen, 0) |> should.equal(Ok(Ok(Nil)))
 }
 
-fn approval_agent() -> agent.Agent(Nil) {
+fn approval_agent() -> agent.Agent(Nil, String) {
   agent.new(
     "agent",
     scripted.plan([
@@ -180,7 +180,7 @@ pub fn a_handler_in_a_commands_caller_can_command_the_run_test() {
 }
 
 /// A run whose transfer timed out after sending: an uncertain effect.
-fn uncertain_transfer() -> agent.Agent(Nil) {
+fn uncertain_transfer() -> agent.Agent(Nil, String) {
   agent.new(
     "agent",
     scripted.plan([

@@ -19,6 +19,11 @@
 //// }
 //// ```
 ////
+//// A run ends with the agent's answer: its model's text, or the value its
+//// answer codec decodes (`agent.with_answer`), so `Run`, `run.Status` and
+//// `run.Snapshot` carry the answer type. `await` and every command return
+//// the run's status.
+////
 //// Every function returns the one `Error` type. Branch on `error_kind`
 //// (`NotFound`, `Refused`, `Retry`, `Unavailable`, `Incompatible`) and log
 //// with `describe_error`; match a variant only where it decides something,
@@ -72,6 +77,7 @@
 //// (`store.new`).
 
 import fabric/agent.{type Agent}
+import fabric/internal/answer as answers
 import fabric/internal/budget/model as reservations
 import fabric/internal/checked_agent
 import fabric/internal/clock
@@ -97,10 +103,11 @@ import gleam/time/duration.{type Duration}
 import sinal/correlation.{type Correlation}
 
 /// A handle on one run, for the agent and context it was started, opened
-/// or recovered with. It holds no process: it can be dropped and rebuilt
-/// with `open`.
-pub opaque type Run(context) {
-  Run(id: String, setup: runner.Setup(context))
+/// or recovered with; `answer` is the agent's answer type
+/// (`agent.with_answer`). It holds no process: it can be dropped and
+/// rebuilt with `open`.
+pub opaque type Run(context, answer) {
+  Run(id: String, setup: runner.Setup(context), answer: answers.Answer(answer))
 }
 
 /// Why a call to Fabric failed: one type for every function of this module.
@@ -286,12 +293,12 @@ const retries = 3
 /// the request or job that starts the run to join their events.
 pub fn start(
   store: Store,
-  agent: Agent(context),
+  agent: Agent(context, answer),
   id id: RunId,
   context context: context,
   prompt prompt: String,
   correlation correlation: Option(Correlation),
-) -> Result(Run(context), Error) {
+) -> Result(Run(context, answer), Error) {
   let admitted = checked_agent.admitted(agent)
   use declaration <- result.try(case admitted.family_budget {
     None -> Ok(None)
@@ -308,7 +315,7 @@ pub fn start(
   let #(state, effects) = runner.root_state(setup, text, prompt, correlation)
   let state = controller.State(..state, family_budget: declaration)
   case runner.launch_new(setup, state, effects) {
-    Ok(_) -> Ok(Run(id: text, setup:))
+    Ok(_) -> Ok(Run(id: text, setup:, answer: checked_agent.answer(agent)))
     Error(backend.AlreadyExists) ->
       Error(AlreadyStarted(id, same_input(store, state)))
     Error(error) -> Error(StartUnconfirmed(id, describe_store(error)))
@@ -376,14 +383,14 @@ fn same_input(store: Store, fresh: State) -> Bool {
 /// else may be driving, `open` it.
 pub fn recover(
   store: Store,
-  agent: Agent(context),
+  agent: Agent(context, answer),
   context: context,
   id: RunId,
-) -> Result(Run(context), Error) {
+) -> Result(Run(context, answer), Error) {
   let id = id_to_string(id)
   let setup = runner.setup(store, checked_agent.admitted(agent), context, None)
   case family.take_over(setup, id, retries) {
-    Ok(Nil) -> Ok(Run(id:, setup:))
+    Ok(Nil) -> Ok(Run(id:, setup:, answer: checked_agent.answer(agent)))
     Error(family.TakeOverContended) -> Error(Contended)
     Error(family.TakeOverUnreadable(problem)) -> Error(record_error(problem))
   }
@@ -406,28 +413,33 @@ pub fn recover(
 /// time; on an unleased store the previous owner must be known to be gone.
 pub fn open(
   store: Store,
-  agent: Agent(context),
+  agent: Agent(context, answer),
   context: context,
   id: RunId,
-) -> Result(Run(context), Error) {
+) -> Result(Run(context, answer), Error) {
   let id = id_to_string(id)
   let setup = runner.setup(store, checked_agent.admitted(agent), context, None)
   runner.load_checked(setup, id)
-  |> result.replace(Run(id:, setup:))
+  |> result.replace(Run(id:, setup:, answer: checked_agent.answer(agent)))
   |> result.map_error(record_error)
 }
 
-pub fn id(run: Run(context)) -> RunId {
+pub fn id(run: Run(context, answer)) -> RunId {
   run_id.from_string(run.id)
 }
 
 /// Opens the sub-agent run `id`, a descendant of `run`, with `run`'s agent
 /// and context: its snapshot, reconciling its uncertain effects, answering
-/// or cancelling it. Its end still reaches its parent.
-pub fn child(run: Run(context), id: RunId) -> Result(Run(context), Error) {
+/// or cancelling it. Its end still reaches its parent. Its answer reads as
+/// the text it stored (its delegation reads it with the child's own answer
+/// codec).
+pub fn child(
+  run: Run(context, answer),
+  id: RunId,
+) -> Result(Run(context, String), Error) {
   let id = id_to_string(id)
   family.locate(run.setup, run.id, id)
-  |> result.map(fn(setup) { Run(id:, setup:) })
+  |> result.map(fn(setup) { Run(id:, setup:, answer: answers.text()) })
   |> result.map_error(record_error)
 }
 
@@ -463,9 +475,9 @@ pub fn child(run: Run(context), id: RunId) -> Result(Run(context), Error) {
 /// To wait for the run or for something else at once (a caller's
 /// cancellation, a shutdown message), use `await_with`.
 pub fn await(
-  run: Run(context),
+  run: Run(context, answer),
   within within: Duration,
-) -> Result(Status, Error) {
+) -> Result(Status(answer), Error) {
   case await_with(run, within:, or: process.new_selector()) {
     Ok(Reached(status)) -> Ok(status)
     // An empty selector receives nothing: this branch never runs.
@@ -475,9 +487,9 @@ pub fn await(
 }
 
 /// What `await_with` ended with.
-pub type Awaited(message) {
+pub type Awaited(answer, message) {
   /// The run's status, as `await` returns it.
-  Reached(Status)
+  Reached(Status(answer))
   /// A message of the caller's selector arrived first. The wait changed
   /// nothing: the run goes on, and the caller decides (for example
   /// `cancel`).
@@ -507,18 +519,22 @@ pub type Awaited(message) {
 /// queued for it wins over a status read in the same moment only if it
 /// arrived first.
 pub fn await_with(
-  run: Run(context),
+  run: Run(context, answer),
   within within: Duration,
   or interrupt: process.Selector(message),
-) -> Result(Awaited(message), Error) {
+) -> Result(Awaited(answer, message), Error) {
   let deadline = now() + int.max(0, duration.to_milliseconds(within))
-  attend(run, process.new_subject(), interrupt, deadline, None)
+  case attend(run, process.new_subject(), interrupt, deadline, None) {
+    Ok(Reached(status)) -> Ok(Reached(answers.status(run.answer, status)))
+    Ok(Interrupted(message)) -> Ok(Interrupted(message))
+    Error(error) -> Error(error)
+  }
 }
 
 /// What a wait ended with: an outcome, or the store process stopped (its
 /// watches are gone with it).
 type Waited(message) {
-  Waited(Result(Awaited(message), Error))
+  Waited(Result(Awaited(String, message), Error))
   StoreStopped
 }
 
@@ -526,12 +542,12 @@ type Waited(message) {
 /// one if a supervisor restarts it meanwhile. `stopped` is the process
 /// that stopped last.
 fn attend(
-  run: Run(context),
+  run: Run(context, answer),
   watcher: process.Subject(Nil),
   interrupt: process.Selector(message),
   deadline: Int,
   stopped: Option(Pid),
-) -> Result(Awaited(message), Error) {
+) -> Result(Awaited(String, message), Error) {
   case store_process(run.setup.store, interrupt, stopped, deadline) {
     Error(Nil) -> Error(StoreUnavailable("the store is not running"))
     Ok(Error(message)) -> Ok(Interrupted(message))
@@ -574,7 +590,7 @@ fn store_process(
 }
 
 fn wait(
-  run: Run(context),
+  run: Run(context, answer),
   watcher: process.Subject(Nil),
   interrupt: process.Selector(message),
   pid: Pid,
@@ -725,7 +741,7 @@ fn due(store: Store, approvals: List(PendingApproval)) -> List(RunId) {
 
 /// Expires the due approval requests of each of `runs`; a run that refuses
 /// (its requests were answered meanwhile) is read again by the caller.
-fn expire(run: Run(context), runs: List(RunId)) -> Nil {
+fn expire(run: Run(context, answer), runs: List(RunId)) -> Nil {
   list.each(runs, fn(id) {
     case locate(run, id) {
       Ok(#(target_id, target)) -> {
@@ -772,18 +788,21 @@ fn receive_until(
 
 /// The run's own record, with the status of the run and its sub-agents
 /// (see `await`).
-pub fn snapshot(run: Run(context)) -> Result(Snapshot, Error) {
+pub fn snapshot(run: Run(context, answer)) -> Result(Snapshot(answer), Error) {
   use node <- result.map(
     family.load_settled(run.setup.store, run.id)
     |> result.map_error(record_error),
   )
   run.Snapshot(..controller.snapshot(node.state), status: family.status(node))
+  |> answers.snapshot(run.answer, _)
 }
 
 /// The approval requests waiting for an answer: the run's own, oldest
 /// first, then its sub-agents'. They can be answered while other work
 /// still runs.
-pub fn pending(run: Run(context)) -> Result(List(PendingApproval), Error) {
+pub fn pending(
+  run: Run(context, answer),
+) -> Result(List(PendingApproval), Error) {
   family.load(run.setup.store, run.id)
   |> result.map(family.pending)
   |> result.map_error(record_error)
@@ -824,11 +843,11 @@ pub fn pending(run: Run(context)) -> Result(List(PendingApproval), Error) {
 /// authorize whoever answers, and build the reviewer from that identity,
 /// before calling this.
 pub fn approve(
-  run: Run(context),
+  run: Run(context, answer),
   reference: ApprovalRef,
   reviewer reviewer: Reviewer,
   context context: context,
-) -> Result(Status, Error) {
+) -> Result(Status(answer), Error) {
   use #(target_id, target) <- result.try(locate(run, reference.run))
   let recheck = controller.Env(..target.env, context:)
   use state <- result.try(answer(
@@ -871,11 +890,11 @@ fn expired(state: State, reference: ApprovalRef) -> Bool {
 /// except `RequirementChanged`; a rejection after the request's deadline is
 /// `ApprovalExpired`. `reviewer` is recorded as for `approve`.
 pub fn reject(
-  run: Run(context),
+  run: Run(context, answer),
   reference: ApprovalRef,
   reason reason: String,
   reviewer reviewer: Reviewer,
-) -> Result(Status, Error) {
+) -> Result(Status(answer), Error) {
   use #(target_id, target) <- result.try(locate(run, reference.run))
   use state <- result.try(answer(
     run,
@@ -895,7 +914,7 @@ pub fn reject(
 /// The run `id` of `run`'s family, located by following the child links:
 /// `WrongReference` when it is not a descendant.
 fn locate(
-  run: Run(context),
+  run: Run(context, answer),
   id: RunId,
 ) -> Result(#(String, runner.Setup(context)), Error) {
   let id = id_to_string(id)
@@ -911,7 +930,7 @@ fn locate(
 }
 
 fn answer(
-  run: Run(context),
+  run: Run(context, answer),
   target_id: String,
   target: runner.Setup(context),
   env: controller.Env(context),
@@ -932,15 +951,15 @@ fn answer(
 
 /// The family's status after `state` of its run `target_id` was committed.
 fn family_status_after(
-  run: Run(context),
+  run: Run(context, answer),
   target_id: String,
   state: State,
-) -> Result(Status, Error) {
+) -> Result(Status(answer), Error) {
   case target_id == run.id {
     True -> Ok(status_after(run, state))
     False ->
       family.load_settled(run.setup.store, run.id)
-      |> result.map(family.status)
+      |> result.map(fn(node) { answers.status(run.answer, family.status(node)) })
       |> result.map_error(record_error)
   }
 }
@@ -975,7 +994,7 @@ fn family_status_after(
 /// no sub-agent once its record moved on, and commits nothing more.
 /// A sub-agent is cancelled the same way; its delegation becomes an
 /// uncertain effect only when the store keeps failing.
-pub fn cancel(run: Run(context)) -> Result(Status, Error) {
+pub fn cancel(run: Run(context, answer)) -> Result(Status(answer), Error) {
   runner.command(run.setup, run.id, run.setup.env, controller.Cancel, retries)
   |> result.map(status_after(run, _))
   |> result.map_error(command_error)
@@ -991,7 +1010,7 @@ pub fn cancel(run: Run(context)) -> Result(Status, Error) {
 /// The watcher is not linked to the caller and is not supervised: a VM that
 /// stops takes it with it, and the run is then recovered like any other.
 /// Call it once per owner; each call adds one watcher.
-pub fn cancel_when_down(run: Run(context), owner owner: Pid) -> Nil {
+pub fn cancel_when_down(run: Run(context, answer), owner owner: Pid) -> Nil {
   let _ =
     process.spawn_unlinked(fn() {
       let monitor = process.monitor(owner)
@@ -1003,7 +1022,7 @@ pub fn cancel_when_down(run: Run(context), owner owner: Pid) -> Nil {
   Nil
 }
 
-fn guard(run: Run(context), down: process.Selector(Nil)) -> Nil {
+fn guard(run: Run(context, answer), down: process.Selector(Nil)) -> Nil {
   case await_with(run, within: duration.minutes(1), or: down) {
     Ok(Interrupted(Nil)) -> {
       let _ = cancel(run)
@@ -1038,7 +1057,7 @@ fn guard(run: Run(context), down: process.Selector(Nil)) -> Nil {
 /// stopped tool's settlement) is recorded as such, and ends on its own. A
 /// sub-agent run that was never stored is stored as cancelled before it started
 /// (naming no agent), and its delegation is recorded as not started.
-pub fn cancel_stored(store: Store, id: RunId) -> Result(Status, Error) {
+pub fn cancel_stored(store: Store, id: RunId) -> Result(Status(String), Error) {
   let id = id_to_string(id)
   runner.cancel_unattended(store, id, 5000, retries)
   |> result.map(committed_status(store, id, _))
@@ -1057,7 +1076,7 @@ pub fn reconcile_stored(
   store: Store,
   effect: ActionRef,
   content: String,
-) -> Result(Snapshot, Error) {
+) -> Result(Snapshot(String), Error) {
   settlement.reconcile(store, effect, content)
   |> result.map(controller.snapshot)
   |> result.map_error(settlement_error)
@@ -1075,7 +1094,10 @@ pub fn reconcile_stored(
 /// to finish propagation. Repeating an unchanged walk performs no writes.
 /// For a graph-owned family, settle this agent root, then recover its graph
 /// parent to observe the saved outcome. The graph remains cancelled.
-pub fn settle_stored(store: Store, id: RunId) -> Result(Snapshot, Error) {
+pub fn settle_stored(
+  store: Store,
+  id: RunId,
+) -> Result(Snapshot(String), Error) {
   settlement.settle(store, id_to_string(id))
   |> result.map(controller.snapshot)
   |> result.map_error(settlement_error)
@@ -1106,10 +1128,10 @@ fn settlement_error(error: settlement.Error) -> Error {
 /// After a run has finished, use `reconcile_stored` to retain evidence
 /// without resuming work, then `settle_stored` for its finished ancestors.
 pub fn reconcile(
-  run: Run(context),
+  run: Run(context, answer),
   effect: ActionRef,
   content: String,
-) -> Result(Status, Error) {
+) -> Result(Status(answer), Error) {
   use #(target_id, target) <- result.try(locate(run, effect.run))
   use Nil <- result.try(open_to_commands(run, target_id))
   use state <- result.try(
@@ -1128,7 +1150,10 @@ pub fn reconcile(
 /// `RunEnded` when an ancestor of the run `id` is stopping or has ended:
 /// cancelling an ancestor wins over answers and reconciliations of its
 /// descendants.
-fn open_to_commands(run: Run(context), id: String) -> Result(Nil, Error) {
+fn open_to_commands(
+  run: Run(context, answer),
+  id: String,
+) -> Result(Nil, Error) {
   case family.ancestors_open(run.setup.store, id) {
     Ok(True) -> Ok(Nil)
     Ok(False) -> Error(RunEnded)
@@ -1138,14 +1163,14 @@ fn open_to_commands(run: Run(context), id: String) -> Result(Nil, Error) {
 
 /// The family's status right after `state` of this run was committed, with
 /// its children read now.
-fn status_after(run: Run(context), state: State) -> Status {
-  committed_status(run.setup.store, run.id, state)
+fn status_after(run: Run(context, answer), state: State) -> Status(answer) {
+  answers.status(run.answer, committed_status(run.setup.store, run.id, state))
 }
 
 /// The family's status right after `state` of the run `id` was committed,
 /// with its children and its runner read now. A family that reads
 /// `Unattended` is read again, as `snapshot` does.
-fn committed_status(store: Store, id: String, state: State) -> Status {
+fn committed_status(store: Store, id: String, state: State) -> Status(String) {
   case store_core.get(store, id) {
     Ok(entry) ->
       family.with_children(store, id, entry, state)

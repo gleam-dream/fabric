@@ -29,7 +29,7 @@ import gleeunit/should
 import sinal
 import sinal/correlation
 
-fn one_slow(probe: Probe) -> Agent(Nil) {
+fn one_slow(probe: Probe) -> Agent(Nil, String) {
   agent.new(
     "agent",
     scripted.plan([scripted.slow("a", "a")]),
@@ -50,7 +50,7 @@ fn b_reviewed(
   }
 }
 
-fn states(run: fabric.Run(context)) -> List(run.ActionState) {
+fn states(run: fabric.Run(context, String)) -> List(run.ActionState) {
   let assert Ok(snapshot) = fabric.snapshot(run)
   list.map(snapshot.actions, fn(action) { action.state })
 }

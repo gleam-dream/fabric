@@ -82,6 +82,12 @@ pub type ToolSpec {
 /// `correlation` is the run's (see `fabric.start`): a model that makes
 /// requests of its own tags them with it, as `fabric/llm` does, so one agent
 /// serves every run and each call joins its run's events.
+///
+/// `answer` is the schema of the agent's final answer (`agent.with_answer`),
+/// `None` for a plain text answer. A model that can constrain its output
+/// asks the provider for it, as `fabric/llm` does; Fabric checks a
+/// `FinalAnswer` against the agent's codec either way, and a text it refuses
+/// ends the run as `run.AnswerInvalid`.
 pub type Request {
   Request(
     run: RunId,
@@ -90,6 +96,7 @@ pub type Request {
     system: Option(String),
     messages: List(Message),
     tools: List(ToolSpec),
+    answer: Option(codec.Schema),
   )
 }
 
@@ -101,6 +108,8 @@ pub type Usage {
 /// `usage` is `None` when the provider did not report it; Fabric never treats
 /// a missing report as zero.
 pub type Reply {
+  /// The final answer. For an agent with an answer codec, `text` is the
+  /// answer as JSON.
   FinalAnswer(text: String, usage: Option(Usage))
   ToolRequest(turn: AssistantTurn, usage: Option(Usage))
   Refusal(reason: String, usage: Option(Usage))

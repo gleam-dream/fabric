@@ -202,7 +202,7 @@ fn traveller(city: String) -> model.Model {
   })
 }
 
-fn start(city: String, reports: Subject(Report)) -> fabric.Run(Nil) {
+fn start(city: String, reports: Subject(Report)) -> fabric.Run(Nil, String) {
   start_in(watched.memory(), city, reports, 5000)
 }
 
@@ -211,7 +211,7 @@ fn start_in(
   city: String,
   reports: Subject(Report),
   rollback_within: Int,
-) -> fabric.Run(Nil) {
+) -> fabric.Run(Nil, String) {
   let assert Ok(agent) =
     agent.new(
       "traveller",
@@ -246,7 +246,7 @@ fn next(reports: Subject(Report)) -> Report {
   report
 }
 
-fn action_state(run: fabric.Run(Nil)) -> run.ActionState {
+fn action_state(run: fabric.Run(Nil, String)) -> run.ActionState {
   let assert Ok(snapshot) = fabric.snapshot(run)
   let assert [action] = snapshot.actions
   action.state

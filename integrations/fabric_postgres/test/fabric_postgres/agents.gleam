@@ -61,7 +61,7 @@ fn one_field(name: String) -> codec.Codec(Int) {
 }
 
 /// The agent whose model asks for `work` with `amount`.
-pub fn agent(gate: Gate, amount: Int) -> Agent(Nil) {
+pub fn agent(gate: Gate, amount: Int) -> Agent(Nil, String) {
   let work =
     tool.bind(
       definition(),

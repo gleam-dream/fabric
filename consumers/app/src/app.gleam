@@ -303,7 +303,7 @@ pub fn scripted_librarian(messages: List(Message)) -> Reply {
 
 // --- agent --------------------------------------------------------------------
 
-pub fn librarian_spec() -> agent.Spec(Member) {
+pub fn librarian_spec() -> agent.Spec(Member, String) {
   agent.new(
     "librarian",
     model.new(fn(request: model.Request) {
@@ -319,11 +319,11 @@ pub fn librarian_spec() -> agent.Spec(Member) {
 }
 
 /// Built once, at boot: every problem is reported before any run.
-pub fn librarian() -> Result(Agent(Member), List(agent.ConfigError)) {
+pub fn librarian() -> Result(Agent(Member, String), List(agent.ConfigError)) {
   agent.build(librarian_spec())
 }
 
-pub fn misconfigured() -> Result(Agent(Member), List(agent.ConfigError)) {
+pub fn misconfigured() -> Result(Agent(Member, String), List(agent.ConfigError)) {
   librarian_spec()
   |> agent.with_max_turns(0)
   |> agent.build
@@ -384,8 +384,9 @@ pub fn order_definition() -> tool.Definition(Purchase, String) {
   )
 }
 
-/// Places a purchase order for a title.
-pub fn purchaser() -> Agent(Member) {
+/// Places a purchase order for a title, and answers with a typed `Order`
+/// (`agent.with_answer`): the delegation's output is that answer.
+pub fn purchaser() -> Agent(Member, Order) {
   let order =
     order_definition()
     |> tool.bind(
@@ -409,12 +410,19 @@ pub fn purchaser() -> Agent(Member) {
               ),
               usage,
             )
-          _, seen -> FinalAnswer("ordered " <> string.join(seen, ", "), usage)
+          _, seen ->
+            codec.encode_json(
+              order_codec(),
+              Order("ordered " <> string.join(seen, ", ")),
+            )
+            |> result.unwrap("")
+            |> FinalAnswer(usage)
         })
       }),
       [order],
       purchasing_policy,
     )
+    |> agent.with_answer(order_codec())
     |> agent.build
   purchaser
 }
@@ -490,7 +498,7 @@ pub fn loan_tool() -> tool.Tool(Member) {
 
 /// Acquires a book through the purchaser, or borrows one through an
 /// interlibrary loan.
-pub fn front_desk() -> Agent(Member) {
+pub fn front_desk() -> Agent(Member, String) {
   let assert Ok(desk) =
     agent.new(
       "front-desk",
@@ -531,7 +539,6 @@ pub fn front_desk() -> Agent(Member) {
       acquire_definition(),
       to: purchaser(),
       prompt: fn(purchase: Purchase) { "buy " <> purchase.title },
-      output: fn(text) { Ok(Order(text)) },
     )
     |> agent.build
   desk

@@ -36,8 +36,8 @@ pub fn non_generative_decisions_use_the_same_business_routes_test() {
         "fixture:" <> example.0,
         correlation: None,
       )
-    let assert Ok(done) =
-      graph.await(handle, within: duration.milliseconds(5000))
+    let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+    let assert Ok(done) = graph.snapshot(handle)
     done.status |> should.equal(graph.Completed(example.1))
     let assert [review, terminal] = done.receipts
     terminal.node |> should.equal(example.2)

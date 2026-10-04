@@ -57,13 +57,13 @@ pub fn start_owned_run(schema: String, lease: Int) -> run.RunId {
   id
 }
 
-fn incarnation(run: fabric.Run(Nil)) -> Int {
+fn incarnation(run: fabric.Run(Nil, String)) -> Int {
   let assert Ok(snapshot) = fabric.snapshot(run)
   snapshot.incarnation
 }
 
 /// `await` may see an expired lease before the next sweep has claimed it.
-fn settled(run: fabric.Run(Nil), tries: Int) -> run.Status {
+fn settled(run: fabric.Run(Nil, String), tries: Int) -> run.Status(String) {
   let assert Ok(status) = fabric.await(run, within: duration.milliseconds(100))
   case status {
     run.Working | run.Unattended if tries > 0 -> {

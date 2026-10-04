@@ -549,9 +549,17 @@ fn phase_json(phase: Phase) -> Json {
   }
 }
 
-fn outcome_json(outcome: Outcome) -> Json {
+fn outcome_json(outcome: Outcome(String)) -> Json {
   case outcome {
     run.Completed(text) -> tag("completed", [#("text", json.string(text))])
+    // Stored as a completion that names why its answer is invalid, so a
+    // reader that ignores the key reads the text answer it would have read
+    // before typed answers.
+    run.AnswerInvalid(raw:, reason:) ->
+      tag("completed", [
+        #("text", json.string(raw)),
+        #("answer_invalid", json.string(reason)),
+      ])
     run.Refused(reason) -> tag("refused", [#("reason", json.string(reason))])
     run.OutputLimited(partial) ->
       tag("output_limited", [#("partial_text", json.string(partial))])
@@ -753,7 +761,7 @@ fn has_family_refusal(state: State) -> Bool {
   })
 }
 
-fn family_outcome(outcome: Outcome) -> Bool {
+fn family_outcome(outcome: Outcome(String)) -> Bool {
   case outcome {
     run.BudgetExhausted(run.FamilyLimit(_)) -> True
     _ -> False
@@ -1209,10 +1217,22 @@ fn phase_decoder(version: Int) -> Decoder(Phase) {
   }
 }
 
-fn outcome_decoder() -> Decoder(Outcome) {
+fn outcome_decoder() -> Decoder(Outcome(String)) {
   use found <- tagged(run.Cancelled)
   case found {
-    "completed" -> Ok(string_field("text", run.Completed))
+    "completed" ->
+      Ok({
+        use text <- decode.field("text", decode.string)
+        use invalid <- decode.optional_field(
+          "answer_invalid",
+          None,
+          decode.optional(decode.string),
+        )
+        decode.success(case invalid {
+          None -> run.Completed(text)
+          Some(reason) -> run.AnswerInvalid(raw: text, reason:)
+        })
+      })
     "refused" -> Ok(string_field("reason", run.Refused))
     "output_limited" -> Ok(string_field("partial_text", run.OutputLimited))
     "turn_limit" ->

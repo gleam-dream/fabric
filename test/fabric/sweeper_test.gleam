@@ -22,7 +22,7 @@ import gleam/list
 import gleeunit/should
 import sinal
 
-fn worker(name: String, body: probe.Probe) -> agent.Agent(Nil) {
+fn worker(name: String, body: probe.Probe) -> agent.Agent(Nil, String) {
   agent.new(
     name,
     scripted.plan([scripted.slow("w", "work")]),
@@ -37,7 +37,7 @@ fn worker(name: String, body: probe.Probe) -> agent.Agent(Nil) {
 fn dead(
   node: store.Store,
   backend: backend.LeasedBackend,
-  agent: agent.Agent(Nil),
+  agent: agent.Agent(Nil, String),
   body: probe.Probe,
 ) -> run.RunId {
   let assert Ok(run) =
@@ -88,7 +88,7 @@ fn claimed(events: process.Subject(o.Sweep)) -> o.Sweep {
   }
 }
 
-fn uncertain(run: fabric.Run(Nil), tries: Int) -> run.UncertainAction {
+fn uncertain(run: fabric.Run(Nil, String), tries: Int) -> run.UncertainAction {
   case fabric.await(run, within: duration.milliseconds(0)) {
     Ok(run.Suspended([], [effect])) -> effect
     _ if tries > 0 -> {

@@ -77,7 +77,7 @@ fn stop_parent(runs: store.Store, state: graph.State) {
   Nil
 }
 
-fn worker(model: model.Model) -> agent.Agent(Nil) {
+fn worker(model: model.Model) -> agent.Agent(Nil, String) {
   agent.new("child", model, [], policy.always_allow()) |> support.agent
 }
 

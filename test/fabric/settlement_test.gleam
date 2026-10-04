@@ -75,7 +75,7 @@ fn start(
   handed: Subject(Handed),
   then: Then,
   within: Int,
-) -> #(fabric.Run(Nil), Handed) {
+) -> #(fabric.Run(Nil, String), Handed) {
   let agent =
     agent.new(
       "agent",
@@ -99,7 +99,7 @@ fn start(
   #(run, handed)
 }
 
-fn only_state(run: fabric.Run(Nil)) -> run.ActionState {
+fn only_state(run: fabric.Run(Nil, String)) -> run.ActionState {
   let assert Ok(snapshot) = fabric.snapshot(run)
   let assert [action] = snapshot.actions
   action.state
@@ -279,7 +279,11 @@ fn named_settling(
 fn start_two(
   a_within: Int,
   b_within: Int,
-) -> #(fabric.Run(Nil), tool.Settlement(Forecast), tool.Settlement(Forecast)) {
+) -> #(
+  fabric.Run(Nil, String),
+  tool.Settlement(Forecast),
+  tool.Settlement(Forecast),
+) {
   let handed = process.new_subject()
   let agent =
     agent.new(
@@ -312,7 +316,7 @@ fn start_two(
   }
 }
 
-fn states(run: fabric.Run(Nil)) -> List(run.ActionState) {
+fn states(run: fabric.Run(Nil, String)) -> List(run.ActionState) {
   let assert Ok(snapshot) = fabric.snapshot(run)
   list.map(snapshot.actions, fn(action) { action.state })
 }

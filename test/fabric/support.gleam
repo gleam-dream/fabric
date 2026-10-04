@@ -112,7 +112,7 @@ pub fn child_id(parent: RunId, n: Int) -> RunId {
 }
 
 /// The agent `spec` describes, which must be valid.
-pub fn agent(spec: Spec(context)) -> Agent(context) {
+pub fn agent(spec: Spec(context, answer)) -> Agent(context, answer) {
   let assert Ok(agent) = agent.build(spec)
   agent
 }

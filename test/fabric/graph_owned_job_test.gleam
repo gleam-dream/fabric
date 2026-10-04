@@ -92,10 +92,11 @@ pub fn refusals_uncertainty_and_read_failures_remain_pending_until_terminal_evid
         )
       let assert Ok(waiting) =
         graph.await(handle, within: duration.milliseconds(5000))
-      let assert graph.AwaitingJob(reference) = waiting.status
+      let assert graph.AwaitingJob(reference) = waiting
       let assert Ok(_) = graph.cancel(handle)
-      let assert Ok(pending) =
+      let assert Ok(_) =
         graph.await(handle, within: duration.milliseconds(5000))
+      let assert Ok(pending) = graph.snapshot(handle)
       pending.status
       |> should.equal(graph.CancellingJob(
         reference,
@@ -114,14 +115,15 @@ pub fn refusals_uncertainty_and_read_failures_remain_pending_until_terminal_evid
           }),
           support.id("refused-stop"),
         )
-      let assert Ok(done) = graph.poll_job(handle, reference)
+      let assert Ok(_) = graph.poll_job(handle, reference)
+      let assert Ok(done) = graph.snapshot(handle)
       done.status
       |> should.equal(
         graph.Cancelled(
           graph.AfterFailure(graph.OperationFailed("remote failed")),
         ),
       )
-      graph.poll_job(handle, reference) |> should.equal(Ok(done))
+      graph.poll_job(handle, reference) |> should.equal(Ok(done.status))
     },
   )
 }
@@ -135,7 +137,7 @@ pub fn cancellation_before_owned_admission_never_requests_a_remote_stop_test() {
     graph.start(rt, support.id("unadmitted-stop"), "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingApproval(approval) = waiting.status
+  let assert graph.AwaitingApproval(approval) = waiting
   let assert Ok(_) = graph.cancel(handle)
   let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Cancelled(graph.BeforeStart))
@@ -160,17 +162,17 @@ pub fn a_failed_start_fence_releases_no_stop_and_queued_recovery_can_request_tes
     graph.start(rt, support.id("fenced-stop"), "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert graph.AwaitingJob(reference) = waiting
   flaky.arm(backend, [flaky.Pass, flaky.FailBefore])
   let assert Ok(_) = graph.cancel(handle)
   let assert Ok(unattended) =
     graph.await(handle, within: duration.milliseconds(5000))
-  unattended.status |> should.equal(graph.Unattended)
+  unattended |> should.equal(graph.Unattended)
   probe.entries(calls) |> should.equal([])
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(pending) =
     graph.await(handle, within: duration.milliseconds(5000))
-  pending.status
+  pending
   |> should.equal(graph.CancellingJob(
     reference,
     job.RequestAccepted,
@@ -178,7 +180,7 @@ pub fn a_failed_start_fence_releases_no_stop_and_queued_recovery_can_request_tes
   ))
   probe.entries(calls) |> should.equal(["request"])
   let assert Ok(done) = graph.poll_job(handle, reference)
-  done.status |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
+  done |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
 }
 
 pub fn owned_cleanup_continues_under_a_cancelled_parent_with_no_unused_work_budget_test() {
@@ -220,14 +222,14 @@ pub fn owned_cleanup_continues_under_a_cancelled_parent_with_no_unused_work_budg
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Child(child_ref, child.Job(_)) = waiting.status
+  let assert graph.Child(child_ref, child.Job(_)) = waiting
   let assert Ok(child_handle) = graph.child(handle, child_ref.activation, rt)
   let assert Ok(child_waiting) = graph.snapshot(child_handle)
   let assert graph.AwaitingJob(reference) = child_waiting.status
   let assert Ok(_) = graph.cancel(handle)
   let assert Ok(pending) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Cancelled(graph.ChildUnresolved(_, _)) = pending.status
+  let assert graph.Cancelled(graph.ChildUnresolved(_, _)) = pending
   let assert Ok(child_pending) = graph.snapshot(child_handle)
   child_pending.status
   |> should.equal(graph.CancellingJob(
@@ -236,9 +238,9 @@ pub fn owned_cleanup_continues_under_a_cancelled_parent_with_no_unused_work_budg
     operation.CancellationRequested,
   ))
   let assert Ok(done) = graph.poll_job(child_handle, reference)
-  done.status |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
+  done |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
   let assert Ok(settled) = graph.recover(handle)
-  settled.status |> should.equal(graph.Cancelled(graph.ChildSettled(child_ref)))
+  settled |> should.equal(graph.Cancelled(graph.ChildSettled(child_ref)))
 }
 
 pub fn incompatible_code_can_record_intent_but_cannot_dispatch_owned_cleanup_test() {
@@ -258,7 +260,7 @@ pub fn incompatible_code_can_record_intent_but_cannot_dispatch_owned_cleanup_tes
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert graph.AwaitingJob(reference) = waiting
   let changed =
     runtime_version(
       runs,
@@ -273,19 +275,19 @@ pub fn incompatible_code_can_record_intent_but_cannot_dispatch_owned_cleanup_tes
   |> should.equal(Ok(Nil))
   let assert Ok(unattended) =
     graph.await(handle, within: duration.milliseconds(5000))
-  unattended.status |> should.equal(graph.Unattended)
+  unattended |> should.equal(graph.Unattended)
   probe.entries(calls) |> should.equal([])
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(pending) =
     graph.await(handle, within: duration.milliseconds(5000))
-  pending.status
+  pending
   |> should.equal(graph.CancellingJob(
     reference,
     job.RequestAccepted,
     operation.CancellationRequested,
   ))
   let assert Ok(done) = graph.poll_job(handle, reference)
-  done.status |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
+  done |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
   probe.entries(calls) |> should.equal(["request"])
 }
 
@@ -308,11 +310,11 @@ pub fn accepted_cancellation_survives_restart_until_confirmed_test() {
     })
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert graph.AwaitingJob(reference) = waiting
   let assert Ok(_) = graph.cancel(handle)
   let assert Ok(pending) =
     graph.await(handle, within: duration.milliseconds(5000))
-  pending.status
+  pending
   |> should.equal(graph.CancellingJob(
     reference,
     job.RequestAccepted,
@@ -333,9 +335,9 @@ pub fn accepted_cancellation_survives_restart_until_confirmed_test() {
       support.id("owned-stop"),
     )
   let assert Ok(recovered) = graph.recover(handle)
-  recovered.status |> should.equal(pending.status)
+  recovered |> should.equal(pending)
   let assert Ok(done) = graph.poll_job(handle, reference)
-  done.status |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
+  done |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
   let assert Ok(entry) = store_core.get(runs, "owned-stop")
   let assert Ok(metadata) = retention.inspect(entry.record)
   metadata.settled |> should.equal(True)
@@ -364,7 +366,7 @@ pub fn an_interrupted_stop_is_not_replayed_and_completion_settles_without_routin
     })
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert graph.AwaitingJob(reference) = waiting
   let assert Ok(_) = graph.cancel(handle)
   process.receive(called, 5000) |> should.equal(Ok(Nil))
   restart.crash(owner, runs)
@@ -382,12 +384,13 @@ pub fn an_interrupted_stop_is_not_replayed_and_completion_settles_without_routin
     _,
     job.RequestUncertain(_),
     operation.CancellationRequested,
-  ) = recovered.status
-  let assert Ok(done) = graph.poll_job(handle, reference)
+  ) = recovered
+  let assert Ok(_) = graph.poll_job(handle, reference)
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Cancelled(graph.AfterResult))
   let assert [receipt] = done.receipts
   receipt.output_json |> should.equal("42")
   receipt.route |> should.equal(graph.Stopped)
-  graph.poll_job(handle, reference) |> should.equal(Ok(done))
+  graph.poll_job(handle, reference) |> should.equal(Ok(done.status))
   restart.remove_dir(directory)
 }

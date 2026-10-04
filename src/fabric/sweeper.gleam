@@ -71,7 +71,7 @@ pub type SweeperError {
 /// The root agent `agent`, whose runs the sweeper recovers with the context
 /// `context` builds for each run (in 5 seconds at most).
 pub fn agent(
-  agent: Agent(context),
+  agent: Agent(context, answer),
   context context: fn(RunId) -> context,
 ) -> Root {
   sweeper.agent_root(agent, context)

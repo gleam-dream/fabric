@@ -73,12 +73,12 @@ pub fn a_job_wait_survives_restart_and_commits_completion_once_test() {
         )
       #(runs, handle)
     })
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   let assert Ok(entry) = store_core.get(runs, "job-restart")
   entry.live |> should.equal(None)
-  graph.poll_job(handle, reference) |> should.equal(Ok(waiting))
+  graph.poll_job(handle, reference) |> should.equal(Ok(waiting.status))
   restart.crash(owner, runs)
   let calls = probe.new()
   let restored =
@@ -89,10 +89,11 @@ pub fn a_job_wait_survives_restart_and_commits_completion_once_test() {
     })
   let handle = support.open_graph(restored, support.id("job-restart"))
   let assert Ok(recovered) = graph.recover(handle)
-  recovered.status |> should.equal(waiting.status)
-  let assert Ok(done) = graph.poll_job(handle, reference)
+  recovered |> should.equal(waiting.status)
+  let assert Ok(_) = graph.poll_job(handle, reference)
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(42))
-  graph.poll_job(handle, reference) |> should.equal(Ok(done))
+  graph.poll_job(handle, reference) |> should.equal(Ok(done.status))
   probe.entries(calls) |> should.equal(["observe"])
   restart.remove_dir(directory)
 }
@@ -117,7 +118,7 @@ pub fn job_observation_requires_admission_and_a_current_reference_test() {
   let assert Ok(handle) = graph.start(runtime, id, "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingApproval(approval) = waiting.status
+  let assert graph.AwaitingApproval(approval) = waiting
   let guess = job.Reference(id, 1, 1, run.DefinitionId("external-job", 1))
   graph.poll_job(handle, guess) |> should.be_error
   probe.entries(calls) |> should.equal([])
@@ -130,7 +131,7 @@ pub fn job_observation_requires_admission_and_a_current_reference_test() {
     )
   let assert Ok(approved) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = approved.status
+  let assert graph.AwaitingJob(reference) = approved
   graph.poll_job(handle, job.Reference(..reference, activation: 2))
   |> should.be_error
   graph.poll_job(
@@ -145,7 +146,7 @@ pub fn job_observation_requires_admission_and_a_current_reference_test() {
   |> should.be_error
   probe.entries(calls) |> should.equal([])
   let assert Ok(done) = graph.poll_job(handle, reference)
-  done.status |> should.equal(graph.Completed(42))
+  done |> should.equal(graph.Completed(42))
 }
 
 pub fn observation_errors_and_invalid_outputs_leave_the_wait_unconsumed_test() {
@@ -158,8 +159,8 @@ pub fn observation_errors_and_invalid_outputs_leave_the_wait_unconsumed_test() {
       "receipt",
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   graph.poll_job(handle, reference) |> should.be_error
   graph.snapshot(handle) |> should.equal(Ok(waiting))
@@ -182,7 +183,7 @@ pub fn observation_errors_and_invalid_outputs_leave_the_wait_unconsumed_test() {
   let corrected =
     support.open_graph(runtime(runs, fn(_) { Ok(job.Completed(42)) }), id)
   let assert Ok(done) = graph.poll_job(corrected, reference)
-  done.status |> should.equal(graph.Completed(42))
+  done |> should.equal(graph.Completed(42))
 }
 
 pub fn an_observer_timeout_preserves_the_wait_and_reuses_its_work_grant_test() {
@@ -210,20 +211,20 @@ pub fn an_observer_timeout_preserves_the_wait_and_reuses_its_work_grant_test() {
       "receipt",
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   graph.poll_job(handle, reference) |> should.be_error
   let assert Ok(observer) = process.receive(started, 1000)
   restart.gone(observer)
   graph.snapshot(handle) |> should.equal(Ok(waiting))
   let pending = support.open_graph(runtime(runs, fn(_) { Ok(job.Pending) }), id)
-  graph.poll_job(pending, reference) |> should.equal(Ok(waiting))
-  graph.poll_job(pending, reference) |> should.equal(Ok(waiting))
+  graph.poll_job(pending, reference) |> should.equal(Ok(waiting.status))
+  graph.poll_job(pending, reference) |> should.equal(Ok(waiting.status))
   let restored =
     support.open_graph(runtime(runs, fn(_) { Ok(job.Completed(42)) }), id)
   let assert Ok(done) = graph.poll_job(restored, reference)
-  done.status |> should.equal(graph.Completed(42))
+  done |> should.equal(graph.Completed(42))
 }
 
 pub fn definite_remote_failure_does_not_run_the_success_route_test() {
@@ -238,8 +239,9 @@ pub fn definite_remote_failure_does_not_run_the_success_route_test() {
     graph.start(runtime, support.id("failed-job"), "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = waiting.status
-  let assert Ok(done) = graph.poll_job(handle, reference)
+  let assert graph.AwaitingJob(reference) = waiting
+  let assert Ok(_) = graph.poll_job(handle, reference)
+  let assert Ok(done) = graph.snapshot(handle)
   done.status
   |> should.equal(graph.Failed(graph.OperationFailed("remote job failed")))
   done.receipts |> should.equal([])
@@ -261,7 +263,7 @@ pub fn cancellation_wins_over_an_inflight_observation_without_remote_cancellatio
     graph.start(runtime, support.id("cancel-job"), "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert graph.AwaitingJob(reference) = waiting
   let reply = process.new_subject()
   process.spawn(fn() { process.send(reply, graph.poll_job(handle, reference)) })
   let held = probe.arrival(calls)
@@ -290,7 +292,7 @@ pub fn competing_observations_commit_only_one_result_test() {
     )
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.AwaitingJob(reference) = waiting.status
+  let assert graph.AwaitingJob(reference) = waiting
   let replies = process.new_subject()
   list.each([1, 2], fn(_) {
     process.spawn(fn() {
@@ -304,8 +306,9 @@ pub fn competing_observations_commit_only_one_result_test() {
   let assert Ok(Ok(one)) = process.receive(replies, 5000)
   let assert Ok(Ok(two)) = process.receive(replies, 5000)
   one |> should.equal(two)
-  one.status |> should.equal(graph.Completed(42))
-  list.length(one.receipts) |> should.equal(1)
+  one |> should.equal(graph.Completed(42))
+  let assert Ok(done) = graph.snapshot(handle)
+  list.length(done.receipts) |> should.equal(1)
 }
 
 pub fn failed_and_lost_completion_commits_preserve_the_receipt_test() {
@@ -317,16 +320,17 @@ pub fn failed_and_lost_completion_commits_preserve_the_receipt_test() {
       "receipt",
       correlation: None,
     )
-  let assert Ok(waiting) =
-    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingJob(reference) = waiting.status
   flaky.arm(backend, [flaky.FailBefore])
   graph.poll_job(handle, reference) |> should.be_error
   graph.snapshot(handle) |> should.equal(Ok(waiting))
   flaky.arm(backend, [flaky.FailAfter])
-  let assert Ok(done) = graph.poll_job(handle, reference)
+  let assert Ok(_) = graph.poll_job(handle, reference)
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(42))
-  graph.poll_job(handle, reference) |> should.equal(Ok(done))
+  graph.poll_job(handle, reference) |> should.equal(Ok(done.status))
 }
 
 pub fn managed_parents_park_while_their_child_observes_a_job_test() {
@@ -358,14 +362,14 @@ pub fn managed_parents_park_while_their_child_observes_a_job_test() {
     graph.start(parent, support.id("nested-job"), "receipt", correlation: None)
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
-  let assert graph.Child(child_ref, child.Job(_)) = waiting.status
+  let assert graph.Child(child_ref, child.Job(_)) = waiting
   let assert Ok(child) =
     graph.child(handle, child_ref.activation, child_runtime)
   let assert Ok(waiting_child) = graph.snapshot(child)
   let assert graph.AwaitingJob(reference) = waiting_child.status
   let assert Ok(_) = graph.poll_job(child, reference)
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
-  done.status |> should.equal(graph.Completed(42))
+  done |> should.equal(graph.Completed(42))
 }
 
 fn with_successor(runs, read, calls) {

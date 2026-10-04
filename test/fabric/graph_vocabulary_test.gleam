@@ -111,7 +111,8 @@ pub fn the_policy_sees_one_action_shape_and_the_approver_context_runs_test() {
   let id = support.id("vocabulary-policy")
   let assert Ok(handle) =
     graph.start(runtime, id: id, initial: 21, correlation: None)
-  let assert Ok(waiting) = graph.await(handle, within: duration.seconds(5))
+  let assert Ok(_) = graph.await(handle, within: duration.seconds(5))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingApproval(pending) = waiting.status
   let assert Ok(#(action, context)) = process.receive(seen, 1000)
   action
@@ -137,7 +138,8 @@ pub fn the_policy_sees_one_action_shape_and_the_approver_context_runs_test() {
   body_context |> should.equal("approver")
   invocation.correlation
   |> should.equal(correlation.from_key("vocabulary-policy"))
-  let assert Ok(done) = graph.await(handle, within: duration.seconds(5))
+  let assert Ok(_) = graph.await(handle, within: duration.seconds(5))
+  let assert Ok(done) = graph.snapshot(handle)
   done.status |> should.equal(graph.Completed(42))
   // Who approved is stored with the activation's receipt.
   let assert [receipt] = done.receipts
@@ -150,9 +152,10 @@ pub fn a_rejection_records_its_reviewer_and_a_second_answer_is_refused_test() {
   let seen = process.new_subject()
   let handle = started(support.store(), seen, "vocabulary-reject")
   let assert Ok(waiting) = graph.await(handle, within: duration.seconds(5))
-  let assert graph.AwaitingApproval(pending) = waiting.status
-  let assert Ok(rejected) =
+  let assert graph.AwaitingApproval(pending) = waiting
+  let assert Ok(_) =
     graph.reject(handle, pending, reason: "not today", reviewer: alice())
+  let assert Ok(rejected) = graph.snapshot(handle)
   rejected.status |> should.equal(graph.Failed(graph.Denied("not today")))
   let assert [
     run.Approval(answer: run.Reject("not today"), reviewer: Some(_), ..),
@@ -192,7 +195,8 @@ pub fn approval_requests_expire_after_seven_days_by_the_store_clock_test() {
   let runs = nodes.node(memory.backend, "graph-expiry", nodes.long)
   let seen = process.new_subject()
   let handle = started(runs, seen, "vocabulary-default-expiry")
-  let assert Ok(waiting) = graph.await(handle, within: duration.seconds(5))
+  let assert Ok(_) = graph.await(handle, within: duration.seconds(5))
+  let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingApproval(pending) = waiting.status
   let assert Some(expires) = waiting.deadline
   { expires >= clock.now() + 8 * day - 60_000 } |> should.be_true
@@ -225,10 +229,10 @@ pub fn await_and_recovery_expire_a_due_request_and_infinity_never_does_test() {
       correlation: None,
     )
   let assert Ok(waiting) = graph.await(handle, within: duration.seconds(5))
-  let assert graph.AwaitingApproval(_) = waiting.status
+  let assert graph.AwaitingApproval(_) = waiting
   process.sleep(30)
   let assert Ok(expired) = graph.await(handle, within: duration.seconds(5))
-  let assert graph.Failed(graph.ExpiredApproval(_)) = expired.status
+  let assert graph.Failed(graph.ExpiredApproval(_)) = expired
   // A second run expires through recovery.
   let assert Ok(second) =
     graph.start(
@@ -240,7 +244,7 @@ pub fn await_and_recovery_expire_a_due_request_and_infinity_never_does_test() {
   let assert Ok(_) = graph.await(second, within: duration.seconds(5))
   process.sleep(30)
   let assert Ok(recovered) = graph.recover(second)
-  let assert graph.Failed(graph.ExpiredApproval(_)) = recovered.status
+  let assert graph.Failed(graph.ExpiredApproval(_)) = recovered
   // Without a deadline the request waits.
   let forever =
     gated(runs, seen, doubled) |> graph.with_approval_expiry(run.Infinity)
@@ -251,7 +255,8 @@ pub fn await_and_recovery_expire_a_due_request_and_infinity_never_does_test() {
       initial: 1,
       correlation: None,
     )
-  let assert Ok(waiting) = graph.await(patient, within: duration.seconds(5))
+  let assert Ok(_) = graph.await(patient, within: duration.seconds(5))
+  let assert Ok(waiting) = graph.snapshot(patient)
   let assert graph.AwaitingApproval(_) = waiting.status
   waiting.deadline |> should.equal(None)
 }
@@ -272,7 +277,7 @@ pub fn the_sweeper_expires_a_due_graph_approval_test() {
       correlation: None,
     )
   let assert Ok(waiting) = graph.await(handle, within: duration.seconds(5))
-  let assert graph.AwaitingApproval(_) = waiting.status
+  let assert graph.AwaitingApproval(_) = waiting
   memory.advance(61_000)
   let assert Ok(pid) =
     sweeper.start(
@@ -342,7 +347,8 @@ pub fn waits_are_bounded_by_seven_days_unless_infinity_is_asked_test() {
       initial: 1,
       correlation: None,
     )
-  let assert Ok(snapshot) = graph.await(handle, within: duration.seconds(5))
+  let assert Ok(_) = graph.await(handle, within: duration.seconds(5))
+  let assert Ok(snapshot) = graph.snapshot(handle)
   let assert graph.AwaitingSignal(_) = snapshot.status
   let assert Some(due) = snapshot.deadline
   { due >= now + 7 * day && due <= now + 7 * day + 60_000 } |> should.be_true
@@ -358,7 +364,8 @@ pub fn waits_are_bounded_by_seven_days_unless_infinity_is_asked_test() {
       initial: 1,
       correlation: None,
     )
-  let assert Ok(snapshot) = graph.await(unbounded, within: duration.seconds(5))
+  let assert Ok(_) = graph.await(unbounded, within: duration.seconds(5))
+  let assert Ok(snapshot) = graph.snapshot(unbounded)
   let assert graph.AwaitingSignal(_) = snapshot.status
   snapshot.deadline |> should.equal(None)
   // Seven days set explicitly is the default: the same stored structure.
@@ -443,11 +450,11 @@ pub fn a_graph_run_emits_its_lifecycle_with_its_correlation_test() {
       correlation: Some(order),
     )
   let assert Ok(waiting) = graph.await(handle, within: duration.seconds(5))
-  let assert graph.AwaitingApproval(pending) = waiting.status
+  let assert graph.AwaitingApproval(pending) = waiting
   let assert Ok(_) =
     graph.approve(handle, pending, reviewer: alice(), context: "approver")
   let assert Ok(done) = graph.await(handle, within: duration.seconds(5))
-  done.status |> should.equal(graph.Completed(4))
+  done |> should.equal(graph.Completed(4))
   lines(subject, [])
   |> should.equal([
     "started publishing order-42",
@@ -469,7 +476,8 @@ pub fn a_cancellation_is_observed_and_returns_the_snapshot_test() {
   let seen = process.new_subject()
   let handle = started(support.store(), seen, "vocabulary-cancel")
   let assert Ok(_) = graph.await(handle, within: duration.seconds(5))
-  let assert Ok(cancelled) = graph.cancel(handle)
+  let assert Ok(_) = graph.cancel(handle)
+  let assert Ok(cancelled) = graph.snapshot(handle)
   cancelled.status |> should.equal(graph.Cancelled(graph.BeforeStart))
   graph.cancel(handle) |> should.equal(Error(graph.RunEnded))
   let events = lines(subject, [])
@@ -643,7 +651,7 @@ pub fn a_definite_and_an_uncertain_body_failure_are_the_tools_test() {
       correlation: None,
     )
   let assert Ok(done) = graph.await(declined, within: duration.seconds(5))
-  done.status
+  done
   |> should.equal(graph.Failed(graph.OperationFailed("card declined")))
   let assert Ok(unknown) =
     graph.start(
@@ -653,6 +661,33 @@ pub fn a_definite_and_an_uncertain_body_failure_are_the_tools_test() {
       correlation: None,
     )
   let assert Ok(done) = graph.await(unknown, within: duration.seconds(5))
-  let assert graph.Blocked(_, graph.EffectUncertain("gateway timed out")) =
-    done.status
+  let assert graph.Blocked(_, graph.EffectUncertain("gateway timed out")) = done
+}
+
+// --- status kinds --------------------------------------------------------------
+
+/// Callers branch on the stable kind of a growing `graph.Status`.
+pub fn a_status_has_a_stable_kind_test() {
+  let id = support.id("kinds")
+  let approval = graph.ApprovalRef(id, 1, 1, 1, run.Requirement("publish", 1))
+  let reconciliation = graph.Reconciliation(id, 1, 1)
+  [
+    #(graph.Working, graph.Active),
+    #(graph.Unattended, graph.NeedsRecovery),
+    #(graph.AwaitingApproval(approval), graph.NeedsInput),
+    #(
+      graph.Blocked(reconciliation, graph.EffectUncertain("sent")),
+      graph.NeedsInput,
+    ),
+    #(graph.Completed(1), graph.Ended),
+    #(graph.Exhausted, graph.Ended),
+    #(graph.Cancelled(graph.BeforeStart), graph.Ended),
+    #(graph.Failed(graph.Denied("no")), graph.Ended),
+  ]
+  |> list.each(fn(case_) {
+    graph.status_kind(case_.0) |> should.equal(case_.1)
+    { graph.describe_status(case_.0) != "" } |> should.be_true
+  })
+  graph.describe_status(graph.AwaitingApproval(approval))
+  |> should.equal("awaiting approval of activation 1 (publish)")
 }

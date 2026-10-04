@@ -19,7 +19,7 @@ import gleam/otp/static_supervisor
 import gleam/time/duration
 import gleeunit/should
 
-fn waiting_agent(gate: probe.Probe) -> agent.Agent(Nil) {
+fn waiting_agent(gate: probe.Probe) -> agent.Agent(Nil, String) {
   agent.new(
     "lifecycle",
     scripted.plan([scripted.slow("c1", "held")]),
@@ -29,7 +29,7 @@ fn waiting_agent(gate: probe.Probe) -> agent.Agent(Nil) {
   |> support.agent
 }
 
-fn finishing_agent() -> agent.Agent(Nil) {
+fn finishing_agent() -> agent.Agent(Nil, String) {
   agent.new(
     "lifecycle",
     scripted.model(fn(_) { model.FinalAnswer("done", None) }),

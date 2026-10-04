@@ -49,6 +49,8 @@ fn progress_from_node(
       Ok(child.FinishedUncertain(string.inspect(outcome)))
     Ok(controller.ChildFinished(run.Completed(text), False)) ->
       Ok(child.Succeeded(text))
+    Ok(controller.ChildFinished(run.AnswerInvalid(raw:, reason:), False)) ->
+      Ok(child.InvalidOutput(raw, reason))
     Ok(controller.ChildFinished(outcome, False)) ->
       Ok(child.Failed(string.inspect(outcome)))
     Ok(controller.ChildMissing) -> Ok(child.Cancelled(False))

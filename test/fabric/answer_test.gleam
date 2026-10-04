@@ -47,6 +47,8 @@ fn env(desk: Desk) -> controller.Env(Desk) {
     system: None,
     approval_expiry: None,
     clock: fn() { 0 },
+    answer: None,
+    check_answer: fn(_) { Ok(Nil) },
   )
 }
 

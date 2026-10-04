@@ -25,7 +25,7 @@ pub opaque type Root {
   Root(key: record.Key, restore: fn(Store, String) -> Result(Nil, Nil))
 }
 
-pub fn agent_root(agent: Agent(c), context: fn(RunId) -> c) -> Root {
+pub fn agent_root(agent: Agent(c, a), context: fn(RunId) -> c) -> Root {
   let admitted = checked_agent.admitted(agent)
   Root(record.Key(record.Agent, admitted.identity), fn(store, root) {
     use context <- result.try(

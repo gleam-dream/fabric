@@ -42,7 +42,8 @@ pub type Summary {
   Summary(summary: String)
 }
 
-fn research() -> tool.Definition(Topic, Summary) {
+/// The summary is the researcher's plain answer.
+fn research() -> tool.Definition(Topic, String) {
   tool.define(
     "research",
     "Delegate research.",
@@ -54,9 +55,9 @@ fn research() -> tool.Definition(Topic, Summary) {
     },
     {
       use summary <- codec.field("summary", codec.string(), get: fn(summary) {
-        summary.summary
+        summary
       })
-      codec.success(Summary(summary))
+      codec.success(summary)
     },
   )
 }
@@ -76,7 +77,7 @@ fn paying_tool(probe: Probe) -> tool.Tool(ctx) {
 fn two_payments_spec(
   probe: Probe,
   policy: policy.Policy(ctx),
-) -> agent.Spec(ctx) {
+) -> agent.Spec(ctx, String) {
   agent.new(
     "payer",
     scripted.model(fn(messages) {
@@ -99,7 +100,10 @@ fn two_payments_spec(
   )
 }
 
-fn two_payments(probe: Probe, policy: policy.Policy(ctx)) -> Agent(ctx) {
+fn two_payments(
+  probe: Probe,
+  policy: policy.Policy(ctx),
+) -> Agent(ctx, String) {
   support.agent(two_payments_spec(probe, policy))
 }
 
@@ -107,7 +111,7 @@ fn payment(id: String, to: String) -> model.ToolCall {
   scripted.call(id, "transfer_funds", "{\"to\":\"" <> to <> "\",\"amount\":1}")
 }
 
-fn delegating(child: Agent(ctx)) -> Agent(ctx) {
+fn delegating(child: Agent(ctx, String)) -> Agent(ctx, String) {
   agent.new(
     "agent",
     scripted.model(fn(messages) {
@@ -127,12 +131,9 @@ fn delegating(child: Agent(ctx)) -> Agent(ctx) {
     [],
     policy.always_allow(),
   )
-  |> agent.with_sub_agent(
-    research(),
-    to: child,
-    prompt: fn(topic: Topic) { topic.topic },
-    output: fn(text) { Ok(Summary(text)) },
-  )
+  |> agent.with_sub_agent(research(), to: child, prompt: fn(topic: Topic) {
+    topic.topic
+  })
   |> support.agent
 }
 
@@ -180,7 +181,7 @@ fn release_and_wait(held: Held) -> Nil {
   Nil
 }
 
-fn states(run: fabric.Run(ctx)) -> List(run.ActionState) {
+fn states(run: fabric.Run(ctx, String)) -> List(run.ActionState) {
   let assert Ok(snapshot) = fabric.snapshot(run)
   list.map(snapshot.actions, fn(action) { action.state })
 }
@@ -230,7 +231,8 @@ pub fn a_held_child_is_cancelled_through_its_record_test() {
 /// released runner commits nothing more.
 pub fn a_held_run_is_cancelled_through_its_record_test() {
   let cancel_with = fn(
-    cancel: fn(fabric.Run(Nil), store.Store) -> Result(run.Status, fabric.Error),
+    cancel: fn(fabric.Run(Nil, String), store.Store) ->
+      Result(run.Status(String), fabric.Error),
   ) {
     let probe = probe.new()
     let store = support.store()
@@ -282,7 +284,7 @@ fn hold_on_settled() -> #(Subject(Held), sinal.Attachment) {
 
 /// Pays `one` (and, when `slow`, runs the gated `slow` tool beside it),
 /// then answers; every model call is recorded as `model`.
-fn counted_payer(probe: Probe, slow: Bool) -> Agent(Nil) {
+fn counted_payer(probe: Probe, slow: Bool) -> Agent(Nil, String) {
   let first = case slow {
     True -> [payment("t1", "one"), scripted.slow("s", "x")]
     False -> [payment("t1", "one")]
@@ -696,7 +698,7 @@ pub fn a_reattached_sub_agent_under_a_stopping_ancestor_never_starts_test() {
 /// A child whose tool hands its settlement to `handed` and waits.
 fn settling_child(
   handed: Subject(tool.Settlement(apps.Forecast)),
-) -> Agent(Nil) {
+) -> Agent(Nil, String) {
   agent.new(
     "forecaster",
     scripted.plan([scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}")]),

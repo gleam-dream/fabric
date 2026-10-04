@@ -62,7 +62,8 @@ pub fn overdue_signal_is_swept_after_store_loss_and_can_be_pruned_test() {
       let assert Ok(Nil) = store.start(runs)
       let assert Ok(handle) =
         graph.start(runtime(runs), id, 7, correlation: None)
-      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+      let assert Ok(_) = graph.await(handle, within: duration.seconds(30))
+      let assert Ok(waiting) = graph.snapshot(handle)
       let assert graph.AwaitingSignal(_) = waiting.status
       let assert Ok(row) = store_core.get(runs, run.id_to_string(id))
       row.live |> should.equal(None)
