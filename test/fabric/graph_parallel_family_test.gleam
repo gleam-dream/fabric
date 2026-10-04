@@ -6,13 +6,19 @@ import fabric/graph/definition
 import fabric/graph/fork
 import fabric/graph/operation
 import fabric/graph/signal
+import fabric/internal/graph/attachment
+import fabric/internal/graph/controller as control
+import fabric/internal/graph/record as graph_record
+import fabric/internal/graph/runner as graph_runner
+import fabric/internal/graph/runtime as graph_runtime
+import fabric/internal/store as store_core
 import fabric/policy
 import fabric/run
 import fabric/store
 import fabric/support
 import fabric/support/restart
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/time/duration
 import gleeunit/should
 import json/blueprint/codec
@@ -279,6 +285,56 @@ pub fn child_budget_closes_admission_and_keeps_refused_members_distinct_test() {
   graph.recover(root) |> should.be_ok
   let assert Ok(restored) = graph.snapshot(root)
   restored.forks |> should.equal(done.forks)
+}
+
+/// A member whose admission finds its parent closed ends `Cancelled`, as
+/// the parent's stop leaves it, not `Failed` as if its policy had failed.
+/// The test above meets that order only rarely: member 2 started, the
+/// parent closed the fork when member 3 was refused, and only then did
+/// member 2 check its admission. Here member 2's record is put back to just
+/// before its admission once the family has ended, and its runner is
+/// started on it.
+pub fn a_member_admitted_after_its_parent_closed_is_cancelled_test() {
+  let runs = support.store()
+  let parent = "fork-closed-admission"
+  let assert Ok(root) =
+    graph.start(
+      support.budgeted(
+        inner(runs),
+        budget.limits(work: 10)
+          |> budget.with_children(2)
+          |> budget.with_depth(1),
+      ),
+      support.id(parent),
+      [1, 2, 3, 4],
+      correlation: None,
+    )
+  let assert Ok(graph.Completed(Error(_))) =
+    graph.await(root, within: duration.milliseconds(5000))
+  let id = attachment.branch_id(parent, 1, 2)
+  let assert Ok(entry) = store_core.get(runs, id)
+  let assert Ok(ended) = graph_record.decode(entry.record)
+  let activation = case ended.phase {
+    control.Ended(control.Cancelled(activation, _))
+    | control.Ended(control.Failed(activation, _)) ->
+      control.Activation(..activation, deadline: None)
+    _ -> panic as "member 2 has not ended"
+  }
+  let member = leaf(runs)
+  let assert Ok(_) =
+    graph_runner.launch(
+      runs,
+      graph_runtime.work(member),
+      graph_runtime.options(member),
+      Some(#(entry.revision, ended)),
+      control.State(..ended, phase: control.Ready(activation)),
+      [control.Inspect(activation)],
+      None,
+      False,
+    )
+  let assert Ok(handle) = graph.branch(root, 1, 2, member)
+  graph.await(handle, within: duration.milliseconds(5000))
+  |> should.equal(Ok(graph.Cancelled(graph.BeforeStart)))
 }
 
 // Every nested admission uses ancestry depth; a new scope does not reset it.

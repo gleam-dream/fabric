@@ -11,6 +11,23 @@ Wave 5 is described with before/after snippets in
 [docs/migration-wave-5.md](docs/migration-wave-5.md), round 5 in
 [docs/migration-round-5.md](docs/migration-round-5.md).
 
+### Wave 5, round 8: a graph child admitted after its parent closed is cancelled
+
+#### Fixed
+
+- A graph child run (a fork member, a subgraph) that reached its own
+  admission after its parent had stopped admitting work (the parent was
+  closing its fork or stopping) ended `Failed(PolicyFailed("parent no longer
+accepts child work"))`, though no policy failed and the parent was
+  cancelling it. It now ends `Cancelled(BeforeStart)`, as when the parent's
+  cancellation reaches it first. An approval answered in that window is
+  `RunEnded`, and a fork admitting members under a closed ancestor stops as
+  for a failed ancestry check. The order was rare (about 1 in 300 runs of
+  `child_budget_closes_admission_and_keeps_refused_members_distinct_test`
+  under CPU load, before round 8 too); the new
+  `a_member_admitted_after_its_parent_closed_is_cancelled_test` takes it
+  every time.
+
 ### Wave 5, round 8: approvers and proofs
 
 #### Changed

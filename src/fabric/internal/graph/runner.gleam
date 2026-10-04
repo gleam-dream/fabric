@@ -173,6 +173,10 @@ pub fn load_raw(
 
 pub type AdmissionError {
   PolicyRejected(String)
+  /// An ancestor stopped admitting this run's work after the run started:
+  /// it is stopping or has ended, and is cancelling this run. Not a policy
+  /// failure: the run stops as cancelled, as that cancellation would.
+  AncestorStopping
   BudgetLimited(budget.Denial)
   BudgetUnavailable(String)
 }
@@ -180,7 +184,7 @@ pub type AdmissionError {
 fn capacity_error(error: capacity.Error) -> AdmissionError {
   case error {
     capacity.Limited(reason) -> BudgetLimited(reason)
-    capacity.Closed -> PolicyRejected("parent no longer accepts child work")
+    capacity.Closed -> AncestorStopping
     capacity.Unavailable(reason) -> BudgetUnavailable(reason)
   }
 }
@@ -615,6 +619,10 @@ fn perform(runner: Runner, effects: List(g.Effect)) -> Result(Runner, Error) {
                 ),
                 None,
               ))
+            // The ancestor closed between this run's start and its
+            // admission: its cancellation is on its way, and the run ends
+            // the same way now instead of failing its policy.
+            Error(AncestorStopping) -> Ok(#(g.Cancel, None))
             Error(BudgetLimited(reason)) ->
               Ok(#(
                 g.BudgetRefused(g.reference(runner.state, activation), reason),
@@ -1072,6 +1080,7 @@ fn admit_fork_members(
             }
             BudgetUnavailable(reason) | PolicyRejected(reason) ->
               Error(CallbackFailed(reason))
+            AncestorStopping -> Error(AncestorClosed)
           }
         Ok(_) -> {
           use runner <- result.try(expire_fork_if_due(runner, a))

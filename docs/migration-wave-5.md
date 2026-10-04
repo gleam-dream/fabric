@@ -1935,3 +1935,19 @@ Dependents:
 No other app answers approvals (`research_agent` and `tool_hub` build
 agents whose policies never require one), and no sibling repository uses
 these items.
+
+### A graph child admitted after its parent closed is cancelled (fixed)
+
+A child graph run checks its family's capacity when it admits an activation.
+When the parent had already closed (a sibling fork member was refused, or
+the parent was stopping), the check reported `Closed`, which the runner
+treated as a policy failure: the child ended
+`Failed(PolicyFailed("parent no longer accepts child work"))` and the
+parent's fork recorded `Admitted(Failed(..))` instead of
+`Admitted(Cancelled)`. The internal `AdmissionError` gains
+`AncestorStopping`; the runner cancels the run (`Cancelled(BeforeStart)`),
+an approval answered in that window is `RunEnded`, and fork admission stops
+as for a closed ancestry check. No public type changed. The order predates
+round 8 (1 failure in 300 runs under CPU load at bc99f0e).
+
+Dependents: none; no app or sibling matches on that failure text.
