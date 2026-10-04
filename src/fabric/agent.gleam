@@ -62,6 +62,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import gleam/time/duration.{type Duration}
 import json/blueprint/codec.{type Codec}
 
@@ -393,8 +394,13 @@ pub fn with_family_budget(
 /// the last attempt does not decode either. The run stores the text, so the
 /// stored record is the same as for a plain agent.
 ///
-/// Providers constrain an answer best when it is a JSON object: give a
-/// record codec. `build` refuses a codec without a schema
+/// Any codec with a schema works, a record, a `codec.union`, a list or a
+/// scalar: `fabric/llm` wraps an answer whose schema has no object root as
+/// `{"answer": ..}` for the provider and unwraps the reply, so the run
+/// stores the answer's own JSON. llm_wire's structured output does not
+/// take a `codec.union` yet, so through `fabric/llm` such an answer fails
+/// the turn as `model.InvalidRequest`; a model built with `model.new`
+/// answers it directly. `build` refuses a codec without a schema
 /// (`AnswerSchemaUnavailable`).
 pub fn with_answer(
   spec: Spec(context, String),
@@ -517,6 +523,21 @@ pub fn describe_config_error(error: ConfigError) -> String {
     InvalidToolLimit(name, limit, value, minimum, maximum) ->
       range(setter(limit) <> " of the tool " <> name, value, minimum, maximum)
   }
+}
+
+/// One line for every problem `build` reported, in its order, joined with
+/// `"; "`:
+///
+/// ```gleam
+/// case agent.build(spec) {
+///   Ok(desk) -> desk
+///   Error(errors) -> panic as agent.describe_config_errors(errors)
+/// }
+/// ```
+pub fn describe_config_errors(errors: List(ConfigError)) -> String {
+  errors
+  |> list.map(describe_config_error)
+  |> string.join("; ")
 }
 
 fn range(name: String, value: Int, minimum: Int, maximum: Int) -> String {

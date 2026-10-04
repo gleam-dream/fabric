@@ -23,6 +23,11 @@ pub fn error_content(message: String) -> String {
   json.to_string(json.object([#("error", json.string(message))]))
 }
 
+/// `{"unconfirmed": note}`: a reconciliation whose effect is still unknown.
+pub fn unconfirmed_content(note: String) -> String {
+  json.to_string(json.object([#("unconfirmed", json.string(note))]))
+}
+
 /// `{"error": kind, "detail": detail}` for failures Fabric itself reports.
 pub fn error_detail_content(kind: String, detail: String) -> String {
   json.to_string(

@@ -156,8 +156,10 @@ pub type Verdict {
   Approve
   Reject(reason: String)
   /// What actually happened to an effect of unknown status, as the model
-  /// will see it.
+  /// will see it (`tool.reconciliation` encodes a typed result).
   Happened(content: String)
+  /// No one can say yet: the model is told so, and the run goes on.
+  StillUnknown(note: String)
 }
 
 /// The application authenticates whoever answers an approval, then names
@@ -198,6 +200,12 @@ pub fn review(
       fabric.reject(handle, pending.reference, reason:, reviewer:)
     run.Suspended(_, [uncertain, ..]), Happened(content) ->
       fabric.reconcile(handle, uncertain.reference, content)
+    run.Suspended(_, [uncertain, ..]), StillUnknown(note) ->
+      fabric.reconcile(
+        handle,
+        uncertain.reference,
+        tool.unconfirmed_reconciliation(note),
+      )
     // `Working`: the time ran out. `Unattended`: its runner was lost.
     // `Finished`: nothing more can change it.
     status, _ -> Ok(status)

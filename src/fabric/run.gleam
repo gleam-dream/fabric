@@ -9,6 +9,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option}
 import gleam/string
+import gleam/time/calendar
 import gleam/time/duration.{type Duration}
 import gleam/time/timestamp.{type Timestamp}
 
@@ -260,15 +261,7 @@ pub fn describe_outcome(outcome: Outcome(answer)) -> String {
       <> int.to_string(turn)
       <> ", so the token budget cannot be enforced"
     Cancelled -> "the run was cancelled"
-    Failed(PolicyFailed(reason:, ..)) -> "the policy failed: " <> reason
-    Failed(OutputEncodingFailed(detail:, ..)) ->
-      "a tool's result could not be recorded: " <> detail
-    Failed(ToolChanged(detail:, ..)) ->
-      "a tool changed after its call was admitted: " <> detail
-    Failed(ModelFailed(error)) ->
-      "the model failed: " <> model.describe_error(error)
-    Failed(ModelProtocolViolation(reason)) ->
-      "the model broke the protocol: " <> reason
+    Failed(failure) -> describe_host_failure(failure)
   }
 }
 
@@ -289,6 +282,7 @@ pub type DelegationLimit {
 }
 
 /// Failures of the host rather than of the model or a tool's business logic.
+/// This union may grow: keep a catch-all, or branch on `host_failure_kind`.
 pub type HostFailure {
   PolicyFailed(id: ActionId, reason: String)
   OutputEncodingFailed(id: ActionId, detail: String)
@@ -301,6 +295,43 @@ pub type HostFailure {
   ModelProtocolViolation(reason: String)
 }
 
+/// A stable classification of `HostFailure`, by the part of the host to
+/// look at. It never gains variants.
+pub type HostFailureKind {
+  /// The policy failed on an action (`PolicyFailed`).
+  PolicyFault
+  /// A tool's result could not be recorded, or the tool changed between
+  /// admission and start (`OutputEncodingFailed`, `ToolChanged`).
+  ToolFault
+  /// The model call failed after its retries, or the model broke the
+  /// protocol (`ModelFailed`, `ModelProtocolViolation`). A `ModelFailed`
+  /// carries its own `model.error_kind`.
+  ModelFault
+}
+
+pub fn host_failure_kind(failure: HostFailure) -> HostFailureKind {
+  case failure {
+    PolicyFailed(..) -> PolicyFault
+    OutputEncodingFailed(..) | ToolChanged(..) -> ToolFault
+    ModelFailed(_) | ModelProtocolViolation(_) -> ModelFault
+  }
+}
+
+/// One line for logs; `describe_outcome` uses it for `Failed`.
+pub fn describe_host_failure(failure: HostFailure) -> String {
+  case failure {
+    PolicyFailed(reason:, ..) -> "the policy failed: " <> reason
+    OutputEncodingFailed(detail:, ..) ->
+      "a tool's result could not be recorded: " <> detail
+    ToolChanged(detail:, ..) ->
+      "a tool changed after its call was admitted: " <> detail
+    ModelFailed(error) -> "the model failed: " <> model.describe_error(error)
+    ModelProtocolViolation(reason) -> "the model broke the protocol: " <> reason
+  }
+}
+
+/// Where one action stands. This union may grow: keep a catch-all, or
+/// branch on `action_state_kind`.
 pub type ActionState {
   /// Allowed and waiting for a concurrency slot.
   Queued
@@ -341,6 +372,86 @@ pub type ActionState {
   /// The host could not complete the action: its output could not be
   /// encoded, or its tool changed after admission. The run stopped.
   Faulted(detail: String)
+}
+
+/// A stable classification of `ActionState`, by what the caller does next.
+/// It never gains variants.
+pub type ActionStateKind {
+  /// The action settles without the caller (`Queued`, `Running`,
+  /// `Delegated`). A delegation's sub-agent run may itself wait for input.
+  Active
+  /// The action waits for an answer to its approval request
+  /// (`AwaitingApproval`): `fabric.approve` or `fabric.reject` it.
+  NeedsApproval
+  /// The action's effect is of unknown status (`Uncertain`):
+  /// `fabric.reconcile` it.
+  NeedsReconciliation
+  /// The action has its final state: a result the model sees or saw, a
+  /// refusal, a settlement, a withdrawal or a host fault.
+  Ended
+}
+
+pub fn action_state_kind(state: ActionState) -> ActionStateKind {
+  case state {
+    Queued | Running | Delegated -> Active
+    AwaitingApproval(..) -> NeedsApproval
+    Uncertain(_) -> NeedsReconciliation
+    Succeeded(_)
+    | ToolFailed(_)
+    | Denied(_)
+    | Rejected(_)
+    | InvalidArguments(_)
+    | UnknownTool
+    | Reconciled(_)
+    | ChildSettled(_)
+    | NotStarted
+    | LimitReached(_)
+    | Faulted(_) -> Ended
+  }
+}
+
+/// One line for logs. It names a tool's result (`Succeeded`, `ToolFailed`,
+/// `Reconciled`) and a sub-agent's answer only by their presence: they may
+/// carry application data.
+pub fn describe_action_state(state: ActionState) -> String {
+  case state {
+    Queued -> "queued for a concurrency slot"
+    Running -> "running"
+    AwaitingApproval(requirement:, revision:, expires:) ->
+      "awaiting approval ("
+      <> requirement.name
+      <> " version "
+      <> int.to_string(requirement.version)
+      <> ", revision "
+      <> int.to_string(revision)
+      <> ")"
+      <> case expires {
+        option.Some(at) ->
+          ", expires at " <> timestamp.to_rfc3339(at, calendar.utc_offset)
+        option.None -> ""
+      }
+    Succeeded(_) -> "succeeded"
+    ToolFailed(_) -> "the tool failed; the model sees its failure"
+    Denied(reason) -> "denied by the policy: " <> reason
+    Rejected(reason) -> "rejected by a reviewer: " <> reason
+    InvalidArguments(detail) -> "its arguments are invalid: " <> detail
+    UnknownTool -> "no tool of that name"
+    Uncertain(evidence) -> "its effect is uncertain: " <> evidence
+    Reconciled(_) -> "reconciled"
+    ChildSettled(outcome) ->
+      "settled from its sub-agent run: " <> describe_outcome(outcome)
+    NotStarted -> "withdrawn before it started"
+    Delegated -> "delegated to a sub-agent run"
+    LimitReached(ChildLimit(limit)) ->
+      "refused: a run starts at most "
+      <> int.to_string(limit)
+      <> " sub-agent runs"
+    LimitReached(DepthLimit(limit)) ->
+      "refused: sub-agents nest at most "
+      <> int.to_string(limit)
+      <> " levels below the root run"
+    Faulted(detail) -> "the host could not complete it: " <> detail
+  }
 }
 
 /// One action of a run. Read it by label: Fabric may add fields.

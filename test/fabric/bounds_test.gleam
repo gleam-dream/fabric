@@ -76,6 +76,16 @@ pub fn build_reports_every_bound_with_its_setter_test() {
   let assert [first, ..] = errors
   agent.describe_config_error(first)
   |> should.equal("agent.with_max_turns is 0, outside 1..9007199254740991")
+  // Every problem in one line, in `build`'s order.
+  let described = agent.describe_config_errors(errors)
+  string.starts_with(
+    described,
+    "agent.with_max_turns is 0, outside 1..9007199254740991; agent.with_max_concurrency is ",
+  )
+  |> should.be_true
+  string.split(described, "; ") |> list.length |> should.equal(10)
+  agent.describe_config_errors([first])
+  |> should.equal(agent.describe_config_error(first))
 }
 
 pub fn build_refuses_bounds_a_timer_cannot_hold_test() {
