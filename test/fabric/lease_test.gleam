@@ -29,6 +29,10 @@ import gleeunit/should
 import sinal
 import sinal/correlation
 
+/// A lease whose timer never ticks within a test: a third of it is twenty
+/// minutes. Tests that drive renewals themselves use it.
+const hour = 3_600_000
+
 fn one_slow(probe: Probe) -> Agent(Nil, String) {
   agent.new(
     "agent",
@@ -337,7 +341,7 @@ pub fn a_lost_lease_event_carries_the_runs_root_and_correlation_test() {
   let assert Ok(there) = fabric.open(b, one_slow(probe), Nil, fabric.id(run))
   let assert Ok(_) = fabric.cancel(there)
   store_core.renew_now(a)
-  let assert Ok(event) = process.receive(lost, 5000)
+  let assert Ok(event) = process.receive(lost, 30_000)
   let _ = sinal.detach(attachment)
   event.run |> should.equal(support.text(fabric.id(run)))
   event.root |> should.equal(support.text(fabric.id(run)))
@@ -393,10 +397,11 @@ pub fn a_lost_lease_kills_the_runner_and_its_running_body_test() {
 /// A store whose renewals fail (the backend is unreachable) kills its
 /// runners, with their tool bodies, before their leases could have
 /// expired: by the backend's clock, the lease is still live when the body
-/// is gone.
+/// is gone. The backend's clock stands still, so the store's own clock
+/// alone decides the kill.
 pub fn a_store_that_cannot_renew_kills_its_runners_before_their_leases_expire_test() {
   let probe = probe.new()
-  let memory = conformance.leased_memory()
+  let memory = conformance.frozen_leased_memory()
   let unreachable =
     backend.LeasedBackend(..memory.backend, renew: fn(_, _, _) {
       Error(backend.Unavailable("the backend is unreachable"))
@@ -421,8 +426,14 @@ pub fn a_store_that_cannot_renew_kills_its_runners_before_their_leases_expire_te
   let id = support.text(fabric.id(run))
   let #(before, lost) = until(events, "lease_lost")
   lost |> should.equal("lease_lost " <> id <> " a unrenewed")
-  { before != [] && list.all(before, fn(line) { line == "renewal_failed 1" }) }
-  |> should.be_true
+  list.all(before, fn(line) { line == "renewal_failed 1" }) |> should.be_true
+  // A tick before the fence sent a renewal, which failed; each event is
+  // emitted by a process of its own, so that one may come after the loss.
+  case before {
+    [] ->
+      until(events, "renewal_failed") |> should.equal(#([], "renewal_failed 1"))
+    _ -> Nil
+  }
   release(events)
   probe.count(probe, "end:a") |> should.equal(0)
 }
@@ -438,10 +449,14 @@ pub fn a_slow_lease_event_handler_does_not_hold_up_the_store_test() {
     })
   let a = nodes.node(unreachable, "a", 1000)
   let entered = process.new_subject()
+  // The handler blocks until the test lets it go, so the read below is
+  // served while it is still blocked.
   let attachment =
     sinal.observe(o.renewal_failed(), fn(_, _failed) {
-      process.send(entered, Nil)
-      process.sleep(2000)
+      let unblock = process.new_subject()
+      process.send(entered, unblock)
+      let _ = process.receive(unblock, 60_000)
+      Nil
     })
   let assert Ok(run) =
     fabric.start(
@@ -453,17 +468,18 @@ pub fn a_slow_lease_event_handler_does_not_hold_up_the_store_test() {
       correlation: None,
     )
   let _ = probe.arrival(probe)
-  let assert Ok(Nil) = process.receive(entered, 5000)
+  let assert Ok(unblock) = process.receive(entered, 30_000)
   let read = process.new_subject()
   process.spawn(fn() { process.send(read, fabric.snapshot(run)) })
-  let assert Ok(Ok(_)) = process.receive(read, 500)
+  let assert Ok(Ok(_)) = process.receive(read, 30_000)
   let _ = sinal.detach(attachment)
-  Nil
+  process.send(unblock, Nil)
 }
 
 /// A tick that comes while a renewal is still in flight is made up as
 /// soon as that renewal completes, not a third of a lease later: a slow
-/// renewal never leaves the next one to start after the fence.
+/// renewal never leaves the next one to start after the fence. The test
+/// sends the ticks itself, so it does not depend on when the timer fires.
 pub fn a_tick_during_a_renewal_is_made_up_when_it_completes_test() {
   let probe = probe.new()
   let memory = conformance.leased_memory()
@@ -472,11 +488,10 @@ pub fn a_tick_during_a_renewal_is_made_up_when_it_completes_test() {
     backend.LeasedBackend(..memory.backend, renew: fn(owner, runs, ttl) {
       let release = process.new_subject()
       process.send(calls, release)
-      let _ = process.receive(release, 1000)
+      let _ = process.receive(release, 30_000)
       memory.backend.renew(owner, runs, ttl)
     })
-  // Ticks every 500 ms; a renewal may take up to 500 ms.
-  let a = nodes.node(slow, "a", 1500)
+  let a = nodes.node(slow, "a", hour)
   let assert Ok(run) =
     fabric.start(
       a,
@@ -487,24 +502,33 @@ pub fn a_tick_during_a_renewal_is_made_up_when_it_completes_test() {
       correlation: None,
     )
   let running = probe.arrival(probe)
+  let assert Ok(_) = restart.runner(a, fabric.id(run))
   // A tick's renewal, at once.
-  let assert Ok(first) = process.receive(calls, 2000)
+  store_core.tick_now(a)
+  let assert Ok(first) = process.receive(calls, 30_000)
   process.send(first, Nil)
-  // Another, sent between ticks, still in flight at the next tick.
-  process.sleep(300)
+  until_renewed(a)
+  // Another, sent between ticks, still in flight at the next tick: the
+  // tick sends nothing while it is.
   store_core.renew_now(a)
-  let assert Ok(second) = process.receive(calls, 1000)
-  process.sleep(300)
+  let assert Ok(second) = process.receive(calls, 30_000)
+  store_core.tick_now(a)
+  // The store answers this after the tick, so the tick was seen.
+  store_core.renewing(a) |> should.equal(Ok(True))
+  process.receive(calls, 0) |> should.equal(Error(Nil))
   process.send(second, Nil)
-  let assert Ok(third) = process.receive(calls, 150)
+  // The missed tick's renewal follows the slow one at once.
+  let assert Ok(third) = process.receive(calls, 30_000)
   process.send(third, Nil)
   probe.release(running)
-  fabric.await(run, within: duration.milliseconds(5000))
+  fabric.await(run, within: duration.milliseconds(30_000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
 }
 
-/// A healthy store renews its runners' leases in time: a tool that runs
-/// through several lease durations keeps its lease and finishes.
+/// Each renewal extends a lease from the backend's time: a run whose store
+/// keeps renewing holds its lease past several lease durations of backend
+/// time, and finishes. The test drives the renewals and the backend clock,
+/// so how fast the machine runs does not matter.
 pub fn renewals_keep_a_lease_live_past_its_duration_test() {
   let probe = probe.new()
   let memory = conformance.leased_memory()
@@ -515,7 +539,7 @@ pub fn renewals_keep_a_lease_live_past_its_duration_test() {
       process.send(renewals, renewed)
       renewed
     })
-  let a = nodes.node(counted, "a", 150)
+  let a = nodes.node(counted, "a", hour)
   let assert Ok(run) =
     fabric.start(
       a,
@@ -527,15 +551,33 @@ pub fn renewals_keep_a_lease_live_past_its_duration_test() {
     )
   let running = probe.arrival(probe)
   let id = support.text(fabric.id(run))
-  // Ten renewals take over three lease durations.
+  // A read of the run is served once the store has applied the write that
+  // launched its runner: from then on a renewal includes it.
+  let assert Ok(_) = restart.runner(a, fabric.id(run))
+  // Ten renewals, each half a lease of backend time after the last: five
+  // lease durations in all.
   list.each(list.repeat(Nil, 10), fn(_) {
-    process.receive(renewals, 5000) |> should.equal(Ok(Ok([id])))
+    memory.advance(hour / 2)
+    store_core.renew_now(a)
+    process.receive(renewals, 30_000) |> should.equal(Ok(Ok([id])))
+    until_renewed(a)
   })
   nodes.holding(memory.backend, fabric.id(run))
   |> should.equal(Ok(#("a", True)))
   probe.release(running)
-  fabric.await(run, within: duration.milliseconds(5000))
+  fabric.await(run, within: duration.milliseconds(30_000))
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
+}
+
+/// Waits until the store has applied the renewal in flight.
+fn until_renewed(store: store.Store) -> Nil {
+  case store_core.renewing(store) {
+    Ok(False) -> Nil
+    _ -> {
+      process.sleep(1)
+      until_renewed(store)
+    }
+  }
 }
 
 /// Several nodes that recover a run at once whose owner is gone and whose
@@ -647,8 +689,8 @@ pub fn a_restarted_store_takes_its_earlier_processes_lease_at_once_test() {
 pub fn an_await_on_another_node_sees_the_end_of_the_run_test() {
   let probe = probe.new()
   let memory = conformance.leased_memory()
-  let a = nodes.node(memory.backend, "a", 300)
-  let b = nodes.node(memory.backend, "b", 300)
+  let a = nodes.node(memory.backend, "a", nodes.long)
+  let b = nodes.node(memory.backend, "b", nodes.long)
   let assert Ok(run) =
     fabric.start(
       a,
@@ -668,7 +710,7 @@ pub fn an_await_on_another_node_sees_the_end_of_the_run_test() {
     )
   })
   probe.release(running)
-  process.receive(awaited, 5000)
+  process.receive(awaited, 30_000)
   |> should.equal(Ok(Ok(run.Finished(run.Completed("final: \"a\"")))))
 }
 
@@ -798,7 +840,7 @@ pub fn a_renewal_applied_after_the_handoff_leaves_the_lease_expired_test() {
           backend.Claim(_, 0) -> {
             let applied = process.new_subject()
             process.send(relay, HandedOff(applied))
-            let _ = process.receive(applied, 5000)
+            let _ = process.receive(applied, 30_000)
             Nil
           }
           _ -> Nil
@@ -826,7 +868,7 @@ pub fn a_renewal_applied_after_the_handoff_leaves_the_lease_expired_test() {
     )
   let running = probe.arrival(probe)
   store_core.renew_now(a)
-  let assert Ok(Nil) = process.receive(renewing, 5000)
+  let assert Ok(Nil) = process.receive(renewing, 30_000)
   restart.begin_stop(app)
   restart.draining(a)
   probe.release(running)
@@ -890,7 +932,7 @@ pub fn a_tool_start_is_refused_once_another_owner_claimed_the_lease_test() {
     sinal.observe(o.model_turn(), fn(_, turn: o.ModelTurn) {
       let go = process.new_subject()
       process.send(replies, #(turn.run, process.self(), go))
-      let _ = process.receive(go, 5000)
+      let _ = process.receive(go, 30_000)
       Nil
     })
   let assert Ok(run) =
@@ -902,7 +944,7 @@ pub fn a_tool_start_is_refused_once_another_owner_claimed_the_lease_test() {
       prompt: "go",
       correlation: None,
     )
-  let assert Ok(#(replied, runner, go)) = process.receive(replies, 5000)
+  let assert Ok(#(replied, runner, go)) = process.receive(replies, 30_000)
   let _ = sinal.detach(attachment)
   replied |> should.equal(support.text(fabric.id(run)))
   // Meanwhile the lease expires and another owner (a sweeper) claims it.
@@ -929,15 +971,15 @@ fn together(items: List(a), body: fn(a) -> b) -> List(b) {
       process.spawn(fn() {
         let start = process.new_subject()
         process.send(ready, start)
-        let assert Ok(Nil) = process.receive(start, 5000)
+        let assert Ok(Nil) = process.receive(start, 30_000)
         process.send(results, #(i, body(item)))
       })
-      let assert Ok(start) = process.receive(ready, 5000)
+      let assert Ok(start) = process.receive(ready, 30_000)
       start
     })
   list.each(starts, process.send(_, Nil))
   list.map(starts, fn(_) {
-    let assert Ok(result) = process.receive(results, 5000)
+    let assert Ok(result) = process.receive(results, 30_000)
     result
   })
   |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
@@ -996,7 +1038,7 @@ fn attach_line(
 /// The next `count` captured lines.
 fn lines(capture: Capture, count: Int) -> List(String) {
   list.map(list.repeat(Nil, count), fn(_) {
-    let assert Ok(line) = process.receive(capture.lines, 5000)
+    let assert Ok(line) = process.receive(capture.lines, 30_000)
     line
   })
 }
@@ -1004,7 +1046,7 @@ fn lines(capture: Capture, count: Int) -> List(String) {
 /// The captured lines up to the first one that starts with `prefix`, and
 /// that line.
 fn until(capture: Capture, prefix: String) -> #(List(String), String) {
-  let assert Ok(line) = process.receive(capture.lines, 5000)
+  let assert Ok(line) = process.receive(capture.lines, 30_000)
   case string.starts_with(line, prefix) {
     True -> #([], line)
     False -> {

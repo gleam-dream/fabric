@@ -109,6 +109,8 @@ pub opaque type Message {
   /// A leased store renews the leases of its runners; `tick`: the timer's
   /// (which sets the next one), not a test's.
   Renew(tick: Bool)
+  /// Whether a renewal is in flight, for tests.
+  ReadRenewing(reply: Subject(Bool))
   /// A renewal sent at the monotonic time `sent` for `runs` (each with its
   /// runner) finished.
   Renewed(
@@ -1053,6 +1055,10 @@ fn serve(state: Loop, message: Message) -> Loop {
       state
     }
     Renew(tick) -> renew(state, tick)
+    ReadRenewing(reply) -> {
+      process.send(reply, state.renewal != Idle)
+      state
+    }
     Renewed(sent, runs, renewed) -> renewed_leases(state, sent, runs, renewed)
     Fence -> Loop(..state, fence_at: None) |> fence |> schedule_fence
     Get(run, ..) as request -> enqueue(state, run, request)
@@ -1643,6 +1649,18 @@ pub fn poll_interval(store: Store) -> Option(Int) {
 /// Sends the store's process a renewal now, for tests.
 pub fn renew_now(store: Store) -> Nil {
   process.send(target(store), Renew(False))
+}
+
+/// Sends the store's process its renewal timer's tick now, for tests that
+/// must not depend on when the timer fires.
+pub fn tick_now(store: Store) -> Nil {
+  process.send(target(store), Renew(True))
+}
+
+/// Whether the store has a renewal in flight, for tests that must wait
+/// until one completed rather than for a while.
+pub fn renewing(store: Store) -> Result(Bool, Nil) {
+  call(store, ReadRenewing) |> result.replace_error(Nil)
 }
 
 fn monitor(state: Loop, pid: Pid) -> Loop {

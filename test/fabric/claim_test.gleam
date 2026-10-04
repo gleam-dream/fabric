@@ -7,6 +7,7 @@ import fabric/internal/claim
 import fabric/internal/controller
 import fabric/internal/live
 import fabric/internal/runner
+import fabric/support/restart
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None}
@@ -35,18 +36,18 @@ pub fn racing_sides_never_both_win_test() {
       process.spawn(fn() {
         let start = process.new_subject()
         process.send(go, start)
-        let assert Ok(Nil) = process.receive(start, 5000)
+        let assert Ok(Nil) = process.receive(start, 30_000)
         process.send(results, take(shared))
       })
     }
     racer(claim.accept)
     racer(claim.withdraw)
-    let assert Ok(first) = process.receive(go, 5000)
-    let assert Ok(second) = process.receive(go, 5000)
+    let assert Ok(first) = process.receive(go, 30_000)
+    let assert Ok(second) = process.receive(go, 30_000)
     process.send(first, Nil)
     process.send(second, Nil)
-    let assert Ok(a) = process.receive(results, 5000)
-    let assert Ok(b) = process.receive(results, 5000)
+    let assert Ok(a) = process.receive(results, 30_000)
+    let assert Ok(b) = process.receive(results, 30_000)
     #(a, b) |> should.not_equal(#(True, True))
     #(a, b) |> should.not_equal(#(False, False))
   })
@@ -56,21 +57,47 @@ pub fn racing_sides_never_both_win_test() {
 /// window: the caller cannot withdraw it, so it waits for the outcome
 /// instead of reporting the command busy.
 pub fn a_command_the_runner_took_is_waited_for_test() {
+  took_after_the_window([10, 100, 1000, 10_000])
+}
+
+/// The runner suspends the caller before it takes the command, and resumes
+/// it once the caller's window has passed, so the window passes after the
+/// take however the machine schedules them. On a loaded machine the caller
+/// can withdraw before the runner even receives the command; that attempt
+/// proves nothing and is made again with a longer window.
+fn took_after_the_window(windows: List(Int)) -> Nil {
+  let assert [within, ..longer] = windows
   let mailboxes = process.new_subject()
   process.spawn(fn() {
     let mailbox: Subject(live.Message) = process.new_subject()
     process.send(mailboxes, mailbox)
     let assert Ok(live.Command(_, _, taken, reply)) =
-      process.receive(mailbox, 5000)
-    let assert True = claim.accept(taken)
-    // Descheduled: the caller's window passes before the runner answers.
-    process.sleep(100)
-    process.send(reply, live.Accepted)
-    process.send(reply, live.Refused(controller.StaleEvent))
+      process.receive(mailbox, 30_000)
+    let assert Ok(caller) = process.subject_owner(reply)
+    restart.suspend(caller)
+    case claim.accept(taken) {
+      False -> restart.resume(caller)
+      True -> {
+        process.sleep(within + 10)
+        restart.resume(caller)
+        process.send(reply, live.Accepted)
+        process.send(reply, live.Refused(controller.StaleEvent))
+      }
+    }
   })
-  let assert Ok(mailbox) = process.receive(mailboxes, 5000)
-  runner.send_live(mailbox, fn(_) { Error(controller.StaleEvent) }, None, 10)
-  |> should.equal(Error(runner.LiveRefused(controller.StaleEvent)))
+  let assert Ok(mailbox) = process.receive(mailboxes, 30_000)
+  case
+    runner.send_live(
+      mailbox,
+      fn(_) { Error(controller.StaleEvent) },
+      None,
+      within,
+    )
+  {
+    Error(runner.LiveBusy) if longer != [] -> took_after_the_window(longer)
+    result ->
+      result |> should.equal(Error(runner.LiveRefused(controller.StaleEvent)))
+  }
 }
 
 /// A runner that reaches a command only after its caller gave up drops
@@ -82,14 +109,14 @@ pub fn a_withdrawn_command_is_never_applied_test() {
     let mailbox: Subject(live.Message) = process.new_subject()
     let release = process.new_subject()
     process.send(started, #(mailbox, release))
-    let assert Ok(Nil) = process.receive(release, 5000)
+    let assert Ok(Nil) = process.receive(release, 30_000)
     let assert Ok(live.Command(_, _, command, _)) =
-      process.receive(mailbox, 5000)
+      process.receive(mailbox, 30_000)
     process.send(accepted, claim.accept(command))
   })
-  let assert Ok(#(mailbox, release)) = process.receive(started, 5000)
+  let assert Ok(#(mailbox, release)) = process.receive(started, 30_000)
   runner.send_live(mailbox, fn(_) { Error(controller.StaleEvent) }, None, 10)
   |> should.equal(Error(runner.LiveBusy))
   process.send(release, Nil)
-  process.receive(accepted, 5000) |> should.equal(Ok(False))
+  process.receive(accepted, 30_000) |> should.equal(Ok(False))
 }
