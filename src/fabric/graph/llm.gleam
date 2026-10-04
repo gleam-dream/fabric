@@ -20,6 +20,10 @@ import llm_wire/message
 pub type Outcome(output) {
   /// Both the validated application value and the provider's original JSON.
   Answer(value: output, raw_json: String)
+  /// The model declined (`llm_wire.Refused`), or the provider's content
+  /// filter blocked the prompt or stopped the output
+  /// (`error.ContentFiltered`); a filter's reason is `error.describe`'s line,
+  /// such as `"Provider content filter blocked the prompt: SAFETY"`.
   Refusal(reason: String)
   OutputLimited(partial_text: String)
 }
@@ -61,7 +65,8 @@ pub fn call(
 ///
 /// Requests must have no tools. Preparation and proven unsent failures are
 /// definite (`tool.Explain`); potentially sent failures require
-/// reconciliation (`tool.Uncertain`). No implicit retry is made, even when
+/// reconciliation (`tool.Uncertain`). A provider's content filter is a
+/// `Refusal` receipt, not a failure. No implicit retry is made, even when
 /// llm_wire reports a transient error.
 pub fn decision(
   identity: run.DefinitionId,
@@ -103,24 +108,29 @@ fn perform(
       tool.Explain(error.describe_prepare_error(error))
     }),
   )
-  use response <- result.try(
-    llm_wire.run(client, prepared) |> result.map_error(failure),
-  )
   // llm_wire sends the trimmed name; the receipt records what was sent.
   let model = string.trim(llm_wire.model(request))
-  case response {
-    llm_wire.Answer(output:, text:, usage:) ->
+  case llm_wire.run(client, prepared) {
+    Ok(llm_wire.Answer(output:, text:, usage:)) ->
       Ok(Receipt(model, Answer(output, text), usage))
-    llm_wire.Refused(reason:, usage:) ->
+    Ok(llm_wire.Refused(reason:, usage:)) ->
       Ok(Receipt(model, Refusal(reason), usage))
-    llm_wire.OutputLimited(partial_text:, partial_calls: [], usage:) ->
+    // A provider's safety stop is the provider's refusal, kept with its
+    // stage and reason, not an uncertain effect.
+    Error(llm_wire.Failure(
+      error: error.ContentFiltered(..) as filtered,
+      usage:,
+      ..,
+    )) -> Ok(Receipt(model, Refusal(error.describe(filtered)), usage))
+    Ok(llm_wire.OutputLimited(partial_text:, partial_calls: [], usage:)) ->
       Ok(Receipt(model, OutputLimited(partial_text), usage))
-    llm_wire.OutputLimited(partial_calls: [_, ..], ..)
-    | llm_wire.NeedsTools(..) ->
+    Ok(llm_wire.OutputLimited(partial_calls: [_, ..], ..) as response)
+    | Ok(llm_wire.NeedsTools(..) as response) ->
       Error(tool.Uncertain(
         "structured decision returned unexpected tools: "
         <> describe_response(response),
       ))
+    Error(other) -> Error(failure(other))
   }
 }
 

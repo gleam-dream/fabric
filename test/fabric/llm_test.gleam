@@ -22,6 +22,7 @@ import gleam/string
 import gleam/time/duration
 import gleeunit/should
 import http_gun/telemetry as http_telemetry
+import llm_wire
 import llm_wire/message
 import llm_wire/testing
 import sinal
@@ -78,8 +79,8 @@ pub fn two_tool_calls_round_trip_through_llm_wire_test() {
   let fake =
     fake_provider.start([
       testing.tool_calls("", [
-        testing.ScriptedCall("call_a", "lookup_weather", "{\"city\":\"Paris\"}"),
-        testing.ScriptedCall(
+        testing.tool_call("call_a", "lookup_weather", "{\"city\":\"Paris\"}"),
+        testing.tool_call(
           "call_b",
           "transfer_funds",
           "{\"to\":\"bob\",\"amount\":10}",
@@ -216,8 +217,8 @@ pub fn invalid_calls_through_llm_wire_get_per_call_feedback_test() {
   let fake =
     fake_provider.start([
       testing.tool_calls("", [
-        testing.ScriptedCall("call_a", "lookup_weather", "{\"town\":\"Paris\"}"),
-        testing.ScriptedCall("call_b", "ghost", "{}"),
+        testing.tool_call("call_a", "lookup_weather", "{\"town\":\"Paris\"}"),
+        testing.tool_call("call_b", "ghost", "{}"),
       ]),
       testing.text("I will ask properly."),
     ])
@@ -317,11 +318,92 @@ pub fn refusal_and_truncation_through_llm_wire_end_the_run_test() {
   fake_provider.stop(fake)
 }
 
+/// A provider's content filter ends the run as `run.Refused` with the stage
+/// and the provider's own reason, whether it blocks the prompt or stops the
+/// output, keeps the reported usage and is not retried.
+pub fn provider_content_filters_end_the_run_as_refused_test() {
+  let blocked = "Provider content filter blocked the prompt: "
+  let stopped = "Provider content filter stopped the output: "
+  [
+    #(None, testing.prompt_blocked(), blocked <> "content_filter"),
+    #(None, testing.content_filtered("Here is"), stopped <> "content_filter"),
+    #(Some(message.Google), testing.prompt_blocked(), blocked <> "SAFETY"),
+    #(
+      Some(message.Google),
+      testing.content_filtered("Here is"),
+      stopped <> "SAFETY",
+    ),
+    #(
+      Some(message.Anthropic),
+      testing.content_filtered("Here is"),
+      stopped <> "refusal",
+    ),
+    #(
+      Some(message.OpenAI),
+      testing.content_filtered("Here is"),
+      stopped <> "content_filter",
+    ),
+  ]
+  |> list.each(fn(example) {
+    let #(provider, reply, reason) = example
+    let reply = testing.with_usage(reply, message.Usage(3, 1, 4))
+    let #(reply, config) = case provider {
+      None -> #(reply, fake_provider.scripted)
+      Some(provider) -> #(testing.events_for(provider, reply), fn(fake) {
+        provider_config(fake, provider)
+      })
+    }
+    let fake = fake_provider.start([reply, testing.text("unused")])
+    let agent =
+      agent.new(
+        "agent",
+        llm.model(fake.client, config(fake), model_id()),
+        [],
+        policy.always_allow(),
+      )
+      |> support.agent
+    let assert Ok(handle) =
+      fabric.start(
+        support.store(),
+        agent,
+        id: run.new_id(),
+        context: Nil,
+        prompt: "a",
+        correlation: None,
+      )
+    fabric.await(handle, within: duration.milliseconds(10_000))
+    |> should.equal(Ok(run.Finished(run.Refused(reason))))
+    fake_provider.remaining(fake) |> should.equal(1)
+    case provider {
+      None -> {
+        let assert Ok(snapshot) = fabric.snapshot(handle)
+        snapshot.usage |> should.equal(run.TokenUsage(3, 1, 0))
+      }
+      Some(_) -> Nil
+    }
+    fake_provider.stop(fake)
+  })
+}
+
+fn provider_config(
+  fake: fake_provider.Fake,
+  provider: message.Provider,
+) -> llm_wire.Config {
+  case provider {
+    message.Anthropic -> fake_provider.anthropic(fake)
+    message.Google -> fake_provider.google(fake, "fixture-key")
+    _ -> fake_provider.openai(fake)
+  }
+}
+
 /// A server error is retryable: the run retries after its backoff and the
 /// next attempt succeeds. A client error is not retried.
 pub fn http_statuses_through_llm_wire_are_classified_for_retry_test() {
   let fake =
-    fake_provider.start([testing.Status(503, "busy"), testing.text("recovered")])
+    fake_provider.start([
+      testing.http_status(message.Custom("scripted"), 503, "busy"),
+      testing.text("recovered"),
+    ])
   let agent =
     agent.new("agent", scripted_model(fake), [], policy.always_allow())
     |> agent.with_model_retry_delay(duration.milliseconds(0))
@@ -339,7 +421,10 @@ pub fn http_statuses_through_llm_wire_are_classified_for_retry_test() {
   |> should.equal(Ok(run.Finished(run.Completed("recovered"))))
   fake_provider.stop(fake)
 
-  let fake = fake_provider.start([testing.Status(400, "bad request")])
+  let fake =
+    fake_provider.start([
+      testing.http_status(message.Custom("scripted"), 400, "bad request"),
+    ])
   let agent =
     agent.new("agent", scripted_model(fake), [], policy.always_allow())
     |> support.agent
@@ -368,7 +453,7 @@ pub fn unparseable_arguments_replay_to_anthropic_as_an_object_test() {
   let fake =
     fake_provider.start([
       testing.tool_calls("", [
-        testing.ScriptedCall("toolu_1", "lookup_weather", "{\"city\": "),
+        testing.tool_call("toolu_1", "lookup_weather", "{\"city\": "),
       ])
         |> testing.events_for(message.Anthropic, _),
       testing.events_for(
@@ -433,7 +518,7 @@ pub fn unparseable_arguments_replay_to_openai_verbatim_test() {
   let fake =
     fake_provider.start([
       testing.tool_calls("", [
-        testing.ScriptedCall("call_a", "lookup_weather", "{\"city\": "),
+        testing.tool_call("call_a", "lookup_weather", "{\"city\": "),
       ])
         |> testing.events_for(message.OpenAI, _),
       testing.events_for(message.OpenAI, testing.text("I will ask properly.")),
