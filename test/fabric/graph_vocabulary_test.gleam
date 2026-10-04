@@ -115,7 +115,7 @@ pub fn the_policy_sees_one_action_shape_and_the_approver_context_runs_test() {
   let assert Ok(_) = graph.await(handle, within: duration.seconds(5))
   let assert Ok(waiting) = graph.snapshot(handle)
   let assert graph.AwaitingApproval(pending) = waiting.status
-  let assert Ok(#(action, context)) = process.receive(seen, 1000)
+  let assert Ok(#(action, context)) = process.receive(seen, 30_000)
   action
   |> should.equal(policy.Action(
     run: id,
@@ -133,9 +133,9 @@ pub fn the_policy_sees_one_action_shape_and_the_approver_context_runs_test() {
   // The answer is checked again, and runs, with the approver's context.
   let assert Ok(_) =
     graph.approve(handle, pending, reviewer: alice(), context: "approver")
-  let assert Ok(#(_, recheck)) = process.receive(seen, 1000)
+  let assert Ok(#(_, recheck)) = process.receive(seen, 30_000)
   recheck |> should.equal("approver")
-  let assert Ok(#(body_context, invocation)) = process.receive(bodies, 5000)
+  let assert Ok(#(body_context, invocation)) = process.receive(bodies, 30_000)
   body_context |> should.equal("approver")
   invocation.correlation
   |> should.equal(correlation.from_key("vocabulary-policy"))
@@ -286,7 +286,7 @@ pub fn the_sweeper_expires_a_due_graph_approval_test() {
       [sweeper.graph(run.DefinitionId("publishing", 1), build:)],
       every: duration.milliseconds(20),
     )
-  let assert Ok(failed) = until_failed(handle, 100)
+  let assert Ok(failed) = until_failed(handle, 1500)
   let assert graph.Failed(graph.ExpiredApproval(_)) = failed.status
   process.unlink(pid)
   process.kill(pid)
@@ -431,10 +431,22 @@ fn capture(subject: Subject(String), run: String) -> List(sinal.Attachment) {
   ]
 }
 
-fn lines(subject: Subject(String), found: List(String)) -> List(String) {
-  case process.receive(subject, 200) {
-    Ok(line) -> lines(subject, [line, ..found])
-    Error(Nil) -> list.reverse(found)
+/// The captured lines up to and including the first that starts with
+/// `last`. Events follow the commit that a wait may already have seen, so
+/// a quiet period is no sign that they all came.
+fn lines(subject: Subject(String), last: String) -> List(String) {
+  lines_loop(subject, last, [])
+}
+
+fn lines_loop(
+  subject: Subject(String),
+  last: String,
+  found: List(String),
+) -> List(String) {
+  let assert Ok(line) = process.receive(subject, 30_000)
+  case string.starts_with(line, last) {
+    True -> list.reverse([line, ..found])
+    False -> lines_loop(subject, last, [line, ..found])
   }
 }
 
@@ -452,11 +464,15 @@ pub fn a_graph_run_emits_its_lifecycle_with_its_correlation_test() {
     )
   let assert Ok(waiting) = graph.await(handle, within: duration.seconds(5))
   let assert graph.AwaitingApproval(pending) = waiting
+  // The runner emits the request after the commit the await saw, and an
+  // approval this process commits emits from here: events of one run
+  // through two processes have no order, so the approval waits for it.
+  let requested = lines(subject, "requested")
   let assert Ok(_) =
     graph.approve(handle, pending, reviewer: alice(), context: "approver")
   let assert Ok(done) = graph.await(handle, within: duration.seconds(5))
   done |> should.equal(graph.Completed(4))
-  lines(subject, [])
+  list.append(requested, lines(subject, "finished"))
   |> should.equal([
     "started publishing order-42",
     "requested publish expires=True",
@@ -481,7 +497,7 @@ pub fn a_cancellation_is_observed_and_returns_the_snapshot_test() {
   let assert Ok(cancelled) = graph.snapshot(handle)
   cancelled.status |> should.equal(graph.Cancelled(graph.BeforeStart))
   graph.cancel(handle) |> should.equal(Error(graph.RunEnded))
-  let events = lines(subject, [])
+  let events = lines(subject, "finished")
   list.contains(events, "cancelled") |> should.be_true
   list.contains(events, "finished GraphCancelled root=vocabulary-cancel")
   |> should.be_true
@@ -536,7 +552,7 @@ pub fn a_child_graph_inherits_its_parent_correlation_and_root_test() {
       correlation: Some(order),
     )
   let assert Ok(_) = graph.await(handle, within: duration.seconds(5))
-  process.receive(subject, 5000)
+  process.receive(subject, 30_000)
   |> should.equal(Ok("order-7 vocabulary-parent"))
   let _ = sinal.detach(attachment)
   Nil
