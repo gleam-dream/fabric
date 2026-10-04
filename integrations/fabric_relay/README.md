@@ -69,23 +69,30 @@ pub fn ask_assistant() -> relay_tool.Definition(Question, Answer) {
 }
 
 pub fn mcp(runs, assistant) -> server.Server(Principal) {
-  let service =
-    fabric_relay.service(runs, assistant, start: fn(call, question: Question) {
+  server.new([
+    fabric_relay.service(ask_assistant(), runs:, agent: assistant, start: fn(call, question) {
       let principal = relay_tool.context(call)
-      Ok(fabric_relay.start(
-        context_for(principal),
-        prompt: question.text,
-        principal: principal.subject,
-      ))
+      fabric_relay.start(context_for(principal), prompt: question.text)
+      |> fabric_relay.with_principal(principal.subject)
     })
-  server.new([fabric_relay.serve(ask_assistant(), service)])
+    |> fabric_relay.serve,
+  ])
 }
 ```
 
+The definition comes first, so `start`'s input type is known without an
+annotation. `start` returns the run's `Start`; `fabric_relay.refuse(error)`
+refuses a call with its own `isError` result instead. The principal scopes
+idempotency keys; a `start` that names none runs for
+`fabric_relay.anonymous`, which suits one trusted client (stdio). Relay's
+call carries no authenticated subject of its own: take it from the server's
+context.
+
 The agent's answer type is the definition's output
 (`agent.with_answer(answer_codec())`), so a completed run answers with the
-typed value. Each call's run takes the call's correlation
-(`relay/tool.correlation`).
+typed value, and its text block names the run in `_meta`
+(`io.github.gleam-dream/run-id`). Each call's run takes the call's
+correlation (`relay/tool.correlation`).
 
 A call with an idempotency key (`client.with_idempotency_key`) names its
 run: `fabric_relay.run_id(definition, principal:, key:)`. A retried call
@@ -101,9 +108,18 @@ for people and structured content: `error` (`working`, `timed_out`,
 `awaiting_approval`, `outcome_unknown`, `unattended`, `cancelled`,
 `key_reused`, `start_failed`, `unavailable`, or how the run ended, such as
 `answer_invalid`) and `run_id`, with `approvals` or `uncertain` where they
-apply. An application answers an approval on the run the id names
-(`fabric.open`, `fabric.approve`), and the client's retry with the same key
-gets the answer.
+apply; its text block names the run in `_meta` as a completed call's does.
+An application answers an approval on the run the id names (`fabric.open`,
+`fabric.approve`), and the client's retry with the same key gets the
+answer.
+
+A keyed run whose client never retries is bounded by the agent's own
+limits: its model attempts (`agent.with_max_turns`, 8), model and tool
+timeouts, an optional token budget, and approval requests that expire
+after 7 days (`agent.with_approval_expiry`) and reject their action. A run
+stopped on an effect of unknown status (`outcome_unknown`) has no bound: it
+waits for a person to reconcile or cancel it, since ending it on a timer
+would hide the effect. Find it by the `run_id` the call answered.
 
 ## Defaults
 

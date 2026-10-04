@@ -39,20 +39,29 @@
 ////
 //// ## Serving an agent over MCP
 ////
-//// `serve(definition, service(runs, agent, start:))` publishes an agent as
-//// one Relay tool. Each call starts a run with the call's correlation
+//// `serve(service(definition, runs:, agent:, start:))` publishes an agent
+//// as one Relay tool. Each call starts a run with the call's correlation
 //// (`tool.correlation`) and the context and prompt `start` builds, waits
-//// for its answer, and answers with it. An agent whose answer type is the
-//// definition's output (`agent.with_answer(output_codec)`) answers with the
-//// typed value.
+//// for its answer, and answers with it, naming the run in the result's
+//// `_meta` (`io.github.gleam-dream/run-id`). An agent whose answer type is
+//// the definition's output (`agent.with_answer(output_codec)`) answers with
+//// the typed value.
+////
+//// ```gleam
+//// fabric_relay.service(ask_desk(), runs:, agent: desk, start: fn(_call, question) {
+////   fabric_relay.start(Nil, prompt: question.text)
+//// })
+//// |> fabric_relay.serve
+//// ```
 ////
 //// A call that carries an idempotency key (`client.with_idempotency_key`)
-//// names its run: the run id is derived from the tool, the principal
-//// `start` names and the key (`run_id`), so a retried call reaches the same
-//// run instead of starting a second one, and waits for it again. Such a run
-//// outlives its call: a disconnect or an answer still pending leaves it
-//// running for the retry. A call without a key owns its run, which is
-//// cancelled when the call is cancelled or its wait ends.
+//// names its run: the run id is derived from the tool, the call's principal
+//// (`with_principal`, `anonymous` by default) and the key (`run_id`), so a
+//// retried call reaches the same run instead of starting a second one, and
+//// waits for it again. Such a run outlives its call: a disconnect or an
+//// answer still pending leaves it running for the retry, bounded by the
+//// agent's own limits (see `serve`). A call without a key owns its run,
+//// which is cancelled when the call is cancelled or its wait ends.
 
 import fabric
 import fabric/agent.{type Agent}
@@ -330,51 +339,79 @@ fn text_of(blocks: List(content.ContentBlock)) -> String {
 
 // --- serving an agent -------------------------------------------------------------
 
-/// What one call starts: the run's context and prompt, and the principal
-/// the server authenticated for the call. Build it with `start`.
+/// What one call starts: the run's context and prompt and the principal
+/// it runs for, or a refusal. Build it with `start` (and `with_principal`)
+/// or `refuse`.
 pub opaque type Start(context) {
   Start(context: context, prompt: String, principal: String)
+  Refuse(error: relay_tool.ToolError)
 }
 
-/// The run a call starts. `principal` names who the call runs for (a
-/// token's subject, from the server's context): an idempotency key is
-/// scoped by it, so one client cannot reach another's run with the same
-/// key. A transport with one trusted client (stdio) may use a constant.
-pub fn start(
-  context: context,
-  prompt prompt: String,
-  principal principal: String,
+/// The principal of a call whose `start` names none: one trusted client,
+/// as over stdio.
+pub const anonymous = "anonymous"
+
+/// The run a call starts, with `context` and `prompt`, for the `anonymous`
+/// principal. Relay's call names no authenticated subject of its own (the
+/// server's context holds it, `tool.context(call)`): a server with more
+/// than one client names it with `with_principal`.
+pub fn start(context: context, prompt prompt: String) -> Start(context) {
+  Start(context:, prompt:, principal: anonymous)
+}
+
+/// Names who the call runs for (a token's subject, from the server's
+/// context). An idempotency key is scoped by it, so one client cannot reach
+/// another's run with the same key.
+pub fn with_principal(
+  start: Start(context),
+  principal: String,
 ) -> Start(context) {
-  Start(context:, prompt:, principal:)
+  case start {
+    Start(..) -> Start(..start, principal:)
+    Refuse(_) -> start
+  }
 }
 
-/// An agent served as an MCP tool: its store, the agent, how a call starts
-/// its run, and how long a call waits for the answer. Build it with
-/// `service` and the `with_*` setters, and publish it with `serve`.
+/// Refuses the call with `error` as its `isError` result; no run starts.
+pub fn refuse(error: relay_tool.ToolError) -> Start(context) {
+  Refuse(error)
+}
+
+/// An agent served as the MCP tool `definition`: its store, the agent, how
+/// a call starts its run, and how long a call waits for the answer. Build it
+/// with `service` and the `with_*` setters, and publish it with `serve`.
 pub opaque type Service(server_context, context, input, answer) {
   Service(
+    definition: relay_tool.Definition(input, answer),
     runs: Store,
     agent: Agent(context, answer),
-    start: fn(relay_tool.Call(server_context), input) ->
-      Result(Start(context), relay_tool.ToolError),
+    start: fn(relay_tool.Call(server_context), input) -> Start(context),
     wait: Duration,
   )
 }
 
 const longest_timer = 4_294_967_295
 
-/// A service that runs `agent` in `runs`. For each call, `start` builds the
-/// run's context, prompt and principal from the call (`tool.context(call)`
-/// is the server's context, such as the authenticated principal) and its
-/// input, or refuses the call with the `isError` result it returns. A call
-/// waits 25 seconds for the answer (`with_wait`).
+/// A service that publishes `agent`, run in `runs`, as the tool
+/// `definition`. For each call, `start` builds the run's context and prompt
+/// from the call (`tool.context(call)` is the server's context, such as the
+/// authenticated principal) and its decoded input, or refuses the call
+/// (`refuse`). A call waits 25 seconds for the answer (`with_wait`).
+///
+/// ```gleam
+/// fabric_relay.service(ask_desk(), runs:, agent: desk, start: fn(call, question) {
+///   fabric_relay.start(Nil, prompt: question.text)
+///   |> fabric_relay.with_principal(tool.context(call).subject)
+/// })
+/// |> fabric_relay.serve
+/// ```
 pub fn service(
-  runs: Store,
-  agent: Agent(context, answer),
-  start start: fn(relay_tool.Call(server_context), input) ->
-    Result(Start(context), relay_tool.ToolError),
+  definition: relay_tool.Definition(input, answer),
+  runs runs: Store,
+  agent agent: Agent(context, answer),
+  start start: fn(relay_tool.Call(server_context), input) -> Start(context),
 ) -> Service(server_context, context, input, answer) {
-  Service(runs:, agent:, start:, wait: duration.seconds(25))
+  Service(definition:, runs:, agent:, start:, wait: duration.seconds(25))
 }
 
 /// How long a call waits for its run's answer before it answers that the
@@ -410,11 +447,14 @@ pub fn run_id(
   run.id_from_parts("mcp", [relay_tool.name(definition), principal, key])
 }
 
-/// Publishes `service`'s agent as the Relay tool `definition`, for
-/// `relay/server.new`. A call answers with the run's answer when it
-/// completes in time. Otherwise it answers `isError: true` with a line for
-/// people and, as structured content, an object whose `error` names what
-/// happened and whose `run_id` names the run:
+/// Publishes `service`'s agent as its Relay tool, for `relay/server.new`.
+/// A call answers with the run's answer when it completes in time; the
+/// answer's text block names the run in its `_meta`
+/// (`io.github.gleam-dream/run-id`; a content-only definition's answer has
+/// none). Otherwise it answers `isError: true` with a line for people,
+/// whose `_meta` names the run the same way, and, as structured content, an
+/// object whose `error` names what happened and whose `run_id` names the
+/// run:
 ///
 /// | `error` | The run |
 /// | --- | --- |
@@ -430,15 +470,29 @@ pub fn run_id(
 ///
 /// The list may grow: match the values a client handles and keep a
 /// default.
+///
+/// A call without a key owns its run, which ends with the call. A keyed
+/// run outlives it, bounded by the agent's own limits: its model attempts
+/// (`agent.with_max_turns`), model and tool timeouts, an optional token
+/// budget, and its approval requests, which expire after 7 days by default
+/// (`agent.with_approval_expiry`) and reject their action. One wait has no
+/// bound: a run stopped on an effect of unknown status (`outcome_unknown`)
+/// waits for a person to reconcile it, by design, since ending it would
+/// hide the effect. Find such runs by the `run_id` the call answered, and
+/// reconcile (`fabric.reconcile`) or cancel (`fabric.cancel`) them; an
+/// `unattended` run waits for `fabric.recover` or a sweeper.
 pub fn serve(
-  definition: relay_tool.Definition(input, answer),
   service: Service(server_context, context, input, answer),
 ) -> relay_tool.Tool(server_context) {
+  let definition = service.definition
   relay_tool.handle_call(definition, fn(call, input) {
-    use Start(context:, prompt:, principal:) <- result.try(service.start(
-      call,
-      input,
-    ))
+    use #(context, prompt, principal) <- result.try(
+      case service.start(call, input) {
+        Start(context:, prompt:, principal:) ->
+          Ok(#(context, prompt, principal))
+        Refuse(error) -> Error(error)
+      },
+    )
     let key = relay_tool.idempotency_key(call)
     let id = case key {
       Some(key) -> run_id(definition, principal:, key:)
@@ -452,7 +506,7 @@ pub fn serve(
     }
     case fabric.await_with(handle, within: service.wait, or: ending) {
       Ok(fabric.Reached(run.Finished(run.Completed(answer)))) ->
-        Ok(relay_tool.complete(answer))
+        Ok(completed(definition, answer, id))
       Ok(fabric.Reached(status)) -> Error(unfinished(handle, status, owned))
       Ok(fabric.Interrupted(Nil)) -> {
         let _ = fabric.cancel(handle)
@@ -462,6 +516,39 @@ pub fn serve(
         Error(failure("unavailable", id, fabric.describe_error(error), []))
     }
   })
+}
+
+/// The `_meta` key that names a served call's run.
+const run_id_meta = "io.github.gleam-dream/run-id"
+
+fn run_meta(id: RunId) -> content.Meta {
+  [#(run_id_meta, value.String(run.id_to_string(id)))]
+}
+
+/// The run's answer, with a text block that mirrors it (as Relay's own
+/// does) and names the run.
+fn completed(
+  definition: relay_tool.Definition(input, answer),
+  answer: answer,
+  id: RunId,
+) -> relay_tool.Reply(answer) {
+  let encoded =
+    relay_tool.output_codec(definition)
+    |> option.to_result(Nil)
+    |> result.try(fn(output) {
+      codec.encode(output, answer) |> result.replace_error(Nil)
+    })
+  case encoded {
+    Ok(encoded) ->
+      relay_tool.complete_with_content(answer, [
+        content.text(case encoded {
+          value.String(text) -> text
+          other -> value.to_string(other)
+        })
+        |> content.with_meta(run_meta(id)),
+      ])
+    Error(Nil) -> relay_tool.complete(answer)
+  }
 }
 
 /// Starts the call's run, or for a retried key opens the run it started.
@@ -590,7 +677,7 @@ fn failure(
   facts: List(#(String, Value)),
 ) -> relay_tool.ToolError {
   relay_tool.error_with(
-    [content.text(text)],
+    [content.text(text) |> content.with_meta(run_meta(id))],
     Some(
       value.Object([
         #("error", value.String(name)),
