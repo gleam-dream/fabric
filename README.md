@@ -176,8 +176,10 @@ pub type Verdict {
   Approve
   Reject(reason: String)
   /// What actually happened to an effect of unknown status, as the model
-  /// will see it.
+  /// will see it (`tool.reconciliation` encodes a typed result).
   Happened(content: String)
+  /// No one can say yet: the model is told so, and the run goes on.
+  StillUnknown(note: String)
 }
 
 /// The application authenticates whoever answers an approval, then names
@@ -218,6 +220,12 @@ pub fn review(
       fabric.reject(handle, pending.reference, reason:, reviewer:)
     run.Suspended(_, [uncertain, ..]), Happened(content) ->
       fabric.reconcile(handle, uncertain.reference, content)
+    run.Suspended(_, [uncertain, ..]), StillUnknown(note) ->
+      fabric.reconcile(
+        handle,
+        uncertain.reference,
+        tool.unconfirmed_reconciliation(note),
+      )
     // `Working`: the time ran out. `Unattended`: its runner was lost.
     // `Finished`: nothing more can change it.
     status, _ -> Ok(status)
@@ -373,7 +381,10 @@ fails with an opaque `model.ModelError`:
 `agent.ConfigError`, `model.ErrorKind`, `run.Outcome`, `run.HostFailure`,
 `run.ActionState`, `graph.Error`, `graph.Failure`,
 `definition.BuildError`, `graph.Status`) each have such a classification or
-a `describe_*` function.
+a `describe_*` function: `run.host_failure_kind` and
+`run.action_state_kind` with `describe_host_failure` and
+`describe_action_state`, for example. `agent.describe_config_errors` puts
+every problem `build` reported on one line.
 
 ### Correlation
 
@@ -383,8 +394,10 @@ stored with the run and carried in every `fabric/telemetry` event of the
 run and its sub-agents, in every `model.Request` (with the run id and the
 turn), and in every tool's `tool.Call`. Every run event also names its
 family's root run (`root`), so a sub-agent's events join their root's. `fabric/llm` puts it on each
-turn's HTTP Gun client view, so one agent serves every run, and
-`fabric_saga` starts each Saga run with it. A graph run takes its
+turn's HTTP Gun client view, so one agent serves every run.
+`fabric_saga` starts each Saga run with it, and every step of the workflow
+reads it with `saga.correlation_of(key)` for the clients it calls; the
+tool's `input` need not carry it. A graph run takes its
 correlation the same way (`graph.start(.., correlation:)`): it is stored,
 carried in every `graph_*` and `activation_*` event, in every operation's
 `operation.Invocation`, and inherited by the graph's child runs, managed

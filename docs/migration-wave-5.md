@@ -1151,3 +1151,217 @@ One line for logs and for a caller that reports why a run did not complete,
 such as `fabric_relay.serve`'s `isError` text. It replaces
 `string.inspect(outcome)` in `oversight/apps/tool_hub/src/tool_hub/assistant.gleam`
 (`Failed(string.inspect(other))`).
+
+## Slice F6: leftovers
+
+Slice F6 finishes FABRIC-R11 and R12, adds the classifications the README
+promised, and takes up what the app migrations found. Stored records keep
+their format: an answer wrapped for the provider is stored as its own JSON,
+which is what an unwrapped answer always stored.
+
+### `fabric_saga`: the held error is in the evidence (R11)
+
+Saga's `Unresolved(step, evidence, settlement)` carries the error a step
+held its effects on (the error `saga.unknown_when` marked, or a recovery
+decision's `Hold(evidence)`). The uncertain effect's evidence now renders it
+with the tool's `explain`, after the held step:
+
+```text
+// Before
+the workflow's effects are not known: the workflow held the effects of step
+refund unresolved; ... (Saga reported unresolved at refund)
+
+// After
+the workflow's effects are not known: the workflow held the effects of step
+refund unresolved: <explain(error)>; ... (Saga reported unresolved at refund)
+```
+
+Saga's report in the evidence still names kinds, actions and step addresses
+only. No signature changes. Dependents: code that matches the evidence text
+(`oversight/apps/support_desk` shows it; its tests read substrings that
+still match).
+
+### A Saga step reads the run's correlation
+
+Nothing changes in `fabric_saga`: each Saga run already carries the Fabric
+run's correlation, and since saga 9a0b1d8 every step reads it from its
+`EffectKey`. The docs now say so, and the tool's `input` need not carry it:
+
+```gleam
+// Before: the correlation passed through the workflow's input
+input: fn(_, call, loan) { #(loan, call.correlation) }
+
+// After
+input: fn(_, _, loan) { loan }
+saga.effect("book_courier", fn(loan, key) {
+  courier |> http_gun.with_correlation(saga.correlation_of(key)) |> book(loan)
+})
+```
+
+Dependents: `oversight/apps/support_desk` and `research_agent` correlate the
+saga's HTTP client by hand and can use `saga.correlation_of`.
+
+### `fabric_typesafe` posts through a caller's `http_gun.Client` (R12)
+
+The classifier no longer opens Gun itself; `src/fabric_typesafe_http.erl` and
+the `gun` dependency are gone. A request goes through the client view the
+caller passes, so its timeout, body and header limits, destination policy
+and telemetry are HTTP Gun's, and it carries the graph run's correlation
+(`operation.Invocation.correlation`).
+
+```gleam
+// Before
+let assert Ok(settings) = client.new(api_key)
+let assert Ok(settings) =
+  client.with_bounds(settings, client.Bounds(..client.bounds(), timeout: duration.seconds(20)))
+
+// After
+let assert Ok(settings) =
+  client.new(
+    http |> http_gun.with_timeout(config.After(duration.seconds(20))),
+    key: api_key,
+  )
+```
+
+| Before                                           | After                                                                                                                                                                                                                               |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `client.new(key)`                                | `client.new(http_gun.Client, key:)`                                                                                                                                                                                                 |
+| `client.Bounds`, `bounds()`, `with_bounds`       | the view's `http_gun.with_timeout` (client default 30 s, was 20 s); `config.with_max_request_body_bytes` (1 MiB), `with_max_response_body_bytes` (8 MiB, was 1 MiB) or `http_gun.with_body_limit`; `with_max_header_bytes` (16 KiB) |
+| `client.post`, `client.Error`, `client.Response` | internal: the operation posts                                                                                                                                                                                                       |
+| plaintext to `localhost`, `127.0.0.1`, `::1`     | the same names, and HTTP Gun admits plaintext only to loopback addresses; a client for a loopback endpoint needs `config.allow_loopback`                                                                                            |
+
+A failure HTTP Gun proves unsent (`NotSent`) is still definite
+(`tool.Explain`), any other is uncertain. Dependents: `consumers/decision`
+and `consumers/writing` (migrated); none outside this repository.
+
+### `run.HostFailure` and `run.ActionState` are classified (added)
+
+```gleam
+pub fn host_failure_kind(failure: run.HostFailure) -> run.HostFailureKind
+// PolicyFault | ToolFault | ModelFault
+pub fn describe_host_failure(failure: run.HostFailure) -> String
+pub fn action_state_kind(state: run.ActionState) -> run.ActionStateKind
+// Active | NeedsApproval | NeedsReconciliation | Ended
+pub fn describe_action_state(state: run.ActionState) -> String
+```
+
+The kinds never gain variants. `describe_action_state` names a tool's
+result and a sub-agent's answer only by their presence. `describe_outcome`
+uses `describe_host_failure` for `Failed`, with the same text as before.
+Dependents: none; an app that matches every `ActionState` to log it can
+call `describe_action_state`.
+
+### `agent.describe_config_errors` (added)
+
+```gleam
+// Before
+string.join(list.map(errors, agent.describe_config_error), "; ")
+// After
+agent.describe_config_errors(errors)
+```
+
+Dependents: `oversight/apps/support_desk/src/support_desk/desk.gleam`.
+
+### `tool.unconfirmed_reconciliation` (added)
+
+A person who cannot yet say what happened had to write the content by hand.
+
+```gleam
+// Before
+fabric.reconcile(handle, effect, "{\"status\":\"unconfirmed\",\"note\":\"finance is checking\"}")
+// After
+fabric.reconcile(handle, effect, tool.unconfirmed_reconciliation("finance is checking"))
+// The model sees {"unconfirmed":"finance is checking"}
+```
+
+The action ends `Reconciled` and leaves the run's uncertain effects, so the
+application tracks the open question from there. To keep the run waiting
+for the answer instead, do not reconcile. Dependents:
+`oversight/apps/support_desk/src/support_desk.gleam` (`unconfirmed`).
+
+### A taken id whose record cannot be read is not `same_input: False`
+
+`fabric.start` and `graph.start` answered `AlreadyStarted(id, same_input:
+False)` both for another start's run and for a stored run they could not
+read. They now return the read's error for the second: `StoreUnavailable`
+(an `Unavailable` kind: start again to compare), or `CorruptRecord` or
+`UnsupportedVersion` (`Incompatible`). `AlreadyStarted` always means the
+stored run was compared; its type is unchanged.
+
+```gleam
+// Before: an unreadable record looked like someone else's run
+Error(fabric.AlreadyStarted(_, same_input: False)) -> Error(IdTaken)
+// After: the same arm means another start's run; an unreadable one is
+Error(fabric.StoreUnavailable(_)) -> retry()
+```
+
+Dependents: `oversight/apps/research_agent/src/research_agent/jobs.gleam`
+and `oversight/apps/support_desk/src/support_desk/desk.gleam` match
+`AlreadyStarted(_, same_input: True)` or `AlreadyStarted(id, ..)` and keep
+compiling; an unreadable record now reaches their catch-all instead.
+
+### Answers without an object root are wrapped for the provider
+
+Providers need an object at the root of an output schema, so a typed answer
+that was a list, a string, a number, a boolean or a nullable value failed
+every turn through `fabric/llm` with `InvalidRequest`. `fabric/llm` now
+sends such a schema as `{"answer": <schema>}` and unwraps the reply before
+Fabric reads it, for agents and graph agents alike (both use `fabric/llm`):
+the codec stays the natural type and the run stores the answer's own JSON.
+
+```gleam
+// Before: a wrapper record in the application
+agent.with_answer({
+  use cities <- codec.field("cities", codec.list(codec.string()), get: fn(c) { c })
+  codec.success(cities)
+})
+// After
+agent.with_answer(codec.list(codec.string()))
+// The provider sees {"answer": [...]}; the run stores ["Paris","Rome"]
+```
+
+A `codec.union` answer is wrapped too, but llm_wire's strict structured
+output refuses a union at any depth, so through `fabric/llm` it still fails
+the turn with `InvalidRequest`; a model built with `model.new` answers it
+directly. Dependents: `oversight/apps/research_agent` flattens its
+`Written | NoSources` answer into a record and must keep doing so until
+llm_wire takes unions.
+
+### `fabric_relay.service` takes the definition; `start` returns a `Start`
+
+```gleam
+// Before: `question` needed an annotation, `principal` a constant, and the
+// result an `Ok` that could not fail
+let service =
+  fabric_relay.service(runs, assistant, start: fn(call, question: Question) {
+    Ok(fabric_relay.start(ctx, prompt: question.text, principal: "local"))
+  })
+server.new([fabric_relay.serve(ask_assistant(), service)])
+
+// After
+fabric_relay.service(ask_assistant(), runs:, agent: assistant, start: fn(call, question) {
+  fabric_relay.start(ctx, prompt: question.text)
+  |> fabric_relay.with_principal(tool.context(call).subject)  // optional
+})
+|> fabric_relay.serve
+```
+
+| Before                                               | After                                                                                              |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `service(runs, agent, start:)`                       | `service(definition, runs:, agent:, start:)`                                                       |
+| `serve(definition, service)`                         | `serve(service)`                                                                                   |
+| `start: fn(call, input) -> Result(Start, ToolError)` | `start: fn(call, input) -> Start`; `refuse(tool_error)` refuses                                    |
+| `start(context, prompt:, principal:)`                | `start(context, prompt:)`, principal `anonymous`; `with_principal(start, p)`                       |
+| a completed call names no run                        | its text block's `_meta` has `io.github.gleam-dream/run-id`, as an `isError` result's now does too |
+
+Relay's call carries no authenticated subject of its own (the server's
+context holds it), so the default principal is the constant
+`fabric_relay.anonymous`, which suits one trusted client; a server with
+several clients names it. A content-only definition's answer names no run.
+`serve` documents what bounds a keyed run whose client never retries: the
+agent's turn, timeout and token limits and the 7-day approval expiry. A run
+stopped on an effect of unknown status has no bound, by design: it waits
+for a person.
+
+Dependents: `oversight/apps/tool_hub/src/tool_hub/assistant.gleam`
+(`service`, `start`, `serve`) breaks at compile time.
