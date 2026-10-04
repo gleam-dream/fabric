@@ -851,3 +851,183 @@ queued or a wait begun, with its kind and deadline), `activation_settled`
 (`[fabric, graph, stop]`). Each carries the run's `correlation` and its
 family's `root`; a graph run's `lease_lost` now carries its stored
 correlation and root. Additive: no dependent breaks.
+
+## Slice F3: typed answers
+
+An agent's final answer is now typed. `agent.with_answer(spec, codec)` gives
+it a codec: the model is asked for the codec's JSON Schema, and a run
+completes with the decoded value. The answer type flows through `Agent`,
+`fabric.Run`, `run.Status`, `run.Outcome` and `run.Snapshot`, through
+sub-agents (a delegation's output is its child's answer) and through graph
+agents (the operation's output codec is the agent's). Commands return the
+run's status in both runtimes.
+
+Stored records keep their format: a run stores the text the model sent, as
+before. The fixtures `test/fixtures/records/pre-answer-*.json` were written
+by the fabric of slice F5 (`stored_answer_test`): a completed run stored with
+a text answer reads as `run.Completed(text)` under a plain agent, and through
+the agent's codec when the text decodes (`run.Completed(value)`); a stored
+text the codec refuses reads as `run.AnswerInvalid(raw:, reason:)`. A run that
+ends on an invalid answer is stored as a completion with an
+`"answer_invalid"` key, which a reader that ignores the key reads as the text
+answer it would have read before.
+
+### `agent.with_answer`; `Spec`, `Agent` and the run types gain the answer
+
+```gleam
+// Before
+let assert Ok(desk) = agent.new("desk", model, tools, policy) |> agent.build
+// desk: Agent(Ctx)
+case fabric.await(handle, within: duration.seconds(30)) {
+  Ok(run.Finished(run.Completed(text))) -> parse_resolution(text)
+  ...
+}
+
+// After
+let assert Ok(desk) =
+  agent.new("desk", model, tools, policy)
+  |> agent.with_answer(resolution_codec)   // a record codec with a schema
+  |> agent.build
+// desk: Agent(Ctx, Resolution); without with_answer: Agent(Ctx, String)
+case fabric.await(handle, within: duration.seconds(30)) {
+  Ok(run.Finished(run.Completed(resolution))) -> Ok(resolution)
+  Ok(run.Finished(run.AnswerInvalid(raw:, reason:))) -> Error(#(raw, reason))
+  ...
+}
+```
+
+| Before                                      | After                                                                      |
+| ------------------------------------------- | -------------------------------------------------------------------------- |
+| `agent.Spec(context)`                       | `agent.Spec(context, answer)`; `agent.new` returns `Spec(context, String)` |
+| `agent.Agent(context)`                      | `agent.Agent(context, answer)`                                             |
+| `fabric.Run(context)`                       | `fabric.Run(context, answer)`                                              |
+| `run.Status`, `run.Outcome`, `run.Snapshot` | `run.Status(answer)`, `run.Outcome(answer)`, `run.Snapshot(answer)`        |
+| `run.Completed(text: String)`               | `run.Completed(answer: answer)`                                            |
+| (none)                                      | `run.AnswerInvalid(raw: String, reason: String)`                           |
+| `run.ChildSettled(outcome: Outcome)`        | `run.ChildSettled(outcome: Outcome(String))`                               |
+| `fabric.Awaited(message)`                   | `fabric.Awaited(answer, message)`                                          |
+| `sweeper.agent(Agent(context), ..)`         | `sweeper.agent(Agent(context, answer), ..)`                                |
+| (none)                                      | `agent.AnswerSchemaUnavailable` (`build` refuses a codec without a schema) |
+| (none)                                      | `telemetry.OutcomeKind.AnswerInvalid` (`"answer_invalid"`)                 |
+
+A plain agent changes only in its types: `Agent(Ctx)` becomes
+`Agent(Ctx, String)` and `run.Status` becomes `run.Status(String)`. An
+exhaustive `case` on `run.Outcome` adds `AnswerInvalid`.
+
+`fabric.child(run, id)` returns `Run(context, String)`: a sub-agent's answer
+reads as the text it stored (its delegation reads it with the child's
+codec). Commands on the store with no agent read the stored text:
+`fabric.cancel_stored` returns `Status(String)`, `reconcile_stored` and
+`settle_stored` return `Snapshot(String)`.
+
+Dependents:
+
+- `oversight/apps/support_desk`: `desk.gleam` (`Agent(Session)`,
+  `fabric.Run(Session)`, `run.Outcome`, the 23-line JSON parser in
+  `answer` that `with_answer` replaces), `support_desk.gleam`
+  (`fabric.Run(desk.Session)`), `test/support_desk_test.gleam`.
+- `oversight/apps/research_agent`: `domain.gleam` (the 46-line `TITLE:`
+  parser that `with_answer` replaces), `jobs.gleam` (`Agent(Context)`,
+  `fabric.Run(Context)`, `fabric.Reached(run.Finished(run.Completed(text)))`),
+  `researcher.gleam` (`Agent(Context)`, `run.Snapshot`), `app.gleam`
+  (`run.Snapshot`), `test/research_agent_test.gleam`.
+- `oversight/apps/tool_hub`: `assistant.gleam` (`agent.Agent(Context)`,
+  `fabric.Reached(run.Finished(run.Completed(text)))`),
+  `test/tool_hub_test.gleam` (`run.Status`).
+
+### The model is given the answer's schema
+
+`model.Request` gains `answer: Option(codec.Schema)`: the schema of an agent
+with `with_answer`, `None` for a plain one. Fabric checks a `FinalAnswer`
+against the agent's codec whatever the model did with it. `fabric/llm` asks
+the provider for structured output through `llm_wire.with_output(request,
+"answer", contract.value_codec(..))`: OpenAI's and Anthropic's JSON Schema
+output format, Google's response schema. A final text llm_wire refuses
+against the schema is still returned as the `FinalAnswer`, so the run ends
+with `AnswerInvalid` and keeps the text; a schema the provider cannot take
+(OpenAI and Anthropic need an object at the root) fails the turn as
+`model.InvalidRequest`.
+
+```gleam
+// Before: a model built by hand
+model.Request(run:, turn:, correlation:, system:, messages:, tools:)
+
+// After
+model.Request(run:, turn:, correlation:, system:, messages:, tools:, answer: None)
+```
+
+A model that reads the request by label is unaffected. Dependents: none in
+`oversight/apps` builds a `Request`.
+
+### Sub-agents use the child's answer type
+
+```gleam
+// Before
+agent.with_sub_agent(spec, research, to: researcher, prompt: fn(topic) { topic.name },
+  output: fn(text) { parse_summary(text) })   // research: Definition(Topic, Summary)
+
+// After: the child's answer is the delegation's output
+let researcher = agent.new(..) |> agent.with_answer(summary_codec) |> agent.build
+agent.with_sub_agent(spec, research, to: researcher, prompt: fn(topic) { topic.name })
+```
+
+`definition`'s output type is the child's answer type (`String` for a plain
+child), and its output codec encodes the result the model sees. A child that
+ends with `AnswerInvalid` is a definite failure the model sees ("the
+sub-agent's answer is invalid: ..."). Dependents: none in `oversight/apps`
+calls `with_sub_agent`.
+
+### Graph agents take their output from the agent
+
+```gleam
+// Before
+graph_agent.new(identity, agent, input: topic_codec, output: summary_codec,
+  prompt: fn(topic) { .. }, answer: parse_summary)
+
+// After
+graph_agent.new(identity, agent, input: topic_codec, prompt: fn(topic) { .. })
+// agent: Agent(context, Summary), built with agent.with_answer(summary_codec)
+```
+
+The operation's output codec is the agent's answer codec (`codec.string()`
+for a plain agent, which encodes its text as a JSON string, as an `output:
+codec.string(), answer: Ok` pair did). A child agent that ends with
+`AnswerInvalid` blocks its parent with `graph.InvalidResult(output:, reason:)`,
+as an `answer` callback's `Error` did. `graph_agent.child` returns
+`fabric.Run(context, output)`. Dependents: none in `oversight/apps` uses
+`fabric/graph`.
+
+### Commands return the run's status in both runtimes
+
+The agent runtime's commands returned the run's `Status`, the graph
+runtime's its `Snapshot`. Both now return the status, as `await` does, and
+`snapshot` reads the whole record:
+
+```gleam
+// Before
+let assert Ok(graph.Snapshot(status: graph.AwaitingApproval(pending), ..)) =
+  graph.await(handle, within: duration.seconds(5))
+let assert Ok(done) = graph.approve(handle, pending, reviewer:, context:)
+done.value
+
+// After
+let assert Ok(graph.AwaitingApproval(pending)) =
+  graph.await(handle, within: duration.seconds(5))
+let assert Ok(graph.Completed(answer)) = graph.approve(handle, pending, reviewer:, context:)
+let assert Ok(snapshot) = graph.snapshot(handle)   // the state value, receipts, deadline
+snapshot.value
+```
+
+`graph.await`, `recover`, `poll_job`, `cancel`, `approve`, `reject`,
+`deliver`, `deliver_json` and `reconcile` return `Result(Status(answer),
+Error)`. `graph.cancel_stored` still returns `Nil`: with no definition there
+is no status to read. Dependents: none in `oversight/apps` uses
+`fabric/graph`; this repository's consumers and integrations are migrated.
+
+### `graph.status_kind`
+
+`graph.Status` grows, so it has a stable classification:
+`graph.status_kind(status) -> graph.StatusKind`, one of `Active` (await it),
+`NeedsRecovery` (`Unattended`: recover it), `NeedsInput` (an approval, a
+signal or a reconciliation) and `Ended`; `graph.describe_status` gives one
+line for logs. Additive.
