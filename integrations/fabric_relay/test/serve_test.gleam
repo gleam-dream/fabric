@@ -133,18 +133,6 @@ fn served(runs, desk) {
   })
 }
 
-/// The run a block's `_meta` names.
-fn meta_run(blocks: List(content.ContentBlock)) -> Option(String) {
-  case blocks {
-    [content.TextContent(meta:, ..), ..] ->
-      case list.key_find(meta, "io.github.gleam-dream/run-id") {
-        Ok(value.String(id)) -> Some(id)
-        _ -> None
-      }
-    _ -> None
-  }
-}
-
 /// The `error` and `run_id` of an `isError` result.
 fn refusal(result) -> #(String, Option(String)) {
   let assert Ok(client.ToolFailed(_, Some(value.Object(facts)))) = result
@@ -178,15 +166,22 @@ pub fn a_call_answers_with_the_runs_typed_answer_test() {
   let peer =
     testing.connect(desk_server(service), "ada")
     |> client.with_correlation(correlation.from_key("ticket-12"))
-  let assert Ok(client.Succeeded(answer, blocks)) =
-    client.call(peer, ask(), Question("hello"))
+  let assert Ok(result) = client.call(peer, ask(), Question("hello"))
+  let assert client.Succeeded(answer, blocks) = result
   answer |> should.equal(Answer("done: hello"))
   // The run took the call's correlation, and the answer names the run.
   let assert Ok(Turn(run: id, correlation:, ..)) = process.receive(turns, 100)
   correlation |> should.equal(correlation.from_key("ticket-12"))
-  meta_run(blocks) |> should.equal(Some(run.id_to_string(id)))
+  fabric_relay.run_of(result) |> should.equal(Some(id))
   let assert [content.TextContent(text:, ..)] = blocks
   text |> should.equal("{\"answer\":\"done: hello\"}")
+}
+
+/// A result that names no run, such as another server's, has no run.
+pub fn a_result_without_a_run_names_none_test() {
+  fabric_relay.run_of(client.Succeeded(Nil, [content.text("plain")]))
+  |> should.equal(None)
+  fabric_relay.run_of(client.ToolFailed([], None)) |> should.equal(None)
 }
 
 /// A `start` that names no principal runs a keyed call for `anonymous`.
@@ -201,19 +196,18 @@ pub fn a_call_without_a_principal_runs_for_anonymous_test() {
         fabric_relay.start(Nil, prompt: question.text)
       },
     )
-  let assert Ok(client.Succeeded(_, blocks)) =
+  let assert Ok(result) =
     testing.connect(desk_server(service), "ada")
     |> client.with_idempotency_key("k-1")
     |> client.call(ask(), Question("hello"))
-  meta_run(blocks)
+  let assert client.Succeeded(..) = result
+  fabric_relay.run_of(result)
   |> should.equal(
-    Some(
-      run.id_to_string(fabric_relay.run_id(
-        ask(),
-        principal: fabric_relay.anonymous,
-        key: "k-1",
-      )),
-    ),
+    Some(fabric_relay.run_id(
+      ask(),
+      principal: fabric_relay.anonymous,
+      key: "k-1",
+    )),
   )
 }
 
@@ -250,8 +244,9 @@ pub fn a_retried_call_reaches_the_same_run_test() {
   let expected = fabric_relay.run_id(ask(), principal: "ada", key: "order-1001")
   refusal(first)
   |> should.equal(#("awaiting_approval", Some(run.id_to_string(expected))))
-  let assert Ok(client.ToolFailed(blocks, _)) = first
-  meta_run(blocks) |> should.equal(Some(run.id_to_string(expected)))
+  let assert Ok(failed) = first
+  let assert client.ToolFailed(..) = failed
+  fabric_relay.run_of(failed) |> should.equal(Some(expected))
   let assert Ok(approvals) = list.key_find(facts(first), "approvals")
   approvals
   |> should.equal(

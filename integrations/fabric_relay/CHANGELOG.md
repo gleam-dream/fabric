@@ -21,6 +21,8 @@ version:, peer:)` as a graph activity. `isError` is `tool.Explain`; a call
   with an idempotency key names its run (`run_id`), so a retry reaches the
   same run. `with_wait` sets how long a call waits (25 s). Every result's
   text block names the run in `_meta` (`io.github.gleam-dream/run-id`).
+- `run_of(result)`: the run a served call's result names in its `_meta`,
+  as a `RunId`, for a client that opens the run (`fabric.open`).
 
 ### Changed (slice F6, for code written against slice F4)
 
