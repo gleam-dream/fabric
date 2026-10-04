@@ -24,7 +24,7 @@ with_peer(Body) ->
 
 start_run({Peer, _OsPid}, Schema, Lease) ->
     peer:call(Peer, 'fabric_postgres@peer_test', start_owned_run,
-              [Schema, Lease], 30000).
+              [Schema, Lease], 60000).
 
 kill_peer({Peer, OsPid}) ->
     Monitor = erlang:monitor(process, Peer),

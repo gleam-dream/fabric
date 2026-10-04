@@ -91,6 +91,51 @@ fn start_store(settings) {
   runs
 }
 
+/// A store like `start_store`'s whose sweeps report what they claimed.
+fn start_watched_store(
+  settings: fabric_postgres.Settings,
+  scans: process.Subject(Result(List(String), backend.StoreError)),
+) -> store.Store {
+  let postgres = fabric_postgres.backend(settings)
+  let watched =
+    backend.LeasedBackend(..postgres, claim_ready: fn(owner, ttl, limit) {
+      let claimed = postgres.claim_ready(owner, ttl, limit)
+      process.send(scans, claimed)
+      claimed
+    })
+  let assert Ok(runs) =
+    store.leased(
+      process.new_name("fork-deadline"),
+      node: "fork-deadline",
+      lease: duration.seconds(30),
+      backend: watched,
+    )
+  let assert Ok(Nil) = store.start(runs)
+  runs
+}
+
+/// Waits until the cleanup has converged: no run holds a lease, and the
+/// next sweep's claim, made after that, found nothing ready.
+fn converged(
+  backend: backend.LeasedBackend,
+  ids: List(run.RunId),
+  scans: process.Subject(Result(List(String), backend.StoreError)),
+) -> Nil {
+  idle(backend, ids, 3000)
+  drain(scans)
+  case process.receive(scans, 30_000) {
+    Ok(Ok([])) -> Nil
+    _ -> converged(backend, ids, scans)
+  }
+}
+
+fn drain(subject: process.Subject(a)) -> Nil {
+  case process.receive(subject, 0) {
+    Ok(_) -> drain(subject)
+    Error(Nil) -> Nil
+  }
+}
+
 fn sweep(runs, arrivals) {
   let assert Ok(started) =
     sweeper.start(
@@ -103,6 +148,30 @@ fn sweep(runs, arrivals) {
       every: duration.milliseconds(20),
     )
   started
+}
+
+/// Before the fork's deadline no run is ready. The deadline counts from
+/// the root's start, so a loaded machine can get here after it: then the
+/// root is rightly ready, and the claim taken to show it is given back.
+fn nothing_ready_before(
+  backend: backend.LeasedBackend,
+  root: run.RunId,
+  due: Int,
+) -> Nil {
+  let claimed = backend.claim_ready("early", 60_000, 10)
+  let assert Ok(now) = backend.now()
+  case claimed {
+    Ok([only]) if now >= due -> {
+      only |> should.equal(run.id_to_string(root))
+      let assert Ok(row) = backend.get(only)
+      backend.compare_and_set(only, row.revision, row.record, backend.Release)
+      |> should.be_ok
+    }
+    _ -> {
+      let assert Ok([]) = claimed as "early"
+      Nil
+    }
+  }
 }
 
 fn idle(
@@ -202,7 +271,7 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
       |> should.be_ok
     })
   })
-  backend.claim_ready("early", 60_000, 10) |> should.equal(Ok([]))
+  nothing_ready_before(backend, id, due)
   let assert Ok(_) =
     pog.query(
       "SELECT true FROM pg_sleep(GREATEST(0, ($1::bigint - floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint)::double precision / 1000.0) + 0.02)",
@@ -210,9 +279,10 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
     |> pog.parameter(pog.int(due))
     |> pog.timeout(30_000)
     |> pog.execute(connection)
+  let scans = process.new_subject()
   let #(cleanup_owner, cleanup_runs) =
     agents.owned(fn() {
-      let runs = start_store(settings)
+      let runs = start_watched_store(settings, scans)
       let _ = sweep(runs, arrivals)
       runs
     })
@@ -234,10 +304,10 @@ pub fn nested_expiration_recovers_after_two_store_losses_without_effect_replay_t
     limit: 10,
   )
   |> should.equal(Ok(0))
-  process.sleep(100)
-  idle(backend, ids, 3000)
-  backend.claim_ready("not-again", 60_000, 10) |> should.equal(Ok([]))
+  converged(backend, ids, scans)
   agents.kill(cleanup_owner)
+  let assert Ok([]) = backend.claim_ready("not-again", 60_000, 10)
+    as "not-again"
   // Reconcile through another store after all original cleanup watches are gone.
   let runs = start_store(settings)
   list.each(members, fn(member) {
