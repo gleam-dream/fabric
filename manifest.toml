@@ -30,6 +30,7 @@ packages = [
 [requirements]
 gleam_crypto = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }
+gleam_http = { version = ">= 4.0.0 and < 5.0.0" }
 gleam_json = { version = ">= 3.0.0 and < 4.0.0" }
 gleam_otp = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_stdlib = { version = ">= 0.70.0 and < 2.0.0" }
@@ -38,4 +39,5 @@ gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 http_gun = { path = "../http_gun" }
 json_blueprint = { path = "../json_blueprint" }
 llm_wire = { path = "../llm_wire" }
+simplifile = { version = ">= 2.0.0 and < 3.0.0" }
 sinal = { path = "../sinal" }

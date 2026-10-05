@@ -8,9 +8,6 @@ import fabric/graph/operation
 import fabric/reviewer
 import fabric/run
 import fabric/store
-import fabric_typesafe
-import fabric_typesafe/client
-import fabric_typesafe/question
 import fabric_writing
 import fabric_writing/domain
 import fabric_writing/evaluation
@@ -29,6 +26,8 @@ import http_gun
 import http_gun/config as http_config
 import json/blueprint/codec
 import llm_wire
+import llm_wire/classify
+import llm_wire/classify/question
 import llm_wire/openai
 
 @external(erlang, "fabric_writing_ffi", "environment")
@@ -73,18 +72,15 @@ pub fn main() -> Nil {
     "typesafe" -> {
       // The classifier posts through the same client, bounded to the
       // 20-second request it had before.
-      let assert Ok(settings) =
-        client.new(
-          http
-            |> http_gun.with_timeout(http_config.After(duration.seconds(20))),
-          key: required("TYPESAFE_API_KEY"),
-        )
+      let settings =
+        classify.typesafe(fn() { required("TYPESAFE_API_KEY") })
+        |> classify.with_timeout(llm_wire.After(duration.seconds(20)))
       let model =
         environment("FABRIC_CLASSIFIER_MODEL") |> result.unwrap("jev-latest")
       dispatch(
         mode,
         http,
-        provider.classifier(settings, model),
+        provider.classifier(http, settings, model),
         classifier_metadata,
       )
     }
@@ -165,7 +161,7 @@ fn llm_metadata(receipt: llm.Receipt(a)) -> List(#(String, json.Json)) {
 }
 
 fn classifier_metadata(
-  receipt: fabric_typesafe.Receipt(question.Choice(domain.Decision)),
+  receipt: classify.Outcome(question.Choice(domain.Decision)),
 ) -> List(#(String, json.Json)) {
   [
     #("requested_model", json.string(receipt.requested_model)),

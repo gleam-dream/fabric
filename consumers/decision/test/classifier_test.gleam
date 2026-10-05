@@ -2,8 +2,6 @@ import fabric/graph
 import fabric/run
 import fabric/store
 import fabric_decision_classifier as demo
-import fabric_typesafe
-import fabric_typesafe/client
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None}
@@ -12,6 +10,8 @@ import gleeunit/should
 import http_gun
 import http_gun/config as http_config
 import json/blueprint/codec
+import llm_wire/classify
+import llm_wire/message
 
 type Server
 
@@ -25,9 +25,8 @@ pub fn non_generative_decisions_use_the_same_business_routes_test() {
   let #(server, url) = start_server()
   let assert Ok(http) =
     http_gun.start(http_config.default() |> http_config.allow_loopback)
-  let assert Ok(settings) = client.new(http, key: "test-key")
-  let assert Ok(settings) =
-    client.with_endpoint(settings, url <> "/v1/systemone")
+  let settings = classify.typesafe(fn() { "test-key" })
+  let settings = classify.with_endpoint(settings, url <> "/v1/systemone")
   [#("approve", "approved", "publish"), #("revise", "needs revision", "revise")]
   |> list.each(fn(example) {
     let runs = store.in_memory(process.new_name("classifier-consumer"))
@@ -35,7 +34,7 @@ pub fn non_generative_decisions_use_the_same_business_routes_test() {
     let assert Ok(id) = run.parse_id("classifier-consumer")
     let assert Ok(handle) =
       graph.start(
-        demo.runtime(runs, settings, "fixture"),
+        demo.runtime(runs, http, settings, "fixture"),
         id,
         "fixture:" <> example.0,
         correlation: None,
@@ -47,14 +46,14 @@ pub fn non_generative_decisions_use_the_same_business_routes_test() {
     terminal.node |> should.equal(example.2)
     let assert Ok(receipt) =
       codec.decode_json(
-        fabric_typesafe.receipt_codec(demo.questions()),
+        classify.receipt_codec(settings, demo.questions()),
         review.output_json,
       )
     receipt.resolved_model |> should.equal("protocol-fixture-only")
     receipt.answer.1.0.label |> should.equal(example.0)
     receipt.answer.0.yes |> should.equal(0.9)
     receipt.answer.1.1.position |> should.equal(1.8)
-    receipt.usage |> should.equal(fabric_typesafe.Usage(12, 8))
+    receipt.usage |> should.equal(message.Usage(12, 8, 20))
   })
   stop_server(server)
 }

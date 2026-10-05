@@ -2,12 +2,10 @@
 //// Main performs one live request; tests configure an explicit protocol fixture.
 
 import fabric/graph
+import fabric/graph/classify as decision
 import fabric/run
 import fabric/store
 import fabric_decision_demo/routing
-import fabric_typesafe
-import fabric_typesafe/client
-import fabric_typesafe/question
 import gleam/erlang/process
 import gleam/io
 import gleam/option.{None}
@@ -18,30 +16,33 @@ import http_gun
 import http_gun/config as http_config
 import json/blueprint/codec
 import json/blueprint/value
+import llm_wire
+import llm_wire/classify
+import llm_wire/classify/question
 
 pub type Answers =
   #(question.Noul, #(question.Choice(routing.Decision), question.Score))
 
 pub fn questions() -> question.Batch(Answers) {
-  let assert Ok(noul) =
+  let noul =
     question.noul(value.String("Is this arithmetic statement correct?"), None)
-  let assert Ok(choice) =
+  let choice =
     question.choice(
       value.String("Choose how to handle this arithmetic statement."),
       [
-        question.Alternative(
+        question.alternative(
           "approve",
           routing.Approve,
           value.String("The arithmetic is correct."),
         ),
-        question.Alternative(
+        question.alternative(
           "revise",
           routing.Revise,
           value.String("The arithmetic is incorrect or cannot be assessed."),
         ),
       ],
     )
-  let assert Ok(score) =
+  let score =
     question.score(
       value.String("Rate the arithmetic statement's correctness."),
       [
@@ -50,32 +51,32 @@ pub fn questions() -> question.Batch(Answers) {
         value.String("Correct"),
       ],
     )
-  let assert Ok(first) = question.ask("correct", noul)
-  let assert Ok(second) = question.ask("decision", choice)
-  let assert Ok(third) = question.ask("quality", score)
-  let assert Ok(rest) = question.combine(second, third)
-  let assert Ok(batch) = question.combine(first, rest)
+  let first = question.ask("correct", noul)
+  let second = question.ask("decision", choice)
+  let third = question.ask("quality", score)
+  let rest = question.combine(second, third)
+  let batch = question.combine(first, rest)
   batch
 }
 
 pub fn runtime(
   runs: store.Store,
-  config: client.Config,
+  http: http_gun.Client,
+  config: classify.Config,
   model: String,
-) -> graph.Runtime(client.Config, String, String) {
+) -> graph.Runtime(http_gun.Client, String, String) {
   let reviewer =
-    fabric_typesafe.new(
+    decision.decision(
       run.DefinitionId("arithmetic-classifier", 1),
       codec.string(),
       questions(),
-      fn(settings, input) {
-        #(settings, fabric_typesafe.Request(model, value.String(input)))
-      },
+      config,
+      fn(http, input) { decision.call(http, model, value.String(input)) },
     )
   routing.runtime(
     run.DefinitionId("arithmetic-classifier-graph", 1),
     runs,
-    fn(_) { config },
+    fn(_) { http },
     reviewer,
     fn(receipt) { Ok(receipt.answer.1.0.selected) },
   )
@@ -91,11 +92,9 @@ pub fn main() -> Nil {
       panic as "TYPESAFE_API_KEY is missing or empty; no classifier request was sent"
   }
   let assert Ok(http) = http_gun.start(http_config.default())
-  let assert Ok(settings) =
-    client.new(
-      http |> http_gun.with_timeout(http_config.After(duration.seconds(20))),
-      key:,
-    )
+  let settings =
+    classify.typesafe(fn() { key })
+    |> classify.with_timeout(llm_wire.After(duration.seconds(20)))
   let model =
     environment("FABRIC_CLASSIFIER_MODEL") |> result.unwrap("jev-latest")
   let runs = store.in_memory(process.new_name("classifier-decision-demo"))
@@ -103,7 +102,7 @@ pub fn main() -> Nil {
   let assert Ok(id) = run.parse_id("classifier-decision")
   let assert Ok(handle) =
     graph.start(
-      runtime(runs, settings, model),
+      runtime(runs, http, settings, model),
       id,
       "2 + 2 = 4",
       correlation: None,
@@ -115,7 +114,7 @@ pub fn main() -> Nil {
   io.println(terminal.node)
   let assert Ok(receipt) =
     codec.decode_json(
-      fabric_typesafe.receipt_codec(questions()),
+      classify.receipt_codec(settings, questions()),
       review.output_json,
     )
   io.println("requested model: " <> receipt.requested_model)

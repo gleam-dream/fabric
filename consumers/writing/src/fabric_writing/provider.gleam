@@ -1,15 +1,15 @@
 //// Swappable review producers; both keep their original durable receipts.
 
+import fabric/graph/classify as decision
 import fabric/graph/llm
 import fabric/graph/operation
 import fabric/run
-import fabric_typesafe
-import fabric_typesafe/client
-import fabric_typesafe/question
 import fabric_writing/domain
 import http_gun
 import json/blueprint/value
 import llm_wire
+import llm_wire/classify
+import llm_wire/classify/question
 
 pub type Reviewer(receipt) {
   Reviewer(
@@ -112,30 +112,29 @@ pub fn answer(receipt: llm.Receipt(a)) -> Result(a, String) {
 }
 
 pub fn questions() -> question.Batch(question.Choice(domain.Decision)) {
-  let assert Ok(q) =
+  let q =
     question.choice(value.String(rubric), [
-      question.Alternative("approve", domain.Approve, value.String(approve)),
-      question.Alternative("revise", domain.Revise, value.String(revise)),
-      question.Alternative("reject", domain.Reject, value.String(reject)),
+      question.alternative("approve", domain.Approve, value.String(approve)),
+      question.alternative("revise", domain.Revise, value.String(revise)),
+      question.alternative("reject", domain.Reject, value.String(reject)),
     ])
-  let assert Ok(batch) = question.ask("decision", q)
+  let batch = question.ask("decision", q)
   batch
 }
 
 pub fn classifier(
-  settings: client.Config,
+  http: http_gun.Client,
+  settings: classify.Config,
   model: String,
-) -> Reviewer(fabric_typesafe.Receipt(question.Choice(domain.Decision))) {
+) -> Reviewer(classify.Outcome(question.Choice(domain.Decision))) {
   Reviewer(
-    fabric_typesafe.new(
+    decision.decision(
       run.DefinitionId("writing-review-typesafe", 1),
       domain.draft_codec(),
       questions(),
+      settings,
       fn(_, draft) {
-        #(
-          settings,
-          fabric_typesafe.Request(model, value.String(domain.prompt(draft))),
-        )
+        decision.call(http, model, value.String(domain.prompt(draft)))
       },
     ),
     fn(receipt) { Ok(receipt.answer.selected) },

@@ -29,7 +29,6 @@ PACKAGES = (
     "integrations/fabric_saga",
     "integrations/fabric_postgres",
     "integrations/fabric_relay",
-    "integrations/fabric_typesafe",
     "consumers/app",
     "consumers/graph",
     "consumers/decision",
@@ -79,8 +78,8 @@ def checks(root: Path, profile: str) -> list[Check]:
     if profile != "fast":
         selected.extend([
             Check(
-                "typesafe-protocol-tests", "integrations/fabric_typesafe",
-                ("python3", "-B", "-m", "unittest", "discover", "-s", "test/support", "-p", "*_test.py"),
+                "classification-protocol-tests", ".",
+                ("python3", "-B", "-m", "unittest", "discover", "-s", "test/fixtures/classifier", "-p", "*_test.py"),
             ),
             Check(
                 "writing-evaluation-tests", "consumers/writing",

@@ -1,14 +1,13 @@
 import fabric/approvers
+import fabric/classify_support as support
 import fabric/graph
+import fabric/graph/classify as decision
 import fabric/graph/definition
 import fabric/policy
 import fabric/reviewer
 import fabric/run
 import fabric/store
 import fabric/testing as fabric_testing
-import fabric_typesafe
-import fabric_typesafe/client
-import fabric_typesafe/question
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
@@ -19,9 +18,12 @@ import http_gun/config as http_config
 import http_gun/telemetry as http_telemetry
 import json/blueprint/codec
 import json/blueprint/value
+import llm_wire/classify
+import llm_wire/classify/question
+import llm_wire/message
+import simplifile
 import sinal
 import sinal/correlation
-import support
 
 type Decision {
   Approve
@@ -32,39 +34,39 @@ type Answers =
   #(question.Noul, #(question.Choice(Decision), question.Score))
 
 fn questions() -> question.Batch(Answers) {
-  let assert Ok(noul) =
-    question.noul(value.String("Is the statement correct?"), None)
-  let assert Ok(choice) =
+  let noul = question.noul(value.String("Is the statement correct?"), None)
+  let choice =
     question.choice(value.String("What should happen?"), [
-      question.Alternative("approve", Approve, value.String("Correct")),
-      question.Alternative("revise", Revise, value.String("Incorrect")),
+      question.alternative("approve", Approve, value.String("Correct")),
+      question.alternative("revise", Revise, value.String("Incorrect")),
     ])
-  let assert Ok(score) =
+  let score =
     question.score(value.String("How correct?"), [
       value.String("incorrect"),
       value.String("partial"),
       value.String("correct"),
     ])
-  let assert Ok(first) = question.ask("correct", noul)
-  let assert Ok(second) = question.ask("decision", choice)
-  let assert Ok(third) = question.ask("quality", score)
-  let assert Ok(rest) = question.combine(second, third)
-  let assert Ok(batch) = question.combine(first, rest)
+  let first = question.ask("correct", noul)
+  let second = question.ask("decision", choice)
+  let third = question.ask("quality", score)
+  let rest = question.combine(second, third)
+  let batch = question.combine(first, rest)
   batch
 }
 
 fn runtime(
   runs: store.Store,
-  config: client.Config,
-  policy: policy.Policy(client.Config),
-) -> graph.Runtime(client.Config, String, fabric_typesafe.Receipt(Answers)) {
+  config: support.Config,
+  policy: policy.Policy(support.Config),
+) -> graph.Runtime(support.Config, String, classify.Outcome(Answers)) {
   let op =
-    fabric_typesafe.new(
+    decision.decision(
       run.DefinitionId("classify", 1),
       codec.string(),
       questions(),
-      fn(settings, input) {
-        #(settings, fabric_typesafe.Request("jev-latest", value.String(input)))
+      config.settings,
+      fn(settings: support.Config, input) {
+        decision.call(settings.http, "jev-latest", value.String(input))
       },
     )
   let node_id = definition.node_id("classify")
@@ -83,7 +85,7 @@ fn runtime(
         entry: node_id,
         nodes: [node],
         state: codec.string(),
-        answer: fabric_typesafe.receipt_codec(questions()),
+        answer: classify.receipt_codec(support.settings(), questions()),
       )
       |> definition.with_max_activations(1),
     )
@@ -107,7 +109,7 @@ pub fn an_http_classifier_batch_retains_native_answers_models_usage_and_rubric_t
   let assert graph.Completed(receipt) = done.status
   receipt.requested_model |> should.equal("jev-latest")
   receipt.resolved_model |> should.equal("protocol-fixture-only")
-  receipt.usage |> should.equal(fabric_typesafe.Usage(12, 8))
+  receipt.usage |> should.equal(message.Usage(12, 8, 20))
   let #(noul, #(choice, score)) = receipt.answer
   noul.yes |> should.equal(0.9)
   choice.selected |> should.equal(Approve)
@@ -116,7 +118,7 @@ pub fn an_http_classifier_batch_retains_native_answers_models_usage_and_rubric_t
   string.contains(receipt.request_json, "test-key") |> should.be_false
   let assert [saved] = done.receipts
   codec.decode_json(
-    fabric_typesafe.receipt_codec(questions()),
+    classify.receipt_codec(support.settings(), questions()),
     saved.output_json,
   )
   |> should.equal(Ok(receipt))
@@ -289,17 +291,7 @@ pub fn corrupt_receipts_and_changed_question_meaning_cannot_restore_test() {
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done
-  let codec = fabric_typesafe.receipt_codec(questions())
-  codec.encode(
-    codec,
-    fabric_typesafe.Receipt(..receipt, usage: fabric_typesafe.Usage(0, 0)),
-  )
-  |> should.be_error
-  codec.encode(
-    codec,
-    fabric_typesafe.Receipt(..receipt, resolved_model: "other"),
-  )
-  |> should.be_error
+  let codec = classify.receipt_codec(support.settings(), questions())
   codec.decode(
     codec,
     value.Array([
@@ -333,10 +325,9 @@ pub fn corrupt_receipts_and_changed_question_meaning_cannot_restore_test() {
     },
   )
   let assert Ok(saved) = codec.encode(codec, receipt)
-  let assert Ok(different) =
-    question.noul(value.String("A different question"), None)
-  let assert Ok(different) = question.ask("correct", different)
-  codec.decode(fabric_typesafe.receipt_codec(different), saved)
+  let different = question.noul(value.String("A different question"), None)
+  let different = question.ask("correct", different)
+  codec.decode(classify.receipt_codec(support.settings(), different), saved)
   |> should.be_error
   Nil
 }
@@ -370,7 +361,7 @@ fn id(text: String) -> run.RunId {
 }
 
 fn allow(
-  _: client.Config,
+  _: support.Config,
   _: policy.Action,
 ) -> Result(policy.Decision, String) {
   Ok(policy.Allow)
@@ -398,4 +389,43 @@ fn proof_for(
   let assert Ok(proof) =
     approvers.check(fabric_testing.trusting_approvers(), reviewer, requirement)
   proof
+}
+
+pub fn pre_round9_receipt_and_graph_store_read_without_a_provider_test() {
+  let receipt_codec = classify.receipt_codec(support.settings(), questions())
+  let receipt =
+    simplifile.read("test/fixtures/records/pre-round9-classifier-receipt.json")
+    |> should.be_ok
+  let restored = codec.decode_json(receipt_codec, receipt) |> should.be_ok
+  restored.answer.0.yes |> should.equal(0.9)
+  restored.answer.1.0.selected |> should.equal(Approve)
+  let path = support.temp_dir()
+  let target = path <> "/round9-old-classifier"
+  simplifile.create_directory(target) |> should.be_ok
+  list.each(
+    [
+      "00000000000000000001",
+      "00000000000000000002",
+      "00000000000000000003",
+      "00000000000000000004",
+    ],
+    fn(revision) {
+      let contents =
+        simplifile.read(
+          "test/fixtures/records/pre-round9-classifier-" <> revision <> ".json",
+        )
+        |> should.be_ok
+      simplifile.write(target <> "/" <> revision <> ".json", contents)
+      |> should.be_ok
+    },
+  )
+  let runs = directory(path)
+  let settings = support.Config(support.http(), support.settings())
+  let handle =
+    open_graph(runtime(runs, settings, allow), id("round9-old-classifier"))
+  let snapshot = graph.snapshot(handle) |> should.be_ok
+  let assert graph.Completed(answer) = snapshot.status
+  answer |> should.equal(restored)
+  store.stop(runs) |> should.be_ok
+  support.remove_dir(path)
 }
