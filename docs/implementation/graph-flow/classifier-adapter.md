@@ -1,9 +1,9 @@
 # TypeSafe classifier adapter
 
 This slice implements G10 and [decisions independent of chat](../../GRAPH-FLOW.md#decisions-are-independent-of-chat).
-The optional `fabric_typesafe` package asks typed questions through TypeSafe's
-System One HTTP API. Fabric core gains no classifier dependency or chat-model
-variant. An application composes the resulting native values with existing
+The `llm_wire/classify` family asks typed questions through its TypeSafe
+System One wire. `fabric/graph/classify` composes it as a core graph operation
+using the existing llm_wire dependency, without a chat-model variant. An application composes the resulting native values with existing
 routing, policy and recovery.
 
 ## Retained provider contract

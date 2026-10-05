@@ -1951,3 +1951,72 @@ as for a closed ancestry check. No public type changed. The order predates
 round 8 (1 failure in 300 runs under CPU load at bc99f0e).
 
 Dependents: none; no app or sibling matches on that failure text.
+
+## Round 9: classification ports replace the TypeSafe bridge
+
+Remove the `fabric_typesafe` dependency. Question definitions move to
+`llm_wire/classify/question`; `Alternative(label, value, description)` becomes
+`alternative(label, value, description)`. `noul`, `choice`, `score`, `ask` and
+`combine` are total for source definitions (drop `let assert Ok`); their
+`check_*` counterparts accept runtime definitions and return typed errors.
+`question.decode` returns typed `question.Error`, with `error_kind` and
+`describe_error`. Returned `Noul`, `Choice`, `Score` and `Probability` values
+keep their fields; read them by label.
+
+Before:
+
+```gleam
+let assert Ok(config) = client.new(http, key: key)
+let assert Ok(config) = client.with_endpoint(config, url)
+let op = fabric_typesafe.new(id, input_codec, questions, fn(context, input) {
+  #(config, fabric_typesafe.Request(model, value.String(input)))
+})
+let saved = fabric_typesafe.receipt_codec(questions)
+```
+
+After:
+
+```gleam
+import fabric/graph/classify as decision
+import llm_wire/classify
+
+let config = classify.typesafe(fn() { key }) |> classify.with_endpoint(url)
+let op = decision.decision(id, input_codec, questions, config, fn(context, input) {
+  decision.call(http, model, value.String(input))
+})
+let saved = classify.receipt_codec(config, questions)
+```
+
+Without fabric, use `classify.request(model, state, questions)`,
+`classify.prepare(config, request)` and `classify.run(http, prepared)`.
+The request, settings and prepared call are opaque; settings use `with_*`.
+Preparation returns `error.PrepareError`; execution returns `llm_wire.Failure`
+with submission evidence, `error.kind`, `describe_failure` and `advise`.
+`with_timeout` takes `llm_wire.After(Duration)` or `Infinity`, default 600 s;
+request and response byte limits default to 1 MiB. Endpoint and credential
+validation happens at preparation, not at the settings constructor.
+
+`Receipt(answer)` becomes `classify.Outcome(answer)`. It retains answer,
+requested/resolved model, request/response JSON and usage, and adds the input
+state. Usage is `message.Usage(input_tokens, output_tokens, total_tokens)`.
+Native outcomes have no public constructor. For tests, opaque
+`testing.classification_response(body)`, `with_classification_status`,
+`with_classification_header` and `classification_exchange(prepared, reply)`
+replace the bridge's private fixture transport. A second provider uses
+`classify.wire` and `classify.decoded`; core HTTP behaviour stays shared.
+
+Receipts write `llm.classification.receipt.v1` and still read
+`fabric.typesafe.receipt.v1`. The old-code fixtures include a completed graph
+store; the compatibility test opens it offline. Keep application operation
+identities and versions unchanged when only migrating this wiring.
+The decision and writing consumers migrate together and keep their native
+business routes, rubric evidence, approval and recovery semantics.
+
+### Nested graph execution on slower hosts
+
+No public API or record shape changes. The full gate exposed a nested fork
+that exceeded its unchanged five-second test deadline. Profiling identified
+copies of repeated callback environments, not a lost wakeup: the two-level
+fixture copied 20,488,572 machine words. Lazy callback construction and narrow
+managed-child input contracts reduce that to 3,796,381 words. A structural
+regression bounds copied size, and the original deadline test passed 20 times.
