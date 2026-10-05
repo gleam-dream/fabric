@@ -650,19 +650,30 @@ fn check_prepared(
 ) -> Result(Node(context, state, answer), Error) {
   let id = NodeId(prepared.node)
   use node <- result.try(lookup(definition, id))
-  use _ <- result.try(
-    case
-      prepared.operation == node.operation
-      && prepared.recovery == node.recovery
-      && prepared.kind == node.kind
-      && same_deadline(prepared.deadline, node.deadline)
-    {
-      True -> Ok(Nil)
-      False -> Error(OperationChanged(id))
-    },
-  )
-  use _ <- result.try(node.check_input(prepared.input))
-  Ok(node)
+  use _ <- result.map(prepared_check(node)(prepared))
+  node
+}
+
+/// Retain only the input contract while binding managed children. Capturing
+/// the whole node would copy output codecs and unrelated descendant drivers
+/// into both the child and fork lookup closures.
+fn prepared_check(node: Node(context, state, answer)) {
+  let Node(id:, operation:, recovery:, kind:, deadline:, check_input:, ..) =
+    node
+  fn(prepared: control.Prepared) {
+    use _ <- result.try(
+      case
+        prepared.operation == operation
+        && prepared.recovery == recovery
+        && prepared.kind == kind
+        && same_deadline(prepared.deadline, deadline)
+      {
+        True -> Ok(Nil)
+        False -> Error(OperationChanged(id))
+      },
+    )
+    check_input(prepared.input)
+  }
 }
 
 /// Whether a stored activation's deadline fits the node's. A wait stored
@@ -902,8 +913,14 @@ fn detach_children(
   fn(control.Prepared) -> Result(child_driver.Driver, Error),
   fn(control.Prepared) -> Result(fork_driver.Driver, Error),
 ) {
-  let children = dict.map_values(definition.nodes, fn(_, node) { node.child })
-  let forks = dict.map_values(definition.nodes, fn(_, node) { node.fork })
+  let children =
+    dict.map_values(definition.nodes, fn(_, node) {
+      #(prepared_check(node), node.child)
+    })
+  let forks =
+    dict.map_values(definition.nodes, fn(_, node) {
+      #(prepared_check(node), node.fork)
+    })
   let definition =
     Graph(
       ..definition,
@@ -917,14 +934,21 @@ fn detach_children(
     )
   #(
     definition,
-    fn(prepared) {
-      use node <- result.try(check_prepared(definition, prepared))
-      dict.get(children, node.id)
-      |> result.unwrap(Error(NodeMissing(node.id)))
+    fn(prepared: control.Prepared) {
+      let id = NodeId(prepared.node)
+      use #(check, driver) <- result.try(
+        dict.get(children, id) |> result.replace_error(NodeMissing(id)),
+      )
+      use _ <- result.try(check(prepared))
+      driver
     },
-    fn(prepared) {
-      use node <- result.try(check_prepared(definition, prepared))
-      dict.get(forks, node.id) |> result.unwrap(Error(NodeMissing(node.id)))
+    fn(prepared: control.Prepared) {
+      let id = NodeId(prepared.node)
+      use #(check, driver) <- result.try(
+        dict.get(forks, id) |> result.replace_error(NodeMissing(id)),
+      )
+      use _ <- result.try(check(prepared))
+      driver
     },
   )
 }

@@ -525,65 +525,71 @@ pub fn new(
   let compiled.Detached(definition, child, fork) =
     compiled.detach_children(definition)
   let work_with = fn(context: fn(run.RunId) -> context) {
-    live.Work(
-      admit: fn(state, activation) {
-        let invocation = invocation(state, activation)
-        let prepared = activation.prepared
-        let context = context(invocation.run)
-        use decision <- result.try(policy(
-          context,
-          action(state, activation.id, activation.attempt, prepared),
-        ))
-        Ok(
-          live.Admission(decision, fn() {
-            compiled.invoke(definition, context, invocation, prepared)
-          }),
-        )
-      },
-      accept: fn(state, activation, output) {
-        use _ <- result.try(compiled.check_join(
-          definition,
-          state,
-          activation,
-          output,
-        ))
-        compiled.accept(definition, state.value, activation.prepared, output)
-      },
-      check_output: fn(activation, output) {
-        compiled.check_output(definition, activation.prepared, output)
-      },
-      observe_job: fn(state, activation) {
-        compiled.observe_job(
-          definition,
-          context(run_id.from_string(state.run)),
-          activation.prepared,
-        )
-      },
-      cancel_job: fn(state, activation) {
-        let invocation = invocation(state, activation)
-        let context = context(invocation.run)
-        fn() {
-          compiled.cancel_job(
-            definition,
+    fn() {
+      live.Work(
+        admit: fn(state, activation) {
+          let invocation = invocation(state, activation)
+          let prepared = activation.prepared
+          let context = context(invocation.run)
+          use decision <- result.try(policy(
             context,
-            invocation,
+            action(state, activation.id, activation.attempt, prepared),
+          ))
+          Ok(
+            live.Admission(decision, fn() {
+              compiled.invoke(definition, context, invocation, prepared)
+            }),
+          )
+        },
+        accept: fn(state, activation, output) {
+          use _ <- result.try(compiled.check_join(
+            definition,
+            state,
+            activation,
+            output,
+          ))
+          compiled.accept(definition, state.value, activation.prepared, output)
+        },
+        check_output: fn(activation, output) {
+          compiled.check_output(definition, activation.prepared, output)
+        },
+        observe_job: fn(state, activation) {
+          compiled.observe_job(
+            definition,
+            context(run_id.from_string(state.run)),
             activation.prepared,
           )
-          |> result.replace("null")
-        }
-      },
-      validate: fn(state) { compiled.validate(definition, state) },
-      child: fn(activation) { child(activation.prepared) },
-      fork: fn(activation) { fork(activation.prepared) },
-    )
+        },
+        cancel_job: fn(state, activation) {
+          let invocation = invocation(state, activation)
+          let context = context(invocation.run)
+          fn() {
+            compiled.cancel_job(
+              definition,
+              context,
+              invocation,
+              activation.prepared,
+            )
+            |> result.replace("null")
+          }
+        },
+        validate: fn(state) { compiled.validate(definition, state) },
+        child: fn(activation) { child(activation.prepared) },
+        fork: fn(activation) { fork(activation.prepared) },
+      )
+    }
   }
   // `build` replaces these options with the checked bounds of the spec.
   let runtime =
     graph_runtime.new(
       definition,
       store,
-      work_with(context),
-      fn(given) { work_with(fn(_) { given }) },
+      fn(given) {
+        work_with(case given {
+          None -> context
+          Some(given) -> fn(_) { given }
+        })
+      },
       runner.Options(
         callback_timeout: 1,
         operation_timeout: None,
@@ -1735,16 +1741,18 @@ pub fn cancel_stored(store: store.Store, id: run.RunId) -> Result(Nil, Error) {
 
 /// Work with no definition behind it: every deployed callback refuses.
 fn refusing_work() -> live.Work {
-  live.Work(
-    admit: fn(_, _) { Error("no definition is deployed for this run") },
-    accept: fn(_, _, _) { Error(definition.DefinitionChanged) },
-    check_output: fn(_, _) { Error(definition.DefinitionChanged) },
-    observe_job: fn(_, _) { Error(definition.DefinitionChanged) },
-    cancel_job: fn(_, _) { fn() { Error(definition.DefinitionChanged) } },
-    validate: fn(_) { Error(definition.DefinitionChanged) },
-    child: fn(_) { Error(definition.DefinitionChanged) },
-    fork: fn(_) { Error(definition.DefinitionChanged) },
-  )
+  fn() {
+    live.Work(
+      admit: fn(_, _) { Error("no definition is deployed for this run") },
+      accept: fn(_, _, _) { Error(definition.DefinitionChanged) },
+      check_output: fn(_, _) { Error(definition.DefinitionChanged) },
+      observe_job: fn(_, _) { Error(definition.DefinitionChanged) },
+      cancel_job: fn(_, _) { fn() { Error(definition.DefinitionChanged) } },
+      validate: fn(_) { Error(definition.DefinitionChanged) },
+      child: fn(_) { Error(definition.DefinitionChanged) },
+      fork: fn(_) { Error(definition.DefinitionChanged) },
+    )
+  }
 }
 
 /// Approves the run's waiting approval request. `context` is the
@@ -1958,7 +1966,7 @@ fn signal_event(
 ) -> Result(control.Event, Error) {
   use accepted <- result.try(
     bounded.call(graph_runtime.options(runtime).callback_timeout, fn() {
-      graph_runtime.work(runtime).accept(state, activation, output)
+      graph_runtime.work(runtime)().accept(state, activation, output)
     })
     |> result.map_error(callback_failed),
   )
@@ -2225,7 +2233,7 @@ fn reconcile_with(
         bounded.call(graph_runtime.options(runtime).callback_timeout, fn() {
           case cancelled {
             True -> {
-              use _ <- result.map(graph_runtime.work(runtime).check_output(
+              use _ <- result.map(graph_runtime.work(runtime)().check_output(
                 activation,
                 output,
               ))
@@ -2235,7 +2243,7 @@ fn reconcile_with(
               )
             }
             False -> {
-              use decision <- result.map(graph_runtime.work(runtime).accept(
+              use decision <- result.map(graph_runtime.work(runtime)().accept(
                 state,
                 activation,
                 output,
