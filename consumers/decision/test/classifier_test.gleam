@@ -4,7 +4,7 @@ import fabric/store
 import fabric_decision_classifier as demo
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/time/duration
 import gleeunit/should
 import http_gun
@@ -25,7 +25,7 @@ pub fn non_generative_decisions_use_the_same_business_routes_test() {
   let #(server, url) = start_server()
   let assert Ok(http) =
     http_gun.start(http_config.default() |> http_config.allow_loopback)
-  let settings = classify.typesafe(fn() { "test-key" })
+  let settings = classify.config(fn() { "test-key" })
   let settings = classify.with_endpoint(settings, url <> "/v1/systemone")
   [#("approve", "approved", "publish"), #("revise", "needs revision", "revise")]
   |> list.each(fn(example) {
@@ -46,14 +46,14 @@ pub fn non_generative_decisions_use_the_same_business_routes_test() {
     terminal.node |> should.equal(example.2)
     let assert Ok(receipt) =
       codec.decode_json(
-        classify.receipt_codec(settings, demo.questions()),
+        classify.receipt_codec(classify.typesafe(), demo.questions()),
         review.output_json,
       )
     receipt.resolved_model |> should.equal("protocol-fixture-only")
     receipt.answer.1.0.label |> should.equal(example.0)
     receipt.answer.0.yes |> should.equal(0.9)
     receipt.answer.1.1.position |> should.equal(1.8)
-    receipt.usage |> should.equal(message.Usage(12, 8, 20))
+    receipt.usage |> should.equal(Some(message.Usage(12, 8, 20)))
   })
   stop_server(server)
 }

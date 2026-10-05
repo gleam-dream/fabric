@@ -73,7 +73,7 @@ pub fn main() -> Nil {
       // The classifier posts through the same client, bounded to the
       // 20-second request it had before.
       let settings =
-        classify.typesafe(fn() { required("TYPESAFE_API_KEY") })
+        classify.config(fn() { required("TYPESAFE_API_KEY") })
         |> classify.with_timeout(llm_wire.After(duration.seconds(20)))
       let model =
         environment("FABRIC_CLASSIFIER_MODEL") |> result.unwrap("jev-latest")
@@ -166,13 +166,14 @@ fn classifier_metadata(
   [
     #("requested_model", json.string(receipt.requested_model)),
     #("resolved_model", json.string(receipt.resolved_model)),
-    #(
-      "usage",
-      json.object([
-        #("input_tokens", json.int(receipt.usage.input_tokens)),
-        #("output_tokens", json.int(receipt.usage.output_tokens)),
-      ]),
-    ),
+    #("usage", case receipt.usage {
+      Some(usage) ->
+        json.object([
+          #("input_tokens", json.int(usage.input_tokens)),
+          #("output_tokens", json.int(usage.output_tokens)),
+        ])
+      None -> json.null()
+    }),
     #("request_json", json.string(receipt.request_json)),
     #("response_json", json.string(receipt.response_json)),
   ]

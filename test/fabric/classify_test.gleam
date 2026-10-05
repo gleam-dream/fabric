@@ -3,10 +3,12 @@ import fabric/classify_support as support
 import fabric/graph
 import fabric/graph/classify as decision
 import fabric/graph/definition
+import fabric/graph/operation
 import fabric/policy
 import fabric/reviewer
 import fabric/run
 import fabric/store
+import fabric/support/restart
 import fabric/testing as fabric_testing
 import gleam/erlang/process
 import gleam/list
@@ -59,16 +61,29 @@ fn runtime(
   config: support.Config,
   policy: policy.Policy(support.Config),
 ) -> graph.Runtime(support.Config, String, classify.Outcome(Answers)) {
+  runtime_with_replay(runs, config, policy, False)
+}
+
+fn runtime_with_replay(runs, config: support.Config, policy, replay) {
   let op =
     decision.decision(
       run.DefinitionId("classify", 1),
       codec.string(),
       questions(),
-      config.settings,
+      classify.typesafe(),
       fn(settings: support.Config, input) {
-        decision.call(settings.http, "jev-latest", value.String(input))
+        decision.call(
+          settings.http,
+          settings.settings,
+          "jev-latest",
+          value.String(input),
+        )
       },
     )
+  let op = case replay {
+    True -> operation.with_replay(op, 2)
+    False -> op
+  }
   let node_id = definition.node_id("classify")
   let node =
     definition.node(
@@ -85,7 +100,7 @@ fn runtime(
         entry: node_id,
         nodes: [node],
         state: codec.string(),
-        answer: classify.receipt_codec(support.settings(), questions()),
+        answer: classify.receipt_codec(classify.typesafe(), questions()),
       )
       |> definition.with_max_activations(1),
     )
@@ -109,7 +124,7 @@ pub fn an_http_classifier_batch_retains_native_answers_models_usage_and_rubric_t
   let assert graph.Completed(receipt) = done.status
   receipt.requested_model |> should.equal("jev-latest")
   receipt.resolved_model |> should.equal("protocol-fixture-only")
-  receipt.usage |> should.equal(message.Usage(12, 8, 20))
+  receipt.usage |> should.equal(Some(message.Usage(12, 8, 20)))
   let #(noul, #(choice, score)) = receipt.answer
   noul.yes |> should.equal(0.9)
   choice.selected |> should.equal(Approve)
@@ -118,7 +133,7 @@ pub fn an_http_classifier_batch_retains_native_answers_models_usage_and_rubric_t
   string.contains(receipt.request_json, "test-key") |> should.be_false
   let assert [saved] = done.receipts
   codec.decode_json(
-    classify.receipt_codec(support.settings(), questions()),
+    classify.receipt_codec(classify.typesafe(), questions()),
     saved.output_json,
   )
   |> should.equal(Ok(receipt))
@@ -181,6 +196,83 @@ pub fn approval_precedes_request_construction_and_the_http_call_test() {
   let assert graph.Completed(_) = done
   support.stats(url, "calls") |> should.equal(1)
   Nil
+}
+
+pub fn approval_refreshes_credentials_and_execution_settings_test() {
+  use url <- support.fixture
+  let revealed = process.new_subject()
+  let stale =
+    support.Config(
+      support.http(),
+      classify.config(fn() {
+        process.send(revealed, "stale")
+        "expired-key"
+      })
+        |> classify.with_endpoint(url <> "/wrong"),
+    )
+  let assert Ok(handle) =
+    graph.start(
+      runtime(memory(), stale, fn(_, _) {
+        Ok(policy.RequireApproval(run.Requirement("classifier-cost", 1)))
+      }),
+      id("fresh-approval"),
+      "sample",
+      correlation: None,
+    )
+  let assert Ok(graph.AwaitingApproval(approval)) =
+    graph.await(handle, within: duration.seconds(5))
+  process.receive(revealed, 0) |> should.be_error
+  let fresh =
+    support.Config(
+      support.http(),
+      classify.config(fn() {
+        process.send(revealed, "fresh")
+        "test-key"
+      })
+        |> classify.with_endpoint(url <> "/v1/systemone"),
+    )
+  graph.approve(
+    handle,
+    approval,
+    proof: proof_for(approval.requirement, as_reviewer("reviewer")),
+    context: fresh,
+  )
+  |> should.be_ok
+  let assert Ok(graph.Completed(_)) =
+    graph.await(handle, within: duration.seconds(5))
+  process.receive(revealed, 1000) |> should.equal(Ok("fresh"))
+  support.stats(url, "calls") |> should.equal(1)
+}
+
+pub fn incompatible_fresh_live_limits_fail_before_credential_access_test() {
+  list.each(
+    [classify.with_request_limit, classify.with_response_limit],
+    fn(limit) {
+      use url <- support.fixture
+      let revealed = process.new_subject()
+      let config =
+        support.Config(
+          support.http(),
+          classify.config(fn() {
+            process.send(revealed, Nil)
+            "test-key"
+          })
+            |> classify.with_endpoint(url <> "/v1/systemone")
+            |> limit(1_048_577),
+        )
+      let assert Ok(handle) =
+        graph.start(
+          runtime(memory(), config, allow),
+          id("incompatible-limits"),
+          "sample",
+          correlation: None,
+        )
+      let assert Ok(graph.Failed(graph.OperationFailed(_))) =
+        graph.await(handle, within: duration.seconds(5))
+      process.receive(revealed, 0) |> should.be_error
+      support.stats(url, "calls") |> should.equal(0)
+    },
+  )
 }
 
 pub fn malformed_results_rate_limits_and_lost_replies_never_route_or_retry_test() {
@@ -272,11 +364,60 @@ pub fn recovery_after_store_loss_reuses_the_receipt_with_the_server_stopped_test
   process.kill(owner)
   let assert Ok(Nil) = store.stop(runs)
   support.stop(server)
-  let handle = open_graph(runtime(directory(path), config, allow), id("saved"))
+  let fresh =
+    support.Config(
+      config.http,
+      classify.config(fn() { panic as "stored receipt revealed credentials" })
+        |> classify.with_request_limit(1)
+        |> classify.with_response_limit(1),
+    )
+  let handle = open_graph(runtime(directory(path), fresh, allow), id("saved"))
   let assert Ok(_) = graph.recover(handle)
   let assert Ok(after) = graph.snapshot(handle)
   after.status |> should.equal(before.status)
   after.receipts |> should.equal(before.receipts)
+  support.remove_dir(path)
+}
+
+pub fn replay_after_process_loss_uses_fresh_execution_context_test() {
+  use url <- support.fixture
+  let path = support.temp_dir()
+  let #(owner, runs) =
+    restart.owned(fn() {
+      let runs = directory(path)
+      graph.start(
+        runtime_with_replay(runs, support.config(url, "/hold"), allow, True),
+        id("fresh-recovery"),
+        "sample",
+        correlation: None,
+      )
+      |> should.be_ok
+      runs
+    })
+  await_stat(url, "calls", 1, 100)
+  restart.crash(owner, runs)
+  let revealed = process.new_subject()
+  let fresh =
+    support.Config(
+      support.http(),
+      classify.config(fn() {
+        process.send(revealed, Nil)
+        "test-key"
+      })
+        |> classify.with_endpoint(url <> "/v1/systemone"),
+    )
+  let runs = directory(path)
+  let handle =
+    open_graph(
+      runtime_with_replay(runs, fresh, allow, True),
+      id("fresh-recovery"),
+    )
+  graph.recover(handle) |> should.be_ok
+  let assert Ok(graph.Completed(_)) =
+    graph.await(handle, within: duration.seconds(5))
+  process.receive(revealed, 1000) |> should.be_ok
+  support.stats(url, "calls") |> should.equal(2)
+  store.stop(runs) |> should.be_ok
   support.remove_dir(path)
 }
 
@@ -291,7 +432,7 @@ pub fn corrupt_receipts_and_changed_question_meaning_cannot_restore_test() {
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.Completed(receipt) = done
-  let codec = classify.receipt_codec(support.settings(), questions())
+  let codec = classify.receipt_codec(classify.typesafe(), questions())
   codec.decode(
     codec,
     value.Array([
@@ -327,7 +468,7 @@ pub fn corrupt_receipts_and_changed_question_meaning_cannot_restore_test() {
   let assert Ok(saved) = codec.encode(codec, receipt)
   let different = question.noul(value.String("A different question"), None)
   let different = question.ask("correct", different)
-  codec.decode(classify.receipt_codec(support.settings(), different), saved)
+  codec.decode(classify.receipt_codec(classify.typesafe(), different), saved)
   |> should.be_error
   Nil
 }
@@ -392,7 +533,7 @@ fn proof_for(
 }
 
 pub fn pre_round9_receipt_and_graph_store_read_without_a_provider_test() {
-  let receipt_codec = classify.receipt_codec(support.settings(), questions())
+  let receipt_codec = classify.receipt_codec(classify.typesafe(), questions())
   let receipt =
     simplifile.read("test/fixtures/records/pre-round9-classifier-receipt.json")
     |> should.be_ok
