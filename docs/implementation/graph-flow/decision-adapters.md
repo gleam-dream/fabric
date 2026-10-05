@@ -112,8 +112,8 @@ The optional [Relay package](../../../integrations/fabric_relay/README.md)
 replaces the earlier `fabric_mcp` package (wave 5): MCP tools reach agents and
 graph activities through Relay's client. The earlier package's evidence is
 recorded in [the MCP contract](mcp-adapter.md).
-The optional [TypeSafe package](../../../integrations/fabric_typesafe/README.md)
-now provides typed heterogeneous classifier batches and native HTTP. Its
+The [classification family](https://github.com/gleam-dream/llm_wire)
+provides typed heterogeneous classifier batches and native HTTP. Its
 [contract and evidence](classifier-adapter.md) retain protocol-fixture checks
 separately from actual Jev inference. Both decision producers use the same
 application routing definition in the decision consumer. The

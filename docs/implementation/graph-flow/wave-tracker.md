@@ -1659,7 +1659,7 @@ six-step goal remains active, with wave 3 next.
 ### Wave 5: typed non-generative classifier and shared decision routes
 
 - Governing rules: G6/G10 and [the classifier contract](classifier-adapter.md).
-  The optional `fabric_typesafe` package uses the documented System One HTTP API
+  The optional `llm_wire/classify` package uses the documented System One HTTP API
   directly, with the existing Gun transport dependency. Fabric core gains no
   classifier dependency. Noul retains the yes probability; Choice maps labels
   to native values and retains its distribution; Score retains its fractional

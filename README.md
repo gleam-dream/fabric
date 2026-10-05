@@ -702,6 +702,17 @@ call Fabric should run there.
 
 `consumers/app` is a complete external application using public imports only.
 
+## Classification decisions
+
+`fabric/graph/classify.decision(identity, input, questions, config, request)`
+uses llm_wire's provider-neutral classification family. The request builder
+returns `classify.call(http, model, state)` after policy admission. Build
+questions with `llm_wire/classify/question`, settings with
+`llm_wire/classify.typesafe(fn() { key })`, and durable answer codecs with
+`llm_wire/classify.receipt_codec(config, questions)`. The decision and writing
+consumers compile this public path. Earlier stored classifier receipts and
+graph runs remain readable without a network call.
+
 ## Integrations
 
 Each integration is a separate package under `integrations/`, so Fabric
@@ -712,7 +723,6 @@ itself depends on none of them.
 | [fabric_relay](integrations/fabric_relay/README.md)       | MCP over [Relay](https://github.com/gleam-dream/relay): `fabric_relay.tool(definition, peer:)`, `discover` and `operation` call MCP tools from agents and graphs; `serve` publishes an agent as an MCP tool, and a retried call with an idempotency key reaches the same run. |
 | [fabric_saga](integrations/fabric_saga/README.md)         | A Saga workflow as one typed tool: `fabric_saga.tool(definition, workflow, execution.config(), input:, explain:, rollback_within:)`. A cancelled call waits up to `rollback_within` for Saga's rollback. `consumers/app` uses it.                                             |
 | [fabric_postgres](integrations/fabric_postgres/README.md) | The leased PostgreSQL backend, its migrations, discovery refresh and pruning of finished run families.                                                                                                                                                                        |
-| [fabric_typesafe](integrations/fabric_typesafe/README.md) | Non-generative yes/no, choice and rubric decisions from TypeSafe as graph operations with durable typed receipts.                                                                                                                                                             |
 
 The [writing consumer](consumers/writing/README.md) composes real source and
 artifact tools with generation, interchangeable LLM and TypeSafe review,

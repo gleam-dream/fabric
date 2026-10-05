@@ -145,7 +145,7 @@ not the provider's self-reported confidence as accuracy.
   reviewer implementations, with a retained comparison report.
 - Core/shell: shared native review outcome and bounded routes; real generation,
   independent LLM/classifier review, durable artifact effect and user approval.
-- Libraries: existing llm_wire and fabric_typesafe, no added platform.
+- Libraries: existing llm_wire and llm_wire/classify, no added platform.
 - Scenarios: approve, revise, reject/limit, invalid response, withheld/rejected
   approval, store restart while waiting, reuse of completed results and no
   duplicate publish. Offline error tests supplement actual provider execution.

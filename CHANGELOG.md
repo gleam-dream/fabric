@@ -7,6 +7,13 @@ integration packages under `integrations/` keep their own changelogs.
 
 ## Unreleased
 
+- Bound nested graph runtime copying by retaining callback environments once
+  and only input contracts in managed-child bindings; preserve existing deadlines.
+
+### Round 9
+
+- Moved classification graph decisions into `fabric/graph/classify` over llm_wire. Removed the `fabric_typesafe` bridge; migrated decision and writing consumers. Old receipt and graph-store fixtures written before the migration remain readable.
+
 Wave 5 is described with before/after snippets in
 [docs/migration-wave-5.md](docs/migration-wave-5.md), round 5 in
 [docs/migration-round-5.md](docs/migration-round-5.md).

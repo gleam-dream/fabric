@@ -10,7 +10,7 @@ Read source → Generate draft → Review ──approve──→ Approval → Sa
 ```
 
 Generation uses `fabric/graph/llm`. The reviewer can use that same adapter or
-`fabric_typesafe`; both select the native `Approve`, `Revise` or `Reject` value
+`llm_wire/classify`; both select the native `Approve`, `Revise` or `Reject` value
 against the same rubric. Reviewers retain their original receipt types and
 provider evidence. Revision is bounded to three drafts. Saga and Grind are not
 dependencies of this consumer.
