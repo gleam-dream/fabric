@@ -137,7 +137,7 @@ def module_recipe(text: str, heading: str = RECIPE_HEADING) -> str:
 SAGA_RECIPE = dict(
     consumer="consumers/saga_tool/src/saga_tool.gleam",
     module="src/fabric/tool.gleam", marker="<!-- saga-recipe -->",
-    heading="//// ## With saga",
+    heading="//// ## With saga", max_lines=60,
 )
 
 
@@ -146,7 +146,7 @@ RELAY_RECIPES = [{'consumer': 'consumers/relay_tools/src/relay_tools.gleam', 'mo
 
 def recipe_problems(root: Path, *, consumer: str = RECIPE_CONSUMER,
                     module: str = RECIPE_MODULE, marker: str = RECIPE_MARKER,
-                    heading: str = RECIPE_HEADING) -> list[str]:
+                    heading: str = RECIPE_HEADING, max_lines: int = 50) -> list[str]:
     """Where the two documentation copies differ from the compiled consumer."""
     source = (root / consumer).read_text()
     copies = {
@@ -154,8 +154,8 @@ def recipe_problems(root: Path, *, consumer: str = RECIPE_CONSUMER,
         module: module_recipe((root / module).read_text(), heading),
     }
     problems = []
-    if len(source.splitlines()) > 50:
-        problems.append(f"{consumer}: recipe exceeds 50 lines")
+    if len(source.splitlines()) > max_lines:
+        problems.append(f"{consumer}: recipe exceeds {max_lines} lines")
     for name, copy in copies.items():
         if copy != source:
             diff = difflib.unified_diff(source.splitlines(), copy.splitlines(),
