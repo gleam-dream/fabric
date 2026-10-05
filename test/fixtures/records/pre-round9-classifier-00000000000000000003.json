@@ -1,0 +1,35 @@
+{
+  "format": "fabric.graph",
+  "version": 15,
+  "write": "00d42665eb79197962a3e1b8b1e99f1f",
+  "run": "round9-old-classifier",
+  "definition": {
+    "identity": { "name": "classifier-graph", "version": 1 },
+    "signature": "{\"entry\":\"classify\",\"nodes\":[{\"node\":\"classify\",\"operation\":\"classify\",\"version\":1,\"kind\":\"activity\",\"recovery\":{\"tag\":\"reconcile\"},\"destinations\":[]}]}",
+    "max_activations": 1
+  },
+  "incarnation": 1,
+  "allocated": 1,
+  "approvals_issued": 0,
+  "value": "\"2 + 2 = 4\"",
+  "initial": "\"2 + 2 = 4\"",
+  "parent": null,
+  "receipts": [],
+  "phase": {
+    "tag": "running",
+    "activation": {
+      "id": 1,
+      "attempt": 1,
+      "prepared": {
+        "node": "classify",
+        "operation": { "name": "classify", "version": 1 },
+        "input": "\"2 + 2 = 4\"",
+        "kind": "activity",
+        "recovery": { "tag": "reconcile" }
+      },
+      "deadline": null
+    }
+  },
+  "forks": [],
+  "family_budget": null
+}

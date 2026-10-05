@@ -4,7 +4,7 @@
 start_server() ->
     Python = os:find_executable("python3"),
     Port = open_port({spawn_executable, Python}, [binary, exit_status, {line, 1024},
-        {args, ["-B", "-u", "../../integrations/fabric_typesafe/test/support/server.py"]}]),
+        {args, ["-B", "-u", "../../test/fixtures/classifier/server.py"]}]),
     receive {Port, {data, {eol, Url}}} -> {Port, Url}
     after 5000 -> port_close(Port), error(fixture_start_timeout) end.
 

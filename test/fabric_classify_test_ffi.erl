@@ -1,10 +1,10 @@
--module(fabric_typesafe_test_ffi).
+-module(fabric_classify_test_ffi).
 -export([start_server/0, stop_server/1, temp_dir/0, remove_dir/1]).
 
 start_server() ->
     Python = os:find_executable("python3"),
     Port = open_port({spawn_executable, Python}, [binary, exit_status, {line, 1024},
-        {args, ["-B", "-u", "test/support/server.py"]}]),
+        {args, ["-B", "-u", "test/fixtures/classifier/server.py"]}]),
     receive {Port, {data, {eol, Url}}} -> {Port, Url}
     after 5000 -> port_close(Port), error(fixture_start_timeout) end.
 
