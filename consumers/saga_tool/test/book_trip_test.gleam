@@ -28,6 +28,8 @@ import gleeunit/should
 import json/blueprint/codec
 import saga
 import saga/execution
+import saga/outcome
+import saga/reporting
 import saga/telemetry as saga_telemetry
 import saga_tool
 import saga_tool/support/watched
@@ -542,4 +544,45 @@ pub fn a_step_reads_the_runs_correlation_test() {
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(handle, within: duration.seconds(5))
   process.receive(seen, 1000) |> should.equal(Ok(ticket))
+}
+
+/// Reporting preserves caller-owned business and undo error values before the
+/// consumer projects the report into a Fabric tool failure.
+pub fn full_report_retains_native_business_and_undo_errors_test() {
+  let reports = process.new_subject()
+  let assert Ok(report) =
+    reporting.run_owned(
+      book_trip(reports),
+      Trip("Mordor"),
+      execution.config(),
+      fn(_) { Nil },
+      duration.seconds(5),
+    )
+  let assert execution.Failed(execution.StepFailed(_, NoHotel(city)), settled) =
+    report
+  city |> should.equal("Mordor")
+  let assert [execution.UndoFailed(_, ReleaseRefused(flight))] =
+    settled.undo_failures
+  flight |> should.equal("FL-Mordor")
+  string.contains(outcome.summary(report), "reserve_flight") |> should.be_true
+  string.contains(outcome.summary(report), "FL-Mordor") |> should.be_false
+}
+
+pub fn reporting_admission_errors_retain_typed_cause_and_prove_no_start_test() {
+  let reports = process.new_subject()
+  let assert Error(error) =
+    reporting.run_owned(
+      book_trip(reports),
+      Trip("Porto"),
+      execution.config() |> execution.with_max_concurrency(0),
+      fn(_) { Nil },
+      duration.seconds(5),
+    )
+  reporting.error_kind(error) |> should.equal(reporting.ExecutionAdmission)
+  reporting.effect_status(error) |> should.equal(reporting.NotStarted)
+  reporting.run_error(error)
+  |> should.equal(
+    Some(execution.InvalidConfig([execution.MaxConcurrencyNotPositive(0)])),
+  )
+  reported(reports) |> should.equal([])
 }

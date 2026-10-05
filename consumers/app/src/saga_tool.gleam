@@ -3,7 +3,7 @@ import gleam/result
 import gleam/time/duration.{type Duration}
 import saga
 import saga/execution
-import saga/outcome
+import saga/outcome.{Definitely, Unknown}
 import saga/reporting
 
 pub fn tool(
@@ -14,34 +14,46 @@ pub fn tool(
   explain explain: fn(error) -> String,
   rollback_within rollback_within: Duration,
 ) -> tool.Tool(context) {
+  let project = fn(result) {
+    case result {
+      Ok(report) -> #(
+        outcome.classify(report, explain)
+          |> result.map_error(fn(failure) {
+            case failure {
+              Definitely(detail) -> tool.Explain(detail)
+              Unknown(detail) -> tool.Uncertain(detail)
+            }
+          }),
+        "Saga reported " <> outcome.summary(report),
+      )
+      Error(error) -> {
+        let detail = reporting.describe_error(error)
+        let failure = case reporting.effect_status(error) {
+          reporting.NotStarted -> tool.Explain(detail)
+          reporting.Unknown -> tool.Uncertain(detail)
+        }
+        #(Error(failure), detail)
+      }
+    }
+  }
   tool.bind_settling(
     definition,
     fn(context, call: tool.Call, value, settlement) {
-      reporting.run_owned(
-        workflow,
-        input(context, call, value),
-        execution.with_correlation(config, call.correlation),
-        explain,
-        fn(stopped, summary) {
-          let _ =
-            tool.settle(
-              settlement,
-              result.map_error(stopped, failure),
-              summary:,
-            )
-          Nil
-        },
-        rollback_within,
-      )
+      let reported =
+        reporting.run_owned(
+          workflow,
+          input(context, call, value),
+          execution.with_correlation(config, call.correlation),
+          fn(stopped) {
+            let #(result, summary) = project(stopped)
+            let _ = tool.settle(settlement, result, summary:)
+            Nil
+          },
+          rollback_within,
+        )
+      project(reported).0
     },
-    failure,
+    fn(failure) { failure },
     settle_within: rollback_within,
   )
-}
-
-fn failure(stopped: outcome.Failure) -> tool.Failure {
-  case outcome.failure_kind(stopped) {
-    outcome.Compensated -> tool.Explain(outcome.describe_failure(stopped))
-    _ -> tool.Uncertain(outcome.describe_failure(stopped))
-  }
 }

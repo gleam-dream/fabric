@@ -90,7 +90,28 @@ class GateTest(unittest.TestCase):
             module = root / check.SAGA_RECIPE["module"]
             module.write_text(module.read_text().replace("reporting.run_owned(", "reporting.changed("))
             [problem] = check.recipe_problems(root, **check.SAGA_RECIPE)
-            self.assertIn("+      reporting.changed(", problem)
+            self.assertIn("reporting.changed(", problem)
+
+    def test_recipe_line_bounds_include_the_complete_source(self) -> None:
+        for config, limit in [(check.SAGA_RECIPE, 60), ({}, 50)]:
+            with self.subTest(limit=limit), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                source_path = config.get("consumer", check.RECIPE_CONSUMER)
+                module_path = config.get("module", check.RECIPE_MODULE)
+                marker = config.get("marker", check.RECIPE_MARKER)
+                heading = config.get("heading", check.RECIPE_HEADING)
+                source = root / source_path
+                module = root / module_path
+                source.parent.mkdir(parents=True, exist_ok=True)
+                module.parent.mkdir(parents=True, exist_ok=True)
+                for count in [limit, limit + 1]:
+                    recipe = "// recipe line\n" * count
+                    source.write_text(recipe)
+                    (root / "README.md").write_text(f"{marker}\n```gleam\n{recipe}```\n")
+                    doc = "".join("//// " + line + "\n" for line in recipe.splitlines())
+                    module.write_text(f"{heading}\n//// ```gleam\n{doc}//// ```\n")
+                    expected = [] if count == limit else [f"{source_path}: recipe exceeds {limit} lines"]
+                    self.assertEqual(check.recipe_problems(root, **config), expected)
 
     def test_each_relay_recipe_is_compiled_verbatim_and_mismatch_has_diff(self) -> None:
         for config in check.RELAY_RECIPES:
