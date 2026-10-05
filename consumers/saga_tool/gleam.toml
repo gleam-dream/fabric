@@ -1,11 +1,8 @@
-# Fabric's optional Saga integration: a Saga workflow as one typed Fabric
-# tool. A separate package, so that Fabric itself does not depend on Saga.
-name = "fabric_saga"
-version = "0.1.0"
+# Unpublished consumer; compiles the documented saga tool recipe verbatim.
+name = "saga_tool_consumer"
+version = "0.0.0"
 target = "erlang"
 gleam = ">= 1.18.0"
-licenses = ["Apache-2.0"]
-description = "A Saga workflow as one typed Fabric tool."
 
 [dependencies]
 gleam_stdlib = ">= 0.70.0 and < 2.0.0"

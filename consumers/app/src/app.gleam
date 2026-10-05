@@ -19,7 +19,6 @@ import fabric/policy
 import fabric/reviewer
 import fabric/run
 import fabric/tool
-import fabric_saga
 import gleam/erlang/atom
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
@@ -32,6 +31,7 @@ import gleam/time/duration
 import json/blueprint/codec.{type Codec}
 import saga
 import saga/execution
+import saga_tool
 import sinal/forwarder
 
 // --- observation ----------------------------------------------------------------
@@ -504,7 +504,7 @@ pub fn loan_workflow() -> saga.Workflow(Loan, String, LoanError, Nil) {
 }
 
 pub fn loan_tool() -> tool.Tool(Member) {
-  fabric_saga.tool(
+  saga_tool.tool(
     tool.define(
       "interlibrary_loan",
       "Borrow a book from a partner library.",

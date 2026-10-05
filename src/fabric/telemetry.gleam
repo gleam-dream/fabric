@@ -162,8 +162,8 @@
 //// tool results, or model text, with one exception: `settlement_refused`
 //// carries the refused settlement's summary as the tool gave it to
 //// `tool.settle`, so that a person can reconcile the action. A tool's
-//// summary must therefore not carry secrets; `fabric_saga`'s
-//// name outcome kinds and step addresses only. `turn` and `call_id`
+//// summary must therefore not carry secrets; `saga/outcome.summary`
+//// names outcome kinds and step addresses only. `turn` and `call_id`
 //// identify an action only within its `run`.
 
 import fabric/model.{type Usage, Usage}
