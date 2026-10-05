@@ -1,12 +1,12 @@
 # MCP graph adapter
 
 > Superseded in wave 5: `fabric_mcp` and its stdio client were deleted.
-> [`fabric_relay`](../../../integrations/fabric_relay/README.md) mounts MCP
+> [compiled Relay recipes](../../../README.md#composing-with-relay) mounts MCP
 > tools in agents and graphs over Relay's client, which also speaks stdio,
 > and serves agents as MCP tools. This page records the earlier package's
 > selection evidence only.
 
-This optional package implements the MCP boundary selected by
+This consumer-owned recipe implements the MCP boundary selected by
 [GRAPH-FLOW](../../GRAPH-FLOW.md#mcp-stays-an-adapter-boundary) and G10. Fabric
 core acquires no MCP, Saga or Grind dependency. The selected stdio binding is
 implemented and exercised against a real local service. Stage 5 remains open

@@ -1718,7 +1718,7 @@ Round 9 local dependency revisions (refreshed at closeout):
 | sinal          | `44c5395` |
 | saga           | `380758a` |
 | grind          | `eb7b173` |
-| relay          | `166ddd6` |
+| relay          | `2de271b` |
 | warden         | `f6120ef` |
 
 Fabric resolves its siblings as `../` path dependencies, each checked out on

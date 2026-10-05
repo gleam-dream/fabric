@@ -108,7 +108,7 @@ no live classifier/MCP acceptance is claimed by this initial reconnaissance.
 
 ## Current adapter evidence
 
-The optional [Relay package](../../../integrations/fabric_relay/README.md)
+The optional [Relay recipe](../../../README.md#composing-with-relay)
 replaces the earlier `fabric_mcp` package (wave 5): MCP tools reach agents and
 graph activities through Relay's client. The earlier package's evidence is
 recorded in [the MCP contract](mcp-adapter.md).
