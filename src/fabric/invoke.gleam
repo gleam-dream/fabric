@@ -28,7 +28,10 @@
 ////
 //// A cancellation failure is reported explicitly; it never claims the
 //// run stopped. Read or recover such a run by id. An unknown effect needs
-//// reconciliation, not a retry of the effect.
+//// reconciliation, not a retry of the effect. Cancelled and expired runs
+//// retain unresolved effect evidence in `OutcomeUnknown`, including effects
+//// owned by a child. A completion committed before cancellation retains its
+//// native answer.
 ////
 //// ## Serving through Relay
 ////
@@ -352,84 +355,13 @@ pub fn agent(
       case opened {
         Error(response) -> response
         Ok(handle) -> {
-          let cancel = fn() {
-            fabric.cancel(handle)
-            |> result.map(fn(status) {
-              case status {
-                run.Finished(_) -> True
-                _ -> False
-              }
-            })
-            |> result.map_error(AgentError)
-          }
           case fabric.await_with(handle, within: wait, or: ending(request)) {
             Error(error) -> unavailable(id, fabric.describe_error(error))
-            Ok(fabric.Interrupted(Nil)) ->
-              stopped(id, "cancelled", "the call was cancelled", cancel())
+            Ok(fabric.Interrupted(Nil)) -> cancel_agent(handle, "cancelled")
             Ok(fabric.Reached(status)) ->
-              case status {
-                run.Finished(run.Completed(answer)) -> answered(id, answer)
-                run.Working if request.key == None ->
-                  stopped(
-                    id,
-                    "timed_out",
-                    "no answer in time; the run was cancelled",
-                    cancel(),
-                  )
-                run.Working -> working(id)
-                run.Unattended ->
-                  response(
-                    id,
-                    Unattended,
-                    "unattended",
-                    "the run has work in flight and no runner",
-                    [],
-                  )
-                run.Suspended(_, [_, ..] as uncertain) ->
-                  response(
-                    id,
-                    OutcomeUnknown,
-                    "outcome_unknown",
-                    "the run stopped on effects of unknown status; a person must reconcile them",
-                    [
-                      #(
-                        "uncertain",
-                        value.Array(
-                          list.map(uncertain, fn(effect) {
-                            value.Object([
-                              #("tool", value.String(effect.tool)),
-                              #("evidence", value.String(effect.evidence)),
-                            ])
-                          }),
-                        ),
-                      ),
-                    ],
-                  )
-                run.Suspended(approvals, []) ->
-                  response(
-                    id,
-                    AwaitingApproval,
-                    "awaiting_approval",
-                    "the run waits for an approval",
-                    [
-                      #(
-                        "approvals",
-                        value.Array(
-                          list.map(approvals, fn(pending) {
-                            value.Object([#("tool", value.String(pending.tool))])
-                          }),
-                        ),
-                      ),
-                    ],
-                  )
-                run.Finished(outcome) ->
-                  response(
-                    id,
-                    Ended,
-                    outcome_name(outcome),
-                    run.describe_outcome(outcome),
-                    [],
-                  )
+              case status, request.key {
+                run.Working, None -> cancel_agent(handle, "timed_out")
+                _, _ -> agent_response(handle, status)
               }
           }
         }
@@ -516,130 +448,250 @@ fn wait_graph(
     graph.await_with(handle, within: duration.milliseconds(left), or: interrupt)
   {
     Error(error) -> unavailable(id, graph.describe_error(error))
-    Ok(graph.Interrupted(Nil)) ->
-      stopped(
-        id,
-        "cancelled",
-        "the call was cancelled",
-        graph.cancel(handle)
-          |> result.map(fn(status) { graph.status_kind(status) == graph.Ended })
-          |> result.map_error(GraphError),
-      )
+    Ok(graph.Interrupted(Nil)) -> cancel_graph(handle, "cancelled")
     Ok(graph.Reached(status)) ->
-      case status {
-        graph.Completed(answer) -> answered(id, answer)
-        _ ->
-          case graph.status_kind(status) {
-            graph.Active ->
-              case deadline - now() > 0 {
-                True ->
-                  case
-                    process.selector_receive(
-                      interrupt,
-                      int.min(100, int.max(0, deadline - now())),
-                    )
-                  {
-                    Ok(Nil) ->
-                      stopped(
-                        id,
-                        "cancelled",
-                        "the call was cancelled",
-                        graph.cancel(handle)
-                          |> result.map(fn(status) {
-                            graph.status_kind(status) == graph.Ended
-                          })
-                          |> result.map_error(GraphError),
-                      )
-                    Error(Nil) ->
-                      wait_graph(handle, id, owned, interrupt, deadline)
-                  }
-                False ->
-                  case owned {
-                    True ->
-                      stopped(
-                        id,
-                        "timed_out",
-                        "no answer in time; cancellation was requested",
-                        graph.cancel(handle)
-                          |> result.map(fn(status) {
-                            graph.status_kind(status) == graph.Ended
-                          })
-                          |> result.map_error(GraphError),
-                      )
-                    False -> working(id)
-                  }
+      case graph.status_kind(status) {
+        graph.Active ->
+          case deadline - now() > 0 {
+            True ->
+              case
+                process.selector_receive(
+                  interrupt,
+                  int.min(100, int.max(0, deadline - now())),
+                )
+              {
+                Ok(Nil) -> cancel_graph(handle, "cancelled")
+                Error(Nil) -> wait_graph(handle, id, owned, interrupt, deadline)
               }
-            graph.NeedsRecovery ->
-              response(
-                id,
-                Unattended,
-                "unattended",
-                graph.describe_status(status),
-                [],
-              )
-            graph.NeedsInput ->
-              case status {
-                graph.AwaitingApproval(reference) ->
-                  response(
-                    id,
-                    AwaitingApproval,
-                    "awaiting_approval",
-                    graph.describe_status(status),
-                    [
-                      #(
-                        "approvals",
-                        value.Array([
-                          value.Object([
-                            #(
-                              "operation",
-                              value.String(reference.requirement.name),
-                            ),
-                          ]),
-                        ]),
-                      ),
-                    ],
-                  )
-                graph.Blocked(_, problem) ->
-                  response(
-                    id,
-                    OutcomeUnknown,
-                    "outcome_unknown",
-                    graph.describe_status(status),
-                    [
-                      #(
-                        "evidence",
-                        value.String(case problem {
-                          graph.EffectUncertain(evidence) -> evidence
-                          graph.InvalidResult(_, reason) -> reason
-                        }),
-                      ),
-                    ],
-                  )
-                _ ->
-                  response(
-                    id,
-                    AwaitingInput,
-                    "awaiting_input",
-                    graph.describe_status(status),
-                    [],
-                  )
+            False ->
+              case owned {
+                True -> cancel_graph(handle, "timed_out")
+                False -> graph_response(id, status)
               }
-            graph.Ended ->
-              response(
-                id,
-                Ended,
-                case status {
-                  graph.Cancelled(_) -> "cancelled"
-                  graph.Expired(..) -> "expired"
-                  graph.Exhausted -> "budget_exhausted"
-                  _ -> "failed"
-                },
-                graph.describe_status(status),
-                [],
-              )
           }
+        _ -> graph_response(id, status)
       }
   }
+}
+
+fn graph_response(id: RunId, status: graph.Status(a)) -> Response(a) {
+  case status {
+    graph.Completed(answer) -> answered(id, answer)
+    graph.Cancelled(disposition) ->
+      graph_stopped(id, "cancelled", graph.describe_status(status), disposition)
+    graph.Expired(_, disposition) ->
+      graph_stopped(id, "expired", graph.describe_status(status), disposition)
+    graph.Blocked(reference, problem) ->
+      unknown_graph(id, problem, [
+        #("activation", value.String(int.to_string(reference.activation))),
+      ])
+    graph.AwaitingApproval(reference) ->
+      response(
+        id,
+        AwaitingApproval,
+        "awaiting_approval",
+        graph.describe_status(status),
+        [
+          #(
+            "approvals",
+            value.Array([
+              value.Object([
+                #("operation", value.String(reference.requirement.name)),
+              ]),
+            ]),
+          ),
+        ],
+      )
+    graph.AwaitingSignal(_) ->
+      response(
+        id,
+        AwaitingInput,
+        "awaiting_input",
+        graph.describe_status(status),
+        [],
+      )
+    graph.Unattended ->
+      response(id, Unattended, "unattended", graph.describe_status(status), [])
+    graph.Failed(_) ->
+      response(id, Ended, "failed", graph.describe_status(status), [])
+    graph.Exhausted ->
+      response(id, Ended, "budget_exhausted", graph.describe_status(status), [])
+    graph.Working
+    | graph.AwaitingJob(_)
+    | graph.CancellingJob(..)
+    | graph.Child(..)
+    | graph.Fork(..)
+    | graph.CancellingChild(..) -> working(id)
+  }
+}
+
+fn graph_stopped(
+  id: RunId,
+  cause: String,
+  description: String,
+  disposition: graph.Cancellation,
+) -> Response(a) {
+  let facts = [#("termination", value.String(cause))]
+  case disposition {
+    graph.Unresolved(reference, problem) ->
+      unknown_graph(id, problem, [
+        #("activation", value.String(int.to_string(reference.activation))),
+        ..facts
+      ])
+    graph.ChildUnresolved(reference, problem) ->
+      unknown_graph(id, problem, [
+        #("activation", value.String(int.to_string(reference.activation))),
+        #("child_run_id", value.String(run.id_to_string(reference.child))),
+        ..facts
+      ])
+    graph.BeforeStart
+    | graph.JobDetached(_)
+    | graph.JobStopped(_)
+    | graph.AfterResult
+    | graph.AfterFailure(_)
+    | graph.ChildSettled(_)
+    | graph.ForkSettled(_) -> response(id, Ended, cause, description, [])
+  }
+}
+
+fn unknown_graph(
+  id: RunId,
+  problem: graph.Problem,
+  facts: List(#(String, Value)),
+) -> Response(a) {
+  let evidence = case problem {
+    graph.EffectUncertain(evidence) -> evidence
+    graph.InvalidResult(_, reason) -> reason
+  }
+  response(
+    id,
+    OutcomeUnknown,
+    "outcome_unknown",
+    "the run has effects requiring reconciliation",
+    [#("evidence", value.String(evidence)), ..facts],
+  )
+}
+
+fn agent_response(
+  handle: fabric.Run(c, a),
+  status: run.Status(a),
+) -> Response(a) {
+  let id = fabric.id(handle)
+  case status {
+    run.Finished(_) ->
+      case fabric.snapshot(handle) {
+        Error(error) -> unavailable(id, fabric.describe_error(error))
+        Ok(snapshot) -> {
+          let uncertain =
+            list.filter_map(snapshot.actions, fn(action) {
+              case action.state {
+                run.Uncertain(evidence) ->
+                  Ok(effect_fact(action.call.name, evidence))
+                _ -> Error(Nil)
+              }
+            })
+          case uncertain {
+            [] -> agent_status_response(id, snapshot.status)
+            [_, ..] -> uncertain_agent(id, uncertain)
+          }
+        }
+      }
+    _ -> agent_status_response(id, status)
+  }
+}
+
+fn effect_fact(tool: String, evidence: String) -> Value {
+  value.Object([
+    #("tool", value.String(tool)),
+    #("evidence", value.String(evidence)),
+  ])
+}
+
+fn uncertain_agent(id: RunId, uncertain: List(Value)) -> Response(a) {
+  response(
+    id,
+    OutcomeUnknown,
+    "outcome_unknown",
+    "the run stopped on effects of unknown status; a person must reconcile them",
+    [#("uncertain", value.Array(uncertain))],
+  )
+}
+
+fn agent_status_response(id: RunId, status: run.Status(a)) -> Response(a) {
+  case status {
+    run.Finished(run.Completed(answer)) -> answered(id, answer)
+    run.Working -> working(id)
+    run.Unattended ->
+      response(
+        id,
+        Unattended,
+        "unattended",
+        "the run has work in flight and no runner",
+        [],
+      )
+    run.Suspended(_, [_, ..] as uncertain) ->
+      uncertain_agent(
+        id,
+        list.map(uncertain, fn(effect) {
+          effect_fact(effect.tool, effect.evidence)
+        }),
+      )
+    run.Suspended(approvals, []) ->
+      response(
+        id,
+        AwaitingApproval,
+        "awaiting_approval",
+        "the run waits for an approval",
+        [
+          #(
+            "approvals",
+            value.Array(
+              list.map(approvals, fn(pending) {
+                value.Object([#("tool", value.String(pending.tool))])
+              }),
+            ),
+          ),
+        ],
+      )
+    run.Finished(outcome) ->
+      response(
+        id,
+        Ended,
+        outcome_name(outcome),
+        run.describe_outcome(outcome),
+        [],
+      )
+  }
+}
+
+fn cancel_agent(handle: fabric.Run(c, a), cause: String) -> Response(a) {
+  let cancelled = case fabric.cancel(handle) {
+    Error(fabric.RunEnded) ->
+      fabric.snapshot(handle) |> result.map(fn(snapshot) { snapshot.status })
+    other -> other
+  }
+  stopped(
+    fabric.id(handle),
+    cause,
+    cancelled
+      |> result.map(agent_response(handle, _))
+      |> result.map_error(AgentError),
+  )
+}
+
+fn cancel_graph(handle: graph.Handle(c, s, a), cause: String) -> Response(a) {
+  let cancelled = case graph.cancel(handle) {
+    Error(graph.RunEnded) ->
+      graph.snapshot(handle) |> result.map(fn(snapshot) { snapshot.status })
+    other -> other
+  }
+  stopped(
+    graph.id(handle),
+    cause,
+    cancelled
+      |> result.map(graph_response(graph.id(handle), _))
+      |> result.map_error(GraphError),
+  )
 }
 
 fn ending(request: Request(c, i)) -> process.Selector(Nil) {
@@ -696,20 +748,19 @@ fn unavailable(id: RunId, message: String) -> Response(a) {
 
 fn stopped(
   id: RunId,
-  code: String,
-  message: String,
-  cancelled: Result(Bool, CancellationError),
+  cause: String,
+  cancelled: Result(Response(a), CancellationError),
 ) -> Response(a) {
   case cancelled {
-    Ok(True) -> response(id, Ended, code, message, [])
-    Ok(False) ->
-      response(
-        id,
-        Working,
-        code,
-        "cancellation requested; effects are still settling",
-        [],
+    Ok(Response(kind: Ended, code: "cancelled", ..) as response) ->
+      Response(..response, code: cause, description: "the run was cancelled")
+    Ok(Response(kind: Working, ..) as response) ->
+      Response(
+        ..response,
+        code: cause,
+        description: "cancellation requested; effects are still settling",
       )
+    Ok(response) -> response
     Error(error) ->
       response(
         id,
