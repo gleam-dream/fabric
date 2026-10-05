@@ -2222,3 +2222,60 @@ client.call_discovered(peer, declaration, input)
 
 The README, module documentation and compiled discovery consumer contain this
 same recipe. Its size remains 50 lines.
+
+### Round 9 review: fresh classification context and typed Saga reports
+
+Before, classification settings were captured in the graph definition:
+
+```gleam
+let settings = classify.typesafe(fn() { key })
+let review = decision.decision(identity, input, questions, settings, fn(context, value) {
+  decision.call(context.http, model, value)
+})
+let saved = classify.receipt_codec(settings, questions)
+```
+
+After, the operation fixes the pure protocol and receives live settings after
+policy admission, including approval and recovery:
+
+```gleam
+let wire = classify.typesafe()
+let review = decision.decision(identity, input, questions, wire, fn(context, value) {
+  let settings = classify.config(context.reveal)
+    |> classify.with_endpoint(context.endpoint)
+  decision.call(context.http, settings, model, value)
+})
+let saved = classify.receipt_codec(wire, questions)
+```
+
+`decision.decision` replaces its `Config` argument with `Wire`;
+`decision.call(http, model, state)` becomes
+`decision.call(http, config, model, state)`. Standalone classification uses
+`classify.prepare(wire, config, request)`. Decision and writing consumers use
+the new constructors. The writing metadata renderer preserves absent usage as
+JSON null instead of inventing token counts. `Choice.confidence` and
+`Score.confidence` are `Option(Float)`; usage is `Option(Usage)`. Present
+TypeSafe measurements are `Some`, and legacy receipt bytes stay readable.
+
+The wire's finite receipt limits belong to the operation version. Live request
+or response limits above them fail preparation before a key is revealed or a
+request is sent. Lower live limits do not tighten existing receipt decoding.
+Another provider protocol requires another operation version.
+
+Before, the Saga recipe called
+`reporting.run_owned(workflow, input, config, explain, fn(result, summary) { ... }, rollback_within)`
+and received a flattened application result. After, it calls
+`reporting.run_owned(workflow, input, config, fn(report) { ... }, rollback_within)`.
+Both paths obtain `Result(execution.Outcome(output, error, undo_error), reporting.Error)`.
+The consumer projects `Ok(report)` with `outcome.classify(report, explain)` and
+`outcome.summary(report)`. Reporting errors map to `Explain` only when
+`reporting.effect_status` proves `NotStarted`; `Unknown` maps to `Uncertain`.
+
+Replace the copied recipe in the app consumer with the README's complete
+59-line version. Its unchanged `saga_tool.tool` signature keeps caller-owned
+workflow types and error rendering. The additional 12 lines expose the two
+real boundaries without a library-specific convenience layer. The Saga-only
+gate bound is 60 lines; every other recipe remains bounded to 50. All original
+consumer behavior tests remain, including cancellation and refused settlement;
+new external tests inspect native business/undo errors and typed admission
+errors before any consumer projection.

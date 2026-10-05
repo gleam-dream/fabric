@@ -7,6 +7,21 @@ integration packages under `integrations/` keep their own changelogs.
 
 ## Unreleased
 
+- Round 9 validation: idle-shutdown tests wait for actual runner exits.
+  A zero readiness runner count means no active run ownership; a process may
+  still be delivering its completion observations. A deterministic observer
+  barrier checks that shutdown correctly counts that still-running process.
+
+- Round 9 review: classification graph definitions retain a pure provider wire;
+  each admitted call obtains credentials and live settings from fresh context.
+  Reject incompatible live/receipt byte limits before credentials or I/O and
+  retain offline current and legacy receipts. Classification usage and
+  concentration confidence now preserve absent provider evidence.
+- Adapt the Saga recipe to full typed execution reports and typed reporting
+  failures. One consumer-local projection supplies tool results and complete
+  safe settlement summaries. The complete recipe is 59 lines (previously 47);
+  its gate allows 60 while all other recipes retain their 50-line bound.
+
 - Round 9 review: invocation retains unresolved effects from cancelled agents,
   cancelled graphs and expired graphs, including child effects. Normal reads,
   keyed reopens and cancellation use the same outcome translation. Completion
