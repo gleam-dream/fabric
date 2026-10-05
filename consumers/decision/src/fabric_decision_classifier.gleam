@@ -70,8 +70,10 @@ pub fn runtime(
       run.DefinitionId("arithmetic-classifier", 1),
       codec.string(),
       questions(),
-      config,
-      fn(http, input) { decision.call(http, model, value.String(input)) },
+      classify.typesafe(),
+      fn(http, input) {
+        decision.call(http, config, model, value.String(input))
+      },
     )
   routing.runtime(
     run.DefinitionId("arithmetic-classifier-graph", 1),
@@ -93,7 +95,7 @@ pub fn main() -> Nil {
   }
   let assert Ok(http) = http_gun.start(http_config.default())
   let settings =
-    classify.typesafe(fn() { key })
+    classify.config(fn() { key })
     |> classify.with_timeout(llm_wire.After(duration.seconds(20)))
   let model =
     environment("FABRIC_CLASSIFIER_MODEL") |> result.unwrap("jev-latest")
@@ -114,7 +116,7 @@ pub fn main() -> Nil {
   io.println(terminal.node)
   let assert Ok(receipt) =
     codec.decode_json(
-      classify.receipt_codec(settings, questions()),
+      classify.receipt_codec(classify.typesafe(), questions()),
       review.output_json,
     )
   io.println("requested model: " <> receipt.requested_model)

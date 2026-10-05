@@ -36,7 +36,7 @@ pub fn http_with(settings: http_config.Config) -> http_gun.Client {
 }
 
 pub fn settings() -> classify.Config {
-  classify.typesafe(fn() { "test-key" })
+  classify.config(fn() { "test-key" })
 }
 
 pub fn config(url: String, path: String) -> Config {

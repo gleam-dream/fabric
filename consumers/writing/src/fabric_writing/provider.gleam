@@ -132,9 +132,9 @@ pub fn classifier(
       run.DefinitionId("writing-review-typesafe", 1),
       domain.draft_codec(),
       questions(),
-      settings,
+      classify.typesafe(),
       fn(_, draft) {
-        decision.call(http, model, value.String(domain.prompt(draft)))
+        decision.call(http, settings, model, value.String(domain.prompt(draft)))
       },
     ),
     fn(receipt) { Ok(receipt.answer.selected) },

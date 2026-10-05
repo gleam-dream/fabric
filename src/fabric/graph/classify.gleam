@@ -1,6 +1,8 @@
 //// A typed classification as one graph decision, after policy admission.
 ////
-//// The caller owns HTTP Gun and classification settings. Receipts retain
+//// Each operation version fixes its pure wire and receipt bounds. The request
+//// callback supplies current HTTP Gun and classification settings after policy
+//// admission, including approval and recovery. Receipts retain
 //// native answers, distributions, models, usage and protocol evidence;
 //// replay needs no network or credentials. Confidence is concentration
 //// evidence, not the probability that a decision is correct.
@@ -18,31 +20,46 @@ import llm_wire/classify/question
 import llm_wire/error
 
 pub opaque type Call {
-  Call(client: http_gun.Client, model: String, state: Value)
+  Call(
+    client: http_gun.Client,
+    config: classify.Config,
+    model: String,
+    state: Value,
+  )
 }
 
 /// Live request context; it is never written to the graph record.
-pub fn call(client: http_gun.Client, model: String, state: Value) -> Call {
-  Call(client:, model:, state:)
+pub fn call(
+  client: http_gun.Client,
+  config: classify.Config,
+  model: String,
+  state: Value,
+) -> Call {
+  Call(client:, config:, model:, state:)
 }
 
-/// `request` runs only after policy admission and should be pure.
+/// `request` runs only after policy admission and should be pure. Derive live
+/// settings from its fresh context; the wire and questions retain their meaning
+/// for this operation version. A different protocol needs a new version.
+/// Live byte limits above the wire's receipt bounds fail before credential
+/// access or network I/O. Lower live limits do not affect stored receipts.
 pub fn decision(
   identity: run.DefinitionId,
   input: codec.Codec(input),
   questions: question.Batch(answer),
-  config: classify.Config,
+  wire: classify.Wire,
   request: fn(context, input) -> Call,
 ) -> operation.Operation(context, input, classify.Outcome(answer)) {
   operation.new(
     identity,
     input,
-    classify.receipt_codec(config, questions),
+    classify.receipt_codec(wire, questions),
     fn(context, invocation: operation.Invocation, input) {
       let call = request(context, input)
       use prepared <- result.try(
         classify.prepare(
-          config,
+          wire,
+          call.config,
           classify.request(call.model, call.state, questions),
         )
         |> result.map_error(fn(problem) {
