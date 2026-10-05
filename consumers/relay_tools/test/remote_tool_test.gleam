@@ -6,11 +6,12 @@ import fabric
 import fabric/agent
 import fabric/graph
 import fabric/graph/definition
+import fabric/graph/operation
 import fabric/model
 import fabric/policy
 import fabric/run
 import fabric/store
-import fabric_relay
+import fabric/tool
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
@@ -23,6 +24,9 @@ import relay/content
 import relay/server
 import relay/testing
 import relay/tool as relay_tool
+import relay_discovery
+import relay_operation
+import relay_tools
 import sinal/correlation.{type Correlation}
 
 // --- the inventory server -------------------------------------------------------
@@ -157,7 +161,7 @@ pub fn a_typed_tool_answers_with_its_structured_output_test() {
   let inventory = testing.connect(inventory(seen, 0), Nil)
   let #(id, status) =
     run_once(
-      [fabric_relay.tool(lookup(), peer:)],
+      [relay_tools.tool(lookup(), peer:)],
       inventory,
       "lookup",
       "{\"sku\":\"AB-1\"}",
@@ -172,9 +176,7 @@ pub fn a_typed_tool_answers_with_its_structured_output_test() {
   correlation |> should.equal(correlation.from_key("question-7"))
   key
   |> should.equal(
-    run.id_to_string(
-      run.id_from_parts("action", [run.id_to_string(id), "1", "c1"]),
-    ),
+    tool.idempotency_key(tool.Call(id, run.ActionId(1, "c1"), correlation)),
   )
 }
 
@@ -191,7 +193,7 @@ pub fn the_definition_names_and_describes_the_fabric_tool_test() {
     agent.new(
       "assistant",
       model,
-      [fabric_relay.tool(lookup(), peer:)],
+      [relay_tools.tool(lookup(), peer:)],
       policy.always_allow(),
     )
     |> agent.build
@@ -217,7 +219,7 @@ pub fn an_is_error_result_is_explained_to_the_model_test() {
   let inventory = testing.connect(inventory(seen, 0), Nil)
   let #(_, status) =
     run_once(
-      [fabric_relay.tool(reserve(), peer:)],
+      [relay_tools.tool(reserve(), peer:)],
       inventory,
       "reserve",
       "{\"sku\":\"ZZ-9\"}",
@@ -238,7 +240,7 @@ pub fn a_lost_call_to_a_changing_tool_is_uncertain_test() {
     |> client.connect
   let #(_, status) =
     run_once(
-      [fabric_relay.tool(reserve(), peer:)],
+      [relay_tools.tool(reserve(), peer:)],
       inventory,
       "reserve",
       "{\"sku\":\"AB-1\"}",
@@ -259,7 +261,7 @@ pub fn a_lost_call_to_a_read_only_tool_is_explained_test() {
     |> client.connect
   let #(_, status) =
     run_once(
-      [fabric_relay.tool(lookup(), peer:)],
+      [relay_tools.tool(lookup(), peer:)],
       inventory,
       "lookup",
       "{\"sku\":\"AB-1\"}",
@@ -278,7 +280,7 @@ pub fn a_call_never_sent_is_explained_test() {
   let assert Ok(unreachable) = client.connect(config)
   let #(_, status) =
     run_once(
-      [fabric_relay.tool(reserve(), peer:)],
+      [relay_tools.tool(reserve(), peer:)],
       unreachable,
       "reserve",
       "{\"sku\":\"AB-1\"}",
@@ -292,7 +294,9 @@ pub fn a_call_never_sent_is_explained_test() {
 pub fn listed_tools_are_mounted_and_validate_their_arguments_test() {
   let seen = process.new_subject()
   let inventory = testing.connect(inventory(seen, 0), Nil)
-  let assert Ok(tools) = fabric_relay.discover(inventory, peer:)
+  let assert Ok(declarations) = client.list_tools(inventory)
+  let assert Ok(tools) =
+    list.try_map(declarations, relay_discovery.discovered(_, peer:))
   list.length(tools) |> should.equal(3)
   // Structured content as the server sent it.
   let #(_, status) = run_once(tools, inventory, "lookup", "{\"sku\":\"AB-1\"}")
@@ -317,9 +321,9 @@ pub fn a_listed_tool_needs_a_name_a_model_accepts_test() {
       ..relay_tool.declaration(lookup()),
       name: "files.read",
     )
-  let assert Error(error) = fabric_relay.discovered(declaration, peer:)
-  error |> should.equal(fabric_relay.UnsupportedName("files.read"))
-  fabric_relay.describe_discovery_error(error)
+  let assert Error(error) = relay_discovery.discovered(declaration, peer:)
+  error |> should.equal(relay_discovery.UnsupportedName("files.read"))
+  relay_discovery.describe_error(error)
   |> string.contains("files.read")
   |> should.be_true
 }
@@ -330,8 +334,7 @@ pub fn a_listing_failure_is_reported_test() {
   // machine and report `timed_out.not_sent` instead.
   let assert Ok(config) = client.http("http://127.0.0.1:9/mcp")
   let assert Ok(unreachable) = client.connect(config)
-  let assert Error(fabric_relay.ListingFailed(error)) =
-    fabric_relay.discover(unreachable, peer:)
+  let assert Error(error) = client.list_tools(unreachable)
   client.evidence(error) |> should.equal(client.NotSent)
 }
 
@@ -346,7 +349,7 @@ fn one_node_graph(runs: store.Store, inventory: client.Client, tool) {
       nodes: [
         definition.node(
           node,
-          fabric_relay.operation(tool, version: 1, peer:),
+          relay_operation.operation(tool, version: 1, peer:),
           select: fn(sku) { Ok(sku) },
           accept: fn(sku, item: Item) { Ok(definition.Finish(sku, item.stock)) },
           destinations: [],
@@ -381,7 +384,12 @@ pub fn a_graph_operation_calls_the_tool_with_the_runs_correlation_test() {
   correlation |> should.equal(correlation.from_key("graph-7"))
   key
   |> should.equal(
-    run.id_to_string(run.id_from_parts("graph", [run.id_to_string(id), "1"])),
+    operation.idempotency_key(operation.Invocation(
+      run: id,
+      activation: 1,
+      attempt: 1,
+      correlation:,
+    )),
   )
 }
 

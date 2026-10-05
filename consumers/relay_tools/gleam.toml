@@ -1,5 +1,6 @@
-name = "fabric_relay"
-version = "0.1.0"
+# Unpublished consumer of the compiled Relay recipes.
+name = "relay_tools_consumer"
+version = "0.0.0"
 target = "erlang"
 gleam = ">= 1.18.0"
 licenses = ["Apache-2.0"]
