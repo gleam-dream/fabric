@@ -2053,3 +2053,112 @@ README and `fabric/tool` docs against the compiled recipe and emits a diff.
 Dependents migrated: `consumers/app` and oversight's `apps/support_desk` each
 own a verbatim copy. Fabric's core manifest has no saga dependency. The former
 bridge package is deleted; no stored record shape changed.
+
+### MCP bridges become explicit composition
+
+Copy only the modules needed from the README into the application's `src`.
+Remove `fabric_relay` from its manifest. Fabric gains no Relay dependency.
+All 23 old tests now compile in `consumers/relay_tools`; graph operations are
+retained as a 28-line variant. The main recipes are 40-line typed calling and
+41-line serving, plus 50-line discovery and a 12-line result-id accessor.
+
+```gleam
+// Before
+let mounted = fabric_relay.tool(definition, peer:)
+let listed = fabric_relay.discover(peer, peer:)
+let operation = fabric_relay.operation(definition, version: 1, peer:)
+// After
+let mounted = relay_tools.tool(definition, peer:)
+let assert Ok(declarations) = client.list_tools(peer)
+let listed = list.try_map(declarations, relay_discovery.discovered(_, peer:))
+let operation = relay_operation.operation(definition, version: 1, peer:)
+```
+
+`discovered` now reports the recipe's `UnsupportedName` or
+`UnsupportedSchema(contract.DocumentError)`, described by `describe_error`.
+Listing failures remain Relay's opaque `client.Error`, with `kind`, `reason`,
+`evidence` and `describe_error`. The old `DiscoveryError.ListingFailed` wrapper
+and `describe_discovery_error` disappear; no delivery evidence is discarded.
+`tool` and `operation` still require structured output definitions. Discovery
+retains schema validation and projects content-only results to their text.
+
+```gleam
+// Before
+fabric_relay.service(definition, runs:, agent:, start: fn(call, input) {
+  fabric_relay.start(context, prompt: input.question)
+  |> fabric_relay.with_principal(tool.context(call).subject)
+}) |> fabric_relay.with_wait(wait) |> fabric_relay.serve
+// After
+let service = invoke.agent(tool.name(definition), runs, agent)
+  |> invoke.with_wait(wait)
+relay_serve.serve(definition, service, fn(call, input) {
+  Ok(invoke.request(context, input.question)
+    |> invoke.with_principal(tool.context(call).subject))
+})
+```
+
+The old `Start` wrapper becomes `Result(invoke.Request, tool.ToolError)`:
+`refuse(error)` becomes `Error(error)`, `start(context, prompt:)` becomes
+`invoke.request(context, prompt)`. The anonymous principal remains `"anonymous"`.
+Set a verified principal for shared servers. Service configuration is now
+`invoke.Service`; `check` returns `Result(Nil, invoke.ConfigError)` and the
+single `InvalidWait(value, minimum, maximum)` replaces the list containing
+`InvalidLimit(Wait, ...)`. Use `invoke.describe_config_error`.
+
+For an HTTP handler or job, bypass the Relay recipe entirely:
+
+```gleam
+let request = invoke.request(context, prompt)
+  |> invoke.with_principal(subject)
+  |> invoke.with_key(key)
+  |> invoke.with_correlation(correlation)
+  |> invoke.with_cancelled(disconnected)
+let response = invoke.call(service, request)
+let id = invoke.id(response)
+let answer = invoke.answer(response)  // Option(native_answer)
+let kind = invoke.response_kind(response)
+let description = invoke.describe_response(response)
+let structured = invoke.details(response)  // error, run_id, evidence
+```
+
+`invoke.code` supplies detailed machine codes (keep a fallback). `Working`,
+`AwaitingApproval`, `AwaitingInput`, `OutcomeUnknown`, `Unattended`, `Ended`
+and `Refused` tell the caller what to do next. Cancellation that is still
+settling is `Working`; a failed cancellation is `OutcomeUnknown`, never a
+claim that effects stopped. Approval and uncertain effects are handed back
+with the run id, even for an unkeyed request. Follow them up or cancel them.
+
+For graphs, `invoke.graph(name, runtime)` accepts
+`invoke.request(Nil, initial_state)` and returns the native answer. Retries
+compare the stored initial state through `graph.matches_initial(handle, state)`,
+not the current state. `graph.await_with(handle, within:, or: selector)` adds
+`Reached(status)`/`Interrupted(message)` without changing `graph.await`.
+
+```gleam
+// Before
+let id = fabric_relay.run_id(definition, principal:, key:)
+let found = fabric_relay.run_of(result)
+// After
+let id = invoke.keyed_id(service, principal, key)
+let found = relay_run.run_of(result)
+```
+
+Both successful replies, including content-only replies, and failures name the
+run in content `_meta` under `io.github.gleam-dream/run-id`.
+
+**Identity migration:** the old bridge joined free-form parts with hyphens;
+`("ada-bob", "order")` could alias `("ada", "bob-order")`. Invocation ids now
+hash a JSON-framed tuple including the runtime family, service, principal and
+key. External action keys now come from `tool.idempotency_key(call)` or
+`operation.idempotency_key(invocation)` and frame parts the same way. These
+are new mappings. Finish or reconcile pre-upgrade keyed runs and interrupted
+remote calls before resubmitting their keys under the new recipe, or retain an
+application migration mapping to their original ids/remote keys. No record
+shape changed: `fabric.open` and `graph.open` still read old ids. Do not use
+principal-less legacy ids as an authentication check.
+
+Name admission is now the fabric-owned `tool.valid_name(name)` Boolean port,
+using the same grammar as agent admission. The local recipe only joins ports;
+Relay owns output extraction and metadata, and fabric owns run lifecycle.
+Dependents: oversight `apps/tool_hub`, including its discovery mode and both
+MCP directions, plus the compiled consumer.

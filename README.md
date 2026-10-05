@@ -448,7 +448,7 @@ it alike. An approval request or a graph wait stores its deadline
 (`run.PendingApproval.expires`, `graph.Snapshot.deadline`); one stored
 before deadlines had defaults keeps none and never expires. A bound may
 come from configuration, so a setter only stores it: `agent.build`,
-`graph.build`, `definition.build` and `fabric_relay.serve` report every
+`graph.build` and `definition.build` report every
 bound out of range at once, each as `InvalidLimit(limit:, value:, minimum:,
 maximum:)` naming its setter (`describe_config_errors`,
 `definition.describe_build_errors`).
@@ -783,10 +783,9 @@ The unpublished `consumers/saga_tool` compiles this exact block; the
 Each integration is a separate package under `integrations/`, so Fabric
 itself depends on none of them.
 
-| Package                                                   | What it adds                                                                                                                                                                                                                                                                  |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [fabric_relay](integrations/fabric_relay/README.md)       | MCP over [Relay](https://github.com/gleam-dream/relay): `fabric_relay.tool(definition, peer:)`, `discover` and `operation` call MCP tools from agents and graphs; `serve` publishes an agent as an MCP tool, and a retried call with an idempotency key reaches the same run. |
-| [fabric_postgres](integrations/fabric_postgres/README.md) | The leased PostgreSQL backend, its migrations, discovery refresh and pruning of finished run families.                                                                                                                                                                        |
+| Package                                                   | What it adds                                                                                           |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| [fabric_postgres](integrations/fabric_postgres/README.md) | The leased PostgreSQL backend, its migrations, discovery refresh and pruning of finished run families. |
 
 The [writing consumer](consumers/writing/README.md) composes real source and
 artifact tools with generation, interchangeable LLM and TypeSafe review,
@@ -844,8 +843,247 @@ nix develop
 gleam format --check src test
 gleam build --warnings-as-errors
 gleam test                                   # the core; no PostgreSQL
-(cd integrations/fabric_relay && gleam test)
+(cd consumers/relay_tools && gleam test)
 integrations/fabric_postgres/scripts/test-postgres.sh
 ```
 
 The tested sibling revisions are in [PLAN](docs/PLAN.md#tested-sibling-revisions).
+
+## Composing with Relay
+
+Fabric owns run identity, bounded waiting and cancellation in `fabric/invoke`.
+Relay owns MCP calls, schemas and delivery evidence. Copy the recipes you use
+into your application; the `relay-recipes` gate compares each complete module
+below with its module documentation and unpublished consumer. Fabric does not
+depend on Relay. These recipes retain typed calls, discovery, graph calls and
+serving; the application chooses its authenticated principal and handles errors.
+
+`invoke.agent(name, runs, agent)` and `invoke.graph(name, runtime)` create a
+service with a 25-second wait. `invoke.request(context, input)` carries native
+input; use `with_principal`, `with_key`, `with_correlation` and `with_cancelled`.
+`invoke.call` returns an opaque response with `id`, `answer`, `response_kind`,
+`code`, `describe_response` and JSON `details`. Check configuration at startup
+with `invoke.check`; invalid waits start nothing. A keyed run outlives disconnect,
+a fresh run requests cancellation at disconnect or its deadline. Approval,
+reconciliation and unattended work return the run id for application follow-up.
+
+The serving recipe accepts `start: fn(call, input) -> Result(Request, ToolError)`.
+Read a verified principal from `tool.context(call)` and apply
+`invoke.with_principal`; return `Error(tool.error_message(...))` to refuse before
+starting a run. Keep the wait shorter than the Relay request and invocation
+bounds. Successful native answers and structured failures both carry
+`io.github.gleam-dream/run-id` on their content blocks.
+
+Typed calling requires a structured output definition; content-only tools use
+the discovery recipe. A tool's `isError` becomes `Explain`, while a lost call
+becomes `Uncertain` unless its declaration marks it read-only. Discovery projects
+content-only replies to their text; applications needing media should retain the
+original Relay result. List with `client.list_tools`, then
+`list.try_map(declarations, relay_discovery.discovered(_, peer:))`; handle listing
+and schema/name admission errors at their respective boundaries.
+
+### Calling Relay tools
+
+<!-- relay-tools-recipe -->
+
+```gleam
+import fabric/tool
+import gleam/option.{Some}
+import relay/client
+import relay/client/output
+import relay/tool as remote
+
+pub fn tool(
+  definition: remote.Definition(i, o),
+  peer peer: fn(c) -> client.Client,
+) -> tool.Tool(c) {
+  let declaration = remote.declaration(definition)
+  let assert Some(codec) = remote.output_codec(definition)
+  tool.bind(
+    tool.define(
+      declaration.name,
+      option.unwrap(declaration.description, ""),
+      remote.input_codec(definition),
+      codec,
+    ),
+    fn(context, call: tool.Call, input) {
+      peer(context)
+      |> client.with_correlation(call.correlation)
+      |> client.with_idempotency_key(tool.idempotency_key(call))
+      |> client.call(definition, input)
+      |> output.require
+    },
+    failure(declaration, _),
+  )
+}
+
+pub fn failure(
+  declaration: remote.Declaration,
+  error: output.Error,
+) -> tool.Failure {
+  let message = output.describe_error(error)
+  case output.evidence(error), declaration.annotations.read_only_hint {
+    client.MaybeSent, hint if hint != Some(True) -> tool.Uncertain(message)
+    _, _ -> tool.Explain(message)
+  }
+}
+```
+
+### Discovering Relay tools
+
+<!-- relay-discovery-recipe -->
+
+```gleam
+import fabric/tool
+import gleam/option
+import gleam/result
+import json/blueprint/codec
+import json/blueprint/contract
+import relay/client
+import relay/client/output
+import relay/tool as remote
+import relay_tools
+
+pub type Error {
+  UnsupportedName(String)
+  UnsupportedSchema(contract.DocumentError)
+}
+
+pub fn describe_error(error: Error) -> String {
+  case error {
+    UnsupportedName(name) -> "unsupported model tool name: " <> name
+    UnsupportedSchema(error) -> contract.describe_document_error(error)
+  }
+}
+
+pub fn discovered(
+  declaration: remote.Declaration,
+  peer peer: fn(c) -> client.Client,
+) -> Result(tool.Tool(c), Error) {
+  use Nil <- result.try(case tool.valid_name(declaration.name) {
+    True -> Ok(Nil)
+    False -> Error(UnsupportedName(declaration.name))
+  })
+  use schema <- result.map(
+    remote.input_contract(declaration) |> result.map_error(UnsupportedSchema),
+  )
+  tool.bind(
+    tool.define(
+      declaration.name,
+      option.unwrap(declaration.description, ""),
+      contract.value_codec(schema),
+      codec.value(),
+    ),
+    fn(context, call: tool.Call, input) {
+      peer(context)
+      |> client.with_correlation(call.correlation)
+      |> client.with_idempotency_key(tool.idempotency_key(call))
+      |> client.call_discovered(declaration, input)
+      |> output.require_discovered(declaration)
+    },
+    relay_tools.failure(declaration, _),
+  )
+}
+```
+
+### Calling Relay tools from a graph
+
+<!-- relay-operation-recipe -->
+
+```gleam
+import fabric/graph/operation
+import fabric/run
+import gleam/option.{Some}
+import relay/client
+import relay/client/output
+import relay/tool
+import relay_tools
+
+pub fn operation(
+  definition: tool.Definition(i, o),
+  version version: Int,
+  peer peer: fn(c) -> client.Client,
+) -> operation.Operation(c, i, o) {
+  let assert Some(codec) = tool.output_codec(definition)
+  operation.new(
+    run.DefinitionId(tool.name(definition), version),
+    tool.input_codec(definition),
+    codec,
+    fn(context, call: operation.Invocation, input) {
+      peer(context)
+      |> client.with_correlation(call.correlation)
+      |> client.with_idempotency_key(operation.idempotency_key(call))
+      |> client.call(definition, input)
+      |> output.require
+    },
+    relay_tools.failure(tool.declaration(definition), _),
+  )
+}
+```
+
+### Serving through Relay
+
+<!-- relay-serve-recipe -->
+
+```gleam
+import fabric/invoke
+import fabric/run
+import gleam/option.{None, Some}
+import gleam/result
+import json/blueprint/value
+import relay/content
+import relay/tool
+
+pub fn serve(
+  definition: tool.Definition(i, a),
+  service: invoke.Service(c, input, a),
+  start: fn(tool.Call(s), i) -> Result(invoke.Request(c, input), tool.ToolError),
+) -> Result(tool.Tool(s), invoke.ConfigError) {
+  use Nil <- result.map(invoke.check(service))
+  tool.handle_call(definition, fn(call, input) {
+    use request <- result.try(start(call, input))
+    let request =
+      request
+      |> invoke.with_key(tool.idempotency_key(call))
+      |> invoke.with_correlation(tool.correlation(call))
+      |> invoke.with_cancelled(tool.cancelled(call))
+    let response = invoke.call(service, request)
+    let meta = [
+      #(
+        "io.github.gleam-dream/run-id",
+        value.String(run.id_to_string(invoke.id(response))),
+      ),
+    ]
+    case invoke.answer(response) {
+      Some(answer) -> Ok(tool.complete_with_meta(answer, meta))
+      None ->
+        Error(tool.error_with(
+          [
+            content.text(invoke.describe_response(response))
+            |> content.with_meta(meta),
+          ],
+          Some(invoke.details(response)),
+        ))
+    }
+  })
+}
+```
+
+### Reading a Relay run id
+
+<!-- relay-run-recipe -->
+
+```gleam
+import fabric/run
+import gleam/option.{type Option, None, Some}
+import json/blueprint/value
+import relay/client
+import relay/client/output
+
+pub fn run_of(result: client.ToolResult(a)) -> Option(run.RunId) {
+  case output.meta(result, "io.github.gleam-dream/run-id") {
+    Some(value.String(id)) -> run.parse_id(id) |> option.from_result
+    _ -> None
+  }
+}
+```

@@ -7,6 +7,15 @@ integration packages under `integrations/` keep their own changelogs.
 
 ## Unreleased
 
+- Round 9: move request/run ownership to protocol-neutral `fabric/invoke`,
+  supporting agents and graphs. Replace `fabric_relay` with compiled recipes
+  for typed calls (40 lines), discovery (50), graph calls (28), serving (41)
+  and reading a run id (12). Preserve all 23 integration tests.
+- Add graph `await_with` and `matches_initial`, tool name validation and stable
+  action/activation idempotency keys. Frame key parts before hashing, avoiding
+  collisions between principals and keys containing separators. The mapping
+  changes; existing records remain readable by their original ids.
+
 - Round 9: replace `fabric_saga` with a 47-line compiled saga tool recipe,
   backed by saga's outcome and task-reporting ports. Preserve all 43 former
   bridge tests across saga (24) and the recipe consumer (19). Migrate the app
