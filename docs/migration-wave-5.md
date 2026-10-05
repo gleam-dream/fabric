@@ -2169,3 +2169,56 @@ The retained PostgreSQL adapter is unchanged apart from its test peer locating
 `kill` on `PATH` instead of assuming `/bin/kill`. Its public API and persisted
 records are unchanged. This pre-existing portability fix is committed
 separately from the invocation and recipe changes.
+
+### Round 9 review: invocation uncertainty and discovered output
+
+Invocation signatures and stored records are unchanged. Previously a cancelled
+or expired graph could return `Ended` despite retained reconciliation evidence.
+A cancelled agent could also return `Ended` while its snapshot retained uncertain
+actions. These outcomes now return `OutcomeUnknown`; `details` retains graph
+`evidence`, agent `uncertain` effects, and `child_run_id` for unresolved children.
+Graph cancellation and expiry also retain their cause as `termination`.
+
+Before, treating every cancelled invocation as settled hid unresolved effects:
+
+```gleam
+case invoke.code(response) {
+  "cancelled" -> mark_closed(invoke.id(response))
+  _ -> handle_other(response)
+}
+```
+
+After, use the stable classification and retain evidence for reconciliation:
+
+```gleam
+case invoke.response_kind(response) {
+  invoke.OutcomeUnknown -> reconcile(invoke.id(response), invoke.details(response))
+  invoke.Ended -> mark_closed(invoke.id(response))
+  _ -> handle_other(response)
+}
+```
+
+Settled cancellation remains `Ended`. Cancellation still reports `Working` while
+owned effects settle. If completion commits before cancellation, invocation
+returns `Answered` with that answer. Cancellation errors remain explicit.
+
+The Relay discovery recipe follows the presence carried by the client result.
+A present JSON null stays null; absent structured output projects content text.
+The recipe no longer passes the declaration to the output projection.
+
+Before:
+
+```gleam
+client.call_discovered(peer, declaration, input)
+|> output.require_discovered(declaration)
+```
+
+After:
+
+```gleam
+client.call_discovered(peer, declaration, input)
+|> output.require_discovered
+```
+
+The README, module documentation and compiled discovery consumer contain this
+same recipe. Its size remains 50 lines.
