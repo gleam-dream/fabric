@@ -6,6 +6,7 @@
 import fabric
 import fabric/agent
 import fabric/approvers
+import fabric/invoke
 import fabric/model
 import fabric/policy
 import fabric/reviewer
@@ -13,7 +14,6 @@ import fabric/run
 import fabric/store
 import fabric/testing as fabric_testing
 import fabric/tool as fabric_tool
-import fabric_relay
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -28,6 +28,8 @@ import relay/http
 import relay/server
 import relay/testing
 import relay/tool as relay_tool
+import relay_run
+import relay_serve
 import sinal/correlation
 
 pub type Question {
@@ -122,19 +124,23 @@ fn runs() -> store.Store {
 
 /// The server, whose context is the caller's principal.
 fn desk_server(
-  service: fabric_relay.Service(String, Nil, Question, Answer),
+  service: invoke.Service(Nil, String, Answer),
 ) -> server.Server(String) {
-  let assert Ok(assistant) = fabric_relay.serve(service)
+  let assert Ok(assistant) = publish(service)
   server.new([assistant])
 }
 
-/// The input's type comes from the definition: `start` needs no
-/// annotation.
-fn served(runs, desk) {
-  fabric_relay.service(ask(), runs:, agent: desk, start: fn(call, question) {
-    fabric_relay.start(Nil, prompt: question.text)
-    |> fabric_relay.with_principal(relay_tool.context(call))
+fn publish(service) {
+  relay_serve.serve(ask(), service, fn(call, question) {
+    Ok(
+      invoke.request(Nil, question.text)
+      |> invoke.with_principal(relay_tool.context(call)),
+    )
   })
+}
+
+fn served(runs, desk) {
+  invoke.agent("ask_desk", runs, desk)
 }
 
 /// The `error` and `run_id` of an `isError` result.
@@ -176,58 +182,44 @@ pub fn a_call_answers_with_the_runs_typed_answer_test() {
   // The run took the call's correlation, and the answer names the run.
   let assert Ok(Turn(run: id, correlation:, ..)) = process.receive(turns, 100)
   correlation |> should.equal(correlation.from_key("ticket-12"))
-  fabric_relay.run_of(result) |> should.equal(Some(id))
+  relay_run.run_of(result) |> should.equal(Some(id))
   let assert [content.TextContent(text:, ..)] = blocks
   text |> should.equal("{\"answer\":\"done: hello\"}")
 }
 
 /// A result that names no run, such as another server's, has no run.
 pub fn a_result_without_a_run_names_none_test() {
-  fabric_relay.run_of(client.Succeeded(Nil, [content.text("plain")]))
+  relay_run.run_of(client.Succeeded(Nil, [content.text("plain")]))
   |> should.equal(None)
-  fabric_relay.run_of(client.ToolFailed([], None)) |> should.equal(None)
+  relay_run.run_of(client.ToolFailed([], None)) |> should.equal(None)
 }
 
 /// A `start` that names no principal runs a keyed call for `anonymous`.
 pub fn a_call_without_a_principal_runs_for_anonymous_test() {
   let turns = process.new_subject()
-  let service =
-    fabric_relay.service(
-      ask(),
-      runs: runs(),
-      agent: desk(desk_model(turns, False, 0)),
-      start: fn(_call, question) {
-        fabric_relay.start(Nil, prompt: question.text)
-      },
-    )
+  let service = served(runs(), desk(desk_model(turns, False, 0)))
+  let assert Ok(assistant) =
+    relay_serve.serve(ask(), service, fn(_, question) {
+      Ok(invoke.request(Nil, question.text))
+    })
   let assert Ok(result) =
-    testing.connect(desk_server(service), "ada")
+    testing.connect(server.new([assistant]), "ada")
     |> client.with_idempotency_key("k-1")
     |> client.call(ask(), Question("hello"))
   let assert client.Succeeded(..) = result
-  fabric_relay.run_of(result)
-  |> should.equal(
-    Some(fabric_relay.run_id(
-      ask(),
-      principal: fabric_relay.anonymous,
-      key: "k-1",
-    )),
-  )
+  relay_run.run_of(result)
+  |> should.equal(Some(invoke.keyed_id(service, "anonymous", "k-1")))
 }
 
 pub fn start_refuses_a_call_with_its_own_result_test() {
   let turns = process.new_subject()
-  let service =
-    fabric_relay.service(
-      ask(),
-      runs: runs(),
-      agent: desk(desk_model(turns, False, 0)),
-      start: fn(_call, _question) {
-        fabric_relay.refuse(relay_tool.error_message("not your desk"))
-      },
-    )
+  let service = served(runs(), desk(desk_model(turns, False, 0)))
+  let assert Ok(assistant) =
+    relay_serve.serve(ask(), service, fn(_, _) {
+      Error(relay_tool.error_message("not your desk"))
+    })
   let assert Ok(client.ToolFailed([content.TextContent(text:, ..)], _)) =
-    testing.connect(desk_server(service), "ada")
+    testing.connect(server.new([assistant]), "ada")
     |> client.call(ask(), Question("hello"))
   text |> should.equal("not your desk")
   count(turns) |> should.equal(0)
@@ -245,12 +237,12 @@ pub fn a_retried_call_reaches_the_same_run_test() {
     testing.connect(desk_server(served(runs, desk)), "ada")
     |> client.with_idempotency_key("order-1001")
   let first = client.call(peer, ask(), Question("pay"))
-  let expected = fabric_relay.run_id(ask(), principal: "ada", key: "order-1001")
+  let expected = invoke.keyed_id(served(runs, desk), "ada", "order-1001")
   refusal(first)
   |> should.equal(#("awaiting_approval", Some(run.id_to_string(expected))))
   let assert Ok(failed) = first
   let assert client.ToolFailed(..) = failed
-  fabric_relay.run_of(failed) |> should.equal(Some(expected))
+  relay_run.run_of(failed) |> should.equal(Some(expected))
   let assert Ok(approvals) = list.key_find(facts(first), "approvals")
   approvals
   |> should.equal(
@@ -290,13 +282,7 @@ pub fn a_key_names_one_run_per_principal_test() {
   { ada != bob } |> should.be_true
   bob
   |> should.equal(
-    Some(
-      run.id_to_string(fabric_relay.run_id(
-        ask(),
-        principal: "bob",
-        key: "order-1",
-      )),
-    ),
+    Some(run.id_to_string(invoke.keyed_id(service, "bob", "order-1"))),
   )
 }
 
@@ -323,7 +309,7 @@ pub fn a_keyed_run_keeps_working_for_the_retry_test() {
   let runs = runs()
   let desk = desk(desk_model(turns, False, 300))
   let service =
-    served(runs, desk) |> fabric_relay.with_wait(duration.milliseconds(50))
+    served(runs, desk) |> invoke.with_wait(duration.milliseconds(50))
   let peer =
     testing.connect(desk_server(service), "ada")
     |> client.with_idempotency_key("slow-1")
@@ -345,24 +331,19 @@ pub fn serve_reports_a_wait_out_of_range_test() {
   let desk = desk(desk_model(process.new_subject(), False, 0))
   let assert Error(errors) =
     served(runs(), desk)
-    |> fabric_relay.with_wait(duration.milliseconds(0))
-    |> fabric_relay.serve
-  errors
-  |> should.equal([
-    fabric_relay.InvalidLimit(fabric_relay.Wait, 0, 1, 4_294_967_295),
-  ])
-  fabric_relay.describe_config_errors(errors)
-  |> should.equal("fabric_relay.with_wait (ms) is 0, outside 1..4294967295")
-  let assert Error([
-    fabric_relay.InvalidLimit(fabric_relay.Wait, 4_294_967_296, ..),
-  ]) =
+    |> invoke.with_wait(duration.milliseconds(0))
+    |> publish
+  errors |> should.equal(invoke.InvalidWait(0, 1, 4_294_967_295))
+  invoke.describe_config_error(errors)
+  |> should.equal("fabric/invoke.with_wait (ms) is 0, outside 1..4294967295")
+  let assert Error(invoke.InvalidWait(4_294_967_296, ..)) =
     served(runs(), desk)
-    |> fabric_relay.with_wait(duration.milliseconds(4_294_967_296))
-    |> fabric_relay.serve
+    |> invoke.with_wait(duration.milliseconds(4_294_967_296))
+    |> publish
   let assert Ok(_) =
     served(runs(), desk)
-    |> fabric_relay.with_wait(duration.milliseconds(4_294_967_295))
-    |> fabric_relay.serve
+    |> invoke.with_wait(duration.milliseconds(4_294_967_295))
+    |> publish
 }
 
 /// A call without a key owns its run: when the wait ends, the run is
@@ -372,7 +353,7 @@ pub fn an_unkeyed_run_is_cancelled_when_the_wait_ends_test() {
   let turns = process.new_subject()
   let desk = desk(desk_model(turns, False, 2000))
   let service =
-    served(runs, desk) |> fabric_relay.with_wait(duration.milliseconds(50))
+    served(runs, desk) |> invoke.with_wait(duration.milliseconds(50))
   let result =
     testing.connect(desk_server(service), "ada")
     |> client.call(ask(), Question("slow"))

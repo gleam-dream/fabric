@@ -92,6 +92,24 @@ class GateTest(unittest.TestCase):
             [problem] = check.recipe_problems(root, **check.SAGA_RECIPE)
             self.assertIn("+      reporting.changed(", problem)
 
+    def test_each_relay_recipe_is_compiled_verbatim_and_mismatch_has_diff(self) -> None:
+        for config in check.RELAY_RECIPES:
+            with self.subTest(recipe=config["consumer"]), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                for relative in ["README.md", config["consumer"], config["module"]]:
+                    destination = root / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_text((check.ROOT / relative).read_text())
+                self.assertEqual(check.recipe_problems(root, **config), [])
+                source = (root / config["consumer"]).read_text()
+                self.assertLessEqual(len(source.splitlines()), 50)
+                readme = root / "README.md"
+                readme.write_text(readme.read_text().replace(source, source.replace("pub fn", "fn", 1), 1))
+                [problem] = check.recipe_problems(root, **config)
+                self.assertIn("README.md differs", problem)
+                self.assertIn("-pub fn", problem)
+                self.assertIn("+fn", problem)
+
 
 if __name__ == "__main__":
     unittest.main()

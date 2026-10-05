@@ -101,6 +101,116 @@
 ////   }
 //// }
 //// ```
+////
+//// ## Calling Relay tools
+////
+//// Copy `relay_tools` into the application; the consumer compiles this exact recipe.
+//// See the README for composition and failure handling.
+////
+//// ```gleam
+//// import fabric/tool
+//// import gleam/option.{Some}
+//// import relay/client
+//// import relay/client/output
+//// import relay/tool as remote
+////
+//// pub fn tool(
+////   definition: remote.Definition(i, o),
+////   peer peer: fn(c) -> client.Client,
+//// ) -> tool.Tool(c) {
+////   let declaration = remote.declaration(definition)
+////   let assert Some(codec) = remote.output_codec(definition)
+////   tool.bind(
+////     tool.define(
+////       declaration.name,
+////       option.unwrap(declaration.description, ""),
+////       remote.input_codec(definition),
+////       codec,
+////     ),
+////     fn(context, call: tool.Call, input) {
+////       peer(context)
+////       |> client.with_correlation(call.correlation)
+////       |> client.with_idempotency_key(tool.idempotency_key(call))
+////       |> client.call(definition, input)
+////       |> output.require
+////     },
+////     failure(declaration, _),
+////   )
+//// }
+////
+//// pub fn failure(
+////   declaration: remote.Declaration,
+////   error: output.Error,
+//// ) -> tool.Failure {
+////   let message = output.describe_error(error)
+////   case output.evidence(error), declaration.annotations.read_only_hint {
+////     client.MaybeSent, hint if hint != Some(True) -> tool.Uncertain(message)
+////     _, _ -> tool.Explain(message)
+////   }
+//// }
+//// ```
+////
+//// ## Discovering Relay tools
+////
+//// Copy `relay_discovery` into the application; the consumer compiles this exact recipe.
+//// See the README for composition and failure handling.
+////
+//// ```gleam
+//// import fabric/tool
+//// import gleam/option
+//// import gleam/result
+//// import json/blueprint/codec
+//// import json/blueprint/contract
+//// import relay/client
+//// import relay/client/output
+//// import relay/tool as remote
+//// import relay_tools
+////
+//// pub type Error {
+////   UnsupportedName(String)
+////   UnsupportedSchema(contract.DocumentError)
+//// }
+////
+//// pub fn describe_error(error: Error) -> String {
+////   case error {
+////     UnsupportedName(name) -> "unsupported model tool name: " <> name
+////     UnsupportedSchema(error) -> contract.describe_document_error(error)
+////   }
+//// }
+////
+//// pub fn discovered(
+////   declaration: remote.Declaration,
+////   peer peer: fn(c) -> client.Client,
+//// ) -> Result(tool.Tool(c), Error) {
+////   use Nil <- result.try(case tool.valid_name(declaration.name) {
+////     True -> Ok(Nil)
+////     False -> Error(UnsupportedName(declaration.name))
+////   })
+////   use schema <- result.map(
+////     remote.input_contract(declaration) |> result.map_error(UnsupportedSchema),
+////   )
+////   tool.bind(
+////     tool.define(
+////       declaration.name,
+////       option.unwrap(declaration.description, ""),
+////       contract.value_codec(schema),
+////       codec.value(),
+////     ),
+////     fn(context, call: tool.Call, input) {
+////       peer(context)
+////       |> client.with_correlation(call.correlation)
+////       |> client.with_idempotency_key(tool.idempotency_key(call))
+////       |> client.call_discovered(declaration, input)
+////       |> output.require_discovered(declaration)
+////     },
+////     relay_tools.failure(declaration, _),
+////   )
+//// }
+//// ```
+
+import gleam/int
+import json/blueprint/value
+import llm_wire/tool as wire_tool
 
 import fabric/internal/invocation.{type Outcome}
 import fabric/internal/tool as core
@@ -423,4 +533,25 @@ pub fn input(
 /// run's own limits bound it.
 pub fn with_timeout(tool: Tool(context), timeout: Timeout) -> Tool(context) {
   core.with_timeout(tool, timeout)
+}
+
+/// Whether a tool name fits the model providers' shared grammar:
+/// 1–64 ASCII letters, digits, underscores or hyphens.
+pub fn valid_name(name: String) -> Bool {
+  wire_tool.check_name(name) |> result.is_ok
+}
+
+/// An external idempotency key for this logical action. Stable across
+/// replay, independent of correlation, with unambiguous part boundaries.
+pub fn idempotency_key(call: Call) -> String {
+  run.id_from_parts("action", [
+    value.to_string(
+      value.Array([
+        value.String(run.id_to_string(call.run)),
+        value.String(int.to_string(call.action.turn)),
+        value.String(call.action.call_id),
+      ]),
+    ),
+  ])
+  |> run.id_to_string
 }

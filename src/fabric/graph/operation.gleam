@@ -11,6 +11,42 @@
 //// days after policy admission by default, `with_deadline` to change it,
 //// `run.Infinity` to wait without one. `definition.build` checks every
 //// setting of an operation and reports every problem at once.
+////
+//// ## Calling Relay tools from a graph
+////
+//// Copy `relay_operation` into the application; the consumer compiles this exact recipe.
+//// See the README for composition and failure handling.
+////
+//// ```gleam
+//// import fabric/graph/operation
+//// import fabric/run
+//// import gleam/option.{Some}
+//// import relay/client
+//// import relay/client/output
+//// import relay/tool
+//// import relay_tools
+////
+//// pub fn operation(
+////   definition: tool.Definition(i, o),
+////   version version: Int,
+////   peer peer: fn(c) -> client.Client,
+//// ) -> operation.Operation(c, i, o) {
+////   let assert Some(codec) = tool.output_codec(definition)
+////   operation.new(
+////     run.DefinitionId(tool.name(definition), version),
+////     tool.input_codec(definition),
+////     codec,
+////     fn(context, call: operation.Invocation, input) {
+////       peer(context)
+////       |> client.with_correlation(call.correlation)
+////       |> client.with_idempotency_key(operation.idempotency_key(call))
+////       |> client.call(definition, input)
+////       |> output.require
+////     },
+////     relay_tools.failure(tool.declaration(definition), _),
+////   )
+//// }
+//// ```
 
 import fabric/graph/job
 import fabric/graph/signal
@@ -19,8 +55,10 @@ import fabric/internal/graph/observer
 import fabric/internal/graph/signal as signal_contract
 import fabric/run
 import fabric/tool
+import gleam/int
 import gleam/result
 import gleam/string
+import json/blueprint/value
 
 import json/blueprint/codec.{type Codec}
 import sinal/correlation.{type Correlation}
@@ -291,4 +329,18 @@ pub fn output_codec(
   operation: Operation(context, input, output),
 ) -> Codec(output) {
   contract.output(operation)
+}
+
+/// An external idempotency key for this logical activation, stable across
+/// retries and independent of the attempt and correlation.
+pub fn idempotency_key(invocation: Invocation) -> String {
+  run.id_from_parts("graph", [
+    value.to_string(
+      value.Array([
+        value.String(run.id_to_string(invocation.run)),
+        value.String(int.to_string(invocation.activation)),
+      ]),
+    ),
+  ])
+  |> run.id_to_string
 }

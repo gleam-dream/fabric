@@ -1462,7 +1462,7 @@ pub fn start(
   {
     Ok(_) -> Ok(handle(runtime, id))
     Error(runner.StoreFailed(backend.AlreadyExists)) ->
-      same_input(runtime, state)
+      same_started_input(runtime, state)
       |> result.map_error(from_runner)
       |> result.try(fn(same) { Error(AlreadyStarted(id, same)) })
     Error(error) -> Error(from_runner(error))
@@ -1472,7 +1472,7 @@ pub fn start(
 /// Whether the stored run `fresh.run` is a root of the same graph started
 /// with the same initial state and correlation as `fresh`; the read's error
 /// when the stored run cannot be read.
-fn same_input(
+fn same_started_input(
   runtime: Runtime(context, state, answer),
   fresh: control.State,
 ) -> Result(Bool, runner.Error) {
@@ -1484,6 +1484,38 @@ fn same_input(
   && stored.definition == fresh.definition
   && stored.initial == fresh.initial
   && stored.correlation == fresh.correlation
+}
+
+/// Whether this root was started with `initial`, under this definition.
+/// Compares the canonical stored input, not the current state or the
+/// correlation of a later request. Useful for idempotent request handlers.
+/// The codec runs under the runtime's callback timeout.
+pub fn matches_initial(
+  handle: Handle(context, state, answer),
+  initial: state,
+) -> Result(Bool, Error) {
+  let runtime = graph_handle.runtime(handle)
+  use prepared <- result.try(
+    bounded.call(graph_runtime.options(runtime).callback_timeout, fn() {
+      compiled.prepare(graph_runtime.definition(runtime), initial)
+    })
+    |> result.map_error(callback_failed),
+  )
+  use #(value, _) <- result.try(
+    prepared |> result.map_error(IncompatibleDefinition),
+  )
+  use #(_, stored) <- result.try(
+    runner.load_raw(
+      graph_runtime.store(runtime),
+      run.id_to_string(graph_handle.id(handle)),
+    )
+    |> result.map_error(from_runner),
+  )
+  Ok(
+    stored.parent == None
+    && stored.definition == compiled.identity(graph_runtime.definition(runtime))
+    && stored.initial == value,
+  )
 }
 
 /// The run as stored, read through its current definition.
@@ -1526,6 +1558,26 @@ pub fn await(
   handle: Handle(context, state, answer),
   within within: Duration,
 ) -> Result(Status(answer), Error) {
+  case await_with(handle, within:, or: process.new_selector()) {
+    Ok(Reached(status)) -> Ok(status)
+    Ok(Interrupted(never)) -> never
+    Error(error) -> Error(error)
+  }
+}
+
+/// The status reached, or a caller-owned message that interrupted the wait.
+pub type Awaited(answer, message) {
+  Reached(Status(answer))
+  Interrupted(message)
+}
+
+/// `await`, selecting on a caller's cancellation or shutdown at the same
+/// time. Interruption leaves the run unchanged; the caller may `cancel` it.
+pub fn await_with(
+  handle: Handle(context, state, answer),
+  within within: Duration,
+  or interrupt: process.Selector(message),
+) -> Result(Awaited(answer, message), Error) {
   let within = int.max(0, duration.to_milliseconds(within))
   let watcher = process.new_subject()
   let id = run.id_to_string(graph_handle.id(handle))
@@ -1537,27 +1589,28 @@ pub fn await(
     )
     |> result.map_error(store_failed),
   )
-  let outcome = attend(handle, watcher, now() + within)
+  let outcome = attend(handle, watcher, interrupt, now() + within)
   store_core.unwatch(
     graph_runtime.store(graph_handle.runtime(handle)),
     id,
     watcher,
   )
-  result.map(outcome, fn(snapshot) { snapshot.status })
+  outcome
 }
 
 fn attend(
   handle: Handle(context, state, answer),
   watcher: process.Subject(Nil),
+  interrupt: process.Selector(message),
   deadline: Int,
-) -> Result(Snapshot(state, answer), Error) {
+) -> Result(Awaited(answer, message), Error) {
   use snapshot <- result.try(snapshot(handle))
   let left = deadline - now()
   case snapshot.status, left > 0 {
     AwaitingApproval(reference), _ ->
       case expire_if_due(handle, reference) {
-        Ok(True) -> attend(handle, watcher, deadline)
-        Ok(False) -> Ok(snapshot)
+        Ok(True) -> attend(handle, watcher, interrupt, deadline)
+        Ok(False) -> Ok(Reached(snapshot.status))
         Error(error) -> Error(error)
       }
     Working, True
@@ -1570,10 +1623,16 @@ fn attend(
     | Child(_, child.Failed(_)), True
     | Child(_, child.Cancelled(_)), True
     -> {
-      let _ = process.receive(watcher, int.min(left, 100))
-      attend(handle, watcher, deadline)
+      let selected =
+        interrupt
+        |> process.map_selector(Interrupted)
+        |> process.select_map(watcher, fn(_) { Reached(snapshot.status) })
+      case process.selector_receive(selected, int.min(left, 100)) {
+        Ok(Interrupted(message)) -> Ok(Interrupted(message))
+        _ -> attend(handle, watcher, interrupt, deadline)
+      }
     }
-    _, _ -> Ok(snapshot)
+    _, _ -> Ok(Reached(snapshot.status))
   }
 }
 

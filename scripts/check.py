@@ -28,7 +28,7 @@ PACKAGES = (
     ".",
     "consumers/saga_tool",
     "integrations/fabric_postgres",
-    "integrations/fabric_relay",
+    "consumers/relay_tools",
     "consumers/app",
     "consumers/graph",
     "consumers/decision",
@@ -59,6 +59,7 @@ def checks(root: Path, profile: str) -> list[Check]:
     selected.append(Check(
         "saga-recipe", ".", ("python3", "-B", "scripts/check.py", "saga-recipe"),
     ))
+    selected.append(Check("relay-recipes", ".", ("python3", "-B", "scripts/check.py", "relay-recipes")))
     selected.append(Check(
         "gate-tests", ".",
         ("python3", "-B", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"),
@@ -140,6 +141,9 @@ SAGA_RECIPE = dict(
 )
 
 
+RELAY_RECIPES = [{'consumer': 'consumers/relay_tools/src/relay_tools.gleam', 'module': 'src/fabric/tool.gleam', 'marker': '<!-- relay-tools-recipe -->', 'heading': '//// ## Calling Relay tools'}, {'consumer': 'consumers/relay_tools/src/relay_discovery.gleam', 'module': 'src/fabric/tool.gleam', 'marker': '<!-- relay-discovery-recipe -->', 'heading': '//// ## Discovering Relay tools'}, {'consumer': 'consumers/relay_tools/src/relay_operation.gleam', 'module': 'src/fabric/graph/operation.gleam', 'marker': '<!-- relay-operation-recipe -->', 'heading': '//// ## Calling Relay tools from a graph'}, {'consumer': 'consumers/relay_tools/src/relay_serve.gleam', 'module': 'src/fabric/invoke.gleam', 'marker': '<!-- relay-serve-recipe -->', 'heading': '//// ## Serving through Relay'}, {'consumer': 'consumers/relay_tools/src/relay_run.gleam', 'module': 'src/fabric/invoke.gleam', 'marker': '<!-- relay-run-recipe -->', 'heading': '//// ## Reading a Relay run id'}]
+
+
 def recipe_problems(root: Path, *, consumer: str = RECIPE_CONSUMER,
                     module: str = RECIPE_MODULE, marker: str = RECIPE_MARKER,
                     heading: str = RECIPE_HEADING) -> list[str]:
@@ -150,6 +154,8 @@ def recipe_problems(root: Path, *, consumer: str = RECIPE_CONSUMER,
         module: module_recipe((root / module).read_text(), heading),
     }
     problems = []
+    if len(source.splitlines()) > 50:
+        problems.append(f"{consumer}: recipe exceeds 50 lines")
     for name, copy in copies.items():
         if copy != source:
             diff = difflib.unified_diff(source.splitlines(), copy.splitlines(),
@@ -231,12 +237,13 @@ def run_checks(root: Path, selected: list[Check], logs: Path) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("profile", choices=("fast", "full", "ci", "recipe", "saga-recipe"))
+    parser.add_argument("profile", choices=("fast", "full", "ci", "recipe", "saga-recipe", "relay-recipes"))
     parser.add_argument("--logs", type=Path, default=ROOT / ".artifacts/check")
     arguments = parser.parse_args()
-    if arguments.profile in ("recipe", "saga-recipe"):
+    if arguments.profile in ("recipe", "saga-recipe", "relay-recipes"):
         try:
-            problems = recipe_problems(ROOT, **(SAGA_RECIPE if arguments.profile == "saga-recipe" else {}))
+            configurations = RELAY_RECIPES if arguments.profile == "relay-recipes" else [SAGA_RECIPE if arguments.profile == "saga-recipe" else {}]
+            problems = [problem for configuration in configurations for problem in recipe_problems(ROOT, **configuration)]
         except (ValueError, OSError) as error:
             problems = [str(error)]
         for problem in problems:
