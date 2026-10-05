@@ -136,7 +136,7 @@ pub fn load(
 ) -> Result(#(store.Entry, g.State), Error) {
   use #(entry, state) <- result.try(load_raw(runs, id))
   use checked <- result.try(
-    bounded.call(options.callback_timeout, fn() { work.validate(state) })
+    bounded.call(options.callback_timeout, fn() { work().validate(state) })
     |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
   )
   use _ <- result.try(checked |> result.map_error(Incompatible))
@@ -218,7 +218,7 @@ pub fn admit(
         | operation.Job(_)
         | operation.OwnedJob(_) -> Ok(Nil)
       })
-      work.admit(state, activation)
+      work().admit(state, activation)
     })
     |> result.map_error(string.inspect)
     |> result.flatten
@@ -657,8 +657,8 @@ fn perform(runner: Runner, effects: List(g.Effect)) -> Result(Runner, Error) {
       g.RequestJobStop(activation), False -> {
         use body <- result.try(
           bounded.call(runner.options.callback_timeout, fn() {
-            use _ <- result.try(runner.work.validate(runner.state))
-            Ok(runner.work.cancel_job(runner.state, activation))
+            use _ <- result.try(runner.work().validate(runner.state))
+            Ok(runner.work().cancel_job(runner.state, activation))
           })
           |> result.map_error(fn(error) {
             CallbackFailed(string.inspect(error))
@@ -751,7 +751,7 @@ fn receive(runner: Runner) -> Nil {
           // close. The start fence still requires compatible deployed code.
           g.StoppingJob(_, job.RequestQueued, _) ->
             bounded.call(runner.options.callback_timeout, fn() {
-              runner.work.validate(runner.state)
+              runner.work().validate(runner.state)
             })
             |> result.map_error(fn(error) {
               CallbackFailed(string.inspect(error))
@@ -875,7 +875,7 @@ fn poll_child(runner: Runner) -> Result(Runner, Error) {
     Ok(child.Succeeded(output)), False -> {
       let accepted =
         bounded.call(runner.options.callback_timeout, fn() {
-          runner.work.accept(state, a, output)
+          runner.work().accept(state, a, output)
         })
       use <- with_wait_deadline(runner, a, False)
       case accepted {
@@ -942,7 +942,7 @@ pub fn checked_fork(
   activation: g.Activation,
 ) -> Result(fork_driver.Driver, String) {
   use driver <- result.try(
-    work.fork(activation) |> result.map_error(string.inspect),
+    work().fork(activation) |> result.map_error(string.inspect),
   )
   use parent_store <- result.try(
     store.pid(runs) |> result.replace_error("parent store unavailable"),
@@ -1007,7 +1007,7 @@ fn poll_fork(runner: Runner) -> Result(Runner, Error) {
         Ok(output) -> {
           let accepted =
             bounded.call(runner.options.callback_timeout, fn() {
-              runner.work.accept(runner.state, a, output)
+              runner.work().accept(runner.state, a, output)
             })
           use <- with_wait_deadline(runner, a, False)
           case accepted {
@@ -1342,7 +1342,7 @@ pub fn completion_event(
     True -> {
       let checked =
         bounded.call(options.callback_timeout, fn() {
-          work.check_output(activation, output)
+          work().check_output(activation, output)
         })
       case checked {
         Ok(Ok(Nil)) -> g.CancelledResult(ref, output)
@@ -1353,7 +1353,7 @@ pub fn completion_event(
     False -> {
       case
         bounded.call(options.callback_timeout, fn() {
-          work.accept(state, activation, output)
+          work().accept(state, activation, output)
         })
       {
         Ok(Ok(decision)) ->
@@ -1793,7 +1793,7 @@ fn read_job(
   stopping: Bool,
 ) -> Result(g.State, Error) {
   let observed =
-    bounded.call(options.callback_timeout, fn() { work.observe_job(state, a) })
+    bounded.call(options.callback_timeout, fn() { work().observe_job(state, a) })
     |> result.map_error(string.inspect)
     |> result.try(fn(reply) { reply |> result.map_error(string.inspect) })
     |> result.map_error(CallbackFailed)
@@ -1858,7 +1858,7 @@ fn checked_job_output(
   a: g.Activation,
   output: String,
 ) -> Result(Nil, Error) {
-  bounded.call(options.callback_timeout, fn() { work.check_output(a, output) })
+  bounded.call(options.callback_timeout, fn() { work().check_output(a, output) })
   |> result.map_error(string.inspect)
   |> result.try(fn(reply) { reply |> result.map_error(string.inspect) })
   |> result.map_error(CallbackFailed)
@@ -1883,7 +1883,7 @@ fn job_event(
     job.Completed(output), False -> {
       use decision <- result.map(
         bounded.call(options.callback_timeout, fn() {
-          work.accept(state, a, output)
+          work().accept(state, a, output)
         })
         |> result.map_error(string.inspect)
         |> result.try(fn(reply) { reply |> result.map_error(string.inspect) })
@@ -2178,7 +2178,7 @@ pub fn checked_child(
   activation: g.Activation,
 ) -> Result(child_driver.Driver, String) {
   use driver <- result.try(
-    work.child(activation) |> result.map_error(string.inspect),
+    work().child(activation) |> result.map_error(string.inspect),
   )
   case driver.store(), store.pid(runs) {
     Ok(child_store), Ok(parent_store) if child_store == parent_store ->

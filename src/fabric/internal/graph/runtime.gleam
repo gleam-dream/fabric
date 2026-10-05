@@ -13,10 +13,8 @@ pub opaque type Runtime(context, state, answer) {
   Runtime(
     definition: Definition(context, state, answer),
     store: Store,
-    work: live.Work,
-    /// The work with one caller's context instead of the runtime's: an
-    /// approval's recheck, and the body it admits, run with it.
-    with_context: fn(context) -> live.Work,
+    /// One environment for ordinary work and approval context overrides.
+    work: fn(Option(context)) -> live.Work,
     options: runner.Options,
     family_budget: Option(budget.Limits),
     /// Who may answer the runtime's approval requests.
@@ -27,15 +25,13 @@ pub opaque type Runtime(context, state, answer) {
 pub fn new(
   definition: Definition(context, state, answer),
   store: Store,
-  work: live.Work,
-  with_context: fn(context) -> live.Work,
+  work: fn(Option(context)) -> live.Work,
   options: runner.Options,
 ) -> Runtime(context, state, answer) {
   Runtime(
     definition:,
     store:,
     work:,
-    with_context:,
     options:,
     family_budget: option.None,
     approvers: option.None,
@@ -78,14 +74,14 @@ pub fn store(runtime: Runtime(context, state, answer)) -> Store {
 }
 
 pub fn work(runtime: Runtime(context, state, answer)) -> live.Work {
-  runtime.work
+  runtime.work(option.None)
 }
 
 pub fn work_with(
   runtime: Runtime(context, state, answer),
   context: context,
 ) -> live.Work {
-  runtime.with_context(context)
+  runtime.work(option.Some(context))
 }
 
 pub fn options(runtime: Runtime(context, state, answer)) -> runner.Options {

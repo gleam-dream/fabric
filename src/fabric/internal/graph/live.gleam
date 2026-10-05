@@ -18,7 +18,13 @@ pub type Admission {
   Admission(decision: policy.Decision, body: Body)
 }
 
-pub type Work {
+/// Keep one environment while crossing process boundaries. Construct individual
+/// callbacks inside the worker so descendant definitions are not copied once
+/// for every callback in the table.
+pub type Work =
+  fn() -> Callbacks
+
+pub type Callbacks {
   Work(
     admit: fn(g.State, g.Activation) -> Result(Admission, String),
     accept: fn(g.State, g.Activation, String) ->

@@ -391,3 +391,16 @@ pub fn fork_members_share_the_parents_work_limit_test() {
   |> should.equal(graph.Failed(graph.FamilyBudget(budget.WorkLimit(1))))
   stopped.receipts |> should.equal([])
 }
+
+// Copying a runtime to a bounded worker must not duplicate every callback's
+// descendant environment. This two-level graph used to copy 20,488,572 words
+// and exhaust its five-second execution deadline on a four-core ARM host.
+@external(erlang, "erts_debug", "flat_size")
+fn copied_words(value: a) -> Int
+
+pub fn nested_runtime_callback_environments_have_a_bounded_copy_cost_test() {
+  let runtime = outer(support.store())
+  { copied_words(runtime) < 5_000_000 } |> should.be_true
+  { copied_words(graph_runtime.work(runtime)) < 3_000_000 }
+  |> should.be_true
+}
