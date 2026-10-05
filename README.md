@@ -704,24 +704,28 @@ call Fabric should run there.
 
 ## Classification decisions
 
-`fabric/graph/classify.decision(identity, input, questions, config, request)`
-uses llm_wire's provider-neutral classification family. The request builder
-returns `classify.call(http, model, state)` after policy admission. Build
-questions with `llm_wire/classify/question`, settings with
-`llm_wire/classify.typesafe(fn() { key })`, and durable answer codecs with
-`llm_wire/classify.receipt_codec(config, questions)`. The decision and writing
-consumers compile this public path. Earlier stored classifier receipts and
-graph runs remain readable without a network call.
+`fabric/graph/classify.decision(identity, input, questions, wire, request)`
+fixes the provider protocol and pure receipt codec for an operation version.
+Build the protocol with `llm_wire/classify.typesafe()` and live settings with
+`llm_wire/classify.config(fn() { key })`. The request callback runs after
+policy admission and returns `classify.call(http, settings, model, state)`
+from current trusted context, including after approval or recovery.
+
+`llm_wire/classify.receipt_codec(wire, questions)` reads stored evidence
+without credentials or network access. Live byte limits above the wire's
+fixed receipt bounds fail preparation before credential access; stricter live
+limits leave earlier receipts readable. A provider protocol change requires
+another operation version. Concentration confidence and usage can be absent;
+complete answer distributions remain required. The decision and writing
+consumers compile this public path, including the retained legacy fixtures.
 
 ## A saga workflow as a tool
 
-Copy this 47-line recipe into your application's `saga_tool` module. Saga owns
-outcome classification and the receiver that reports compensation after the
-calling task exits. Fabric owns the tool's settlement deadline. The recipe
-passes `call.correlation` into saga; steps read it with
-`saga.correlation_of(key)`. Keep the rollback budget long enough for the
-workflow's settle and compensation bounds. Late results are refused and their
-evidence is retained for reconciliation. This adds no saga dependency to fabric.
+Copy this 59-line recipe into your application's `saga_tool` module. One local
+projection turns a full execution report into a tool result and safe settlement
+summary. Reporting errors preserve whether execution may have started. Saga
+owns cancellation reporting; Fabric owns the settlement deadline. This recipe
+uses a 60-line gate bound; other recipes retain their 50-line bound.
 
 <!-- saga-recipe -->
 
@@ -731,7 +735,7 @@ import gleam/result
 import gleam/time/duration.{type Duration}
 import saga
 import saga/execution
-import saga/outcome
+import saga/outcome.{Definitely, Unknown}
 import saga/reporting
 
 pub fn tool(
@@ -742,36 +746,48 @@ pub fn tool(
   explain explain: fn(error) -> String,
   rollback_within rollback_within: Duration,
 ) -> tool.Tool(context) {
+  let project = fn(result) {
+    case result {
+      Ok(report) -> #(
+        outcome.classify(report, explain)
+          |> result.map_error(fn(failure) {
+            case failure {
+              Definitely(detail) -> tool.Explain(detail)
+              Unknown(detail) -> tool.Uncertain(detail)
+            }
+          }),
+        "Saga reported " <> outcome.summary(report),
+      )
+      Error(error) -> {
+        let detail = reporting.describe_error(error)
+        let failure = case reporting.effect_status(error) {
+          reporting.NotStarted -> tool.Explain(detail)
+          reporting.Unknown -> tool.Uncertain(detail)
+        }
+        #(Error(failure), detail)
+      }
+    }
+  }
   tool.bind_settling(
     definition,
     fn(context, call: tool.Call, value, settlement) {
-      reporting.run_owned(
-        workflow,
-        input(context, call, value),
-        execution.with_correlation(config, call.correlation),
-        explain,
-        fn(stopped, summary) {
-          let _ =
-            tool.settle(
-              settlement,
-              result.map_error(stopped, failure),
-              summary:,
-            )
-          Nil
-        },
-        rollback_within,
-      )
+      let reported =
+        reporting.run_owned(
+          workflow,
+          input(context, call, value),
+          execution.with_correlation(config, call.correlation),
+          fn(stopped) {
+            let #(result, summary) = project(stopped)
+            let _ = tool.settle(settlement, result, summary:)
+            Nil
+          },
+          rollback_within,
+        )
+      project(reported).0
     },
-    failure,
+    fn(failure) { failure },
     settle_within: rollback_within,
   )
-}
-
-fn failure(stopped: outcome.Failure) -> tool.Failure {
-  case outcome.failure_kind(stopped) {
-    outcome.Compensated -> tool.Explain(outcome.describe_failure(stopped))
-    _ -> tool.Uncertain(outcome.describe_failure(stopped))
-  }
 }
 ```
 
