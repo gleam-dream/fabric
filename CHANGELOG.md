@@ -7,6 +7,13 @@ integration packages under `integrations/` keep their own changelogs.
 
 ## Unreleased
 
+- Round 9 review: invocation retains unresolved effects from cancelled agents,
+  cancelled graphs and expired graphs, including child effects. Normal reads,
+  keyed reopens and cancellation use the same outcome translation. Completion
+  that wins a cancellation race retains its native answer.
+- Update the compiled discovery recipe for Relay's presence-aware output:
+  `output.require_discovered` takes only the result and preserves explicit null.
+
 - Round 9 validation: locate the PostgreSQL test peer kill executable on PATH; no adapter API or storage change.
 
 - Round 9: move request/run ownership to protocol-neutral `fabric/invoke`,
