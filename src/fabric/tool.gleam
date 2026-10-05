@@ -201,7 +201,7 @@
 ////       |> client.with_correlation(call.correlation)
 ////       |> client.with_idempotency_key(tool.idempotency_key(call))
 ////       |> client.call_discovered(declaration, input)
-////       |> output.require_discovered(declaration)
+////       |> output.require_discovered
 ////     },
 ////     relay_tools.failure(declaration, _),
 ////   )

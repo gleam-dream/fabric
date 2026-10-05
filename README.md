@@ -866,6 +866,10 @@ input; use `with_principal`, `with_key`, `with_correlation` and `with_cancelled`
 with `invoke.check`; invalid waits start nothing. A keyed run outlives disconnect,
 a fresh run requests cancellation at disconnect or its deadline. Approval,
 reconciliation and unattended work return the run id for application follow-up.
+Cancelled or expired runs with unresolved effects return `OutcomeUnknown` and
+retain evidence in `details`; this includes unresolved child effects. Settled
+cancellation remains `Ended`. A completion committed before cancellation retains
+its native answer.
 
 The serving recipe accepts `start: fn(call, input) -> Result(Request, ToolError)`.
 Read a verified principal from `tool.context(call)` and apply
@@ -979,7 +983,7 @@ pub fn discovered(
       |> client.with_correlation(call.correlation)
       |> client.with_idempotency_key(tool.idempotency_key(call))
       |> client.call_discovered(declaration, input)
-      |> output.require_discovered(declaration)
+      |> output.require_discovered
     },
     relay_tools.failure(declaration, _),
   )
