@@ -7,6 +7,11 @@ integration packages under `integrations/` keep their own changelogs.
 
 ## Unreleased
 
+- Round 9: replace `fabric_saga` with a 47-line compiled saga tool recipe,
+  backed by saga's outcome and task-reporting ports. Preserve all 43 former
+  bridge tests across saga (24) and the recipe consumer (19). Migrate the app
+  consumer and support desk; retain correlation and late-settlement evidence.
+
 - Bound nested graph runtime copying by retaining callback environments once
   and only input contracts in managed-child bindings; preserve existing deadlines.
 

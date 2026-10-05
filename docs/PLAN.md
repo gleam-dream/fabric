@@ -1716,7 +1716,7 @@ Round 9 local dependency revisions (refreshed at closeout):
 | http_gun       | `c34a0f5` |
 | json_blueprint | `4ed1d2e` |
 | sinal          | `44c5395` |
-| saga           | `50f254a` |
+| saga           | `380758a` |
 | grind          | `eb7b173` |
 | relay          | `166ddd6` |
 | warden         | `f6120ef` |

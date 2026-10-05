@@ -1,6 +1,6 @@
 # fabric
 
-A bounded, typed LLM agent and agentic graph runtime for Gleam: typed application operations, an explicit policy gate, pure controllers, and supervised runners with cancellation. It consumes llm_wire for providers and json_blueprint for codecs. Saga workflows remain an optional integration.
+A bounded, typed LLM agent and agentic graph runtime for Gleam: typed application operations, an explicit policy gate, pure controllers, and supervised runners with cancellation. It consumes llm_wire for providers and json_blueprint for codecs. Saga workflows use a compiled recipe over the two packages' public APIs.
 
 Start with [Usage](#usage): one agent with a typed tool, an approval, a
 durable store, a typed answer and recovery, then the [defaults](#defaults)
@@ -502,7 +502,7 @@ its stored ancestors when it is read, and stores it at its next commit; when
 an ancestor cannot be read, the topmost readable one stands in and
 `telemetry.root_inferred` says so. `fabric/llm` puts it on each
 turn's HTTP Gun client view, so one agent serves every run.
-`fabric_saga` starts each Saga run with it, and every step of the workflow
+The saga tool recipe starts each Saga run with it, and every step of the workflow
 reads it with `saga.correlation_of(key)` for the clients it calls; the
 tool's `input` need not carry it. A graph run takes its
 correlation the same way (`graph.start(.., correlation:)`): it is stored,
@@ -713,6 +713,71 @@ questions with `llm_wire/classify/question`, settings with
 consumers compile this public path. Earlier stored classifier receipts and
 graph runs remain readable without a network call.
 
+## A saga workflow as a tool
+
+Copy this 47-line recipe into your application's `saga_tool` module. Saga owns
+outcome classification and the receiver that reports compensation after the
+calling task exits. Fabric owns the tool's settlement deadline. The recipe
+passes `call.correlation` into saga; steps read it with
+`saga.correlation_of(key)`. Keep the rollback budget long enough for the
+workflow's settle and compensation bounds. Late results are refused and their
+evidence is retained for reconciliation. This adds no saga dependency to fabric.
+
+<!-- saga-recipe -->
+
+```gleam
+import fabric/tool
+import gleam/result
+import gleam/time/duration.{type Duration}
+import saga
+import saga/execution
+import saga/outcome
+import saga/reporting
+
+pub fn tool(
+  definition: tool.Definition(input, output),
+  workflow: saga.Workflow(workflow_input, output, error, undo_error),
+  config: execution.Config,
+  input input: fn(context, tool.Call, input) -> workflow_input,
+  explain explain: fn(error) -> String,
+  rollback_within rollback_within: Duration,
+) -> tool.Tool(context) {
+  tool.bind_settling(
+    definition,
+    fn(context, call: tool.Call, value, settlement) {
+      reporting.run_owned(
+        workflow,
+        input(context, call, value),
+        execution.with_correlation(config, call.correlation),
+        explain,
+        fn(stopped, summary) {
+          let _ =
+            tool.settle(
+              settlement,
+              result.map_error(stopped, failure),
+              summary:,
+            )
+          Nil
+        },
+        rollback_within,
+      )
+    },
+    failure,
+    settle_within: rollback_within,
+  )
+}
+
+fn failure(stopped: outcome.Failure) -> tool.Failure {
+  case outcome.failure_kind(stopped) {
+    outcome.Compensated -> tool.Explain(outcome.describe_failure(stopped))
+    _ -> tool.Uncertain(outcome.describe_failure(stopped))
+  }
+}
+```
+
+The unpublished `consumers/saga_tool` compiles this exact block; the
+`saga-recipe` gate checks it against these docs and `fabric/tool`.
+
 ## Integrations
 
 Each integration is a separate package under `integrations/`, so Fabric
@@ -721,7 +786,6 @@ itself depends on none of them.
 | Package                                                   | What it adds                                                                                                                                                                                                                                                                  |
 | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [fabric_relay](integrations/fabric_relay/README.md)       | MCP over [Relay](https://github.com/gleam-dream/relay): `fabric_relay.tool(definition, peer:)`, `discover` and `operation` call MCP tools from agents and graphs; `serve` publishes an agent as an MCP tool, and a retried call with an idempotency key reaches the same run. |
-| [fabric_saga](integrations/fabric_saga/README.md)         | A Saga workflow as one typed tool: `fabric_saga.tool(definition, workflow, execution.config(), input:, explain:, rollback_within:)`. A cancelled call waits up to `rollback_within` for Saga's rollback. `consumers/app` uses it.                                             |
 | [fabric_postgres](integrations/fabric_postgres/README.md) | The leased PostgreSQL backend, its migrations, discovery refresh and pruning of finished run families.                                                                                                                                                                        |
 
 The [writing consumer](consumers/writing/README.md) composes real source and
