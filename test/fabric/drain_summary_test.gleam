@@ -287,11 +287,77 @@ pub fn a_blocked_summary_observer_does_not_hold_shutdown_test() {
   let _ = sinal.detach(attached)
 }
 
+/// The result is committed before its synchronous observers and runner exit.
+pub fn committed_completion_can_still_belong_to_the_shutdown_cohort_test() {
+  let name = process.new_name("drain-completed-process")
+  let runs = store.in_memory(name)
+  let #(events, attached) = capture(name)
+  let application = restart.application(runs)
+  let id = run.new_id()
+  let observed = process.new_subject()
+  let barrier =
+    sinal.observe(o.run_finished(), fn(_, metadata) {
+      case metadata.run == run.id_to_string(id) {
+        True -> {
+          let release = process.new_subject()
+          process.send(observed, release)
+          process.receive_forever(release)
+        }
+        False -> Nil
+      }
+    })
+  let complete =
+    agent.new(
+      "complete",
+      scripted.model(fn(_) { model.FinalAnswer("done", None) }),
+      [],
+      policy.always_allow(),
+    )
+    |> support.agent
+  let assert Ok(handle) =
+    fabric.start(
+      runs,
+      complete,
+      id:,
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let release = process.receive(observed, 1000) |> should.be_ok
+  let assert Ok(run.Finished(_)) =
+    fabric.await(handle, within: duration.seconds(1))
+  let assert Ok(store.Readiness(runners: 0, ..)) = store.readiness(runs)
+  restart.begin_stop(application)
+  restart.draining(runs)
+  process.send(release, Nil)
+  restart.stopped(application)
+  let _ = reported(events, o.Drain(1, 0, 0, 0, 0, 1, 0, 0))
+  let _ = sinal.detach(barrier)
+  let _ = sinal.detach(attached)
+}
+
 pub fn idle_shutdown_excludes_completed_and_suspended_runs_test() {
   let name = process.new_name("drain-idle")
   let runs = store.in_memory(name)
   let #(events, attached) = capture(name)
   let application = restart.application(runs)
+  let completed_id = run.new_id()
+  let suspended_id = run.new_id()
+  let exited = process.new_subject()
+  let finished =
+    sinal.observe(o.run_finished(), fn(_, event) {
+      case event.run == run.id_to_string(completed_id) {
+        True -> process.send(exited, process.self())
+        False -> Nil
+      }
+    })
+  let requested =
+    sinal.observe(o.approval_requested(), fn(_, event) {
+      case event.action.run == run.id_to_string(suspended_id) {
+        True -> process.send(exited, process.self())
+        False -> Nil
+      }
+    })
   let complete =
     agent.new(
       "complete",
@@ -304,13 +370,15 @@ pub fn idle_shutdown_excludes_completed_and_suspended_runs_test() {
     fabric.start(
       runs,
       complete,
-      id: run.new_id(),
+      id: completed_id,
       context: Nil,
       prompt: "go",
       correlation: None,
     )
   let assert Ok(run.Finished(_)) =
     fabric.await(completed, within: duration.milliseconds(1000))
+  let completed_pid = process.receive(exited, 1000) |> should.be_ok
+  restart.gone(completed_pid)
   let waiting =
     agent.new(
       "waiting",
@@ -323,17 +391,22 @@ pub fn idle_shutdown_excludes_completed_and_suspended_runs_test() {
     fabric.start(
       runs,
       waiting,
-      id: run.new_id(),
+      id: suspended_id,
       context: Nil,
       prompt: "go",
       correlation: None,
     )
   let assert Ok(run.Suspended(_, _)) =
     fabric.await(suspended, within: duration.milliseconds(1000))
-  // Reading readiness is a round trip after both runners' final writes.
+  let suspended_pid = process.receive(exited, 1000) |> should.be_ok
+  restart.gone(suspended_pid)
+  // Readiness counts live run ownership, not supervised process lifetime.
+  // The exit monitors establish that this shutdown starts with no runners.
   let assert Ok(store.Readiness(runners: 0, ..)) = store.readiness(runs)
   restart.stop(application)
   let _ = reported(events, o.Drain(0, 0, 0, 0, 0, 0, 0, 0))
+  let _ = sinal.detach(finished)
+  let _ = sinal.detach(requested)
   let _ = sinal.detach(attached)
 }
 
