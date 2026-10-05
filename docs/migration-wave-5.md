@@ -2162,3 +2162,10 @@ using the same grammar as agent admission. The local recipe only joins ports;
 Relay owns output extraction and metadata, and fabric owns run lifecycle.
 Dependents: oversight `apps/tool_hub`, including its discovery mode and both
 MCP directions, plus the compiled consumer.
+
+### Test portability
+
+The retained PostgreSQL adapter is unchanged apart from its test peer locating
+`kill` on `PATH` instead of assuming `/bin/kill`. Its public API and persisted
+records are unchanged. This pre-existing portability fix is committed
+separately from the invocation and recipe changes.
