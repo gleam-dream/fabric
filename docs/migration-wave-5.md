@@ -2279,3 +2279,9 @@ gate bound is 60 lines; every other recipe remains bounded to 50. All original
 consumer behavior tests remain, including cancellation and refused settlement;
 new external tests inspect native business/undo errors and typed admission
 errors before any consumer projection.
+
+### Round 9: Warden lifecycle validation
+
+The tested Warden revision includes cache-owned provider fetches and bounded
+cleanup before a client tree restarts. Fabric callers and recipe copies need
+no changes; only the tested sibling revision is refreshed.

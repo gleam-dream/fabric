@@ -1719,7 +1719,7 @@ Round 9 local dependency revisions (refreshed at closeout):
 | saga           | `2a6bc4b` |
 | grind          | `510ca00` |
 | relay          | `afb7c0c` |
-| warden         | `99531f3` |
+| warden         | `0a0907f` |
 
 Fabric resolves its siblings as `../` path dependencies, each checked out on
 its default branch. The wave 3 migration gate on 2026-10-02 (HTTP Gun's

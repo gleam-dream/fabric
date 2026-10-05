@@ -7,6 +7,9 @@ integration packages under `integrations/` keep their own changelogs.
 
 ## Unreleased
 
+- Refresh the tested Warden revision after its fetch ownership and bounded
+  restart fixes. Fabric APIs, recipes and application wiring are unchanged.
+
 - Round 9 validation: idle-shutdown tests wait for actual runner exits.
   A zero readiness runner count means no active run ownership; a process may
   still be delivering its completion observations. A deterministic observer
