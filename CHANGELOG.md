@@ -7,6 +7,8 @@ integration packages under `integrations/` keep their own changelogs.
 
 ## Unreleased
 
+- Round 9 validation: locate the PostgreSQL test peer kill executable on PATH; no adapter API or storage change.
+
 - Round 9: move request/run ownership to protocol-neutral `fabric/invoke`,
   supporting agents and graphs. Replace `fabric_relay` with compiled recipes
   for typed calls (40 lines), discovery (50), graph calls (28), serving (41)
