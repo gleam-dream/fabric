@@ -1952,7 +1952,9 @@ round 8 (1 failure in 300 runs under CPU load at bc99f0e).
 
 Dependents: none; no app or sibling matches on that failure text.
 
-## Round 9: classification ports replace the TypeSafe bridge
+## Round 9: ports and compiled recipes
+
+### Classification replaces the TypeSafe bridge
 
 Remove the `fabric_typesafe` dependency. Question definitions move to
 `llm_wire/classify/question`; `Alternative(label, value, description)` becomes
@@ -2020,3 +2022,34 @@ copies of repeated callback environments, not a lost wakeup: the two-level
 fixture copied 20,488,572 machine words. Lazy callback construction and narrow
 managed-child input contracts reduce that to 3,796,381 words. A structural
 regression bounds copied size, and the original deadline test passed 20 times.
+
+### A saga workflow as a tool
+
+Before:
+
+```gleam
+import fabric_saga
+let refund = fabric_saga.tool(definition, workflow, config,
+  input: input, explain: explain, rollback_within: duration.seconds(5))
+```
+
+After, copy the 47-line README recipe into `src/saga_tool.gleam` and remove
+`fabric_saga` from `gleam.toml`:
+
+```gleam
+import saga_tool
+let refund = saga_tool.tool(definition, workflow, config,
+  input: input, explain: explain, rollback_within: duration.seconds(5))
+```
+
+The arguments keep their meaning. `saga/outcome` owns complete effect
+classification, including held effects; `saga/reporting.run_owned` owns the
+surviving receiver. The recipe carries `call.correlation` and maps typed
+failures to `Explain` or `Uncertain`. Fabric still owns settlement deadlines and
+observes refused late reports. All 19 integration behaviors remain tested in
+`consumers/saga_tool`; the 24 pure verdict tests moved to saga. The gate compares
+README and `fabric/tool` docs against the compiled recipe and emits a diff.
+
+Dependents migrated: `consumers/app` and oversight's `apps/support_desk` each
+own a verbatim copy. Fabric's core manifest has no saga dependency. The former
+bridge package is deleted; no stored record shape changed.
