@@ -30,7 +30,11 @@ kill_peer({Peer, OsPid}) ->
     Monitor = erlang:monitor(process, Peer),
     %% OsPid was obtained from this peer and validated in with_peer/1.
     %% spawn_executable passes it as one argument without invoking a shell.
-    Port = open_port({spawn_executable, "/bin/kill"},
+    Kill = case os:find_executable("kill") of
+        false -> error(kill_executable_not_found);
+        Executable -> Executable
+    end,
+    Port = open_port({spawn_executable, Kill},
                      [exit_status, {args, ["-KILL", OsPid]}]),
     receive
         {Port, {exit_status, 0}} -> ok;
