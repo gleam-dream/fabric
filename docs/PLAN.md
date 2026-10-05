@@ -1712,14 +1712,14 @@ Round 9 local dependency revisions (refreshed at closeout):
 
 | Package        | Revision  |
 | -------------- | --------- |
-| llm_wire       | `7fdaf86` |
-| http_gun       | `c34a0f5` |
+| llm_wire       | `a53d4f3` |
+| http_gun       | `7aa01ce` |
 | json_blueprint | `4ed1d2e` |
 | sinal          | `44c5395` |
 | saga           | `380758a` |
-| grind          | `eb7b173` |
-| relay          | `2de271b` |
-| warden         | `f6120ef` |
+| grind          | `510ca00` |
+| relay          | `051d5be` |
+| warden         | `ca47581` |
 
 Fabric resolves its siblings as `../` path dependencies, each checked out on
 its default branch. The wave 3 migration gate on 2026-10-02 (HTTP Gun's
