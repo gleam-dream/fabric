@@ -79,6 +79,19 @@ class GateTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "no gleam block"):
                 check.recipe_problems(root)
 
+    def test_saga_recipe_changes_fail_with_a_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for relative in ["README.md", check.SAGA_RECIPE["consumer"], check.SAGA_RECIPE["module"]]:
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text((check.ROOT / relative).read_text())
+            self.assertEqual(check.recipe_problems(root, **check.SAGA_RECIPE), [])
+            module = root / check.SAGA_RECIPE["module"]
+            module.write_text(module.read_text().replace("reporting.run_owned(", "reporting.changed("))
+            [problem] = check.recipe_problems(root, **check.SAGA_RECIPE)
+            self.assertIn("+      reporting.changed(", problem)
+
 
 if __name__ == "__main__":
     unittest.main()

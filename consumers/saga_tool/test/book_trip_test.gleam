@@ -19,8 +19,6 @@ import fabric/store
 import fabric/telemetry as o
 import fabric/testing
 import fabric/tool
-import fabric_saga
-import fabric_saga/support/watched
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
@@ -31,6 +29,8 @@ import json/blueprint/codec
 import saga
 import saga/execution
 import saga/telemetry as saga_telemetry
+import saga_tool
+import saga_tool/support/watched
 import sinal
 import sinal/correlation
 
@@ -165,7 +165,7 @@ fn trip_definition() -> tool.Definition(Trip, Itinerary) {
 }
 
 fn trip_tool(reports: Subject(Report), rollback_within: Int) -> tool.Tool(Nil) {
-  fabric_saga.tool(
+  saga_tool.tool(
     trip_definition(),
     book_trip(reports),
     // A cancelled run lets an in-flight step settle this long before
@@ -433,7 +433,7 @@ pub fn an_outcome_after_the_run_ended_is_refused_test() {
 pub fn an_invalid_config_fails_the_call_before_any_step_runs_test() {
   let reports = process.new_subject()
   let misconfigured =
-    fabric_saga.tool(
+    saga_tool.tool(
       trip_definition(),
       book_trip(reports),
       execution.config() |> execution.with_max_concurrency(0),
@@ -478,7 +478,7 @@ pub fn the_workflow_gets_the_call_and_the_runs_correlation_test() {
       process.send(seen, metadata.correlation)
     })
   let trip =
-    fabric_saga.tool(
+    saga_tool.tool(
       trip_definition(),
       book_trip(reports),
       execution.config(),
@@ -518,7 +518,7 @@ pub fn a_step_reads_the_runs_correlation_test() {
       Ok(Itinerary("FL-" <> trip.city, "HT-" <> trip.city, "CH-1"))
     })
   let trip =
-    fabric_saga.tool(
+    saga_tool.tool(
       trip_definition(),
       saga.define("book", saga.perform(_, book)),
       execution.config(),

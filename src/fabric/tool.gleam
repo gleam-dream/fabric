@@ -44,6 +44,63 @@
 //// tool's bound between commits of the run; one the handler offers from
 //// its own task is refused at once. The handle reaches the run through the
 //// store its invocation ran with.
+////
+//// ## With saga
+////
+//// Copy the recipe into a per-application module. Saga reports its outcome
+//// after task cancellation; Fabric accepts settlement up to `rollback_within`.
+//// The workflow and its steps inherit the run's correlation. The consumer
+//// compiles this block verbatim and the `saga-recipe` gate compares both docs.
+////
+//// ```gleam
+//// import fabric/tool
+//// import gleam/result
+//// import gleam/time/duration.{type Duration}
+//// import saga
+//// import saga/execution
+//// import saga/outcome
+//// import saga/reporting
+////
+//// pub fn tool(
+////   definition: tool.Definition(input, output),
+////   workflow: saga.Workflow(workflow_input, output, error, undo_error),
+////   config: execution.Config,
+////   input input: fn(context, tool.Call, input) -> workflow_input,
+////   explain explain: fn(error) -> String,
+////   rollback_within rollback_within: Duration,
+//// ) -> tool.Tool(context) {
+////   tool.bind_settling(
+////     definition,
+////     fn(context, call: tool.Call, value, settlement) {
+////       reporting.run_owned(
+////         workflow,
+////         input(context, call, value),
+////         execution.with_correlation(config, call.correlation),
+////         explain,
+////         fn(stopped, summary) {
+////           let _ =
+////             tool.settle(
+////               settlement,
+////               result.map_error(stopped, failure),
+////               summary:,
+////             )
+////           Nil
+////         },
+////         rollback_within,
+////       )
+////     },
+////     failure,
+////     settle_within: rollback_within,
+////   )
+//// }
+////
+//// fn failure(stopped: outcome.Failure) -> tool.Failure {
+////   case outcome.failure_kind(stopped) {
+////     outcome.Compensated -> tool.Explain(outcome.describe_failure(stopped))
+////     _ -> tool.Uncertain(outcome.describe_failure(stopped))
+////   }
+//// }
+//// ```
 
 import fabric/internal/invocation.{type Outcome}
 import fabric/internal/tool as core

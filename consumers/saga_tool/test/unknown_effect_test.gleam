@@ -13,8 +13,6 @@ import fabric/policy
 import fabric/run
 import fabric/testing
 import fabric/tool
-import fabric_saga
-import fabric_saga/support/watched
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None}
@@ -25,6 +23,8 @@ import json/blueprint/codec
 import saga
 import saga/execution
 import saga/telemetry
+import saga_tool
+import saga_tool/support/watched
 import sinal
 
 pub type Failure {
@@ -65,7 +65,7 @@ fn start(
   workflow: saga.Workflow(String, String, Failure, Nil),
 ) -> fabric.Run(Nil, String) {
   let tool =
-    fabric_saga.tool(
+    saga_tool.tool(
       definition(),
       workflow,
       execution.config()
