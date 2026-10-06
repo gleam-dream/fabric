@@ -17,30 +17,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: Require trusted access to private sibling sources
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-        run: |
-          echo "Fork pull requests cannot access the private sibling sources. Run verification on a trusted repository branch." >&2
-          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: fabric
           persist-credentials: false
-      - name: Read token for private sibling sources
-        id: siblings
-        if: vars.SIBLINGS_APP_CLIENT_ID != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.SIBLINGS_APP_CLIENT_ID }}
-          private-key: ${{ secrets.SIBLINGS_APP_PRIVATE_KEY }}
-          owner: gleam-dream
-          repositories: http_gun,llm_wire,sinal,saga,relay,warden
-          permission-contents: read
-      - name: Checkout pinned sibling sources
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+      - name: Checkout pinned public sibling sources
         working-directory: fabric
-        env:
-          SIBLINGS_TOKEN: ${{ steps.siblings.outputs.token || secrets.SIBLINGS_READ_TOKEN }}
         run: bash scripts/checkout-siblings.sh
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:

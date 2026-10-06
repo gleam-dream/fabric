@@ -23,22 +23,13 @@ for package in http_gun json_blueprint llm_wire sinal saga relay warden; do
   fi
 done
 
-if [[ -z ${SIBLINGS_TOKEN:-} ]]; then
-  echo "private sibling checkout requires vars.SIBLINGS_APP_CLIENT_ID with secrets.SIBLINGS_APP_PRIVATE_KEY, or secrets.SIBLINGS_READ_TOKEN" >&2
-  exit 1
-fi
-
-# Authentication exists only on the fetch invocation, never in Git config.
+# Public sibling fetches need no checkout credential or persisted Git header.
 unset GIT_TRACE GIT_TRACE_CURL GIT_CURL_VERBOSE
-encoded="$(printf 'x-access-token:%s' "$SIBLINGS_TOKEN" | base64 -w 0)"
-header=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $encoded")
 for package in http_gun json_blueprint llm_wire sinal saga relay warden; do
   revision="${revisions[$package]}"
   owner=gleam-dream
-  auth=("${header[@]}")
   if [[ $package == json_blueprint ]]; then
     owner=lostbean
-    auth=()
   fi
   destination="$workspace/$package"
   if [[ -e $destination ]]; then
@@ -47,7 +38,7 @@ for package in http_gun json_blueprint llm_wire sinal saga relay warden; do
   fi
   git init --quiet "$destination"
   git -C "$destination" remote add origin "https://github.com/$owner/$package.git"
-  git "${auth[@]}" -C "$destination" fetch --quiet --depth 1 origin "$revision"
+  git -C "$destination" fetch --quiet --depth 1 origin "$revision"
   git -C "$destination" checkout --quiet --detach FETCH_HEAD
   test "$(git -C "$destination" rev-parse HEAD)" = "$revision"
   printf '%s %s\n' "$package" "$revision"
