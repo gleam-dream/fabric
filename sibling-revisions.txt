@@ -1,0 +1,8 @@
+# package=immutable Git revision; checkout beside fabric.
+http_gun=3d25a7ff8b7e4b5077b6071011cd3a9435d54c5d
+json_blueprint=0015fc50ddfd334b9c44253c36dc429d29a5845d
+llm_wire=9406438e4f2cfd64d8187d39c01167e83b916336
+sinal=4aee4c3b920bd7241da7659995dfc0a0b5767348
+saga=51dd052520a8f2aba6923358c7eb1dadde63ecb1
+relay=fd57cb2222d872ba5c4377a61e55ccbd2365f826
+warden=000518151f0531ccc7e16039a6cb22d7ff211403

@@ -22,13 +22,15 @@ done
 root="$(mktemp -d "${TMPDIR:-/tmp}/fabric-postgres.XXXXXX")"
 cluster="$root/data"
 started=0
+# Invoked indirectly by the EXIT trap, including explicit exit branches.
+# shellcheck disable=SC2329
 cleanup() {
-  if [[ "$started" == 1 ]]; then
+  if [[ $started == 1 ]]; then
     pg_ctl -D "$cluster" -m immediate stop >/dev/null 2>&1 || true
   fi
   rm -rf "$root"
 }
-trap cleanup EXIT
+trap 'cleanup' EXIT
 initdb -D "$cluster" --username=fabric --auth-local=trust --auth-host=trust \
   --no-sync >/dev/null
 for _ in 1 2 3 4 5; do
@@ -42,7 +44,7 @@ for _ in 1 2 3 4 5; do
     break
   fi
 done
-if [[ "$started" != 1 ]]; then
+if [[ $started != 1 ]]; then
   echo "could not start a cluster on a free port; see $root/postgres.log" >&2
   cat "$root/postgres.log" >&2 || true
   exit 1

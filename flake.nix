@@ -57,10 +57,26 @@
           settings.global.excludes = [
             "**/*.pdf"
             ".render/**"
+            "**/.render/**"
+            "build/**"
+            ".artifacts/**"
+            # Captured upstream/legacy bytes and frozen datasets are evidence.
+            "test/oracle/**"
+            "test/fixtures/records/**"
+            "test/fixtures/llm/**"
+            "docs/evidence/**"
+            "consumers/writing/fixtures/**"
           ];
           programs.gleam.enable = true;
           programs.nixfmt.enable = true;
           programs.prettier.enable = true;
+          # Authored Python and shell tooling shares the local/CI formatter.
+          programs.ruff.format = true;
+          programs.shfmt.enable = true;
+          settings.formatter.shfmt.options = [
+            "-i"
+            "2"
+          ];
         };
       in
       {
@@ -76,6 +92,9 @@
             rebar3
             # Reproducible external-consumer and compiler-negative graph checks.
             python3
+            ruff
+            shellcheck
+            actionlint
             # integrations/fabric_postgres/scripts/test-postgres.sh starts a
             # throwaway cluster with these binaries.
             postgresql_16
