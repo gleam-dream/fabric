@@ -1,5 +1,5 @@
-//// THROWAWAY (workflow composition experiment). Typed tools erased behind
-//// one invocation closure (lab decision D1), shared by every variant.
+//// Workflow composition experiment: typed tools share one invocation
+//// closure across every variant. This is not a production tool API.
 
 import gleam/dict.{type Dict}
 import gleam/json

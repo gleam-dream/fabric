@@ -1,4 +1,4 @@
-//// D4–D8: the real database discovers overdue signals after process loss.
+//// PostgreSQL discovers overdue signals after process loss.
 
 import fabric/graph
 import fabric/graph/definition

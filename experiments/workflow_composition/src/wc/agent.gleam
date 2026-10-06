@@ -1,11 +1,8 @@
-//// THROWAWAY (workflow composition experiment). The Fabric-owned agent
-//// controller: a pure transition `step(state, event) -> (state, effects)`.
-//// Every state is plain data with a JSON codec, so a paused run is a stored
-//// record and no process holds it.
-////
-//// Question served: can one small pure controller carry turns, policy,
-//// durable approval, cancellation, uncertain effects, and budgets, leaving
-//// tool execution to a pluggable executor (plain tasks or Saga)?
+//// Agent controller for the workflow composition experiment.
+//// `step` maps plain state and an event to new state and execution effects.
+//// JSON records retain paused runs without a waiting process.
+//// Policy, approval, cancellation, uncertainty and model-attempt budgets
+//// remain in the controller; each variant supplies its tool executor.
 
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
@@ -16,7 +13,7 @@ import wc/tool
 
 // --- vocabulary --------------------------------------------------------------
 
-/// A provider call id is unique only within one model turn (lab D2).
+/// A provider call id is unique only within one model turn.
 pub type ActionId {
   ActionId(turn: Int, call_id: String)
 }
@@ -314,7 +311,7 @@ fn answer_approval(
     AwaitingApproval(revision) -> Error(StaleApproval(revision))
     _ -> Error(AlreadyAnswered)
   })
-  // Answering rechecks policy against the current world (lab D7).
+  // Approval rechecks current policy before queuing the action.
   let decision = case answer {
     Reject -> Ok(Answered(error_json("approval_rejected"), Rejected))
     Approve ->
@@ -413,7 +410,7 @@ fn settle(state: State) -> #(State, List(Effect)) {
 }
 
 /// Every attempted model call counts against the budget, including a call
-/// re-issued after a lost runner (lab D9).
+/// reissued after a lost runner.
 fn next_turn(state: State) -> #(State, List(Effect)) {
   case state.turns_used >= state.max_turns {
     True -> #(State(..state, phase: Ended(BudgetExhausted)), [])

@@ -98,9 +98,9 @@ def checks(root: Path, profile: str) -> list[Check]:
 
 
 # The warden recipe of `fabric/approvers` is written three times: in the
-# README (after the marker), in the module doc (after its heading) and as the
+# USAGE.md (after the marker), in the module doc (after its heading) and as the
 # consumer package that compiles and tests it. They must be identical.
-RECIPE_README = "README.md"
+RECIPE_README = "USAGE.md"
 RECIPE_MARKER = "<!-- approvers-recipe -->"
 RECIPE_MODULE = "src/fabric/approvers.gleam"
 RECIPE_HEADING = "//// ## With warden"

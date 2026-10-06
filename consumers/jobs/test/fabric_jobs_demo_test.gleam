@@ -1,4 +1,4 @@
-//// J1–J5: public Fabric APIs against a separate durable HTTP job service.
+//// Public Fabric APIs against a separate durable HTTP job service.
 
 import fabric/budget
 import fabric/graph

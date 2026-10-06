@@ -9,7 +9,7 @@ pub fn main() -> Nil {
   gleeunit.main()
 }
 
-// G1–G3: a separately authored graph retains native heterogeneous operation
+// A separately authored graph retains native heterogeneous operation
 // types and reaches a typed result through repeated visits to the same nodes.
 pub fn bounded_generation_and_review_test() {
   let assert Ok(report) = example.run(6)

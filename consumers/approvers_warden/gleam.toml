@@ -1,5 +1,5 @@
 # Compiles and tests the warden recipe of `fabric/approvers` verbatim:
-# src/approvers_warden.gleam is the block of the README and of the module
+# src/approvers_warden.gleam is the block in USAGE.md and of the module
 # doc, which scripts/check.py compares. Fabric itself does not depend on
 # warden.
 name = "approvers_warden"

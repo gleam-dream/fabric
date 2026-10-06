@@ -48,7 +48,7 @@ fn run_node(node: graph.Node(Nil, Int, Int)) -> graph.Report(Int, Int) {
   graph.run(definition, Nil, 0)
 }
 
-// G2: validating a graph is independent of running its operations.
+// Graph validation does not run its operations.
 pub fn invalid_graphs_are_rejected_test() {
   let node = counter(fn(state, value) { Ok(graph.Finish(state, value)) }, [])
   let base = spec([node])
@@ -105,7 +105,7 @@ pub fn undeclared_route_does_not_apply_the_state_update_test() {
   )
 }
 
-// G3: this cycle has no model turns. Its independent activation limit is real.
+// The activation limit bounds this cycle without model turns.
 pub fn pure_cycle_is_bounded_and_preserves_distinct_visits_test() {
   let node =
     counter(fn(_, value) { Ok(graph.Continue(value, id("counter"))) }, [
@@ -122,7 +122,7 @@ pub fn pure_cycle_is_bounded_and_preserves_distinct_visits_test() {
   |> should.equal(["0", "1", "2", "3"])
 }
 
-// G1: an internal codec need not advertise provider JSON Schema.
+// An internal codec need not advertise provider JSON Schema.
 pub fn schema_independent_codecs_and_receipts_test() {
   let internal =
     codec.custom(
@@ -171,7 +171,7 @@ fn encoding_rejection() -> codec.EncodeError {
   codec.encode_failure("rejected")
 }
 
-// G4: the failing stage is public evidence, not a generic failed operation.
+// The error identifies the failing selection or transition.
 pub fn selection_and_transition_failures_test() {
   let operation =
     graph.operation(

@@ -36,7 +36,7 @@
 //// ## Serving through Relay
 ////
 //// Copy `relay_serve` into the application; the consumer compiles this exact recipe.
-//// See the README for composition and failure handling.
+//// See USAGE.md for composition and failure handling.
 ////
 //// ```gleam
 //// import fabric/invoke
@@ -85,7 +85,7 @@
 //// ## Reading a Relay run id
 ////
 //// Copy `relay_run` into the application; the consumer compiles this exact recipe.
-//// See the README for composition and failure handling.
+//// See USAGE.md for composition and failure handling.
 ////
 //// ```gleam
 //// import fabric/run

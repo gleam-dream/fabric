@@ -16,8 +16,8 @@
 ////
 //// A renewal changes only the expiry of leases its owner holds live; a
 //// claim of expired leases changes only the owner and expiry, taking the
-//// rows with `FOR UPDATE SKIP LOCKED` so that concurrent claimers never
-//// take the same run. Neither changes a revision.
+//// rows with `FOR UPDATE SKIP LOCKED`. Concurrent claims are disjoint
+//// while their acquired leases remain live. Neither changes a revision.
 
 import fabric/store/backend.{
   type Current, type Holder, type Lease, type LeasedBackend, type StoreError,

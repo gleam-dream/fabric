@@ -62,5 +62,5 @@ returns a validated answer that reaches the expected route.
 Both entry points completed against their actual providers on 2026-09-30 and
 selected `publish` for the synthetic statement. OpenAI used
 `gpt-4.1-nano-2025-04-14`; TypeSafe resolved `jev-latest` to `jev-1.13.0` and
-returned the three typed answers. See the [completion audit and sanitized output](../../docs/implementation/graph-flow/completion-audit.md)
+returned the three typed answers. See the [retained sanitized provider capture](../../docs/evidence/live-adapters-2026-09-30.txt)
 for observed values, usage, scope and the broader regression evidence.
