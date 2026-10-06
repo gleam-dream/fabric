@@ -45,51 +45,82 @@ class GateTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertEqual(list(Path(folder).iterdir()), [root])
 
-    def test_missing_sibling_credentials_fail_before_any_git_command(self) -> None:
-        for token in (None, ""):
-            with self.subTest(token=token), tempfile.TemporaryDirectory() as folder:
-                root = Path(folder) / "fabric"
-                (root / "scripts").mkdir(parents=True)
-                (root / "scripts/checkout-siblings.sh").write_text(
-                    (check.ROOT / "scripts/checkout-siblings.sh").read_text()
-                )
-                (root / "sibling-revisions.txt").write_text(
-                    (check.ROOT / "sibling-revisions.txt").read_text()
-                )
-                tools = Path(folder) / "tools"
-                tools.mkdir()
-                git = tools / "git"
-                git.write_text('#!/bin/sh\n: > "$GIT_CALL_MARKER"\nexit 91\n')
-                git.chmod(0o755)
-                marker = Path(folder) / "git-called"
-                environment = dict(
-                    os.environ,
-                    PATH=f"{tools}{os.pathsep}{os.environ['PATH']}",
-                    GIT_CALL_MARKER=str(marker),
-                )
-                environment.pop("SIBLINGS_TOKEN", None)
-                if token is not None:
-                    environment["SIBLINGS_TOKEN"] = token
-                result = subprocess.run(
-                    ["bash", "scripts/checkout-siblings.sh"],
-                    cwd=root,
-                    env=environment,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
-                self.assertNotEqual(result.returncode, 0, result.stdout)
-                self.assertFalse(marker.exists(), result.stdout)
-                for name in (
-                    "SIBLINGS_APP_CLIENT_ID",
-                    "SIBLINGS_APP_PRIVATE_KEY",
-                    "SIBLINGS_READ_TOKEN",
-                ):
-                    self.assertIn(name, result.stdout)
-                self.assertEqual(
-                    sorted(path.name for path in Path(folder).iterdir()),
-                    ["fabric", "tools"],
-                )
+    def test_public_sibling_checkout_needs_no_custom_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "fabric"
+            (root / "scripts").mkdir(parents=True)
+            (root / "scripts/checkout-siblings.sh").write_text(
+                (check.ROOT / "scripts/checkout-siblings.sh").read_text()
+            )
+            pins = (check.ROOT / "sibling-revisions.txt").read_text()
+            (root / "sibling-revisions.txt").write_text(pins)
+            tools = Path(folder) / "tools"
+            tools.mkdir()
+            git = tools / "git"
+            git.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, pathlib, sys\n"
+                "args = sys.argv[1:]\n"
+                "with open(os.environ['GIT_CALL_LOG'], 'a') as log:\n"
+                "    log.write(json.dumps(args) + '\\n')\n"
+                "if args[0] == 'init':\n"
+                "    pathlib.Path(args[-1]).mkdir()\n"
+                "elif args[2] == 'fetch':\n"
+                "    (pathlib.Path(args[1]) / 'revision').write_text(args[-1])\n"
+                "elif args[2:] == ['rev-parse', 'HEAD']:\n"
+                "    print((pathlib.Path(args[1]) / 'revision').read_text())\n"
+            )
+            git.chmod(0o755)
+            log = Path(folder) / "git-calls.jsonl"
+            environment = dict(
+                os.environ,
+                PATH=f"{tools}{os.pathsep}{os.environ['PATH']}",
+                GIT_CALL_LOG=str(log),
+            )
+            for name in (
+                "SIBLINGS_TOKEN",
+                "SIBLINGS_APP_CLIENT_ID",
+                "SIBLINGS_APP_PRIVATE_KEY",
+                "SIBLINGS_READ_TOKEN",
+            ):
+                environment.pop(name, None)
+            result = subprocess.run(
+                ["bash", "scripts/checkout-siblings.sh"],
+                cwd=root,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            selected = dict(
+                line.split("=", 1)
+                for line in pins.splitlines()
+                if line and not line.startswith("#")
+            )
+            fetches = {
+                Path(args[1]).name: args[-1]
+                for args in calls
+                if args[0] == "-C" and args[2] == "fetch"
+            }
+            self.assertEqual(fetches, selected)
+            remotes = {
+                Path(args[1]).name: args[-1]
+                for args in calls
+                if args[0] == "-C" and args[2] == "remote"
+            }
+            self.assertEqual(
+                remotes,
+                {
+                    package: "https://github.com/"
+                    + ("lostbean" if package == "json_blueprint" else "gleam-dream")
+                    + f"/{package}.git"
+                    for package in selected
+                },
+            )
+            self.assertTrue(all(args[0] in ("init", "-C") for args in calls))
+            self.assertNotIn("extraheader", json.dumps(calls).lower())
 
     def test_authored_erlang_warning_is_rejected_including_test_sources(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

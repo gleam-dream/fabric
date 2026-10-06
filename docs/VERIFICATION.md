@@ -16,15 +16,12 @@ nix develop -c python3 scripts/check.py full
 nix develop -c python3 scripts/check.py ci
 ```
 
-The pull request and push workflow invokes the full profile in the pinned Nix
-environment. Hosted execution requires configured read access to private siblings.
-The workflow checks out immutable sibling revisions beside Fabric before running
-the gate. Private sibling access uses a read-only GitHub App installation token
-(`SIBLINGS_APP_CLIENT_ID`, `SIBLINGS_APP_PRIVATE_KEY`) or `SIBLINGS_READ_TOKEN` limited to
-the required repositories. Credentials are confined to checkout and are not
-persisted. Fork pull requests receive no sibling credential and stop with an
-explicit private-source access error. Run their verification from an authorized
-repository branch.
+The pull request, push and manual workflows invoke the full profile in the pinned
+Nix environment. The workflow checks out immutable public sibling revisions beside
+Fabric before running the gate. The Fabric checkout uses the default read-only
+`github.token` with `persist-credentials: false`; the sibling helper fetches public
+sources without authentication. Fork pull requests run the same verification
+profile without custom App or PAT configuration.
 
 The 47-check registry covers 13 Gleam packages. Its first check runs formatting,
 Ruff correctness lint, ShellCheck and actionlint. Each package build separately
