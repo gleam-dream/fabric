@@ -7,6 +7,10 @@ integration packages under `integrations/` keep their own changelogs.
 
 ## Unreleased
 
+- Refresh the tested Warden and Relay revisions after removing startup
+  snapshot replay on cache restart and correcting intentional listener shutdown.
+  Fabric callers and recipe copies require no changes.
+
 - Refresh the tested Warden revision after its fetch ownership and bounded
   restart fixes. Fabric APIs, recipes and application wiring are unchanged.
 

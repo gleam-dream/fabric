@@ -2285,3 +2285,14 @@ errors before any consumer projection.
 The tested Warden revision includes cache-owned provider fetches and bounded
 cleanup before a client tree restarts. Fabric callers and recipe copies need
 no changes; only the tested sibling revision is refreshed.
+
+### Round 9: Warden restart and Relay shutdown validation
+
+The tested Warden revision rediscovers provider metadata and signing keys after
+cache restart. Original startup snapshots are no longer replayed. Public startup
+and validation signatures are unchanged; Fabric callers and recipes need no
+migration.
+
+The tested Relay revision prevents intentional listener shutdown from killing
+the caller. Unexpected listener failure still propagates. The `http.stop`
+call and Fabric relay recipes remain unchanged.
