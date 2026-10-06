@@ -15,7 +15,7 @@ Behavioural oracle: BeamWeaver, scoped by [ORACLE](docs/ORACLE.md). Native desig
 - `gleam test`: runs the test suite.
 - `nix develop -c python3 scripts/check.py full`: runs all retained packages,
   consumers, local services, compiler-negative checks and temporary PostgreSQL.
-  See `docs/VERIFICATION.md`. CI activation awaits library publication.
+  See `docs/VERIFICATION.md`. CI invokes the same registry after pinned sibling checkout.
 
 <!-- agent-skills:begin -->
 <!-- framework-commit: cab7c0590036edaa66d8430cc5016399a9fd2c71 origin: git@github.com:lostbean/skills.git -->

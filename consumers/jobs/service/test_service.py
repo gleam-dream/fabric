@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import socket
 import subprocess
 import sys
 import tempfile
@@ -11,12 +12,13 @@ import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from server import Jobs, Submission
+from server import JobHTTPServer, Jobs, Submission
 
 
 @contextmanager
@@ -24,10 +26,18 @@ def service(directory: Path) -> Iterator[str]:
     ready = directory / "ready"
     ready.unlink(missing_ok=True)
     with (directory / "server.log").open("ab") as log:
-        process = subprocess.Popen([
-            sys.executable, str(Path(__file__).with_name("server.py")),
-            "--directory", str(directory / "jobs"), "--ready-file", str(ready),
-        ], stdout=log, stderr=log)
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).with_name("server.py")),
+                "--directory",
+                str(directory / "jobs"),
+                "--ready-file",
+                str(ready),
+            ],
+            stdout=log,
+            stderr=log,
+        )
         try:
             for _ in range(200):
                 if process.poll() is not None:
@@ -59,6 +69,15 @@ def request(url: str, body: object | None = None) -> tuple[int, object]:
 
 
 class ServiceTests(unittest.TestCase):
+    def test_listen_queue_admits_eight_connections_before_accept(self) -> None:
+        # The same burst the Gleam consumer submits must fit while accept is busy.
+        with JobHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler) as server:
+            with ExitStack() as connections:
+                for _ in range(8):
+                    connections.enter_context(
+                        socket.create_connection(server.server_address, timeout=0.2)
+                    )
+
     def test_cancellation_upgrade_preserves_the_legacy_job_journal(self) -> None:
         with tempfile.TemporaryDirectory(prefix="fabric-job-upgrade-") as path:
             directory = Path(path)
@@ -68,15 +87,37 @@ class ServiceTests(unittest.TestCase):
                     text TEXT NOT NULL, delay_ms INTEGER NOT NULL, due REAL NOT NULL,
                     state TEXT NOT NULL CHECK(state IN ('queued', 'complete')), digest TEXT
                 )""")
-                db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?)", ("a" * 64, "queued-key", "queued", 0, 0, "queued", None))
-                db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?)", ("b" * 64, "completed-key", "completed", 0, 0, "complete", "c" * 64))
+                db.execute(
+                    "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
+                    ("a" * 64, "queued-key", "queued", 0, 0, "queued", None),
+                )
+                db.execute(
+                    "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
+                    (
+                        "b" * 64,
+                        "completed-key",
+                        "completed",
+                        0,
+                        0,
+                        "complete",
+                        "c" * 64,
+                    ),
+                )
             jobs = Jobs(directory)
             jobs = Jobs(directory)  # Repeated startup does not migrate again.
             self.assertEqual(jobs.count(), 2)
-            self.assertEqual(jobs.request_cancel("a" * 64), {"id": "a" * 64, "state": "cancel_requested"})
-            self.assertEqual(jobs.request_cancel("b" * 64), {"id": "b" * 64, "state": "complete", "digest": "c" * 64})
+            self.assertEqual(
+                jobs.request_cancel("a" * 64),
+                {"id": "a" * 64, "state": "cancel_requested"},
+            )
+            self.assertEqual(
+                jobs.request_cancel("b" * 64),
+                {"id": "b" * 64, "state": "complete", "digest": "c" * 64},
+            )
 
-    def test_cancel_request_is_retained_before_confirmation_and_survives_restart(self) -> None:
+    def test_cancel_request_is_retained_before_confirmation_and_survives_restart(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(prefix="fabric-job-cancel-") as path:
             directory = Path(path)
             journal = directory / "jobs"
@@ -89,14 +130,18 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(jobs.request_cancel(job_id), accepted)
             self.assertEqual(Jobs(journal).get(job_id), {**accepted, "digest": None})
             with service(directory) as url:
-                self.assertEqual(request(url + "/jobs/" + job_id + "/cancel", {}), (202, accepted))
+                self.assertEqual(
+                    request(url + "/jobs/" + job_id + "/cancel", {}), (202, accepted)
+                )
                 progress = self.await_terminal(url, job_id)
                 self.assertEqual(progress["state"], "cancelled")
                 self.assertEqual(request(url + "/jobs/" + job_id + "/artifact")[0], 404)
                 self.assertFalse((journal / (job_id + ".txt")).exists())
             with service(directory) as url:
                 self.assertEqual(request(url + "/jobs/" + job_id)[1], progress)
-                self.assertEqual(request(url + "/jobs/" + job_id + "/cancel", {}), (202, accepted))
+                self.assertEqual(
+                    request(url + "/jobs/" + job_id + "/cancel", {}), (202, accepted)
+                )
 
     @staticmethod
     def await_terminal(url: str, job_id: str) -> dict[str, object]:
@@ -111,26 +156,44 @@ class ServiceTests(unittest.TestCase):
     def test_stop_and_artifact_publication_have_one_winner(self) -> None:
         with tempfile.TemporaryDirectory(prefix="fabric-job-cancel-") as path:
             with service(Path(path)) as url:
+
                 def race(n: int) -> None:
-                    _, receipt = request(url + "/jobs", {"key": "race-" + str(n), "text": "race", "delay_ms": n % 3})
+                    _, receipt = request(
+                        url + "/jobs",
+                        {"key": "race-" + str(n), "text": "race", "delay_ms": n % 3},
+                    )
                     assert isinstance(receipt, dict)
                     job_id = str(receipt["id"])
-                    status, acknowledgment = request(url + "/jobs/" + job_id + "/cancel", {})
+                    status, acknowledgment = request(
+                        url + "/jobs/" + job_id + "/cancel", {}
+                    )
                     progress = self.await_terminal(url, job_id)
                     if status == 202:
-                        self.assertEqual(acknowledgment, {"id": job_id, "state": "cancel_requested"})
+                        self.assertEqual(
+                            acknowledgment, {"id": job_id, "state": "cancel_requested"}
+                        )
                         self.assertEqual(progress["state"], "cancelled")
-                        self.assertEqual(request(url + "/jobs/" + job_id + "/artifact")[0], 404)
+                        self.assertEqual(
+                            request(url + "/jobs/" + job_id + "/artifact")[0], 404
+                        )
                     else:
                         self.assertEqual(status, 200)
                         self.assertEqual(acknowledgment, progress)
                         self.assertEqual(progress["state"], "complete")
-                        self.assertEqual(request(url + "/jobs/" + job_id + "/artifact"), (200, "RACE"))
-                    self.assertEqual(request(url + "/jobs/" + job_id + "/cancel", {}), (status, acknowledgment))
+                        self.assertEqual(
+                            request(url + "/jobs/" + job_id + "/artifact"),
+                            (200, "RACE"),
+                        )
+                    self.assertEqual(
+                        request(url + "/jobs/" + job_id + "/cancel", {}),
+                        (status, acknowledgment),
+                    )
 
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     list(pool.map(race, range(16)))
-                self.assertEqual(request(url + "/jobs/" + "f" * 64 + "/cancel", {})[0], 404)
+                self.assertEqual(
+                    request(url + "/jobs/" + "f" * 64 + "/cancel", {})[0], 404
+                )
 
     def test_queued_acceptance_and_result_survive_service_restart(self) -> None:
         submission = {"key": "durable-key", "text": "retained job", "delay_ms": 1000}
@@ -141,9 +204,14 @@ class ServiceTests(unittest.TestCase):
                 self.assertEqual(status, 202)
                 assert isinstance(receipt, dict)
                 job_id = receipt["id"]
-                self.assertEqual(request(url + "/jobs/" + job_id)[1], {
-                    "id": job_id, "state": "queued", "digest": None,
-                })
+                self.assertEqual(
+                    request(url + "/jobs/" + job_id)[1],
+                    {
+                        "id": job_id,
+                        "state": "queued",
+                        "digest": None,
+                    },
+                )
             # A fresh OS process opens the existing journal and owns the work.
             with service(directory) as url:
                 self.assertEqual(request(url + "/jobs", submission), (202, receipt))
@@ -156,18 +224,32 @@ class ServiceTests(unittest.TestCase):
                     time.sleep(0.01)
                 else:
                     self.fail("retained job did not complete")
-                self.assertEqual(request(url + "/jobs/" + job_id + "/artifact"), (200, "RETAINED JOB"))
+                self.assertEqual(
+                    request(url + "/jobs/" + job_id + "/artifact"),
+                    (200, "RETAINED JOB"),
+                )
             with service(directory) as url:
                 self.assertEqual(request(url + "/jobs/" + job_id)[1], progress)
-                self.assertEqual(request(url + "/jobs/" + job_id + "/artifact"), (200, "RETAINED JOB"))
+                self.assertEqual(
+                    request(url + "/jobs/" + job_id + "/artifact"),
+                    (200, "RETAINED JOB"),
+                )
 
     def test_invalid_requests_are_refused_before_acceptance(self) -> None:
         with tempfile.TemporaryDirectory(prefix="fabric-job-service-") as path:
             with service(Path(path)) as url:
-                for body in [[], {}, {"key": "x", "text": "x", "delay_ms": True}, {"key": "x", "text": "x", "delay_ms": -1}]:
+                for body in [
+                    [],
+                    {},
+                    {"key": "x", "text": "x", "delay_ms": True},
+                    {"key": "x", "text": "x", "delay_ms": -1},
+                ]:
                     self.assertEqual(request(url + "/jobs", body)[0], 400)
                 self.assertEqual(request(url + "/count"), (200, {"count": 0}))
-                _, receipt = request(url + "/jobs", {"key": "invalid-stop", "text": "untouched", "delay_ms": 5000})
+                _, receipt = request(
+                    url + "/jobs",
+                    {"key": "invalid-stop", "text": "untouched", "delay_ms": 5000},
+                )
                 assert isinstance(receipt, dict)
                 stop_url = url + "/jobs/" + str(receipt["id"]) + "/cancel"
                 self.assertEqual(request(stop_url, {"unexpected": True})[0], 400)

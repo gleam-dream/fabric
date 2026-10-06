@@ -39,7 +39,11 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         if self.path == "/stats":
             with self.server.lock:
-                data = {"calls": self.server.calls, "disconnected": self.server.disconnected, "last_body": self.server.last_body}
+                data = {
+                    "calls": self.server.calls,
+                    "disconnected": self.server.disconnected,
+                    "last_body": self.server.last_body,
+                }
             self.reply(200, data)
             return
         if self.headers.get("Authorization") != "Bearer test-key":
@@ -75,10 +79,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(307, {}, {"Location": "/v1/systemone"})
                 return
             if self.path == "/busy":
-                self.reply(429, {"error": "private diagnostic body"}, {"Retry-After": "9"})
+                self.reply(
+                    429, {"error": "private diagnostic body"}, {"Retry-After": "9"}
+                )
                 return
             if self.path == "/duplicate":
-                self.reply(200, b'{"model":"one","model":"two","answers":{},"usage":{}}')
+                self.reply(
+                    200, b'{"model":"one","model":"two","answers":{},"usage":{}}'
+                )
                 return
             result = evaluate_fixture(request)
             if self.path == "/wrong":
@@ -105,15 +113,29 @@ def evaluate_fixture(request):
             probabilities = {label: 0.0 for label in labels}
             probabilities[selected] = 0.8
             probabilities[others[0]] = 0.2
-            answers[identity] = {"type": kind, "choice": selected, "probabilities": probabilities, "confidence": 0.7}
+            answers[identity] = {
+                "type": kind,
+                "choice": selected,
+                "probabilities": probabilities,
+                "confidence": 0.7,
+            }
         elif kind == "score":
             levels = question["criteria"]
             probabilities = {str(i): 0.0 for i in range(len(levels))}
             probabilities[str(len(levels) - 1)] = 0.8
             probabilities[str(len(levels) - 2)] = 0.2
-            answers[identity] = {"type": kind, "score": len(levels) - 1.2, "probabilities": probabilities,
-                                 "legend": {str(i): level for i, level in enumerate(levels)}, "confidence": 0.7}
-    return {"model": "protocol-fixture-only", "answers": answers, "usage": {"input_tokens": 12, "output_tokens": 8}}
+            answers[identity] = {
+                "type": kind,
+                "score": len(levels) - 1.2,
+                "probabilities": probabilities,
+                "legend": {str(i): level for i, level in enumerate(levels)},
+                "confidence": 0.7,
+            }
+    return {
+        "model": "protocol-fixture-only",
+        "answers": answers,
+        "usage": {"input_tokens": 12, "output_tokens": 8},
+    }
 
 
 if __name__ == "__main__":

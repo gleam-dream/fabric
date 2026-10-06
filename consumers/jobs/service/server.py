@@ -21,6 +21,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
+class JobHTTPServer(ThreadingHTTPServer):
+    """Admit the retained concurrent submission burst while accept is busy."""
+
+    request_queue_size = 32
+
+
 @dataclass(frozen=True)
 class Submission:
     key: str
@@ -57,7 +63,12 @@ class Jobs:
                 raise ValueError("unsupported job journal version")
             if version == 1:
                 return
-            legacy = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone() is not None
+            legacy = (
+                db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'"
+                ).fetchone()
+                is not None
+            )
             if legacy:
                 db.execute("ALTER TABLE jobs RENAME TO jobs_legacy")
             db.execute("""CREATE TABLE jobs (
@@ -85,33 +96,47 @@ class Jobs:
         with self.connect() as db:
             # Serialize key comparison and acceptance; reply only after commit.
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT * FROM jobs WHERE submission_key=?", (request.key,)).fetchone()
+            row = db.execute(
+                "SELECT * FROM jobs WHERE submission_key=?", (request.key,)
+            ).fetchone()
             if row is not None:
                 if row["text"] != request.text or row["delay_ms"] != request.delay_ms:
                     raise Conflict("submission key already binds different input")
                 return str(row["id"])
             identifier = hashlib.sha256(request.key.encode()).hexdigest()
-            db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,'queued',NULL)", (
-                identifier, request.key, request.text, request.delay_ms,
-                time.time() + request.delay_ms / 1000,
-            ))
+            db.execute(
+                "INSERT INTO jobs VALUES (?,?,?,?,?,'queued',NULL)",
+                (
+                    identifier,
+                    request.key,
+                    request.text,
+                    request.delay_ms,
+                    time.time() + request.delay_ms / 1000,
+                ),
+            )
         return identifier
 
     def get(self, identifier: str) -> dict[str, object] | None:
         with self.connect() as db:
-            row = db.execute("SELECT id,state,digest FROM jobs WHERE id=?", (identifier,)).fetchone()
+            row = db.execute(
+                "SELECT id,state,digest FROM jobs WHERE id=?", (identifier,)
+            ).fetchone()
         return dict(row) if row is not None else None
 
     def request_cancel(self, identifier: str) -> dict[str, object] | None:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT id,state,digest FROM jobs WHERE id=?", (identifier,)).fetchone()
+            row = db.execute(
+                "SELECT id,state,digest FROM jobs WHERE id=?", (identifier,)
+            ).fetchone()
             if row is None:
                 return None
             if row["state"] == "complete":
                 return dict(row)
             if row["state"] == "queued":
-                db.execute("UPDATE jobs SET state='cancel_requested' WHERE id=?", (identifier,))
+                db.execute(
+                    "UPDATE jobs SET state='cancel_requested' WHERE id=?", (identifier,)
+                )
             # Return the same acceptance fact even if its worker already
             # confirmed cancellation. A duplicate never creates new work.
             return {"id": identifier, "state": "cancel_requested"}
@@ -130,13 +155,18 @@ class Jobs:
         # One service worker owns artifact writes. A crash before completion
         # leaves the job queued; writing the same deterministic artifact is safe.
         with self.connect() as db:
-            rows = db.execute("SELECT id FROM jobs WHERE state='cancel_requested' OR (state='queued' AND due<=?)", (time.time(),)).fetchall()
+            rows = db.execute(
+                "SELECT id FROM jobs WHERE state='cancel_requested' OR (state='queued' AND due<=?)",
+                (time.time(),),
+            ).fetchall()
         for row in rows:
             # Stop admission and publication serialize through the same lock.
             # Re-read after acquiring it: the earlier due list is only a hint.
             with self.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
-                current = db.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone()
+                current = db.execute(
+                    "SELECT * FROM jobs WHERE id=?", (row["id"],)
+                ).fetchone()
                 if current["state"] in {"complete", "cancelled"}:
                     continue
                 destination = self.directory / (row["id"] + ".txt")
@@ -147,7 +177,9 @@ class Jobs:
                     temporary.unlink(missing_ok=True)
                     destination.unlink(missing_ok=True)
                     self.sync_directory()
-                    db.execute("UPDATE jobs SET state='cancelled' WHERE id=?", (row["id"],))
+                    db.execute(
+                        "UPDATE jobs SET state='cancelled' WHERE id=?", (row["id"],)
+                    )
                     continue
                 content = str(current["text"]).upper().encode()
                 with temporary.open("wb") as output:
@@ -156,9 +188,13 @@ class Jobs:
                     os.fsync(output.fileno())
                 temporary.replace(destination)
                 self.sync_directory()
-                db.execute("UPDATE jobs SET state='complete',digest=? WHERE id=?", (
-                    hashlib.sha256(content).hexdigest(), row["id"],
-                ))
+                db.execute(
+                    "UPDATE jobs SET state='complete',digest=? WHERE id=?",
+                    (
+                        hashlib.sha256(content).hexdigest(),
+                        row["id"],
+                    ),
+                )
 
     def sync_directory(self) -> None:
         directory = os.open(self.directory, os.O_RDONLY)
@@ -188,7 +224,10 @@ def serve(directory: Path, ready_file: Path) -> None:
             if len(parts) == 4 and parts[1] == "jobs" and parts[3] == "cancel":
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < length <= 1024 or json.loads(self.rfile.read(length)) != {}:
+                    if (
+                        not 0 < length <= 1024
+                        or json.loads(self.rfile.read(length)) != {}
+                    ):
                         raise ValueError("cancellation requires an empty object")
                 except (ValueError, UnicodeDecodeError) as error:
                     self.reply(400, {"error": str(error)})
@@ -197,7 +236,9 @@ def serve(directory: Path, ready_file: Path) -> None:
                 if progress is None:
                     self.reply(404, {"error": "not found"})
                 else:
-                    self.reply(200 if progress["state"] == "complete" else 202, progress)
+                    self.reply(
+                        200 if progress["state"] == "complete" else 202, progress
+                    )
                 return
             if self.path != "/jobs":
                 self.reply(404, {"error": "not found"})
@@ -224,8 +265,10 @@ def serve(directory: Path, ready_file: Path) -> None:
                 self.reply(404, {"error": "not found"})
                 return
             identifier = parts[2]
-            value = jobs.get(identifier) if len(parts) == 3 else (
-                jobs.artifact(identifier) if parts[3] == "artifact" else None
+            value = (
+                jobs.get(identifier)
+                if len(parts) == 3
+                else (jobs.artifact(identifier) if parts[3] == "artifact" else None)
             )
             self.reply(404 if value is None else 200, value)
 
@@ -237,7 +280,7 @@ def serve(directory: Path, ready_file: Path) -> None:
 
     worker = threading.Thread(target=work, daemon=True)
     worker.start()
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = JobHTTPServer(("127.0.0.1", 0), Handler)
     ready_file.write_text(f"http://127.0.0.1:{server.server_port}", encoding="utf-8")
     try:
         server.serve_forever()

@@ -1,28 +1,105 @@
-name: Test
-on: [push, pull_request]
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  verification:
+    name: Full verification
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: erlef/setup-beam@v1
+      - name: Require trusted access to private sibling sources
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "Fork pull requests cannot access the private sibling sources. Run verification on a trusted repository branch." >&2
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          otp-version: "28"
-          gleam-version: "1.18.1"
-          rebar3-version: "3.27.0"
-      - run: gleam deps download
-      - run: gleam format --check src test
-      - run: gleam build --warnings-as-errors
-      - run: gleam test
+          path: fabric
+          persist-credentials: false
+      - name: Read token for private sibling sources
+        id: siblings
+        if: vars.SIBLINGS_APP_CLIENT_ID != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SIBLINGS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SIBLINGS_APP_PRIVATE_KEY }}
+          owner: gleam-dream
+          repositories: http_gun,llm_wire,sinal,saga,relay,warden
+          permission-contents: read
+      - name: Checkout pinned sibling sources
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        working-directory: fabric
+        env:
+          SIBLINGS_TOKEN: ${{ steps.siblings.outputs.token || secrets.SIBLINGS_READ_TOKEN }}
+        run: bash scripts/checkout-siblings.sh
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: experimental-features = nix-command flakes
+      - name: All retained packages and deterministic fixtures
+        working-directory: fabric
+        run: nix develop --no-update-lock-file -c python3 -B scripts/check.py ci
+      - name: Retain verification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fabric-verification
+          path: fabric/.artifacts/check/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
 
   design:
     name: Design layer
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           extra_nix_config: experimental-features = nix-command flakes
-      - run: nix run .#design-gate-check -- docs/design . --nested-project integrations/fabric_postgres
+      - name: Check both native design layers
+        run: |
+          mkdir -p .artifacts/design
+          set -o pipefail
+          nix run .#design-gate-check -- docs/design . --nested-project integrations/fabric_postgres 2>&1 | tee .artifacts/design/check.log
+      - name: Retain design evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fabric-design
+          path: .artifacts/design/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  ci:
+    name: CI
+    if: always()
+    needs: [verification, design]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every mandatory result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          results = json.loads(os.environ['RESULTS'])
+          failures = {job: item['result'] for job, item in results.items() if item['result'] != 'success'}
+          if not results or failures:
+              raise SystemExit(f'Required CI jobs did not succeed: {failures}')
+          PY

@@ -13,7 +13,9 @@ class FixtureTest(unittest.TestCase):
     def setUp(self):
         self.process = subprocess.Popen(
             [sys.executable, "-B", "-u", str(Path(__file__).with_name("server.py"))],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
         )
         endpoint = urlsplit(self.process.stdout.readline().strip())
         self.port = endpoint.port
@@ -25,18 +27,32 @@ class FixtureTest(unittest.TestCase):
     def post(self, path, data, key="test-key"):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
         try:
-            connection.request("POST", path, json.dumps(data), {"Authorization": "Bearer " + key})
+            connection.request(
+                "POST", path, json.dumps(data), {"Authorization": "Bearer " + key}
+            )
             response = connection.getresponse()
             return response.status, dict(response.getheaders()), response.read()
         finally:
             connection.close()
 
     def request(self, state):
-        return {"model": "fixture", "state": state, "questions": {
-            "yes": {"type": "noul", "instructions": "correct?"},
-            "route": {"type": "choice", "instructions": "choose", "criteria": {"approve": "correct", "revise": "wrong"}},
-            "quality": {"type": "score", "instructions": "rate", "criteria": ["wrong", "partial", "correct"]},
-        }}
+        return {
+            "model": "fixture",
+            "state": state,
+            "questions": {
+                "yes": {"type": "noul", "instructions": "correct?"},
+                "route": {
+                    "type": "choice",
+                    "instructions": "choose",
+                    "criteria": {"approve": "correct", "revise": "wrong"},
+                },
+                "quality": {
+                    "type": "score",
+                    "instructions": "rate",
+                    "criteria": ["wrong", "partial", "correct"],
+                },
+            },
+        }
 
     def test_all_question_shapes_and_requested_route(self):
         status, _, raw = self.post("/v1/systemone", self.request("fixture:revise"))
@@ -44,9 +60,14 @@ class FixtureTest(unittest.TestCase):
         body = json.loads(raw)
         self.assertEqual(body["model"], "protocol-fixture-only")
         self.assertEqual(body["answers"]["route"]["choice"], "revise")
-        self.assertEqual(body["answers"]["route"]["probabilities"], {"approve": .2, "revise": .8})
-        self.assertEqual(body["answers"]["yes"], {"type": "noul", "noul": .9})
-        self.assertEqual(body["answers"]["quality"]["legend"], {"0": "wrong", "1": "partial", "2": "correct"})
+        self.assertEqual(
+            body["answers"]["route"]["probabilities"], {"approve": 0.2, "revise": 0.8}
+        )
+        self.assertEqual(body["answers"]["yes"], {"type": "noul", "noul": 0.9})
+        self.assertEqual(
+            body["answers"]["quality"]["legend"],
+            {"0": "wrong", "1": "partial", "2": "correct"},
+        )
         self.assertEqual(body["answers"]["quality"]["score"], 1.8)
         self.assertEqual(body["usage"], {"input_tokens": 12, "output_tokens": 8})
 

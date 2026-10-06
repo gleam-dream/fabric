@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One local verification gate, prepared for CI after dependency publication."""
+"""One verification gate for local and hosted deterministic checks."""
 
 import argparse
 from dataclasses import dataclass
@@ -10,6 +10,8 @@ from pathlib import Path
 import subprocess
 import time
 import tomllib
+
+import quality
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,26 +54,67 @@ def checks(root: Path, profile: str) -> list[Check]:
             f"package gate mismatch: added={found - set(PACKAGES)}, "
             f"missing={set(PACKAGES) - found}"
         )
-    selected = [Check("formatting", ".", ("nix", "flake", "check"))]
-    selected.append(Check(
-        "approvers-recipe", ".", ("python3", "-B", "scripts/check.py", "recipe"),
-    ))
-    selected.append(Check(
-        "saga-recipe", ".", ("python3", "-B", "scripts/check.py", "saga-recipe"),
-    ))
-    selected.append(Check("relay-recipes", ".", ("python3", "-B", "scripts/check.py", "relay-recipes")))
-    selected.append(Check(
-        "gate-tests", ".",
-        ("python3", "-B", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"),
-    ))
+    selected = [
+        Check(
+            "formatting-and-static",
+            ".",
+            ("python3", "-B", "scripts/check.py", "static"),
+        )
+    ]
+    selected.append(
+        Check(
+            "approvers-recipe",
+            ".",
+            ("python3", "-B", "scripts/check.py", "recipe"),
+        )
+    )
+    selected.append(
+        Check(
+            "saga-recipe",
+            ".",
+            ("python3", "-B", "scripts/check.py", "saga-recipe"),
+        )
+    )
+    selected.append(
+        Check(
+            "relay-recipes",
+            ".",
+            ("python3", "-B", "scripts/check.py", "relay-recipes"),
+        )
+    )
+    selected.append(
+        Check(
+            "gate-tests",
+            ".",
+            (
+                "python3",
+                "-B",
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                "scripts",
+                "-p",
+                "test_*.py",
+            ),
+        )
+    )
     for package in PACKAGES if profile != "fast" else (".",):
         name = "core" if package == "." else package.replace("/", "-")
-        selected.append(Check(
-            f"{name}-format", package, ("gleam", "format", "--check", "src", "test"),
-        ))
-        selected.append(Check(
-            f"{name}-build", package, ("gleam", "build", "--warnings-as-errors"),
-        ))
+        selected.append(
+            Check(
+                f"{name}-format",
+                package,
+                ("gleam", "format", "--check", "src", "test"),
+            )
+        )
+        selected.append(
+            Check(
+                f"{name}-build",
+                package,
+                ("python3", "-B", str(root / "scripts/check.py"), "build"),
+            )
+        )
         if package == "integrations/fabric_postgres":
             command = ("bash", "scripts/test-postgres.sh")
         elif package == "consumers/jobs":
@@ -80,20 +123,43 @@ def checks(root: Path, profile: str) -> list[Check]:
             command = ("gleam", "test")
         selected.append(Check(f"{name}-tests", package, command))
     if profile != "fast":
-        selected.extend([
-            Check(
-                "classification-protocol-tests", ".",
-                ("python3", "-B", "-m", "unittest", "discover", "-s", "test/fixtures/classifier", "-p", "*_test.py"),
-            ),
-            Check(
-                "writing-evaluation-tests", "consumers/writing",
-                ("python3", "-B", "-m", "unittest", "discover", "-p", "test_live.py"),
-            ),
-            Check(
-                "authoring-contract", ".",
-                ("python3", "-B", "experiments/graph_authoring/check.py"),
-            ),
-        ])
+        selected.extend(
+            [
+                Check(
+                    "classification-protocol-tests",
+                    ".",
+                    (
+                        "python3",
+                        "-B",
+                        "-m",
+                        "unittest",
+                        "discover",
+                        "-s",
+                        "test/fixtures/classifier",
+                        "-p",
+                        "*_test.py",
+                    ),
+                ),
+                Check(
+                    "writing-evaluation-tests",
+                    "consumers/writing",
+                    (
+                        "python3",
+                        "-B",
+                        "-m",
+                        "unittest",
+                        "discover",
+                        "-p",
+                        "test_live.py",
+                    ),
+                ),
+                Check(
+                    "authoring-contract",
+                    ".",
+                    ("python3", "-B", "experiments/graph_authoring/check.py"),
+                ),
+            ]
+        )
     return selected
 
 
@@ -116,7 +182,7 @@ def readme_recipe(text: str, marker: str = RECIPE_MARKER) -> str:
         closing = lines.index("```", opening)
     except ValueError as error:
         raise ValueError(f"{RECIPE_README}: no gleam block after {marker}") from error
-    return "\n".join(lines[opening + 1:closing]) + "\n"
+    return "\n".join(lines[opening + 1 : closing]) + "\n"
 
 
 def module_recipe(text: str, heading: str = RECIPE_HEADING) -> str:
@@ -128,25 +194,67 @@ def module_recipe(text: str, heading: str = RECIPE_HEADING) -> str:
         closing = lines.index("//// ```", opening)
     except ValueError as error:
         raise ValueError(f"{RECIPE_MODULE}: no gleam block after {heading}") from error
-    return "\n".join(
-        line.removeprefix("//// ").removeprefix("////")
-        for line in lines[opening + 1:closing]
-    ) + "\n"
+    return (
+        "\n".join(
+            line.removeprefix("//// ").removeprefix("////")
+            for line in lines[opening + 1 : closing]
+        )
+        + "\n"
+    )
 
 
 SAGA_RECIPE = dict(
     consumer="consumers/saga_tool/src/saga_tool.gleam",
-    module="src/fabric/tool.gleam", marker="<!-- saga-recipe -->",
-    heading="//// ## With saga", max_lines=60,
+    module="src/fabric/tool.gleam",
+    marker="<!-- saga-recipe -->",
+    heading="//// ## With saga",
+    max_lines=60,
 )
 
 
-RELAY_RECIPES = [{'consumer': 'consumers/relay_tools/src/relay_tools.gleam', 'module': 'src/fabric/tool.gleam', 'marker': '<!-- relay-tools-recipe -->', 'heading': '//// ## Calling Relay tools'}, {'consumer': 'consumers/relay_tools/src/relay_discovery.gleam', 'module': 'src/fabric/tool.gleam', 'marker': '<!-- relay-discovery-recipe -->', 'heading': '//// ## Discovering Relay tools'}, {'consumer': 'consumers/relay_tools/src/relay_operation.gleam', 'module': 'src/fabric/graph/operation.gleam', 'marker': '<!-- relay-operation-recipe -->', 'heading': '//// ## Calling Relay tools from a graph'}, {'consumer': 'consumers/relay_tools/src/relay_serve.gleam', 'module': 'src/fabric/invoke.gleam', 'marker': '<!-- relay-serve-recipe -->', 'heading': '//// ## Serving through Relay'}, {'consumer': 'consumers/relay_tools/src/relay_run.gleam', 'module': 'src/fabric/invoke.gleam', 'marker': '<!-- relay-run-recipe -->', 'heading': '//// ## Reading a Relay run id'}]
+RELAY_RECIPES = [
+    {
+        "consumer": "consumers/relay_tools/src/relay_tools.gleam",
+        "module": "src/fabric/tool.gleam",
+        "marker": "<!-- relay-tools-recipe -->",
+        "heading": "//// ## Calling Relay tools",
+    },
+    {
+        "consumer": "consumers/relay_tools/src/relay_discovery.gleam",
+        "module": "src/fabric/tool.gleam",
+        "marker": "<!-- relay-discovery-recipe -->",
+        "heading": "//// ## Discovering Relay tools",
+    },
+    {
+        "consumer": "consumers/relay_tools/src/relay_operation.gleam",
+        "module": "src/fabric/graph/operation.gleam",
+        "marker": "<!-- relay-operation-recipe -->",
+        "heading": "//// ## Calling Relay tools from a graph",
+    },
+    {
+        "consumer": "consumers/relay_tools/src/relay_serve.gleam",
+        "module": "src/fabric/invoke.gleam",
+        "marker": "<!-- relay-serve-recipe -->",
+        "heading": "//// ## Serving through Relay",
+    },
+    {
+        "consumer": "consumers/relay_tools/src/relay_run.gleam",
+        "module": "src/fabric/invoke.gleam",
+        "marker": "<!-- relay-run-recipe -->",
+        "heading": "//// ## Reading a Relay run id",
+    },
+]
 
 
-def recipe_problems(root: Path, *, consumer: str = RECIPE_CONSUMER,
-                    module: str = RECIPE_MODULE, marker: str = RECIPE_MARKER,
-                    heading: str = RECIPE_HEADING, max_lines: int = 50) -> list[str]:
+def recipe_problems(
+    root: Path,
+    *,
+    consumer: str = RECIPE_CONSUMER,
+    module: str = RECIPE_MODULE,
+    marker: str = RECIPE_MARKER,
+    heading: str = RECIPE_HEADING,
+    max_lines: int = 50,
+) -> list[str]:
     """Where the two documentation copies differ from the compiled consumer."""
     source = (root / consumer).read_text()
     copies = {
@@ -158,8 +266,9 @@ def recipe_problems(root: Path, *, consumer: str = RECIPE_CONSUMER,
         problems.append(f"{consumer}: recipe exceeds {max_lines} lines")
     for name, copy in copies.items():
         if copy != source:
-            diff = difflib.unified_diff(source.splitlines(), copy.splitlines(),
-                                        consumer, name, lineterm="")
+            diff = difflib.unified_diff(
+                source.splitlines(), copy.splitlines(), consumer, name, lineterm=""
+            )
             problems.append(f"{name} differs from {consumer}:\n" + "\n".join(diff))
     return problems
 
@@ -180,9 +289,21 @@ def dependencies(root: Path) -> list[dict[str, str]]:
                 f"missing package: {manifest}; check out the required sibling"
             )
         package = tomllib.loads(manifest.read_text())
-        sources.append({
-            "package": package["name"], "version": package["version"], "path": str(path),
-        })
+        revision = subprocess.run(
+            ("git", "-C", str(path), "rev-parse", "HEAD"),
+            capture_output=True,
+            text=True,
+        )
+        sources.append(
+            {
+                "package": package["name"],
+                "version": package["version"],
+                "path": str(path),
+                "revision": revision.stdout.strip()
+                if revision.returncode == 0
+                else "unversioned",
+            }
+        )
         for section in ("dependencies", "dev-dependencies"):
             for name, value in package.get(section, {}).items():
                 if isinstance(value, dict) and "path" in value:
@@ -200,10 +321,14 @@ def dependencies(root: Path) -> list[dict[str, str]]:
 
 
 def run_checks(root: Path, selected: list[Check], logs: Path) -> bool:
+    if not selected:
+        raise ValueError("no checks selected")
     environment = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     for name in (
-        "OPENAI_API_KEY", "TYPESAFE_API_KEY",
-        "FABRIC_DECISION_MODEL", "FABRIC_CLASSIFIER_MODEL",
+        "OPENAI_API_KEY",
+        "TYPESAFE_API_KEY",
+        "FABRIC_DECISION_MODEL",
+        "FABRIC_CLASSIFIER_MODEL",
     ):
         environment.pop(name, None)
     results = []
@@ -214,21 +339,30 @@ def run_checks(root: Path, selected: list[Check], logs: Path) -> bool:
         with (logs / f"{check.name}.log").open("w") as output:
             try:
                 result = subprocess.run(
-                    check.command, cwd=root / check.directory, env=environment,
-                    stdout=output, stderr=subprocess.STDOUT,
+                    check.command,
+                    cwd=root / check.directory,
+                    env=environment,
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
                 )
                 status = result.returncode
             except OSError as error:
                 output.write(str(error) + "\n")
                 status = 127
-        results.append({
-            "name": check.name, "command": check.command,
-            "directory": check.directory, "exit_code": status,
-            "seconds": round(time.monotonic() - started, 3),
-        })
+        results.append(
+            {
+                "name": check.name,
+                "command": check.command,
+                "directory": check.directory,
+                "exit_code": status,
+                "seconds": round(time.monotonic() - started, 3),
+            }
+        )
         (logs / "results.json").write_text(json.dumps(results, indent=2) + "\n")
         if status:
-            print(f"FAILED: {check.name}; see {logs / (check.name + '.log')}", flush=True)
+            print(
+                f"FAILED: {check.name}; see {logs / (check.name + '.log')}", flush=True
+            )
             print((logs / f"{check.name}.log").read_text()[-12000:], flush=True)
             return False
     print(f"Passed {len(results)} checks. Evidence: {logs}", flush=True)
@@ -237,19 +371,45 @@ def run_checks(root: Path, selected: list[Check], logs: Path) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("profile", choices=("fast", "full", "ci", "recipe", "saga-recipe", "relay-recipes"))
+    parser.add_argument(
+        "profile",
+        choices=(
+            "fast",
+            "full",
+            "ci",
+            "recipe",
+            "saga-recipe",
+            "relay-recipes",
+            "static",
+            "build",
+        ),
+    )
     parser.add_argument("--logs", type=Path, default=ROOT / ".artifacts/check")
     arguments = parser.parse_args()
+    if arguments.profile == "static":
+        raise SystemExit(quality.static(ROOT))
+    if arguments.profile == "build":
+        raise SystemExit(quality.build(Path.cwd()))
     if arguments.profile in ("recipe", "saga-recipe", "relay-recipes"):
         try:
-            configurations = RELAY_RECIPES if arguments.profile == "relay-recipes" else [SAGA_RECIPE if arguments.profile == "saga-recipe" else {}]
-            problems = [problem for configuration in configurations for problem in recipe_problems(ROOT, **configuration)]
+            configurations = (
+                RELAY_RECIPES
+                if arguments.profile == "relay-recipes"
+                else [SAGA_RECIPE if arguments.profile == "saga-recipe" else {}]
+            )
+            problems = [
+                problem
+                for configuration in configurations
+                for problem in recipe_problems(ROOT, **configuration)
+            ]
         except (ValueError, OSError) as error:
             problems = [str(error)]
         for problem in problems:
             print(problem, flush=True)
         if not problems:
-            print("the recipe is the same in the README, the module doc and the consumer")
+            print(
+                "the recipe is the same in the README, the module doc and the consumer"
+            )
         raise SystemExit(1 if problems else 0)
     logs = arguments.logs.resolve()
     logs.mkdir(parents=True, exist_ok=True)

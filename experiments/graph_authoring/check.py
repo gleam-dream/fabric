@@ -27,7 +27,7 @@ def check_types() -> None:
             f"fabric_graph_authoring = {{ path = {json.dumps(str(ROOT))} }}\n"
             f"json_blueprint = {{ path = {json.dumps(str(BLUEPRINT))} }}\n"
         )
-        source = '''import fabric_graph_authoring as graph
+        source = """import fabric_graph_authoring as graph
 import json/blueprint/codec
 
 pub fn checked() -> graph.Node(Nil, Int, String) {
@@ -43,7 +43,7 @@ pub fn checked() -> graph.Node(Nil, Int, String) {
     destinations: [],
   )
 }
-'''
+"""
         probe = project / "src/graph_type_probe.gleam"
         probe.write_text(source)
         run(project, "build", "--warnings-as-errors")
