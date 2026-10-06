@@ -1,0 +1,19 @@
+# Migration preserves broader intent and exposes unresolved ownership
+
+<a id="adr-0008"></a>
+
+The initial facade freeze did not reduce Fabric's full declared scope. The native layer carries current contracts and an explicit pending ledger for retained capabilities that current source cannot implement or verify. Newly migrated entries record unresolved work, not a fabricated date of original acceptance. This migration occurred on 6 October 2026; the source documents span earlier dates with mixed proposed, accepted and implemented claims.
+
+Streaming agents remain intended: map llm_wire progress, retain partial transcript meaning, bound backpressure, close resources on cancellation and define approval interruption/restart points. Per-call bounds and graph waits do not implement whole-run elapsed time. Family work/child/depth reservations do not implement family token accounting. Missing provider usage stays unverifiable. Whole-run deadlines need owner decisions about approval pauses, children, wall clock, restart and cleanup before a new API.
+
+Approve/reject/expiry and typed final answers are implemented, despite stale REMAINING/CAPABILITIES claims. Edit/respond approval answers remain unbuilt and require explicit changed-action continuation semantics. Narrower typed delegation context and direct recovered-child parent delivery need targeted source/consumer evidence. Context compaction/summarization is retained deferred intent; no implicit transcript erasure is selected.
+
+Original historical review forks and typed DAG reducer correspondence conflict with later time-travel exclusion and serial typed state/isolated-fork direction. Neither safe historical effect forking nor Saga reducer equivalence is established by ordinary retry or current graph topology validation. This is an owner ruling, not silently completed or dropped scope. Generic DAG implementation is no longer a Fabric module; current conditional graph ownership is ADR 0001.
+
+External Saga composition retains bounded tools and cancellation settlement. Suspending an agent inside Saga, reattaching an independent durable Saga child with typed failure/undo/reconciliation and optional compensation authority are separate retained contracts; the working Saga tool recipe proves neither all of them nor a bridge package need. Fabric owns only its parent continuation and attachment; the external owner retains journal, scheduling and compensation. Waiting must release scarce capacity; telemetry is not completion authority.
+
+Grind remains an independent delivery owner. A job may carry a Fabric reference, but scheduled wakeup, sweeper coexistence, atomic admission/outbox and committed delivery semantics are unresolved. The old named `integrations/fabric_grind` backlog and historical claims about absent public Grind APIs do not select a new package. A shared lease/durability superclass remains an unselected alternative with different invariants.
+
+Baseline exclusions remain retrieval/vector/document infrastructure, distributed Erlang, remote Agent Protocol sub-agents, global middleware/channel systems and directory power-loss durability. Quorum/racing/partial streaming joins and arbitrary graph code generation are outside the selected structured-fork contract. Provider transport and multi-vendor conformance belong to llm_wire; Fabric integration must not turn provider capability evidence into agent streaming claims.
+
+Provenance: original `fabric-design.md`, `API-COVERAGE.md` Fabric rows, `PUBLIC-API.md`, composition/workflow/child research and interface-lab approval/schema/provider/attachment/observation notes at Oversight `3baff7030a96d5b6cf78b2335c16d8c203727da5`; Fabric `docs/PLAN.md`, `CAPABILITIES.md`, `REMAINING.md` at `ab678abe3b49b2d8dedc8b63845c35a60e6f918f`. Later release decisions override stale ownership and completion assertions. Original sign-off dates or complete rationale absent from those records remain unknown.

@@ -1,6 +1,6 @@
-//// THROWAWAY (workflow composition experiment). A minimal JSON codec pair
-//// standing in for Blueprint codecs: typed tools and the persisted run
-//// record both cross a JSON boundary, so nothing stored can be a closure.
+//// JSON codec pair for the workflow composition experiment.
+//// Typed tools and run records cross a JSON boundary; stored values
+//// contain data, never closures.
 
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}

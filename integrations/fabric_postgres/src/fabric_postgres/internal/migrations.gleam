@@ -3,7 +3,7 @@
 //// cigogne's format (`--- migration:up` ... `--- migration:down` ...
 //// `--- migration:end`), so an application that applies its migrations
 //// with cigogne installs the same schema, serialised by the same advisory
-//// lock. `migrations_test` checks that the two agree statement for
+//// lock. `migrate_test` checks that the two agree statement for
 //// statement.
 ////
 //// Each step's statements run with `search_path` set to the target schema

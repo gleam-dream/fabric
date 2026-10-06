@@ -1,7 +1,6 @@
-//// THROWAWAY (workflow composition experiment). An in-memory record store
-//// with a revision per key and compare-and-set. Records are JSON strings,
-//// so a paused run is plain data. The store process is independent of every
-//// runtime process: killing a runtime models a restart, the store survives.
+//// In-memory CAS store for the workflow composition experiment.
+//// JSON records retain a revision per key. The store process survives a
+//// runtime-process crash, allowing restart probes within the same VM.
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}

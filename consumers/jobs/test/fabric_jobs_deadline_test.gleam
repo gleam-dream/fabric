@@ -1,4 +1,4 @@
-//// D9–D13: a real service retains the effects of deadline-triggered cleanup.
+//// A real service retains the effects of cleanup triggered by deadlines.
 
 import fabric/budget
 import fabric/graph

@@ -5,3 +5,5 @@ erl_crash.dump
 .env.local
 .artifacts/
 __pycache__/
+.render/
+**/.render/

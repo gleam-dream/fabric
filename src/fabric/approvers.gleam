@@ -49,11 +49,11 @@
 ////
 //// ## With warden
 ////
-//// Verifying a warden access token takes about 30 lines: the token must
-//// be valid for the application's audience, and carry the scope
+//// A warden access token must be valid for the application's audience
+//// and carry the scope
 //// `approve:<requirement name>`. The block is compiled and tested verbatim
 //// by `consumers/approvers_warden`, and `scripts/check.py` checks that it
-//// is the same in this module, the README and that package.
+//// is the same in this module, USAGE.md and that package.
 ////
 //// ```gleam
 //// import fabric/approvers.{type Approvers}

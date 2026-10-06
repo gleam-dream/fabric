@@ -264,7 +264,7 @@ fn decode(
   |> result.map_error(fn(reason) { error(codec.describe_decode_error(reason)) })
 }
 
-/// Wave 1 deliberately runs only synchronous scripted operations. Never use
+/// Runs synchronous scripted operations. Never use
 /// this experimental driver for external effects: it has no admission fence.
 pub fn run(
   graph: Graph(context, state, answer),

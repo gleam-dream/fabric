@@ -1,4 +1,4 @@
-//// D9–D13: database time arbitrates job deadlines and cleanup poll intervals.
+//// Database time determines job deadlines and cleanup poll intervals.
 
 import fabric/budget
 import fabric/graph

@@ -1,7 +1,7 @@
 # Operations runbook
 
-This runbook covers the PostgreSQL runtime and the S7 reports in the
-[operations contract](implementation/production-readiness/operations.md).
+This runbook covers PostgreSQL runtime operations and reports specified by
+the [native design](design/design.typ#recovery-discovery-and-retention).
 The application owns deployment, credentials, access control and alert thresholds.
 Fabric owns saved execution and conditional writes. Reports help diagnose that
 execution; they never authorize recovery or prove an external effect happened.
@@ -200,10 +200,10 @@ These versions are independent. Check all of them before a rolling deployment.
 | Surface                                        | Current version and compatibility                                                                                                                                          |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent execution                                | Writes 7; reads 1–7. `store.with_record_version` can select 2–7 for representable states. Provider data needs 4, graph parents 5, child settlement 6 and family budgets 7. |
-| Graph execution                                | Writes 14; reads 5–14. No agent-style writer downgrade setting. New graph features require compatible readers before new writes.                                           |
+| Graph execution                                | Writes 15; reads 5–15. No agent-style writer downgrade setting. New graph features require compatible readers before new writes.                                           |
 | Family budget record                           | Version 1. A missing required ledger refuses recovery.                                                                                                                     |
 | PostgreSQL schema                              | Version 7. Apply migrations before new backend writers/recovery.                                                                                                           |
-| Discovery / retention / statistics projections | Versions 10 / 11 / 1. Refresh each after upgrading; stale metadata is not valid execution evidence.                                                                        |
+| Discovery / retention / statistics projections | Versions 12 / 11 / 1. Refresh each after upgrading; stale metadata is not valid execution evidence.                                                                        |
 
 For agents, first deploy readers that understand the target format while
 selecting the shared older writer. Enable newer features and writer settings
@@ -244,6 +244,6 @@ Run `nix develop -c python3 scripts/check.py full --logs /tmp/fabric-check` in t
 repository. This exercises all retained packages, real temporary PostgreSQL,
 local services and the typed authoring consumer. The [verification guide](VERIFICATION.md)
 documents dependencies and retained results. It does not load provider credentials.
-The S7 [wave evidence](implementation/production-readiness/wave-tracker.md) records
-readiness, statistics and shutdown scenarios. Hosted CI activation, library
+The native [verification contract](design/design.typ#verification-and-extension-obligations)
+and retained public suites cover readiness, statistics and shutdown scenarios. Hosted CI activation, library
 publication and a deployment drill remain separate; no hosted result is claimed.

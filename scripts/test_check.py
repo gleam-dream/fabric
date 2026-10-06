@@ -73,7 +73,7 @@ class GateTest(unittest.TestCase):
             self.assertEqual(check.recipe_problems(root), [])
             readme.write_text(f"{check.RECIPE_MARKER}\n```gleam\n{recipe.replace('1', '2')}```\n")
             [problem] = check.recipe_problems(root)
-            self.assertIn("README.md differs", problem)
+            self.assertIn("USAGE.md differs", problem)
             self.assertIn("+  2", problem)
             readme.write_text("no marker\n")
             with self.assertRaisesRegex(ValueError, "no gleam block"):
@@ -82,7 +82,7 @@ class GateTest(unittest.TestCase):
     def test_saga_recipe_changes_fail_with_a_diff(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            for relative in ["README.md", check.SAGA_RECIPE["consumer"], check.SAGA_RECIPE["module"]]:
+            for relative in ["USAGE.md", check.SAGA_RECIPE["consumer"], check.SAGA_RECIPE["module"]]:
                 destination = root / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_text((check.ROOT / relative).read_text())
@@ -107,7 +107,7 @@ class GateTest(unittest.TestCase):
                 for count in [limit, limit + 1]:
                     recipe = "// recipe line\n" * count
                     source.write_text(recipe)
-                    (root / "README.md").write_text(f"{marker}\n```gleam\n{recipe}```\n")
+                    (root / "USAGE.md").write_text(f"{marker}\n```gleam\n{recipe}```\n")
                     doc = "".join("//// " + line + "\n" for line in recipe.splitlines())
                     module.write_text(f"{heading}\n//// ```gleam\n{doc}//// ```\n")
                     expected = [] if count == limit else [f"{source_path}: recipe exceeds {limit} lines"]
@@ -117,17 +117,17 @@ class GateTest(unittest.TestCase):
         for config in check.RELAY_RECIPES:
             with self.subTest(recipe=config["consumer"]), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
-                for relative in ["README.md", config["consumer"], config["module"]]:
+                for relative in ["USAGE.md", config["consumer"], config["module"]]:
                     destination = root / relative
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     destination.write_text((check.ROOT / relative).read_text())
                 self.assertEqual(check.recipe_problems(root, **config), [])
                 source = (root / config["consumer"]).read_text()
                 self.assertLessEqual(len(source.splitlines()), 50)
-                readme = root / "README.md"
+                readme = root / "USAGE.md"
                 readme.write_text(readme.read_text().replace(source, source.replace("pub fn", "fn", 1), 1))
                 [problem] = check.recipe_problems(root, **config)
-                self.assertIn("README.md differs", problem)
+                self.assertIn("USAGE.md differs", problem)
                 self.assertIn("-pub fn", problem)
                 self.assertIn("+fn", problem)
 

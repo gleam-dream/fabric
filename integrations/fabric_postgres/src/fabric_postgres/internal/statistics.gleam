@@ -1,4 +1,4 @@
-//// The SQL behind `fabric_postgres.statistics` and
+//// The SQL behind `fabric_postgres.stats` and
 //// `fabric_postgres.refresh_statistics`.
 
 import fabric/store/statistics as projection

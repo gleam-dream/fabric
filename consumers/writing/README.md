@@ -40,6 +40,45 @@ save whose result was lost. Python scenarios validate the corpus, credential
 loading, measured values and failure accounting. The full repository gate
 includes these checks and never loads credentials or makes live requests.
 
+## Retained timings
+
+On 30 September 2026 the [frozen twelve-case corpus](fixtures/cases.json) ran
+once through each reviewer, alternating reviewer order without retries or
+failed-case exclusions. Each case supplies source text, a brief and a draft;
+the reviewer chooses approve, revise or reject using its native provider
+protocol.
+
+| Reviewer                                                     | Samples |     Median | Minimum–maximum |
+| ------------------------------------------------------------ | ------: | ---------: | --------------: |
+| GPT-4.1 nano (`gpt-4.1-nano-2025-04-14`)                     |      12 | 2,698.5 ms |  1,110–4,576 ms |
+| TypeSafe Jev (requested `jev-latest`, resolved `jev-1.13.0`) |      12 |     465 ms |      425–506 ms |
+
+Monotonic timing covers graph start through recorded decision, including
+adapter, network and graph overhead. Each sample used a fresh VM and connection;
+generation, compilation and VM startup were excluded. The LLM receipt records
+the requested model; its separately resolved revision is unavailable. Runtime
+versions and hardware were not recorded. These historical observations do not
+establish current latency, Fabric-only overhead or production throughput.
+
+The [raw capture](../../docs/evidence/writing-20260930.json) retains all 24
+measurements, provider receipts and source-file SHA-256 values. Its corpus
+SHA-256 is `1ad083bdb7a6dd4898de7b4e6577c8e40023aefd4c90dada21977b58be18a207`.
+[ADR 0012](../../docs/adr/0012-keep-review-producers-interchangeable.md) links
+the original comparison at Fabric revision
+`ab678abe3b49b2d8dedc8b63845c35a60e6f918f` and describes the separate review-quality
+result. Typed decisions and label matches are not performance measurements.
+
+To rerun the workload with configured credentials, use a new output directory:
+
+```sh
+nix develop -c python3 consumers/writing/run_live.py \
+  --live --mode compare --output /tmp/fabric-writing-timing
+```
+
+This makes 24 live provider requests using the current adapters. A rerun can
+resolve different provider versions and is a new measurement, not a recreation
+of the historical provider environment.
+
 ## Explicit live run
 
 Put `OPENAI_API_KEY` and `TYPESAFE_API_KEY` in the ignored root `.env.local`, or
@@ -90,5 +129,5 @@ revision is refused. Restore with the same compatible graph and operation
 definitions. The application uses controlled source/output paths and UTF-8
 source files of at most 16 KiB.
 
-See the [application contract](../../docs/implementation/production-readiness/application.md)
-and [live comparison](../../docs/implementation/production-readiness/writing-comparison.md).
+See the [native walkthrough](../../docs/design/design.typ#end-to-end-walkthrough)
+and [scoped comparison rationale](../../docs/adr/0012-keep-review-producers-interchangeable.md).

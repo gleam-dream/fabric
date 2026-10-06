@@ -1,4 +1,4 @@
-//// D14–D18: database discovery expires a child and retains uncertain cleanup.
+//// Database discovery expires a child and retains uncertain cleanup.
 
 import fabric/budget
 import fabric/graph

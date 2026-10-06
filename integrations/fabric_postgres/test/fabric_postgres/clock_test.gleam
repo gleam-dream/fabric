@@ -1,4 +1,4 @@
-//// D1–D3: persisted deadline time uses the actual database's UTC epoch.
+//// Persisted deadline time uses the database's UTC epoch.
 
 import fabric/store
 import fabric/store/backend

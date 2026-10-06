@@ -1,6 +1,6 @@
-//// THROWAWAY (workflow composition experiment). A pure, deterministic model
-//// port: a function from the transcript to a scripted reply. It stands in
-//// for llm_wire, whose custom providers still need an HTTP/SSE transport.
+//// Scripted model port for the workflow composition experiment.
+//// Maps a transcript to a deterministic reply in place of llm_wire's
+//// HTTP/SSE transport.
 
 import gleam/dynamic/decode
 import gleam/json.{type Json}

@@ -1,0 +1,13 @@
+# Native design owns architecture while executable and operational evidence keeps its home
+
+<a id="adr-0009"></a>
+
+The package owns one native Typst context under `docs/design`, one canonical glossary and concise rationale records under `docs/adr`. Agent and graph have distinct models but share execution ownership, effect uncertainty, approval, family and persistence vocabulary. Recursive units expose that distinction without inventing additional bounded contexts. The nested fabric_postgres package owns its separate layer and SQL decisions; its adapter is a parent extension boundary.
+
+The former Oversight corpus and Fabric planning/review/wave documents mixed snapshots, proposals, compatibility sketches, status and rationale. Current source and independently compiled consumers resolve implementation claims; earlier designs retain broader intended capability scope. Source inspection is not fabricated acceptance. Chronology belongs to ADRs and retained evidence rather than standing design prose or pending-entry dates.
+
+Consolidated material includes graph-in-package, separate agent controller, ports/recipes, typed facade and defaults, approver proof, CAS/fence/cleanup/family rules, fixed classification wire, and unresolved old scope. The migration inventory maps each retired input to native units and rationale. Obsolete unpublished wave/round migration guides are retired rather than renamed as published-version guidance.
+
+README remains the usage and executable-recipe entry. OPERATIONS and VERIFICATION remain operational guidance. CHANGELOG retains current Unreleased capability notes; its unpublished construction diary is captured in [ADR 0010](0010-preserve-format-and-lifecycle-history.md). ORACLE retains exact BeamWeaver fork SHA, license, normalized capture protocol, deliberate divergences and evidence limits; oracle fixtures/scripts are never deleted or hand-edited. Research/comparison prose is retired after material capture in [ADR 0011](0011-limit-oracle-evidence-and-reject-upstream-hazards.md) and [ADR 0012](0012-keep-review-producers-interchangeable.md). Executable experiments retain concise run/evidence-limit guidance. Raw captures do not establish current price or accuracy claims.
+
+User authorization: ecosystem cleanup and native package layer migration, 6 October 2026, with one package agent and staging review before installation. No commits, publishing, live provider calls, production code or API changes belong to this migration. Evidence baseline is Fabric `ab678abe3b49b2d8dedc8b63845c35a60e6f918f` and Oversight `3baff7030a96d5b6cf78b2335c16d8c203727da5`.

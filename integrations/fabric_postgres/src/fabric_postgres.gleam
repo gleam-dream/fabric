@@ -1,6 +1,5 @@
-//// A PostgreSQL store for Fabric runs, for several nodes that share one
-//// database: a leased backend (`fabric/store`, Leases) over one table,
-//// `fabric_runs`, and the migrations that create it.
+//// A PostgreSQL leased backend for Fabric runs shared across nodes.
+//// Records live in `fabric_runs`; forward migrations create its schema.
 ////
 //// ```gleam
 //// let settings =
@@ -40,8 +39,8 @@ import gleam/string
 import gleam/time/duration.{type Duration}
 import pog
 
-/// Where and how a store keeps its runs: the connection, this node's id,
-/// the lease duration and the schema.
+/// Adapter configuration: a borrowed connection, node id, lease duration
+/// and schema.
 pub opaque type Settings {
   Settings(
     connection: pog.Connection,
@@ -189,9 +188,8 @@ pub fn migrate(settings: Settings) -> Result(Nil, MigrateError) {
   })
 }
 
-/// The leased backend a `store` of these settings uses, over the table
-/// `fabric_runs` in the settings' schema. For `fabric/testing`'s
-/// conformance checks, or for a store an application wraps.
+/// The leased backend over `fabric_runs` in the configured schema.
+/// Use it for `fabric/testing` conformance checks or application wrappers.
 pub fn backend(settings: Settings) -> LeasedBackend {
   backend.new(settings.connection, table(settings))
 }
@@ -223,15 +221,13 @@ pub type PruneError {
   PruneFailed(reason: String)
 }
 
-/// Deletes finished runs, a whole family at a time: up to `limit` root
-/// runs that ended at least `ended_for` ago, in whole milliseconds (by the
-/// database's clock), each with every graph and agent descendant. All members
-/// must have current, readable retention projections, reciprocal attachments,
-/// no missing children, no unresolved effects and no live lease. Every member
-/// must be old enough; a new settlement restarts its retention interval.
-/// A child run is never deleted alone. Returns how many
-/// runs it deleted, sub-agent runs included. Safe to call from several
-/// nodes at once: each family is deleted by one of them.
+/// Deletes up to `limit` complete settled root families. Every member must
+/// have current readable retention metadata, reciprocal attachments, no missing
+/// children, no unresolved effects and no live lease. Each member
+/// must have no record write within `ended_for`, measured in whole milliseconds
+/// by database time; a new settlement restarts its retention interval.
+/// A child is never deleted alone. The returned row count includes descendants
+/// and budget records. Concurrent callers delete each family at most once.
 pub fn prune(
   settings: Settings,
   ended_for ended_for: Duration,
@@ -305,7 +301,7 @@ fn table(settings: Settings) -> String {
   quoted(settings.schema) <> ".fabric_runs"
 }
 
-/// Refreshes up to `limit` stale idle-dependency projections after migration
+/// Refreshes up to `limit` stale discovery projections after migration
 /// or old-backend writes. Preserves execution bytes/revisions, leases and ages.
 /// Repeat until zero; unknown records are examined once per projection version.
 pub fn refresh_discovery(

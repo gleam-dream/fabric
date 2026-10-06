@@ -1,4 +1,4 @@
-//// J14–J17: explicit cancellation crosses the real remote service boundary.
+//// Explicit cancellation crosses the real remote service boundary.
 
 import fabric/approvers
 import fabric/graph

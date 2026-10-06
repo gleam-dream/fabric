@@ -1,6 +1,6 @@
 //// Database-wide diagnostic snapshots. Run ages measure time since the latest
 //// durable record write, not time in a phase. Intervention groups can overlap.
-//// Read one with `fabric_postgres.statistics`.
+//// Read one with `fabric_postgres.stats`.
 
 import gleam/option.{type Option}
 
