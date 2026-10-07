@@ -224,6 +224,9 @@ pub type UncertainAction {
 pub type Outcome(answer) {
   /// The model's final answer, read with the agent's answer codec
   /// (`agent.with_answer`), or its text for a plain agent.
+  /// Completion does not mean that every action succeeded: denied or failed
+  /// tools can be observations the model answered. Read `fabric.snapshot(handle)`
+  /// and inspect the returned snapshot's `actions` and the application's effect record.
   Completed(answer: answer)
   /// The model's final answer is not one the agent's codec reads: `raw` is
   /// the text it sent last, `reason` the codec's complaint. A run ends this

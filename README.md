@@ -73,11 +73,14 @@ pub fn summarize(
 }
 ```
 
-Success is `run.Finished(run.Completed(answer))`. Other statuses preserve
-refusal, exhaustion or unfinished work. The example discards stored runs when
-the store stops; a service that needs later recovery should supervise a durable
-store and retain each run id. See the complete
-[payment agent](USAGE.md#payment-agent) for typed tools, approval and recovery.
+The summarizer finishes with `run.Finished(run.Completed(answer))`. This
+records the model's final answer. An agent with tools can also complete after
+a denied or failed action; inspect [action outcomes](USAGE.md#read-action-outcomes)
+before treating its answer as business success. Other statuses preserve refusal,
+exhaustion or unfinished work. The example discards stored runs when the store
+stops; a service that needs later recovery should supervise a durable store and
+retain each run id. See the complete [payment agent](USAGE.md#payment-agent)
+for typed tools, approval and recovery.
 
 ## Ownership and defaults
 

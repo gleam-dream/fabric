@@ -80,6 +80,10 @@ pub fn the_policy_denies_guests_with_a_visible_reason_test() {
   |> should.equal(
     "done: {\"isbn\":\"978-0441013593\",\"title\":\"Dune\"} | {\"error\":\"denied\",\"detail\":\"guests cannot reserve\"}",
   )
+  // A completed answer is not a successful reservation.
+  let assert Ok(snapshot) = fabric.snapshot(run)
+  let assert Ok(reservation) = list.last(snapshot.actions)
+  reservation.state |> should.equal(run.Denied("guests cannot reserve"))
 }
 
 pub fn an_unavailable_member_directory_is_a_host_failure_test() {
