@@ -463,6 +463,41 @@ delegation's output, and a graph agent's is its operation's output. A run
 stores the text the model sent, so a run stored before its agent had a
 codec reads through it when the text decodes.
 
+### Read action outcomes
+
+- `run.Completed(answer)` says the model produced an accepted final answer.
+  A denied reservation can end with the answer “reservation refused”. Both a
+  successful reservation and that refusal can therefore have a completed run.
+- Read `fabric.snapshot(handle)` and inspect the relevant `ActionRecord` by
+  its action id and recorded call. Its `state` distinguishes `Succeeded`,
+  `Denied`, `ToolFailed` and `Uncertain`. Keep failures from the snapshot read
+  distinct from action failures.
+- Choose which actions matter to the application. Requiring every exploratory
+  tool to succeed is different from requiring one payment to succeed. For an
+  external effect, also consult the application's authoritative effect record;
+  a schema-valid model answer is not that record.
+- The [separate library consumer](consumers/app/test/app_test.gleam) demonstrates
+  this distinction in `the_policy_denies_guests_with_a_visible_reason_test`:
+  the run completes, while the reservation action remains `Denied`.
+
+### Bind delayed approval to business identity
+
+- Action input is stored; context stays live. Put the identity of the proposed
+  work in the typed tool input when a later approval must preserve it. For
+  example, retain `Release(document, revision, requester)` rather than taking
+  a new requester or document revision from context when approval arrives.
+- Reload current permissions and document state before `fabric.approve` or
+  `fabric.open`. In policy, compare the retained input with that fresh context.
+  Fabric checks the policy you supply; it cannot identify which application
+  fields must remain unchanged or detect stale facts supplied by the caller.
+- Keep the requester separate from the reviewer returned by the approver.
+  The proof authenticates the answer to the approval requirement. It does not
+  replace the action's business identity or refresh application permissions.
+- Recheck the required business conditions at the effect boundary. A database
+  write can check the expected revision and current permission in its statement.
+  Stronger ordering against concurrent changes requires the application's
+  transaction or external-service contract.
+
 ### Failures
 
 Every function of `fabric` returns one `fabric.Error`. Branch on
