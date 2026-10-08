@@ -26,6 +26,10 @@
 //// }
 //// ```
 ////
+//// An unavailable admission returns `OutcomeUnknown` with the attempted run id.
+//// Retry with the same principal and key, or recover that run explicitly;
+//// do not interpret an unconfirmed start as refusal to create a run.
+////
 //// A cancellation failure is reported explicitly; it never claims the
 //// run stopped. Read or recover such a run by id. An unknown effect needs
 //// reconciliation, not a retry of the effect. Cancelled and expired runs
@@ -326,13 +330,13 @@ pub fn agent(
           use handle <- result.try(
             fabric.open(runs, agent, request.context, id)
             |> result.map_error(fn(e) {
-              unavailable(id, fabric.describe_error(e))
+              agent_admission_error(id, e, "unavailable")
             }),
           )
           use snapshot <- result.try(
             fabric.snapshot(handle)
             |> result.map_error(fn(e) {
-              unavailable(id, fabric.describe_error(e))
+              agent_admission_error(id, e, "unavailable")
             }),
           )
           case snapshot.transcript {
@@ -342,15 +346,7 @@ pub fn agent(
           }
         }
         Error(error), _ ->
-          Error(
-            response(
-              id,
-              Refused,
-              "start_failed",
-              fabric.describe_error(error),
-              [],
-            ),
-          )
+          Error(agent_admission_error(id, error, "start_failed"))
       }
       case opened {
         Error(response) -> response
@@ -396,13 +392,13 @@ pub fn graph(
           use handle <- result.try(
             graph.open(runtime, id)
             |> result.map_error(fn(e) {
-              unavailable(id, graph.describe_error(e))
+              graph_admission_error(id, e, "unavailable")
             }),
           )
           use same <- result.try(
             graph.matches_initial(handle, request.input)
             |> result.map_error(fn(e) {
-              unavailable(id, graph.describe_error(e))
+              graph_admission_error(id, e, "unavailable")
             }),
           )
           case same {
@@ -411,15 +407,7 @@ pub fn graph(
           }
         }
         Error(error), _ ->
-          Error(
-            response(
-              id,
-              Refused,
-              "start_failed",
-              graph.describe_error(error),
-              [],
-            ),
-          )
+          Error(graph_admission_error(id, error, "start_failed"))
       }
       case opened {
         Error(response) -> response
@@ -740,6 +728,33 @@ fn reused(id: RunId) -> Response(a) {
     "the idempotency key names a run started with another request",
     [],
   )
+}
+
+// Admission can have stored a run before its acknowledgement or keyed
+// readback fails. Preserve that uncertainty without changing error codes or
+// the classification of later operational reads and waits.
+fn agent_admission_error(
+  id: RunId,
+  error: fabric.Error,
+  code: String,
+) -> Response(a) {
+  let kind = case error {
+    fabric.StartUnconfirmed(..) | fabric.StoreUnavailable(_) -> OutcomeUnknown
+    _ -> Refused
+  }
+  response(id, kind, code, fabric.describe_error(error), [])
+}
+
+fn graph_admission_error(
+  id: RunId,
+  error: graph.Error,
+  code: String,
+) -> Response(a) {
+  let kind = case error {
+    graph.StoreUnavailable(_) -> OutcomeUnknown
+    _ -> Refused
+  }
+  response(id, kind, code, graph.describe_error(error), [])
 }
 
 fn unavailable(id: RunId, message: String) -> Response(a) {
