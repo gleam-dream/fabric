@@ -927,6 +927,7 @@ pub fn cancelling_a_record_a_lost_runner_left_stopping_ends_it_test() {
       ),
       turns_used: 1,
       usage: run.TokenUsage(0, 0, 0),
+      initial_message_count: 1,
       transcript: [
         model.UserMessage("go"),
         model.AssistantMessage(model.AssistantTurn("", [call], None)),

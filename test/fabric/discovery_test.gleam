@@ -155,10 +155,10 @@ pub fn unknown_corrupt_and_misfiled_records_have_no_usable_discovery_index_test(
     ["invalid", string.replace(encoded, "\"version\":15", "\"version\":1199")],
     fn(encoded) {
       discovery.inspect(encoded) |> should.be_error
-      discovery.encode("root", encoded) |> should.equal("{\"version\":12}")
+      discovery.encode("root", encoded) |> should.equal("{\"version\":13}")
     },
   )
-  discovery.encode("wrong", encoded) |> should.equal("{\"version\":12}")
+  discovery.encode("wrong", encoded) |> should.equal("{\"version\":13}")
 }
 
 pub fn completed_and_settled_child_attachments_stop_dependency_discovery_test() {

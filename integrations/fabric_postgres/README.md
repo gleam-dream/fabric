@@ -84,7 +84,8 @@ A live parent and an expired child retain independent leases.
 
 ## Record versions
 
-Agent readers accept versions 1–7; writers support 2–7 and default to 7. Graph
+Agent readers accept versions 1–8; writers support 2–8 and default to 8. Imported
+initial history requires version 8; older writers refuse it before admission. Graph
 readers accept 5–15 and write 15. Deploy compatible readers before enabling a
 newer writer or capability.
 

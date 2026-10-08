@@ -59,7 +59,11 @@ pub fn with_write_version(store: Store, writer: record.WriteVersion) -> Store {
 }
 
 pub fn supports_family_budget(store: Store) -> Bool {
-  store.write_version == record.V7
+  store.write_version == record.V7 || store.write_version == record.V8
+}
+
+pub fn supports_history(store: Store) -> Bool {
+  store.write_version == record.V8
 }
 
 /// Encode once per logical write, before effects, and reuse the bytes on
@@ -147,7 +151,7 @@ pub fn new(
     None,
     default_drain,
     None,
-    record.V7,
+    record.V8,
   )
 }
 
@@ -158,7 +162,7 @@ pub fn in_memory(name: Name(Message)) -> Store {
     None,
     default_drain,
     None,
-    record.V7,
+    record.V8,
   )
 }
 
@@ -180,7 +184,7 @@ pub fn directory(name: Name(Message), path: String) -> Store {
     None,
     default_drain,
     None,
-    record.V7,
+    record.V8,
   )
 }
 
@@ -196,7 +200,7 @@ pub fn leased(
     None,
     default_drain,
     Some(Leasing(node, ttl)),
-    record.V7,
+    record.V8,
   )
 }
 

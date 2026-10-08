@@ -29,6 +29,7 @@
 //// state, giving the run up, and exits. A runner the factory kills at the
 //// end of its drain window leaves its record as a lost runner does.
 
+import fabric/input
 import fabric/internal/ancestry
 import fabric/internal/answerer.{type Answerer}
 import fabric/internal/bounded
@@ -391,12 +392,21 @@ pub fn root_state(
   prompt: String,
   correlation: Correlation,
 ) -> #(State, List(Effect)) {
-  controller.start_correlated(
+  root_state_with_input(setup, id, input.prompt(prompt), correlation)
+}
+
+pub fn root_state_with_input(
+  setup: Setup(context),
+  id: String,
+  input: input.Input,
+  correlation: Correlation,
+) -> #(State, List(Effect)) {
+  controller.start_with_input(
     setup.env,
     id,
     setup.identity,
     setup.limits,
-    prompt,
+    input,
     None,
     0,
     correlation,

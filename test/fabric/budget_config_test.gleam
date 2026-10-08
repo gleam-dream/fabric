@@ -32,6 +32,7 @@ fn agent_root() {
     1,
     run.TokenUsage(0, 0, 0),
     [model.UserMessage("go")],
+    1,
     [],
     0,
     agent.Ended(run.Cancelled),

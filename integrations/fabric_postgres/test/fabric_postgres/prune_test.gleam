@@ -22,6 +22,15 @@ fn record(id: String, phase: String, parent, children: List(String)) -> String {
   let action_id = fn(id) {
     json.object([#("turn", json.int(1)), #("call_id", json.string(id))])
   }
+  let transcript = case phase {
+    "never_started" -> []
+    _ -> [
+      json.object([
+        #("tag", json.string("user")),
+        #("text", json.string("work")),
+      ]),
+    ]
+  }
   let encoded =
     json.object([
       #("format", json.string("fabric.run")),
@@ -62,7 +71,7 @@ fn record(id: String, phase: String, parent, children: List(String)) -> String {
           #("unreported_replies", json.int(0)),
         ]),
       ),
-      #("transcript", json.array([], fn(value) { value })),
+      #("transcript", json.array(transcript, fn(value) { value })),
       #(
         "history",
         json.array(children, fn(child) {

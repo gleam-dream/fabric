@@ -98,14 +98,15 @@ pub type UnwritableVersion {
 }
 
 /// Chooses the record format for writes through this Store value. The
-/// default is 7; versions 2 through 7 can be written, and 1 through 7 read.
+/// default is 8; versions 2 through 8 can be written, and 1 through 8 read.
 /// Configure before starting the store and use the returned value for
 /// every handle and sweeper. Existing values and runners are unchanged.
 ///
 /// During a rolling upgrade, select a version every node can read. Versions
 /// 2 and 3 refuse assistant provider data, which requires version 4.
 /// Graph parent links require version 5; terminal child settlement requires
-/// version 6; family budgets require version 7. Upgrade all readers before selecting a newer writer.
+/// version 6; family budgets require version 7; imported history requires
+/// version 8. Upgrade all readers before selecting a newer writer.
 /// Records are changed only by ordinary writes, never by this setting.
 pub fn with_record_version(
   store: Store,

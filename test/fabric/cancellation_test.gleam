@@ -423,6 +423,7 @@ fn store_stopping_root(store: store.Store, id: String) -> Nil {
       limits: limits(4, 2),
       turns_used: 1,
       usage: run.TokenUsage(0, 0, 0),
+      initial_message_count: 1,
       transcript: [
         model.UserMessage("go"),
         model.AssistantMessage(model.AssistantTurn("", [call], None)),
@@ -474,6 +475,7 @@ fn store_orphaned_child(
       limits: limits(1, 2),
       turns_used: 1,
       usage: run.TokenUsage(0, 0, 0),
+      initial_message_count: 1,
       transcript:,
       history: [],
       approvals_issued: 0,

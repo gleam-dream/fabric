@@ -15,7 +15,7 @@ import gleam/result
 
 /// Advance when supported formats or classification rules change. A backend
 /// must also match the projection's source revision to the stored revision.
-pub const version = 1
+pub const version = 2
 
 pub type Execution {
   /// Work needs a runner; the backend's live lease distinguishes working from

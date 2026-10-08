@@ -321,3 +321,77 @@ pub fn new_records_are_the_earlier_bytes_without_issues_test() {
   data |> should.equal(string.replace(google_data, ",\"issues\":[]", ""))
   fake_provider.stop(fake)
 }
+
+import fabric/input
+import fabric/invoke
+import fabric/support/restart
+import gleam/erlang/process
+
+/// Deterministic Google protocol fixture, not a live-provider claim. The
+/// retained signed exchange enters through invoke, survives lost-runner
+/// recovery, and is encoded by the real llm_wire Google adapter unchanged.
+pub fn imported_signed_google_history_replays_after_invocation_recovery_test() {
+  let assert [google] =
+    fixtures() |> list.filter(fn(f) { f.provider == message.Google })
+  let imported = [
+    model.UserMessage("original"),
+    model.AssistantMessage(model.AssistantTurn(
+      google.text,
+      google.calls,
+      Some(model.ProviderData("llm_wire.turn.v1", google.data)),
+    )),
+    model.ToolResultMessage("same-id", "14"),
+    model.AssistantMessage(model.AssistantTurn("earlier answer", [], None)),
+  ]
+  let original = input.new(imported, "follow up") |> should.be_ok
+  let entered = process.new_subject()
+  let blocked =
+    model.new(fn(request) {
+      process.send(entered, request.messages)
+      let wait: process.Subject(Nil) = process.new_subject()
+      process.receive_forever(wait)
+      Ok(model.FinalAnswer("unreachable", None))
+    })
+  let definition = fn(model) {
+    agent.new("imported-google", model, [], policy.always_allow())
+    |> support.agent
+  }
+  let runs = support.store()
+  let service =
+    invoke.agent_with_history("imported-google", runs, definition(blocked))
+    |> invoke.with_wait(duration.milliseconds(10))
+  let request = invoke.request(Nil, original) |> invoke.with_key(Some("turn"))
+  let response = invoke.call(service, request)
+  invoke.response_kind(response) |> should.equal(invoke.Working)
+  process.receive(entered, 1000) |> should.equal(Ok(input.messages(original)))
+  let id = invoke.id(response)
+  restart.runner(runs, id) |> should.be_ok |> restart.kill
+  let fake =
+    fake_provider.start([
+      testing.events_for(message.Google, testing.text("continued")),
+    ])
+  let agent =
+    definition(llm.model(
+      fake.client,
+      fake_provider.google(fake, "new-fixture-key"),
+      "m",
+    ))
+  let handle = fabric.recover(runs, agent, Nil, id) |> should.be_ok
+  fabric.await(handle, duration.seconds(5))
+  |> should.equal(Ok(run.Finished(run.Completed("continued"))))
+  fabric.matches_initial(handle, original) |> should.equal(Ok(True))
+  fabric.generated_messages(handle)
+  |> should.equal(
+    Ok([model.AssistantMessage(model.AssistantTurn("continued", [], None))]),
+  )
+  let reopened =
+    invoke.call(
+      invoke.agent_with_history("imported-google", runs, agent),
+      request,
+    )
+  invoke.answer(reopened) |> should.equal(Some("continued"))
+  let assert [body] = fake_provider.bodies(fake)
+  let expected = json.parse(google.replayed, decode.dynamic) |> should.be_ok
+  replayed_turn(message.Google, body) |> should.equal(expected)
+  fake_provider.stop(fake)
+}

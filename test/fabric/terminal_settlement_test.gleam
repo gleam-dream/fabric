@@ -35,6 +35,7 @@ fn state(id, parent, actions) {
     1,
     run.TokenUsage(10, 2, 0),
     [model.UserMessage("do it")],
+    1,
     actions,
     0,
     controller.Ended(run.Cancelled),
@@ -255,6 +256,7 @@ pub fn a_saved_never_started_child_proves_no_effect_while_terminal_failures_stay
       ),
       phase: controller.NeverStarted,
       transcript: [],
+      initial_message_count: 0,
     )
   list.each([root, child], insert(runs, _))
   let assert Ok(snapshot) = fabric.settle_stored(runs, support.id("root"))

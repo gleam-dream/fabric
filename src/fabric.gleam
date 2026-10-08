@@ -82,6 +82,7 @@
 
 import fabric/agent.{type Agent}
 import fabric/approvers.{type Proof, type ProofError}
+import fabric/input
 import fabric/internal/answer as answers
 import fabric/internal/answerer
 import fabric/internal/budget/model as reservations
@@ -93,6 +94,7 @@ import fabric/internal/run_id
 import fabric/internal/runner
 import fabric/internal/settlement
 import fabric/internal/store as store_core
+import fabric/model
 import fabric/reviewer
 import fabric/run.{
   type ActionRef, type Answer, type ApprovalRef, type Incompatibility,
@@ -125,10 +127,10 @@ pub type Error {
   /// start retried with the same id (by a job delivered again, say) gets
   /// this once the first start landed; `open` the run to read or command
   /// it, or `recover` it to take over its work. `same_input` says whether
-  /// the stored run was started by the same agent with the same prompt and
-  /// correlation, so that a retry can tell its own run from another start's
-  /// that reused the id. A run's context is never stored, so it is not
-  /// compared. When the id is taken but the stored run cannot be read, the
+  /// the stored run was started by the same agent with the same original
+  /// input, so that a retry can tell its own run from another start that
+  /// reused the id. Live context and retry correlation are not compared.
+  /// When the id is taken but the stored run cannot be read, the
   /// start returns the read's error instead: `StoreUnavailable` (start again
   /// to compare), or `UnsupportedVersion` or `CorruptRecord` (the id holds a
   /// record this Fabric cannot read).
@@ -143,6 +145,8 @@ pub type Error {
   /// the store writes agent records older than version 7, which cannot hold
   /// one. Nothing was stored.
   FamilyBudgetUnsupported
+  /// Imported history requires record writer version 8. Nothing was stored.
+  HistoryUnsupported
   RunNotFound
   /// The store failed. A write it reported unavailable has an unknown
   /// outcome: the backend may still perform it later.
@@ -221,7 +225,7 @@ pub type ErrorKind {
   Unavailable
   /// The record and this Fabric, agent or store do not fit:
   /// `UnsupportedVersion`, `CorruptRecord`, `IncompatibleAgent`,
-  /// `FamilyBudgetUnsupported`.
+  /// `FamilyBudgetUnsupported`, `HistoryUnsupported`.
   Incompatible
 }
 
@@ -242,7 +246,8 @@ pub fn error_kind(error: Error) -> ErrorKind {
     UnsupportedVersion(_)
     | CorruptRecord(_)
     | IncompatibleAgent(_)
-    | FamilyBudgetUnsupported -> Incompatible
+    | FamilyBudgetUnsupported
+    | HistoryUnsupported -> Incompatible
   }
 }
 
@@ -264,6 +269,8 @@ pub fn describe_error(error: Error) -> String {
       <> reason
     FamilyBudgetUnsupported ->
       "a family budget needs a store that writes agent records of version 7 or later"
+    HistoryUnsupported ->
+      "imported history needs a store that writes agent records of version 8 or later"
     RunNotFound -> "the run does not exist"
     StoreUnavailable(reason) -> "the store is unavailable: " <> reason
     UnsupportedVersion(found) ->
@@ -317,6 +324,36 @@ pub fn start(
   prompt prompt: String,
   correlation correlation: Option(Correlation),
 ) -> Result(Run(context, answer), Error) {
+  start_with_input(
+    store,
+    agent,
+    id:,
+    context:,
+    input: input.prompt(prompt),
+    correlation:,
+  )
+}
+
+/// Starts one run from validated history and a current prompt. Historical
+/// calls are context only. The writer must retain the original boundary;
+/// unsupported history is refused before any write or execution.
+pub fn start_with_input(
+  store: Store,
+  agent: Agent(context, answer),
+  id id: RunId,
+  context context: context,
+  input input: input.Input,
+  correlation correlation: Option(Correlation),
+) -> Result(Run(context, answer), Error) {
+  use Nil <- result.try(
+    case
+      list.length(input.messages(input)) > 1
+      && !store_core.supports_history(store)
+    {
+      True -> Error(HistoryUnsupported)
+      False -> Ok(Nil)
+    },
+  )
   let admitted = checked_agent.admitted(agent)
   use declaration <- result.try(case admitted.family_budget {
     None -> Ok(None)
@@ -330,7 +367,8 @@ pub fn start(
   let text = id_to_string(id)
   let correlation =
     option.lazy_unwrap(correlation, fn() { correlation.from_key(text) })
-  let #(state, effects) = runner.root_state(setup, text, prompt, correlation)
+  let #(state, effects) =
+    runner.root_state_with_input(setup, text, input, correlation)
   let state = controller.State(..state, family_budget: declaration)
   case runner.launch_new(setup, state, effects) {
     Ok(_) -> Ok(Run(id: text, setup:, answer: checked_agent.answer(agent)))
@@ -343,14 +381,42 @@ pub fn start(
 }
 
 /// Whether the stored run `fresh.run` is a root started by the same agent
-/// with the same prompt and correlation as `fresh`, the state a start
+/// with the same original input as `fresh`, the state a start
 /// wanted to store; the read's error when the stored run cannot be read.
 fn same_input(store: Store, fresh: State) -> Result(Bool, runner.ReadError) {
   use #(_, stored) <- result.map(runner.load(store, fresh.run))
   stored.parent == None
   && stored.agent == fresh.agent
-  && stored.correlation == fresh.correlation
-  && list.first(stored.transcript) == list.first(fresh.transcript)
+  && original_messages(stored) == original_messages(fresh)
+}
+
+/// Whether this run's complete original input equals `input`. Generated
+/// messages, live context and retry correlation do not participate.
+pub fn matches_initial(
+  handle: Run(context, answer),
+  input: input.Input,
+) -> Result(Bool, Error) {
+  use #(_, state) <- result.map(
+    runner.load_checked(handle.setup, handle.id)
+    |> result.map_error(record_error),
+  )
+  original_messages(state) == input.messages(input)
+}
+
+/// Messages appended by this run, in exact stored order, including tool
+/// calls, results, answer corrections and opaque provider replay data.
+pub fn generated_messages(
+  handle: Run(context, answer),
+) -> Result(List(model.Message), Error) {
+  use #(_, state) <- result.map(
+    runner.load_checked(handle.setup, handle.id)
+    |> result.map_error(record_error),
+  )
+  list.drop(state.transcript, state.initial_message_count)
+}
+
+fn original_messages(state: State) -> List(model.Message) {
+  list.take(state.transcript, state.initial_message_count)
 }
 
 /// Opens the stored run `id` under `agent` and `context`. When work was in

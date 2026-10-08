@@ -637,11 +637,12 @@ history and effects; llm_wire validates and interprets the provider data.
 Application models return `model.ToolRequest(turn, usage)` and use
 `model.AssistantTurn(text, calls, None)` when they have no provider data.
 
-Rolling upgrades: the default agent-record writer is version 7; readers accept
-versions 1–7. Writers 2–6 remain available for representable states.
+Rolling upgrades: the default agent-record writer is version 8; readers accept
+versions 1–8. Writers 2–7 remain available for representable states.
 Assistant provider data requires at least version 4; graph parent attachments
 require version 5; settled child evidence requires version 6; retained root
-family-budget declarations and quota outcomes require version 7. Older writers
+family-budget declarations and quota outcomes require version 7; imported
+initial history requires version 8. Older writers
 refuse unrepresentable records before dispatching work. Configure the store before
 starting it and use the returned value for every handle and sweeper.
 Existing values and runners keep their setting; this does not migrate rows.
@@ -836,6 +837,66 @@ bounded revision and durable approval; the
 [graph](consumers/graph/README.md), [decision](consumers/decision/README.md)
 and [external-job](consumers/jobs/README.md) consumers exercise the graph
 runtime from public imports.
+
+## Invoking with retained history
+
+- Applications own conversation storage and turn acceptance. Fabric owns one
+  bounded execution for each invocation. A document editor and a text classifier
+  use the same public boundary in
+  [the external consumer](consumers/app/src/history_turns.gleam).
+- `input.new(history, prompt)` validates a complete history and appends the
+  current user prompt once. Preserve the returned `model.Message` values when
+  retaining messages; reducing them to role/text pairs loses tool relationships
+  and opaque provider replay data.
+- `invoke.agent_with_history` accepts the validated input through the existing
+  keyed service. The one-prompt `invoke.agent` and `fabric.start` remain useful;
+  `fabric.start_with_input` provides the corresponding direct start boundary.
+
+```gleam
+import fabric
+import fabric/input
+import fabric/invoke
+import gleam/option.{Some}
+
+let assert Ok(initial) = input.new(retained_messages, "Shorten the draft")
+let service = invoke.agent_with_history("document-revision", runs, editor)
+let request =
+  invoke.request(current_context, initial)
+  |> invoke.with_principal(authenticated_subject)
+  |> invoke.with_key(Some(accepted_turn_id))
+let response = invoke.call(service, request)
+let assert Some(answer) = invoke.answer(response)
+let assert Ok(handle) =
+  fabric.open(runs, editor, current_context, invoke.id(response))
+let assert Ok(new_messages) = fabric.generated_messages(handle)
+```
+
+- A retry must retain the complete original history and prompt. A changed
+  message, tool call/result or replay field returns `key_reused`; later generated
+  messages are excluded from `fabric.matches_initial(handle, initial)`.
+- Correlation and live context can change without changing input identity.
+  Service, principal and key remain execution identity components.
+  `with_principal` assigns an identity; the application must authenticate it.
+- `fabric.generated_messages` returns only new messages in transcript order.
+  It includes current tool calls/results and corrective answer turns, with
+  their replay metadata. It is a snapshot, so incorporate a completed outcome
+  once instead of appending each repeated snapshot.
+- The accessor preserves every stored `model.Message` field. The current
+  `model.FinalAnswer` and `llm_wire.Answer` ports carry text and usage only;
+  final-answer provider replay metadata is unavailable through those ports.
+- Historical tool results never execute their calls again. Current calls use
+  current tool bindings and policy. Historical assistant answers do not spend
+  the current run's answer-repair allowance, including after restart.
+- The constructor validates transcript structure. The provider adapter validates
+  provider-specific replay requirements; generic input validation cannot
+  establish that an opaque provider signature is valid.
+- Continue using `invoke.answer` or the existing typed run outcome to obtain
+  the native answer. Absence of an answer requires inspecting `response_kind`,
+  `code` and retained run evidence; it does not imply success or safe retry.
+- Fabric persists the original input with its execution record. An admission
+  job retains the application's history and prompt before start, then rebuilds
+  the validated `Input` on delivery. `input.messages` exposes the exact combined
+  messages; it contains no live context or credentials.
 
 ## Composing with Relay
 

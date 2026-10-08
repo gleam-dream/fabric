@@ -271,6 +271,7 @@ fn cancel(
           turns_used: 0,
           usage: run.TokenUsage(0, 0, 0),
           transcript: [],
+          initial_message_count: 0,
           history: [],
           approvals_issued: 0,
           phase: controller.NeverStarted,

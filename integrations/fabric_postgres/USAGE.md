@@ -23,7 +23,7 @@ operation deadline.
 ## Upgrades and metadata refresh
 
 Current schema is 7. Retention, discovery and statistics projections are versions
-11, 12 and 1. Normal writes maintain these derived views with their source
+12, 13 and 2. Normal writes maintain these derived views with their source
 revision. Older backend writes make them stale; unknown records stay retained
 and unscheduled.
 

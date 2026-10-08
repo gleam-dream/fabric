@@ -43,6 +43,7 @@
 //// the child run drives itself.
 
 import fabric/budget as quota
+import fabric/input
 import fabric/internal/budget/model as budget
 import fabric/internal/clock
 import fabric/internal/invocation
@@ -147,6 +148,8 @@ pub type State {
     turns_used: Int,
     usage: TokenUsage,
     transcript: List(Message),
+    /// Number of original messages, including the current prompt.
+    initial_message_count: Int,
     /// Actions of earlier batches, oldest first.
     history: List(ActionRecord),
     approvals_issued: Int,
@@ -301,6 +304,31 @@ pub fn start_correlated(
   correlation: Correlation,
   root: String,
 ) -> #(State, List(Effect)) {
+  start_with_input(
+    env,
+    run,
+    agent,
+    limits,
+    input.prompt(prompt),
+    parent,
+    depth,
+    correlation,
+    root,
+  )
+}
+
+pub fn start_with_input(
+  env: Env(context),
+  run: String,
+  agent: DefinitionId,
+  limits: Limits,
+  input: input.Input,
+  parent: Option(run.Parent),
+  depth: Int,
+  correlation: Correlation,
+  root: String,
+) -> #(State, List(Effect)) {
+  let messages = input.messages(input)
   let state =
     State(
       run:,
@@ -311,7 +339,8 @@ pub fn start_correlated(
       limits:,
       turns_used: 0,
       usage: run.TokenUsage(0, 0, 0),
-      transcript: [model.UserMessage(prompt)],
+      transcript: messages,
+      initial_message_count: list.length(messages),
       history: [],
       approvals_issued: 0,
       phase: AwaitingModel(0),
@@ -1204,7 +1233,11 @@ fn model_replied(
   let state = State(..state, usage: add_usage(state.usage, reply_usage(reply)))
   case reply {
     model.FinalAnswer(text, usage) -> {
-      let rejected = rejected_answers(state.transcript)
+      let rejected =
+        rejected_answers(list.drop(
+          state.transcript,
+          state.initial_message_count,
+        ))
       let state =
         State(
           ..state,
@@ -1945,6 +1978,7 @@ pub fn never_started(
     turns_used: 0,
     usage: run.TokenUsage(0, 0, 0),
     transcript: [],
+    initial_message_count: 0,
     history: [],
     approvals_issued: 0,
     phase: NeverStarted,

@@ -43,6 +43,11 @@
 //// model-visible result.
 //// Version 7 retains optional family budget limits on roots. Earlier writers
 //// refuse configured limits; children inherit from their saved root.
+//// Version 8 retains the original-input boundary as `initial_message_count`.
+//// Earlier versions infer one original message from a nonempty transcript,
+//// or zero from an empty terminal record. Earlier writers refuse imported
+//// history. The boundary and its complete prefix are validated on reads and
+//// checked writes; generated messages never become original input on recovery.
 ////
 //// A run whose correlation the caller chose (`fabric.start`) or inherited
 //// from its parent stores it as `"correlation"`, in any version; a reader
@@ -82,6 +87,7 @@
 //// confirmed, which refuses late settlements until recovery completes the
 //// stop.
 
+import fabric/input
 import fabric/internal/budget/config as budget_config
 import fabric/internal/clock
 import fabric/internal/controller.{type Phase, type State, State}
@@ -107,7 +113,7 @@ import sinal/correlation.{type Correlation}
 
 pub const format = "fabric.run"
 
-pub const version = 7
+pub const version = 8
 
 /// The writer window is narrower than the reader's accepted versions.
 pub type WriteVersion {
@@ -117,6 +123,7 @@ pub type WriteVersion {
   V5
   V6
   V7
+  V8
 }
 
 pub fn writer(version: Int) -> Result(WriteVersion, Nil) {
@@ -127,6 +134,7 @@ pub fn writer(version: Int) -> Result(WriteVersion, Nil) {
     5 -> Ok(V5)
     6 -> Ok(V6)
     7 -> Ok(V7)
+    8 -> Ok(V8)
     _ -> Error(Nil)
   }
 }
@@ -141,6 +149,18 @@ pub fn encode_as(
   state: State,
   target: WriteVersion,
 ) -> Result(String, EncodeError) {
+  use Nil <- result.try(
+    validate_initial(state)
+    |> result.map_error(Unrepresentable(writer_number(target), _)),
+  )
+  use Nil <- result.try(case target != V8 && state.initial_message_count > 1 {
+    True ->
+      Error(Unrepresentable(
+        writer_number(target),
+        "imported history requires version 8",
+      ))
+    False -> Ok(Nil)
+  })
   use Nil <- result.try(case state.parent {
     Some(run.GraphBranch(..)) ->
       Error(Unrepresentable(
@@ -154,23 +174,25 @@ pub fn encode_as(
     |> result.map_error(Unrepresentable(writer_number(target), _)),
   )
   use Nil <- result.try(case target, state.family_budget {
-    V7, _ | _, None -> Ok(Nil)
+    V8, _ | V7, _ | _, None -> Ok(Nil)
     _, Some(_) ->
       Error(Unrepresentable(
         writer_number(target),
         "family budgets require version 7",
       ))
   })
-  use Nil <- result.try(case target == V7 || !has_family_refusal(state) {
-    True -> Ok(Nil)
-    False ->
-      Error(Unrepresentable(
-        writer_number(target),
-        "family budget refusals require version 7",
-      ))
-  })
+  use Nil <- result.try(
+    case target == V8 || target == V7 || !has_family_refusal(state) {
+      True -> Ok(Nil)
+      False ->
+        Error(Unrepresentable(
+          writer_number(target),
+          "family budget refusals require version 7",
+        ))
+    },
+  )
   use Nil <- result.try(case target, state.parent {
-    V5, _ | V6, _ | V7, _ -> Ok(Nil)
+    V5, _ | V6, _ | V7, _ | V8, _ -> Ok(Nil)
     _, Some(run.GraphParent(..)) ->
       Error(Unrepresentable(
         writer_number(target),
@@ -179,7 +201,7 @@ pub fn encode_as(
     _, _ -> Ok(Nil)
   })
   use Nil <- result.try(case target {
-    V6 | V7 -> Ok(Nil)
+    V6 | V7 | V8 -> Ok(Nil)
     _ -> {
       let settled =
         list.any(state_actions(state), fn(action) {
@@ -213,7 +235,8 @@ pub fn encode_as(
     _, _ -> Ok(Nil)
   })
   case target, state.phase, state.transcript {
-    V7, _, _ -> Ok(encode(state))
+    V8, _, _ -> Ok(encode(state))
+    V7, _, _ -> Ok(encode_version(state, 7, state.phase))
     V6, _, _ -> Ok(encode_version(state, 6, state.phase))
     V5, _, _ -> Ok(encode_version(state, 5, state.phase))
     V4, _, _ -> Ok(encode_version(state, 4, state.phase))
@@ -239,6 +262,7 @@ fn writer_number(target: WriteVersion) -> Int {
     V5 -> 5
     V6 -> 6
     V7 -> 7
+    V8 -> 8
   }
 }
 
@@ -319,6 +343,13 @@ fn encode_version(state: State, version: Int, phase: Phase) -> String {
     #("approvals_issued", json.int(state.approvals_issued)),
     #("phase", phase_json(phase)),
   ]
+  let fields = case version >= 8 {
+    True ->
+      list.append(fields, [
+        #("initial_message_count", json.int(state.initial_message_count)),
+      ])
+    False -> fields
+  }
   let fields = case version >= 7 {
     True ->
       list.append(fields, [
@@ -702,6 +733,7 @@ fn never_started_before_3(state: State, found: Int) -> State {
 /// Descendants started by this agent still follow the agent naming rule.
 /// Cross-runtime ancestry is checked separately with a bounded walk.
 fn linked(state: State) -> Result(State, DecodeError) {
+  use Nil <- result.try(validate_initial(state) |> result.map_error(Corrupt))
   use Nil <- result.try(
     budget_config.validate(state.parent == None, state.family_budget)
     |> result.map_error(Corrupt),
@@ -752,6 +784,33 @@ fn linked(state: State) -> Result(State, DecodeError) {
       Error(Corrupt(
         "a child of the run " <> state.run <> " does not extend its id",
       ))
+  }
+}
+
+/// The original prefix is closed history followed by exactly one current
+/// user prompt. It must not include generated messages or unfinished calls.
+fn validate_initial(state: State) -> Result(Nil, String) {
+  case state.phase, state.transcript, state.initial_message_count {
+    controller.NeverStarted, [], 0 -> Ok(Nil)
+    controller.Ended(_), [], 0 -> Ok(Nil)
+    controller.NeverStarted, _, _ ->
+      Error("a never-started run has no original input")
+    _, _, count if count < 1 -> Error("a started run requires original input")
+    _, messages, count -> {
+      case count <= list.length(messages) {
+        False -> Error("initial message count exceeds transcript length")
+        True -> {
+          let original = list.take(messages, count)
+          case list.last(original) {
+            Ok(model.UserMessage(prompt)) ->
+              input.new(list.take(original, count - 1), prompt)
+              |> result.replace(Nil)
+              |> result.replace_error("invalid original input transcript")
+            _ -> Error("original input must end with the current user prompt")
+          }
+        }
+      }
+    }
   }
 }
 
@@ -872,6 +931,24 @@ fn state_decoder(found: Int) -> Decoder(State) {
     "transcript",
     decode.list(message_decoder(found)),
   )
+  let legacy_count = case transcript {
+    [] -> 0
+    _ -> 1
+  }
+  use initial_message_count <- decode.then(case found >= 8 {
+    True -> decode.field("initial_message_count", decode.int, decode.success)
+    False -> {
+      use count <- decode.optional_field(
+        "initial_message_count",
+        legacy_count,
+        decode.int,
+      )
+      case count == legacy_count {
+        True -> decode.success(count)
+        False -> decode.failure(0, "imported history requires record version 8")
+      }
+    }
+  })
   use history <- decode.field("history", decode.list(action_decoder(found)))
   use approvals_issued <- decode.field("approvals_issued", decode.int)
   use phase <- decode.field("phase", phase_decoder(found))
@@ -899,6 +976,7 @@ fn state_decoder(found: Int) -> Decoder(State) {
     turns_used:,
     usage:,
     transcript:,
+    initial_message_count:,
     history:,
     approvals_issued:,
     phase:,

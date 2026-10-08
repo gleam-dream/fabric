@@ -1,5 +1,6 @@
 #let terms = (
   (slug: "term-run", title: [Run], body: [A stored execution named by a caller-chosen RunId. Its durable data belongs to either the agent controller or the graph controller.]),
+  (slug: "term-original-input", title: [Original input], body: [The immutable ordered historical messages and current user prompt supplied to one agent run. _Avoid_: conversation resource, which implies an independently managed lifecycle; first message, which excludes later imported history and the current prompt.]),
   (slug: "term-agent", title: [Agent], body: [A validated definition of a model-turn loop, typed tools, policy and final-answer contract.]),
   (slug: "term-graph", title: [Graph], body: [A validated immutable protocol over typed application state, operations and declared routes.]),
   (slug: "term-action", title: [Action], body: [One tool call or delegation identified by its run and ActionId(turn, call_id). A graph operation instead uses an activation and attempt.]),

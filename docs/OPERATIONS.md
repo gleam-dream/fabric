@@ -193,17 +193,94 @@ After restart, observe readiness, sweep results and expired backlog. Failed,
 pending or killed handoffs require checking saved records and external effects;
 the summary itself never instructs Fabric to repeat an operation.
 
+## Deliver accepted turns and incorporate outcomes
+
+- Admission and incorporation have separate failure windows. Admission records
+  application acceptance before a Fabric run exists. Incorporation applies a
+  retained Fabric outcome after that run finishes.
+- Use an existing transactional job or outbox for admission. Oversight's
+  [research-agent consumer](https://github.com/gleam-dream/oversight/tree/a207c516a9e128917799d7f857a348a90aa15dd9/apps/research_agent)
+  records application acceptance and calls `grind.submit_in` on the same
+  transaction. Its delivery mechanism is an example of atomic acceptance;
+  sharing a pool or passing a borrowed `pog.Connection` to Fabric does not
+  establish atomic Fabric admission.
+- A delivery carries a stable accepted-turn key, authenticated principal and
+  complete original input. Call `invoke.agent_with_history` with these values
+  on every delivery. Keep the invocation wait below the delivery mechanism's
+  deadline.
+- Let the PostgreSQL adapter's leased store and registered Fabric sweeper own
+  execution recovery. Register the agent with a context builder that supplies
+  current credentials and authority. Do not add an application lease-renewal
+  loop or abandoned-run scanner.
+- Before invoking, read the application's applied-turn marker. If already
+  applied, return the application's retained result. This guard must remain
+  effective after the Fabric record is pruned.
+- On `Answered`, obtain the existing native answer and generated messages.
+  Apply them and mark the turn applied in one idempotent application
+  transaction. A crash before commit leaves the Fabric outcome available for
+  the next delivery; a lost commit acknowledgement is resolved by reading the
+  applied-turn marker.
+- Keep pruning disabled for a store containing unapplied outcomes. The adapter's
+  age-based `prune` has no application acknowledgement predicate; a sufficiently
+  old finished run can be deleted even if the application has not incorporated
+  it. A finite age alone cannot guarantee retention under an unbounded delivery
+  delay.
+- Coordinate pruning with application admission and incorporation before
+  enabling it for an eligible store. Never invoke an applied turn after its
+  Fabric record disappears: its application marker is the durable authority
+  that prevents another execution.
+- The adapter's
+  [history delivery test](../integrations/fabric_postgres/test/fabric_postgres/history_test.gleam)
+  exercises leased recovery, retained outcome incorporation in a real PostgreSQL
+  transaction, duplicate delivery and the applied guard after pruning. Its
+  provider is deterministic; it does not establish live-provider behavior or
+  transactional queue admission.
+
+| Observation                          | Delivery action                                                                                                                                                                                                                    |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Answered`                           | Incorporate the native answer and generated messages idempotently.                                                                                                                                                                 |
+| `Working`                            | Preserve the same turn identity; let Fabric execution and the existing delivery mechanism continue.                                                                                                                                |
+| `AwaitingApproval` / `AwaitingInput` | Record the suspended observation and arrange the required application interaction.                                                                                                                                                 |
+| `OutcomeUnknown`                     | Inspect admission/effect evidence and reconcile the original execution; never submit the effect under a new key.                                                                                                                   |
+| `Unattended`                         | Inspect recovery registration, lease state and sweeper health.                                                                                                                                                                     |
+| `Ended`                              | Record the terminal failure or cancellation; retain any required evidence.                                                                                                                                                         |
+| `Refused`                            | Inspect `code`: correct invalid configuration or handle `key_reused`. The existing `unavailable` code can represent a read/await failure after execution exists; retain the original identity and inspect the run before deciding. |
+
+### Application-authored per-turn graph alternative
+
+- An application can author a graph with a typed generation operation and a
+  result-application node. The operation takes history from application graph
+  state; the current managed-agent graph boundary remains prompt-only.
+- The graph's retained generation receipt lets recovery retry only the
+  unfinished application operation. Alternatively, an incorporation graph can
+  accept an already retained agent answer under its own stable invocation key.
+  Both forms still require transactional admission through the existing delivery
+  mechanism.
+- Define result application as an idempotent transaction keyed by the accepted
+  turn. A crash after the transaction commits and before the graph saves its
+  result remains an interrupted effect. Enable an existing replay contract
+  only when repeating that transaction returns the same result without applying
+  it again; otherwise preserve uncertainty and reconcile.
+- A running or unresolved application node prevents the family from being a
+  fully settled pruning candidate. A completed application node records the
+  incorporation result before the graph completes. Application markers still
+  prevent resubmission after the complete family is pruned.
+- This alternative adds application graph/state/codecs and recovery registration.
+  It is useful when result application must be part of the durable execution;
+  it is separate from history-aware agent invocation. Neither option introduces
+  a queue, a Fabric conversation resource or an atomic `admit_in` API.
+
 ## Upgrade formats deliberately
 
 These versions are independent. Check all of them before a rolling deployment.
 
-| Surface                                        | Current version and compatibility                                                                                                                                          |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Agent execution                                | Writes 7; reads 1–7. `store.with_record_version` can select 2–7 for representable states. Provider data needs 4, graph parents 5, child settlement 6 and family budgets 7. |
-| Graph execution                                | Writes 15; reads 5–15. No agent-style writer downgrade setting. New graph features require compatible readers before new writes.                                           |
-| Family budget record                           | Version 1. A missing required ledger refuses recovery.                                                                                                                     |
-| PostgreSQL schema                              | Version 7. Apply migrations before new backend writers/recovery.                                                                                                           |
-| Discovery / retention / statistics projections | Versions 12 / 11 / 1. Refresh each after upgrading; stale metadata is not valid execution evidence.                                                                        |
+| Surface                                        | Current version and compatibility                                                                                                                                                                      |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Agent execution                                | Writes 8; reads 1–8. `store.with_record_version` can select 2–8 for representable states. Provider data needs 4, graph parents 5, child settlement 6, family budgets 7 and imported initial history 8. |
+| Graph execution                                | Writes 15; reads 5–15. No agent-style writer downgrade setting. New graph features require compatible readers before new writes.                                                                       |
+| Family budget record                           | Version 1. A missing required ledger refuses recovery.                                                                                                                                                 |
+| PostgreSQL schema                              | Version 7. Apply migrations before new backend writers/recovery.                                                                                                                                       |
+| Discovery / retention / statistics projections | Versions 13 / 12 / 2. Refresh each after upgrading; stale metadata is not valid execution evidence.                                                                                                    |
 
 For agents, first deploy readers that understand the target format while
 selecting the shared older writer. Enable newer features and writer settings
@@ -211,6 +288,12 @@ only after every participating reader is compatible. Configure before starting
 stores and use the same value in the sweeper. The setting does not rewrite old
 records or reconfigure live runners. Once newer records exist, rolling back the
 binary alone may be impossible.
+
+Version 8 retains the initial-input boundary used by duplicate comparison,
+generated-message extraction and answer-repair accounting. Supported older
+records retain their one-prompt semantics when read. A writer selected below
+version 8 refuses imported history before starting work; selecting an older
+writer does not remove history from a stored version 8 run.
 
 Graph formats and SQL/backend compatibility require their own rollout. In
 particular, stop older backend writers before migration 6, which replaces the

@@ -109,7 +109,7 @@
 import fabric
 import fabric/agent.{type Agent}
 import fabric/graph
-import fabric/model
+import fabric/input
 import fabric/run.{type RunId}
 import fabric/store.{type Store}
 import gleam/erlang/process
@@ -189,6 +189,7 @@ pub fn request(context: context, input: input) -> Request(context, input) {
   )
 }
 
+/// Scopes execution identity; this does not authenticate the caller.
 pub fn with_principal(
   request: Request(c, i),
   principal: String,
@@ -310,18 +311,39 @@ pub fn agent(
   runs: Store,
   agent: Agent(c, a),
 ) -> Service(c, String, a) {
+  agent_service(name, runs, agent, input.prompt)
+}
+
+/// Bind an agent to validated original history and its current prompt.
+/// Keyed retries compare the complete original input and reopen the same
+/// run; waiting, cancellation and typed answers follow `agent` unchanged.
+pub fn agent_with_history(
+  name: String,
+  runs: Store,
+  agent: Agent(c, a),
+) -> Service(c, input.Input, a) {
+  agent_service(name, runs, agent, fn(input) { input })
+}
+
+fn agent_service(
+  name: String,
+  runs: Store,
+  agent: Agent(c, a),
+  to_input: fn(i) -> input.Input,
+) -> Service(c, i, a) {
   Service(
     name:,
     family: "agent",
     wait: duration.seconds(25),
     execute: fn(id, request, wait) {
+      let original = to_input(request.input)
       let started =
-        fabric.start(
+        fabric.start_with_input(
           runs,
           agent,
           id:,
           context: request.context,
-          prompt: request.input,
+          input: original,
           correlation: request.correlation,
         )
       let opened = case started, request.key {
@@ -333,16 +355,15 @@ pub fn agent(
               agent_admission_error(id, e, "unavailable")
             }),
           )
-          use snapshot <- result.try(
-            fabric.snapshot(handle)
+          use same <- result.try(
+            fabric.matches_initial(handle, original)
             |> result.map_error(fn(e) {
               agent_admission_error(id, e, "unavailable")
             }),
           )
-          case snapshot.transcript {
-            [model.UserMessage(prompt), ..] if prompt == request.input ->
-              Ok(handle)
-            _ -> Error(reused(id))
+          case same {
+            True -> Ok(handle)
+            False -> Error(reused(id))
           }
         }
         Error(error), _ ->
