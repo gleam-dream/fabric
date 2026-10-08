@@ -10,6 +10,7 @@ import gleam/option.{None, Some}
 import gleam/time/duration
 import gleeunit/should
 import history_turns
+import json/blueprint/codec
 import sinal/correlation
 
 fn memory() {
@@ -94,7 +95,19 @@ pub fn successive_keyed_turns_reopen_the_complete_original_input_test() {
       list.append(historical(), [model.UserMessage("shorten")]),
       generated,
     )
-  let assert Ok(next_input) = input.new(next_history, "add a title")
+  let saved =
+    history_turns.SavedRevision(
+      "document-1",
+      history_turns.Revision("revised"),
+      next_history,
+    )
+  let storage = history_turns.saved_revision_codec()
+  codec.check(storage) |> should.be_ok
+  codec.schema(storage) |> should.be_ok
+  let assert Ok(encoded) = codec.encode_json(storage, saved)
+  let assert Ok(restored) = codec.decode_json(storage, encoded)
+  restored |> should.equal(saved)
+  let assert Ok(next_input) = input.new(restored.messages, "add a title")
   let second = invoke.call(service, request(context, next_input, "revision-2"))
   invoke.id(second) |> should.not_equal(invoke.id(first))
   invoke.answer(second) |> should.equal(Some(history_turns.Revision("revised")))

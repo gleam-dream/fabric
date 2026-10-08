@@ -898,6 +898,39 @@ let assert Ok(new_messages) = fabric.generated_messages(handle)
   the validated `Input` on delivery. `input.messages` exposes the exact combined
   messages; it contains no live context or credentials.
 
+### Saving and restoring messages
+
+Use `fabric/history.codec()` to store any `List(model.Message)` losslessly.
+It composes with application codecs, including native records that retain an
+answer alongside its conversation. The
+[external editor example](consumers/app/src/history_turns.gleam) exposes one
+such `SavedRevision` codec.
+
+```gleam
+import fabric/history
+import json/blueprint/codec
+
+let assert Ok(encoded) = codec.encode_json(history.codec(), new_messages)
+let assert Ok(restored) = codec.decode_json(history.codec(), encoded)
+```
+
+- The `fabric.history.v1` envelope is independent of execution records. It
+  preserves message and call order, raw argument strings and every replay
+  field, including absence versus a present empty string. Opaque provider
+  values are not parsed or normalized.
+- Empty lists and partial generated suffixes can be saved and restored.
+  Restoration does not validate a conversation for admission; combine the
+  retained turns and call `input.new` before starting the next run.
+- Malformed shapes, missing or unknown fields and unsupported format versions
+  return Blueprint decoding errors. Handle those errors rather than treating
+  unreadable history as an empty conversation. Blueprint's default JSON
+  parsing limits apply; `codec.decode_json_with_limits` accepts explicit limits
+  for larger application histories.
+- Applications still own the storage transaction and applied-turn marker.
+  This codec does not create a conversation resource or change execution-record
+  versions. Message representation changes require an independent history
+  format version review.
+
 ## Composing with Relay
 
 Fabric owns run identity, bounded waiting and cancellation in `fabric/invoke`.

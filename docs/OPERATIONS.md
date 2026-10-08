@@ -220,6 +220,11 @@ the summary itself never instructs Fabric to repeat an operation.
   transaction. A crash before commit leaves the Fabric outcome available for
   the next delivery; a lost commit acknowledgement is resolved by reading the
   applied-turn marker.
+- Use `fabric/history.codec()` to retain and restore complete message values
+  in application storage. Handle Blueprint decoding errors explicitly;
+  malformed or unsupported saved history must not become an empty history.
+  The codec's independent format does not change Fabric's execution records
+  or make the incorporation transaction Fabric-owned.
 - Keep pruning disabled for a store containing unapplied outcomes. The adapter's
   age-based `prune` has no application acknowledgement predicate; a sufficiently
   old finished run can be deleted even if the application has not incorporated

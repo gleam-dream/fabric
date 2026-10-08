@@ -3,6 +3,7 @@
 //// A provider is injected so the same examples run with deterministic fixtures.
 
 import fabric/agent
+import fabric/history
 import fabric/model
 import fabric/policy
 import fabric/tool
@@ -19,6 +20,28 @@ pub type Revision {
 
 pub type Label {
   Label(category: String)
+}
+
+/// Application data combines a native answer and losslessly retained context.
+pub type SavedRevision {
+  SavedRevision(
+    document: String,
+    revision: Revision,
+    messages: List(model.Message),
+  )
+}
+
+pub fn saved_revision_codec() -> codec.Codec(SavedRevision) {
+  use document <- codec.field("document", codec.string(), get: fn(r) {
+    r.document
+  })
+  use revision <- codec.field("revision", revision_codec(), get: fn(r) {
+    r.revision
+  })
+  use messages <- codec.field("messages", history.codec(), get: fn(r) {
+    r.messages
+  })
+  codec.success(SavedRevision(document, revision, messages))
 }
 
 pub fn revision_codec() -> codec.Codec(Revision) {
