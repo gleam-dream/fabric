@@ -9,7 +9,8 @@
 - Named stores provide supervised runners, compare-and-set records, recovery,
   leased ownership, shutdown draining and complete-family retention.
 - Protocol-neutral invocation serves agents and graphs with scoped idempotency
-  keys, finite waiting and caller-owned cancellation.
+  keys, finite waiting and caller-owned cancellation. Unconfirmed admission and
+  unavailable admission readback retain `OutcomeUnknown` and the attempted run id.
 - Generation and classification use caller-owned HTTP clients. Classification
   receipts retain a fixed protocol while live settings come from fresh context.
 - Saga, Relay and Warden composition uses compiled public recipes. The
