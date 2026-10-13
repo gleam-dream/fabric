@@ -5,10 +5,13 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parent
-BLUEPRINT = (ROOT / "../../../json_blueprint").resolve()
+BLUEPRINT = tomllib.loads((ROOT / "gleam.toml").read_text())["dependencies"][
+    "json_blueprint"
+]
 
 
 def run(directory: Path, *arguments: str) -> None:
@@ -25,7 +28,11 @@ def check_types() -> None:
             'name = "graph_type_probe"\nversion = "0.0.0"\ntarget = "erlang"\n'
             "[dependencies]\n"
             f"fabric_graph_authoring = {{ path = {json.dumps(str(ROOT))} }}\n"
-            f"json_blueprint = {{ path = {json.dumps(str(BLUEPRINT))} }}\n"
+            "json_blueprint = { "
+            + ", ".join(
+                key + " = " + json.dumps(value) for key, value in BLUEPRINT.items()
+            )
+            + " }\n"
         )
         source = """import fabric_graph_authoring as graph
 import json/blueprint/codec

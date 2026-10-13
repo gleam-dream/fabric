@@ -6,9 +6,9 @@ and recovery.
 
 ## Setup
 
-Fabric is not yet published to Hex. Check out `fabric`, `llm_wire`, `http_gun`,
-`json_blueprint` and `sinal` as sibling repositories. Add Fabric to a sibling
-application's `gleam.toml`:
+Fabric is not yet published to Hex. Its dependencies use immutable Git revisions
+and Gleam fetches them automatically. For local development, add a Fabric
+checkout to your application's `gleam.toml`:
 
 ```toml
 [dependencies]

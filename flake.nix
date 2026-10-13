@@ -86,6 +86,7 @@
 
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
+            git
             lefthook
             gleam
             beam28Packages.erlang

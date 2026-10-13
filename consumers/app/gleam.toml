@@ -10,9 +10,9 @@ gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 fabric = { path = "../.." }
-json_blueprint = { path = "../../../json_blueprint" }
-saga = { path = "../../../saga" }
-sinal = { path = "../../../sinal" }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "0015fc50ddfd334b9c44253c36dc429d29a5845d" }
+saga = { git = "https://github.com/gleam-dream/saga.git", ref = "5c04121e2a98f93d0260902bad821b7449462095" }
+sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "4aee4c3b920bd7241da7659995dfc0a0b5767348" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

@@ -24,4 +24,4 @@ pgo = ">= 0.20.0 and < 0.21.0"
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
-json_blueprint = { path = "../../../json_blueprint" }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "0015fc50ddfd334b9c44253c36dc429d29a5845d" }
