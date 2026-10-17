@@ -9,7 +9,7 @@ gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
-saga = { git = "https://github.com/gleam-dream/saga.git", ref = "5c04121e2a98f93d0260902bad821b7449462095" }
+saga = { git = "https://github.com/gleam-dream/saga.git", ref = "4c48ffa63638cf007c574a8b2e7c3394d1ad7d85" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

@@ -14,8 +14,8 @@ gleam_http = ">= 4.4.0 and < 5.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
 fabric = { path = "../.." }
-json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "0015fc50ddfd334b9c44253c36dc429d29a5845d" }
-warden = { git = "https://github.com/gleam-dream/warden.git", ref = "f28183ebcb8085707054ea7d9b423abd36b649c4" }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "8a67eb858d2476a87bd7cc76ab31628a6aeae813" }
+warden = { git = "https://github.com/gleam-dream/warden.git", ref = "0cd5c446bf2c95128bc84084a71e0ef749778540" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

@@ -11,9 +11,9 @@ gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
 fabric = { path = "../.." }
-relay = { git = "https://github.com/gleam-dream/relay.git", ref = "ef58066e31a11ef5d9b469867e4beec90eba97b5" }
-json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "0015fc50ddfd334b9c44253c36dc429d29a5845d" }
-sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "4aee4c3b920bd7241da7659995dfc0a0b5767348" }
+relay = { git = "https://github.com/gleam-dream/relay.git", ref = "d6ad27d193d240101c0f1c150b6c731698c9224b" }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "8a67eb858d2476a87bd7cc76ab31628a6aeae813" }
+sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "9727f9baab6ed4f796780a0c3a1027c3292c5fc7" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

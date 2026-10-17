@@ -9,9 +9,9 @@ gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
 fabric = { path = "../.." }
-http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "9360c2481d920d2fdcddcf517886b337c28ec162" }
-json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "0015fc50ddfd334b9c44253c36dc429d29a5845d" }
-llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "f9c597fcf5a3f37c0c67d75f0cae669dc9142f63" }
+http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "e4f00b8525e20a7b568b2cd585fe4e37db161b26" }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "8a67eb858d2476a87bd7cc76ab31628a6aeae813" }
+llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "ec1f47b59247840d6588fbf461a7115e1dd42aeb" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
