@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `llm.configured_model` applies LLM Wire generation settings on every turn and reconstruction while Fabric retains transcript, replay, tools and native answer ownership. Existing `llm.model` uses defaults; persisted formats are unchanged.
+
 - Bounded agents retain typed tool inputs, results and final answers, explicit
   policy, authenticated approval, token observations and durable conversation.
 - Conditional graphs retain typed state, committed routes, bounded cycles,

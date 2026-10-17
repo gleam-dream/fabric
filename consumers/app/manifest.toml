@@ -32,10 +32,14 @@ packages = [
 [requirements]
 fabric = { path = "../.." }
 gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }
+gleam_json = { version = ">= 3.0.0 and < 4.0.0" }
 gleam_otp = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_stdlib = { version = ">= 0.70.0 and < 2.0.0" }
 gleam_time = { version = ">= 1.11.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
+http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "9360c2481d920d2fdcddcf517886b337c28ec162" }
 json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "0015fc50ddfd334b9c44253c36dc429d29a5845d" }
+llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "f9c597fcf5a3f37c0c67d75f0cae669dc9142f63" }
 saga = { git = "https://github.com/gleam-dream/saga.git", ref = "5c04121e2a98f93d0260902bad821b7449462095" }
+simplifile = { version = ">= 2.0.0 and < 3.0.0" }
 sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "4aee4c3b920bd7241da7659995dfc0a0b5767348" }

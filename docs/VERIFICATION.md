@@ -87,3 +87,14 @@ measure verification execution. The writing comparison measures historical
 provider-inclusive latency under its recorded limits; it is not a Fabric
 performance gate. Live providers remain separate explicit commands. No scheduled
 rerun is added without a distinct retained obligation.
+
+## Unpublished generation settings
+
+The generation-settings consumer is `consumers/app/test/generation_settings_test.gleam`.
+It uses public HTTP playback, native application values, both provider cache
+protocols, a real directory-store restart and borrowed-client reuse. No provider
+service or database is needed. Capture the working graph from Oversight with
+`nix develop --command python3 -B scripts/local_sources.py --output /tmp/fabric-settings-sources`.
+Then run the Fabric root and application consumer build/tests from that copy.
+The existing immutable LLM Wire pin remains a published baseline and does not
+claim to include the new uncommitted settings API.

@@ -135,3 +135,25 @@ The design's pending entries retain unbuilt streaming, whole-run elapsed and
 family token bounds, approval editing and context compaction. The
 [oracle notes](docs/ORACLE.md) identify the scoped BeamWeaver comparison and its
 limits.
+
+Generation controls can be configured without rebuilding the model adapter:
+
+```gleam
+import llm_wire/generation
+
+let settings = generation.default()
+  |> generation.with_max_tokens(128)
+  |> generation.with_temperature(0.2)
+let model = llm.configured_model(client, config, model_id, settings)
+```
+
+Settings are fixed for that model instance. Fabric owns messages, tools, answer
+decoding and correlation. Applications supply their live settings again when
+reconstructing a runtime; no settings enter persisted execution records.
+
+This coordinated API is unpublished. The recorded immutable LLM Wire dependency
+does not contain it yet. Validate current working trees using Oversight's
+`scripts/local_sources.py`, which copies and normalizes the complete graph, then
+run Fabric and `consumers/app` inside that copy through the original Nix shell.
+Update immutable dependency pins only after the corresponding changes are
+published; local-source success does not qualify the recorded baseline.

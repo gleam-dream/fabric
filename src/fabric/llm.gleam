@@ -69,6 +69,7 @@ import json/blueprint/contract
 import json/blueprint/value
 import llm_wire
 import llm_wire/error
+import llm_wire/generation
 import llm_wire/message
 import llm_wire/tool
 
@@ -86,21 +87,38 @@ pub fn model(
   config: llm_wire.Config,
   model_id: String,
 ) -> Model {
+  configured_model(client, config, model_id, generation.default())
+}
+
+/// A model with fixed generation controls. Every turn applies these settings,
+/// including after application reconstruction. Fabric retains ownership of
+/// messages, tools, output decoding and correlation. Invalid settings fail
+/// during preparation before HTTP execution. The application supplies settings
+/// again on reconstruction; they are not persisted in execution records.
+pub fn configured_model(
+  client: http_gun.Client,
+  config: llm_wire.Config,
+  model_id: String,
+  settings: generation.Settings,
+) -> Model {
   let config =
     llm_wire.with_tool_call_checks(config, tool.ReportInvalidToolCalls)
-  model.new(fn(request) { call(client, config, model_id, request) })
+  model.new(fn(request) { call(client, config, model_id, settings, request) })
 }
 
 fn call(
   client: http_gun.Client,
   config: llm_wire.Config,
   model_id: String,
+  settings: generation.Settings,
   request: Request,
 ) -> Result(Reply, ModelError) {
   use tools <- result.try(list.try_map(request.tools, declaration))
   use messages <- result.try(wire_messages(request))
   let wire_request =
-    llm_wire.request(model_id, messages) |> llm_wire.with_tools(tools)
+    llm_wire.request(model_id, messages)
+    |> llm_wire.with_generation(settings)
+    |> llm_wire.with_tools(tools)
   let client = http_gun.with_correlation(client, request.correlation)
   case request.answer {
     None -> execute(client, config, wire_request, Ok)
