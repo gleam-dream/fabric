@@ -663,7 +663,8 @@ pub fn cancel_unattended(
   }
 }
 
-const no_settlement = "stopped while running; no settlement arrived within the tool's bound"
+const no_settlement =
+  "stopped while running; no settlement arrived within the tool's bound"
 
 /// A late settlement as an action state: definite (the model may see it),
 /// or an effect that stays uncertain.
@@ -1829,7 +1830,8 @@ fn describe(limit: run.DelegationLimit) -> String {
 
 // --- recovery ------------------------------------------------------------------
 
-const lost_evidence = "the runner was lost while the tool ran; its effect may have happened"
+const lost_evidence =
+  "the runner was lost while the tool ran; its effect may have happened"
 
 /// Takes over a record whose runner was lost, as a new incarnation. A
 /// running tool may have taken effect, so it becomes an uncertain effect

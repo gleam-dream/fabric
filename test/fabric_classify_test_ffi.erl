@@ -10,8 +10,8 @@ start_server() ->
 
 stop_server(Port) ->
     port_command(Port, <<"stop\n">>),
-    receive {Port, {data, {eol, <<"stopped">>}}} -> catch port_close(Port), nil
-    after 5000 -> catch port_close(Port), error(fixture_stop_timeout) end.
+    receive {Port, {data, {eol, <<"stopped">>}}} -> try port_close(Port) catch _:_ -> ok end, nil
+    after 5000 -> try port_close(Port) catch _:_ -> ok end, error(fixture_stop_timeout) end.
 
 temp_dir() ->
     Path = filename:join(os:getenv("TMPDIR", "/tmp"), "fabric-classifier-" ++ binary_to_list(binary:encode_hex(crypto:strong_rand_bytes(12)))),

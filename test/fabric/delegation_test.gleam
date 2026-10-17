@@ -262,7 +262,8 @@ fn child_states(child: fabric.Run(Nil, String)) -> List(run.ActionState) {
   list.map(snapshot.actions, fn(action) { action.state })
 }
 
-const lost = "the runner was lost while the tool ran; its effect may have happened"
+const lost =
+  "the runner was lost while the tool ran; its effect may have happened"
 
 // --- approval before start -----------------------------------------------------
 

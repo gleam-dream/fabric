@@ -19,7 +19,7 @@ with_peer(Body) ->
         Body({Peer, OsPid})
     after
         %% Also clean up when a Gleam assertion fails before SIGKILL.
-        catch peer:stop(Peer)
+        try peer:stop(Peer) catch _:_ -> ok end
     end.
 
 start_run({Peer, _OsPid}, Schema, Lease) ->

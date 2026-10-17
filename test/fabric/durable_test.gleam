@@ -101,7 +101,8 @@ fn three_slow(probe: Probe) -> Agent(Nil, String) {
   |> support.agent
 }
 
-const lost = "the runner was lost while the tool ran; its effect may have happened"
+const lost =
+  "the runner was lost while the tool ran; its effect may have happened"
 
 // --- restart -------------------------------------------------------------------
 

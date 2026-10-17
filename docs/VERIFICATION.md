@@ -97,4 +97,4 @@ service or database is needed. Capture the working graph from Oversight with
 `nix develop --command python3 -B scripts/local_sources.py --output /tmp/fabric-settings-sources`.
 Then run the Fabric root and application consumer build/tests from that copy.
 The existing immutable LLM Wire pin remains a published baseline and does not
-claim to include the new uncommitted settings API.
+claim to include the unpublished settings API.

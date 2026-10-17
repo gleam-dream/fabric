@@ -42,7 +42,8 @@ type Fixture {
   )
 }
 
-const google_data = "{\"provider\":{\"kind\":\"google\",\"name\":null},\"response_id\":\"signed-response\",\"provider_data\":\"[\\\"{\\\\\\\"opaque\\\\\\\":true,\\\\\\\"text\\\\\\\":\\\\\\\"thinking\\\\\\\",\\\\\\\"thoughtSignature\\\\\\\":\\\\\\\"text-signature\\\\\\\"}\\\",\\\"{\\\\\\\"inlineData\\\\\\\":{\\\\\\\"data\\\\\\\":\\\\\\\"c2lnbmVkLWJ5dGVz\\\\\\\",\\\\\\\"mimeType\\\\\\\":\\\\\\\"image/png\\\\\\\"},\\\\\\\"thoughtSignature\\\\\\\":\\\\\\\"image-signature\\\\\\\"}\\\",\\\"{\\\\\\\"functionCall\\\\\\\":{\\\\\\\"args\\\\\\\":{\\\\\\\"x\\\\\\\":7},\\\\\\\"id\\\\\\\":\\\\\\\"same-id\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"calc\\\\\\\"},\\\\\\\"thoughtSignature\\\\\\\":\\\\\\\"call-signature\\\\\\\"}\\\"]\",\"issues\":[]}"
+const google_data =
+  "{\"provider\":{\"kind\":\"google\",\"name\":null},\"response_id\":\"signed-response\",\"provider_data\":\"[\\\"{\\\\\\\"opaque\\\\\\\":true,\\\\\\\"text\\\\\\\":\\\\\\\"thinking\\\\\\\",\\\\\\\"thoughtSignature\\\\\\\":\\\\\\\"text-signature\\\\\\\"}\\\",\\\"{\\\\\\\"inlineData\\\\\\\":{\\\\\\\"data\\\\\\\":\\\\\\\"c2lnbmVkLWJ5dGVz\\\\\\\",\\\\\\\"mimeType\\\\\\\":\\\\\\\"image/png\\\\\\\"},\\\\\\\"thoughtSignature\\\\\\\":\\\\\\\"image-signature\\\\\\\"}\\\",\\\"{\\\\\\\"functionCall\\\\\\\":{\\\\\\\"args\\\\\\\":{\\\\\\\"x\\\\\\\":7},\\\\\\\"id\\\\\\\":\\\\\\\"same-id\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"calc\\\\\\\"},\\\\\\\"thoughtSignature\\\\\\\":\\\\\\\"call-signature\\\\\\\"}\\\"]\",\"issues\":[]}"
 
 fn fixtures() -> List(Fixture) {
   [

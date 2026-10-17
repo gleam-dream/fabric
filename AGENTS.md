@@ -8,7 +8,7 @@ Behavioural oracle: BeamWeaver, scoped by [ORACLE](docs/ORACLE.md). Native desig
 
 ## Tooling
 
-- `nix develop` (or direnv): dev shell with `gleam`, Erlang/OTP 28, `rebar3`, `lefthook`.
+- `nix develop` (or direnv): dev shell with `gleam`, Erlang/OTP 29, `rebar3`, `lefthook`.
 - `nix fmt`: formats the whole repo via treefmt (`gleam format`, `nixfmt`, `prettier`).
 - `lefthook`: pre-commit hook formats staged files and re-stages them.
 - `nix flake check`: fails iff the tree is not formatted (plus any existing checks).

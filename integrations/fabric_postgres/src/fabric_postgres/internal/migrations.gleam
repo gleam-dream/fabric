@@ -22,7 +22,8 @@ pub type Migration {
 /// statement below computes from `current_schema()`.
 pub const lock_prefix = "fabric-postgres-migrate:"
 
-const lock = "SELECT true FROM (SELECT pg_advisory_xact_lock(hashtextextended('fabric-postgres-migrate:' || current_schema(), 0))) AS l"
+const lock =
+  "SELECT true FROM (SELECT pg_advisory_xact_lock(hashtextextended('fabric-postgres-migrate:' || current_schema(), 0))) AS l"
 
 pub fn all() -> List(Migration) {
   [
