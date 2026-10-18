@@ -1,4 +1,4 @@
-//// Graph records written before wave 5 slice F5 (version 14: no reviewers,
+//// Graph records written at version 14 (no reviewers,
 //// no approval deadlines, waits without deadlines, no correlation) still
 //// read, recover and finish. The fixtures were written by that code; the
 //// definitions below are the ones that wrote them.

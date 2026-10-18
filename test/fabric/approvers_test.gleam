@@ -406,11 +406,11 @@ fn fixture(name: String) -> String {
   text
 }
 
-/// A suspended run stored by round 7: a typed reviewer with its issuer and
+/// A suspended run stored before proofs existed: a typed reviewer with its issuer and
 /// no verifier. It reads, and the new approvers answer it.
 pub fn a_record_stored_before_proofs_reads_and_is_answered_test() {
   let sso = desk_approvers("sesame")
-  let text = fixture("pre-round-8-suspended.json")
+  let text = fixture("legacy-v7-typed-reviewer-suspended.json")
   let assert Ok(state) = record.decode(text)
   let assert [waiting, _] = controller.snapshot(state).actions
   let assert [

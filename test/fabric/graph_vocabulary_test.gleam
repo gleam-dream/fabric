@@ -1,5 +1,5 @@
-//// The graph runtime speaks the agent runtime's vocabulary (wave 5, slice
-//// F5): one `policy.Action`, one `tool.Failure`, approvals answered with a
+//// The graph runtime speaks the agent runtime's vocabulary: one
+//// `policy.Action`, one `tool.Failure`, approvals answered with a
 //// typed reviewer and the current context that expire after 7 days by the
 //// store's clock, waits bounded by default, the context built from the run
 //// id, a correlation carried into operations, children and events, and one

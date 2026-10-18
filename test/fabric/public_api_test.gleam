@@ -198,7 +198,7 @@ pub fn an_answer_records_its_typed_reviewer_test() {
   reviewer.issuer(stored) |> should.equal(Some("https://id.example"))
 }
 
-// --- records written before wave 5 ---------------------------------------------
+// --- records written before typed reviewers, deadlines and failure kinds ---
 
 fn fixture(name: String) -> String {
   let assert Ok(text) = restart.read_file("test/fixtures/records/" <> name)
@@ -208,8 +208,8 @@ fn fixture(name: String) -> String {
 /// A suspended run stored before reviewers were typed and requests had
 /// deadlines: its string reviewer and missing one read, and its pending
 /// request never expires.
-pub fn a_pre_wave_5_suspended_record_reads_test() {
-  let assert Ok(state) = record.decode(fixture("pre-wave-5-suspended.json"))
+pub fn a_version_7_suspended_record_reads_test() {
+  let assert Ok(state) = record.decode(fixture("legacy-v7-suspended.json"))
   let snapshot = controller.snapshot(state)
   let assert [waiting, rejected] = snapshot.actions
   waiting.state
@@ -224,14 +224,14 @@ pub fn a_pre_wave_5_suspended_record_reads_test() {
   let assert run.Suspended([pending], []) = snapshot.status
   pending.expires |> should.equal(None)
   // No deadline: the sweeper has nothing to wake it for.
-  discovery.inspect(fixture("pre-wave-5-suspended.json"))
+  discovery.inspect(fixture("legacy-v7-suspended.json"))
   |> should.equal(Ok(None))
 }
 
 /// A model failure stored before kinds reads with the kind its
 /// retryability implies.
-pub fn a_pre_wave_5_model_failure_reads_test() {
-  let assert Ok(state) = record.decode(fixture("pre-wave-5-model-failed.json"))
+pub fn a_version_7_model_failure_reads_test() {
+  let assert Ok(state) = record.decode(fixture("legacy-v7-model-failed.json"))
   let assert run.Finished(run.Failed(run.ModelFailed(error))) =
     controller.snapshot(state).status
   model.error_kind(error) |> should.equal(model.Overloaded)

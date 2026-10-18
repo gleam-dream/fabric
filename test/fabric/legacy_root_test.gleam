@@ -1,7 +1,7 @@
 //// A sub-agent record written before roots were stored names only its
 //// parent. Its exact root is derived from the stored ancestors when it is
 //// read, and its next commit stores it. The fixtures are a three-level
-//// family (`legacy` → `legacy-1` → `legacy-1-1`) stored before wave 5,
+//// family (`legacy` → `legacy-1` → `legacy-1-1`) stored at version 7,
 //// with the grandchild waiting for two approvals.
 
 import fabric
@@ -90,7 +90,7 @@ fn family() -> Agent(Nil, String) {
 fn fixture(id: String) -> String {
   let assert Ok(text) =
     restart.read_file(
-      "test/fixtures/records/pre-wave-5-family/" <> id <> ".json",
+      "test/fixtures/records/legacy-v7-family/" <> id <> ".json",
     )
   text
 }
@@ -180,7 +180,7 @@ fn names(events: List(#(String, String, String)), run: String) -> List(String) {
 /// root. Its events carry the true root before its record stores it, and
 /// after: its first commit writes the root back, and a later reader takes
 /// it from the record.
-pub fn a_pre_wave_5_grandchild_carries_its_true_root_test() {
+pub fn a_version_7_grandchild_carries_its_true_root_test() {
   let dir = restart.temp_dir()
   let a = stored(dir, fixtures([root, child, grandchild]))
   string.contains(raw(a, grandchild), "\"root\"") |> should.be_false
@@ -331,7 +331,7 @@ pub fn an_unreadable_or_overlong_chain_is_inferred_test() {
 
 /// A graph child stored before roots names its parent graph, a root run:
 /// the derived root is exact.
-pub fn a_pre_wave_5_graph_child_reads_its_exact_root_test() {
+pub fn a_version_7_graph_child_reads_its_exact_root_test() {
   let records =
     list.map(
       ["graph-waiting-child.json", "graph-waiting-child-child.json"],

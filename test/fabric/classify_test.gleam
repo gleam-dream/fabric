@@ -532,10 +532,10 @@ fn proof_for(
   proof
 }
 
-pub fn pre_round9_receipt_and_graph_store_read_without_a_provider_test() {
+pub fn legacy_receipt_and_graph_store_read_without_a_provider_test() {
   let receipt_codec = classify.receipt_codec(classify.typesafe(), questions())
   let receipt =
-    simplifile.read("test/fixtures/records/pre-round9-classifier-receipt.json")
+    simplifile.read("test/fixtures/records/legacy-classifier-receipt.json")
     |> should.be_ok
   let restored = codec.decode_json(receipt_codec, receipt) |> should.be_ok
   restored.answer.0.yes |> should.equal(0.9)
@@ -553,7 +553,7 @@ pub fn pre_round9_receipt_and_graph_store_read_without_a_provider_test() {
     fn(revision) {
       let contents =
         simplifile.read(
-          "test/fixtures/records/pre-round9-classifier-" <> revision <> ".json",
+          "test/fixtures/records/legacy-classifier-" <> revision <> ".json",
         )
         |> should.be_ok
       simplifile.write(target <> "/" <> revision <> ".json", contents)
