@@ -16,6 +16,6 @@
 ## Consequences
 
 - The usage examples run in the fast gate profile and the full profile, so a changed public signature fails the edit loop.
-- The recipe check compares each module-documentation copy with its compiled consumer. No guide copy exists to compare.
+- The module documentation describes each recipe in prose and names its compiled consumer module. No copy of the code exists in documentation to compare.
 - The test that pinned the first guide block to the compiled payment example is removed, because the README no longer repeats that block.
 - This decision supersedes the documentation-home paragraph of [ADR 0009](0009-native-layer-and-evidence-homes.md).
