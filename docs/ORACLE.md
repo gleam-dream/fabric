@@ -5,6 +5,12 @@ migrates. This ledger records the pin, the fixture rules, and the retained check
 compared or deliberately divergent behaviour. Source inspection is never
 recorded as a passing comparison.
 
+The ledger is one of two retained references. [BENCHMARKS.md](BENCHMARKS.md)
+records the dated provider measurements; neither is a gate on its own. The
+design states the rules these references check in its
+[verification section](design/design.typ#verification-and-extension-obligations),
+and [AGENTS.md](../AGENTS.md#references) lists both.
+
 ## Pin
 
 | Item         | Value                                                                                                                                        |
@@ -120,6 +126,21 @@ storage guarantees identical.
 - The evaluation-only agent-as-graph comparisons exercise supported ordinary
   round trips. They do not prove approval, delegation or interrupted-batch
   equivalence to the retained agent controller.
+
+## Other pinned references
+
+- **Frozen version-2 record reader** (`test/fabric/support/v2/`). Fabric commit
+  `570502e928496b0203909f164a5e8fd021b8ddc8`, immediately before record version 3.
+  Its decoder is the complete historical `decode` with unchanged bodies; only
+  module imports point at the historical type declarations copied from the same
+  revision. It is a test fixture, not a production codec, and tests require it to
+  accept version-2 output and reject version 3. Never replace its parsing or types
+  with current ones.
+- **Classifier protocol fixture** (`test/fixtures/classifier/server.py`). A
+  loopback server that speaks the TypeSafe classification protocol so the decision
+  consumers run offline; its Python tests check the fixture itself. It compares no
+  upstream behavior and records no live result. Dated live captures are in
+  [BENCHMARKS.md](BENCHMARKS.md).
 
 [ADR 0011](adr/0011-limit-oracle-evidence-and-reject-upstream-hazards.md)
 records the capture history, measured correspondence and upstream hazards.

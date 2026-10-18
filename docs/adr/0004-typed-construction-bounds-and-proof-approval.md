@@ -12,4 +12,4 @@ A Reviewer value alone cannot establish authenticated authority across packages.
 
 Provenance: Oversight public API guidelines and release report at Fabric `db81b79` describe the concrete caller friction and stub limitations. Owner decisions 4–5 and approver decisions on 3–4 October 2026, recorded at Oversight `3baff7030a96d5b6cf78b2335c16d8c203727da5`, govern defaults and proof authorization. Fabric source at `ab678abe3b49b2d8dedc8b63845c35a60e6f918f` confirms current construction and proof behavior. Historical proposed 120-second model timeout and optional provider adapter package were not selected contracts.
 
-Destinations: native agent/model, budgets, tools, policy/approval and invocation units. Operational examples remain in README; obsolete unreleased wave migration guides are retired after source-compatible rationale capture.
+Destinations: native agent/model, budgets, tools, policy/approval and invocation units. Operational examples live in the README and the compiled consumers; obsolete unreleased wave migration guides are retired after source-compatible rationale capture.

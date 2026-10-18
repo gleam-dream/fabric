@@ -1,37 +1,17 @@
 # Public graph consumer
 
-This separate package runs the production Fabric graph API. An integer
-generator and a boolean reviewer share native integer state. Rejected drafts
-return to the generator; the third draft is accepted. Six activations finish
-the loop, while a bound of five stops before the last review.
-
-From the Fabric repository:
+A separate package that runs the production Fabric graph API: an integer
+generator and a boolean reviewer share native integer state, rejected drafts
+return to the generator and the third draft is accepted.
 
 ```sh
 nix develop -c sh -c 'cd consumers/graph && gleam build --warnings-as-errors && gleam test && gleam run'
 ```
 
-`start_manual` replaces the scripted reviewer with a durable signal contract.
-Its test delivers native boolean decisions through `graph.deliver`, first
-requesting another draft and then accepting it. State, routes and bounds stay
-the same; the graph waits as stored data between decisions.
+- `start_manual` replaces the scripted reviewer with a durable signal contract answered through `graph.deliver`.
+- `execute_agent` supplies the decision through a managed `fabric/graph/agent` definition whose typed answer is the boolean.
+- `execute_batch([0, 2, 3])` maps the loop over three private child states and joins `[3, 3, 4]` in input order.
 
-`execute_agent` instead supplies the boolean through an ordinary managed agent.
-Its versioned `fabric/graph/agent` definition (`graph_agent.new`) builds a prompt from the native
-revision; the agent's typed answer (`agent.with_answer`, an `{"approve": bool}`
-object) is the `Bool` decision, and its codec encodes the receipts. The same state,
-routes and six-activation bound produce the same three-draft result. Every
-review visit owns a separate durable agent run; this is not a blocking tool
-wrapper. The model is scripted here; the separate
-[decision consumer](../decision/README.md) exercises real LLM and classifier adapters.
-
-The example uses an in-memory store and scripted/manual decisions. Real restart
-coverage lives in `test/fabric/graph_runtime_test.gleam` and the PostgreSQL
-integration tests. The package has no Saga or Grind dependency.
-
-`execute_batch([0, 2, 3])` maps the same six-activation review loop over three
-private child states and joins `[3, 3, 4]` in input order. The map admits at most
-three unsettled children and at most sixteen members. Empty input produces an
-empty answer; oversized input is refused before any child starts. Public
-directory-backend restart coverage for mapped work lives in
-`test/fabric/graph_parallel_test.gleam`.
+The example uses an in-memory store and scripted or manual decisions, and it
+has no Saga or Grind dependency. The [design](../../docs/design/design.typ)
+specifies the graph, signal and fork contracts.

@@ -57,10 +57,15 @@ recovery. `migrate` applies forward steps atomically and serializes callers per
 schema; repeating it after a lost acknowledgement is safe.
 
 Settings default to schema `public` and a 30-second lease. Every live VM sharing
-the database must have a unique stable node id. Fabric renews leases every third
-of their duration and self-fences runners after lost renewal. See
-[settings and migrations](USAGE.md#settings-and-migrations) for accepted values
-and schema privileges.
+the database must have a unique stable node id of 1–128 ASCII letters, digits or
+`.`, `_`, `-`, `@` and `:`; `nonode@nohost` is refused. `with_lease` accepts 100 ms
+to 2^32 − 1 ms, and Fabric renews every third of the lease and self-fences
+runners after lost renewal. `with_schema` accepts 1–63 lowercase letters, digits
+or underscores with no initial digit. `migrate` creates a missing schema, and
+precreating it avoids needing the database CREATE privilege. It records applied
+steps in `fabric_schema_migrations` under a schema-specific advisory lock, and a
+schema already migrated further by a newer adapter stays unchanged. The same
+statements are available as [cigogne migrations](priv/migrations/).
 
 ## Automatic recovery
 
@@ -99,8 +104,9 @@ let assert Ok(runs) = store.with_record_version(runs, 3)
 ```
 
 Writer selection changes future agent writes; it neither rewrites rows nor
-downgrades graph records. See [upgrade procedures](USAGE.md#upgrades-and-metadata-refresh)
-and the [compatibility contract](docs/design/design.typ#schema-and-record-compatibility).
+downgrades graph records. Older writers refuse states they cannot represent before
+changing the record, and downgrading after newer writes needs a separate migration
+plan. The [design](docs/design/design.typ) states the compatibility contract.
 
 ## Pruning
 
@@ -111,8 +117,9 @@ reciprocal membership, sufficient age, definite settlement and no live lease.
 Uncertain outcomes retain the whole family.
 
 Pruning ends the family's replay window; never reuse its ids for another run.
-A lost commit reply can leave the deleted count unknown. See
-[pruning details](USAGE.md#pruning) for concurrency and refresh requirements.
+A lost commit reply can leave the deleted count unknown, and repeating `prune`
+is safe. Pruning runs in serializable transactions with finite retries, so
+concurrent writes force revalidation.
 
 ## Idle dependency, scheduled-job and deadline discovery
 
@@ -123,8 +130,38 @@ judges eligibility, so clock corrections can advance or delay due work.
 
 Stop older backend writers before schema migration 6, which replaces scalar
 dependency columns. Migrate, deploy compatible backends, then refresh metadata
-before relying on discovery or pruning. See
-[discovery and upgrades](USAGE.md#discovery) for polling and deadline behavior.
+before relying on discovery or pruning. Scheduled polls are first eligible
+immediately and later claims wait at least the saved interval; an absolute
+deadline stays retained after a claim.
+
+## Maintenance
+
+After an upgrade, call `refresh_retention`, `refresh_discovery` and
+`refresh_statistics` with `limit: 100` until each returns zero. Refresh preserves
+exact record bytes, revisions, leases and record ages, and concurrent refreshers
+skip locked rows, so a zero describes that call only. Counts include examined
+unknown records.
+
+`stats(settings)` reads one diagnostic snapshot without refreshing, claiming or
+changing records, and `store.now(runs)` reads database UTC milliseconds, the clock
+that lease, deadline and scheduled eligibility use. `store.readiness(runs)`
+separately checks storage reachability, admission and local runner lease safety.
+The application owns pool capacity and maintenance-call bounds, and the backend
+timeout bounds only a worker wait.
+
+## Examples
+
+Each usage topic is a compiled test that the disposable-cluster harness below
+runs, so a changed signature fails the gate.
+
+| Topic                                                 | Example                                                                                                                                                                                                 |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Settings, pool, start, run and recover                | [`readme_example.gleam`](test/fabric_postgres/readme_example.gleam), run by [`readme_test.gleam`](test/fabric_postgres/readme_test.gleam)                                                               |
+| Migration, schemas and the cigogne files              | [`migrate_test.gleam`](test/fabric_postgres/migrate_test.gleam)                                                                                                                                         |
+| Pruning finished run families                         | [`prune_test.gleam`](test/fabric_postgres/prune_test.gleam)                                                                                                                                             |
+| Idle dependency, scheduled-job and deadline discovery | [`discovery_test.gleam`](test/fabric_postgres/discovery_test.gleam)                                                                                                                                     |
+| Diagnostics, readiness and backend time               | [`statistics_test.gleam`](test/fabric_postgres/statistics_test.gleam), [`readiness_test.gleam`](test/fabric_postgres/readiness_test.gleam), [`clock_test.gleam`](test/fabric_postgres/clock_test.gleam) |
+| Record versions and historical records                | [`record_test.gleam`](test/fabric_postgres/record_test.gleam), [`history_test.gleam`](test/fabric_postgres/history_test.gleam)                                                                          |
 
 ## Development
 
@@ -138,8 +175,7 @@ The harness creates and removes a private PostgreSQL cluster. Direct `gleam test
 fails without its test URL. The cluster disables `fsync` and `synchronous_commit`;
 these tests do not establish production power-loss durability.
 
-[Usage and maintenance](USAGE.md) covers metadata refresh, diagnostics and the
-schema. The [operations runbook](../../docs/OPERATIONS.md) covers startup,
-readiness, recovery and shutdown. The [design](docs/design/design.typ),
-[rendered design](docs/design/design-layer.pdf), [vocabulary](docs/design/CONTEXT.typ),
-[coverage](docs/COVERAGE.md) and [ADRs](docs/adr/) describe the storage contracts.
+The [design](docs/design/design.typ), [vocabulary](docs/design/CONTEXT.typ),
+[coverage](docs/COVERAGE.md) and [ADRs](docs/adr/) describe the storage contracts,
+and the parent Fabric design layer describes startup, readiness, recovery and
+shutdown.

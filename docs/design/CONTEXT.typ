@@ -30,4 +30,13 @@
   (slug: "term-correlation", title: [Correlation], body: [The Sinal correlation value retained at the root start and propagated through model calls, tools, operations and children. It is an observation join key, not a replay identity.]),
   (slug: "term-definition-version", title: [Definition Version], body: [The application assertion that deployed behavior and codecs retain a meaning. Structural manifests cannot detect arbitrary callback changes.]),
   (slug: "term-classification-wire", title: [Classification Wire], body: [The pure request encoding and receipt interpretation fixed by a classification operation version. Fresh live credentials and settings are outside it.]),
+  (slug: "term-node", title: [Node], body: [A stable identifier of one live VM that shares a database backend. Two live VMs never share one node id. _Avoid_: process name, which is unique only within one VM.]),
+  (slug: "term-readiness", title: [Readiness], body: [A report of backend reachability, admission acceptance and local runner lease safety at the instant after one bounded read. It promises nothing about later requests.]),
+  (slug: "term-sweeper", title: [Sweeper], body: [A supervised scanner that finds expired leases and changed or due idle waits and recovers each through a registered compatible root.]),
+  (slug: "term-drain", title: [Drain], body: [The bounded shutdown window in which runners finish started work, save results and hand off the remainder. A runner that exceeds the window is killed.]),
+  (slug: "term-oracle", title: [Oracle], body: [A pinned external implementation whose captured, normalized behavior is compared with Fabric for named behavior only. It supplies evidence and never authority.]),
+  (slug: "term-recipe", title: [Recipe], body: [Application code compiled verbatim from public APIs that translates an independent package's outcomes into Fabric ports. Core depends on none of those packages.]),
+  (slug: "term-replay-contract", title: [Replay Contract], body: [An explicit application promise, declared on a tool or operation, that bounded re-execution of an interrupted body is safe. Without it an interrupted body stays an uncertain effect.]),
+  (slug: "term-applied-marker", title: [Applied Marker], body: [An application-owned durable record that a logical turn's outcome was incorporated. It prevents reinvoking the turn after Fabric prunes its record.]),
+  (slug: "term-family-budget", title: [Family Budget], body: [The immutable limits a root declares for cumulative work admissions, child starts and nesting depth, enforced through the family ledger.]),
 )

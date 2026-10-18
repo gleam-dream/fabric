@@ -53,7 +53,7 @@
 //// and carry the scope
 //// `approve:<requirement name>`. The block is compiled and tested verbatim
 //// by `consumers/approvers_warden`, and `scripts/check.py` checks that it
-//// is the same in this module, USAGE.md and that package.
+//// is the same in this module and that package.
 ////
 //// ```gleam
 //// import fabric/approvers.{type Approvers}

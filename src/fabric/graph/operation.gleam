@@ -15,7 +15,7 @@
 //// ## Calling Relay tools from a graph
 ////
 //// Copy `relay_operation` into the application; the consumer compiles this exact recipe.
-//// See USAGE.md for composition and failure handling.
+//// See the README and the design layer for composition and failure handling.
 ////
 //// ```gleam
 //// import fabric/graph/operation

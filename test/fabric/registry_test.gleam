@@ -226,7 +226,7 @@ pub fn a_policy_reads_the_typed_input_of_its_tool_test() {
   string.contains(detail, "transfer_funds") |> should.be_true
 }
 
-/// A policy written as the README writes it fails closed when the
+/// A policy written as the payment desk example writes it fails closed when the
 /// definition it matches on has drifted from the tool the agent runs: a
 /// call of that name whose arguments the policy's codec refuses stops the
 /// run as a policy failure instead of being allowed.

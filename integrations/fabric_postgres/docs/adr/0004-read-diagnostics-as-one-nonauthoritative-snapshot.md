@@ -20,6 +20,6 @@
   `internal/statistics.gleam`, parent diagnostic projection and
   `statistics_test` at
   [baseline revision](https://github.com/gleam-dream/fabric/tree/ab678abe3b49b2d8dedc8b63845c35a60e6f918f/integrations/fabric_postgres).
-  Parent operations semantics remain in its native layer and runbook.
+  Parent operations semantics remain in the parent native layer.
   An original acceptance date or broader load/availability claim is not supplied
   by this evidence.

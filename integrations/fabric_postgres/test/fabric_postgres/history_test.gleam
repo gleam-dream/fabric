@@ -1,7 +1,7 @@
 //// Public history invocation on real PostgreSQL. The application retains
 //// acceptance and incorporation; Fabric's existing sweeper recovers execution.
 //// The accepted row is not a queue: transactional delivery belongs to an
-//// existing job/outbox, as described in docs/OPERATIONS.md.
+//// existing job/outbox, as described in the parent design layer's operating section.
 
 import fabric
 import fabric/agent

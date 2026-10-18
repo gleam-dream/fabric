@@ -2,20 +2,32 @@
 
 ## About this repo
 
-`fabric` — A bounded, typed LLM agent and agentic graph runtime for Gleam: typed application operations, an explicit policy gate, pure controllers, and supervised OTP runners with cancellation. It consumes llm_wire for providers and json_blueprint for codecs. Fabric owns conditional agentic graphs; Saga remains an optional integration for independent workflows with compensation. Neither Saga nor Grind is a core dependency.
-
-Behavioural oracle: BeamWeaver, scoped by [ORACLE](docs/ORACLE.md). Native design: [source](docs/design/design.typ) and [rendered layer](docs/design/design-layer.pdf); canonical [vocabulary](docs/design/CONTEXT.typ), [coverage](docs/COVERAGE.md), and [ADRs](docs/adr/). The PostgreSQL adapter has its own nested design layer.
+`fabric` — A bounded, typed LLM agent and agentic graph runtime for Gleam: typed application operations, an explicit policy gate, pure controllers, and supervised OTP runners with cancellation. It consumes llm_wire for providers and json_blueprint for codecs. Neither Saga nor Grind is a core dependency. The design layer under `docs/` owns the contracts, the vocabulary and the rationale; the PostgreSQL adapter has its own nested design layer.
 
 ## Tooling
 
-- `nix develop` (or direnv): dev shell with `gleam`, Erlang/OTP 29, `rebar3`, `lefthook`.
+- `nix develop` (or direnv): dev shell with `gleam`, Erlang/OTP 29, `rebar3`, `lefthook`, Python and PostgreSQL 16.
 - `nix fmt`: formats the whole repo via treefmt (`gleam format`, `nixfmt`, `prettier`).
 - `lefthook`: pre-commit hook formats staged files and re-stages them.
 - `nix flake check`: fails iff the tree is not formatted (plus any existing checks).
-- `gleam test`: runs the test suite.
-- `nix develop -c python3 scripts/check.py full`: runs all retained packages,
-  consumers, local services, compiler-negative checks and temporary PostgreSQL.
-  See `docs/VERIFICATION.md`. CI invokes the same registry after pinned sibling checkout.
+- `gleam test`: runs the core test suite.
+
+## Gate
+
+- `nix develop -c python3 scripts/check.py fast`: formatting, static tooling and the core suite for the local edit loop.
+- `nix develop -c python3 scripts/check.py full`: every retained package, consumer, local service, compiler-negative check and temporary PostgreSQL. `ci` runs the same checks in hosted CI after the pinned sibling checkout (`sibling-revisions.txt`).
+- `nix develop -c python3 scripts/check.py recipe` (also `saga-recipe`, `relay-recipes`): each recipe in a module doc equals its compiled consumer.
+- `nix develop -c integrations/fabric_postgres/scripts/test-postgres.sh`: the adapter's tests against a private disposable cluster. Never select a production database.
+- `nix develop -c consumers/jobs/test-service.sh`: the jobs consumer against its own HTTP service.
+- Live-provider commands in `consumers/decision` and `consumers/writing` are explicit, make real requests and are never part of the gate. The gate removes provider credentials from child environments and never loads `.env.local`.
+- Oracle fixtures under `test/oracle/fixtures` are recaptured with the committed capture script and never hand-edited. The pin, rules and limits are in [docs/ORACLE.md](docs/ORACLE.md).
+- `nix develop -c sh -c 'cd examples/usage && gleam test && gleam run'`: the usage examples, which `scripts/check.py fast` also runs. A changed public signature fails them.
+- An unpublished coordinated API change is validated in a normalized copy of the whole source graph made by `scripts/local_sources.py` of the [Oversight repository](https://github.com/gleam-dream/oversight), never against the immutable pins.
+
+## References
+
+- [docs/ORACLE.md](docs/ORACLE.md): the BeamWeaver oracle pin, fixture rules, comparison tables, recapture steps and limits, plus the frozen version-2 reader and the classifier protocol fixture. Read it before touching `test/oracle`.
+- [docs/BENCHMARKS.md](docs/BENCHMARKS.md): the dated live-provider measurements with their method, rerun commands and limits. Fabric has no runtime benchmark harness. The two documents link each other.
 
 <!-- agent-skills:begin -->
 <!-- framework-commit: cab7c0590036edaa66d8430cc5016399a9fd2c71 origin: git@github.com:lostbean/skills.git -->

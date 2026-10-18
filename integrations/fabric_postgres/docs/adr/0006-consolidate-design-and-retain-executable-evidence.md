@@ -6,9 +6,9 @@
   standing adapter architecture moves from the long README into one native
   PostgreSQL design context, canonical glossary and coverage map. Material
   rationale has concise ADR homes; usage and maintenance procedures remain in
-  README and the parent operations runbook.
-- The adapter CHANGELOG contains only Unreleased notes. Its unpublished wave
-  names are replaced by current capabilities; package version stays unchanged.
+  README and the parent design layer's operating section.
+- The former adapter CHANGELOG contained only Unreleased notes and its unpublished wave
+  names were replaced by current capabilities; the file is now removed (ADR 0007). The package version stays unchanged.
   Exact source, SQL, fixture, example and FFI blocks remain evidence. The first
   README example remains byte-identical to its compiled test module.
 - Earlier Oversight release review proposed a `config` constructor and a single

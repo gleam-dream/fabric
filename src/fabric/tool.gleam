@@ -117,7 +117,7 @@
 //// ## Calling Relay tools
 ////
 //// Copy `relay_tools` into the application; the consumer compiles this exact recipe.
-//// See USAGE.md for composition and failure handling.
+//// See the README and the design layer for composition and failure handling.
 ////
 //// ```gleam
 //// import fabric/tool
@@ -165,7 +165,7 @@
 //// ## Discovering Relay tools
 ////
 //// Copy `relay_discovery` into the application; the consumer compiles this exact recipe.
-//// See USAGE.md for composition and failure handling.
+//// See the README and the design layer for composition and failure handling.
 ////
 //// ```gleam
 //// import fabric/tool

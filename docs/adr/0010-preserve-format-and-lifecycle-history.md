@@ -2,9 +2,9 @@
 
 <a id="adr-0010"></a>
 
-The captured Fabric CHANGELOG has one Unreleased section and no published
-release section. Its construction diary is condensed into current capability
-notes. This record captures material compatibility and lifecycle rationale;
+The former Fabric CHANGELOG had one Unreleased section and no published
+release section. Its construction diary is condensed into the decisions below
+and the retired file is removed (ADR 0016). This record captures material compatibility and lifecycle rationale;
 the exact former signatures remain in Git history rather than a second current
 API specification. Decisions on typed construction, approval authority and
 ports remain in ADRs 0003–0004.
@@ -64,7 +64,7 @@ separated fixed classification receipt bounds from fresh live settings. ADRs
 sibling revision refreshes, test executable lookup, check counts and formatting
 diary entries do not create additional architecture decisions.
 
-Provenance: Fabric CHANGELOG and current source at
+Provenance: the former Fabric CHANGELOG and current source at
 `ab678abe3b49b2d8dedc8b63845c35a60e6f918f`; exact-byte fixtures under
 `test/fixtures`, `llm_turn_format_test`, graph LLM receipt/record, record/root,
 ancestry, approval, drain and public consumer tests. Individual original dates

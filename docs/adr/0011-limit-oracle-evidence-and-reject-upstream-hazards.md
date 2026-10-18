@@ -13,7 +13,7 @@ historical execution evidence, not a new comparison run during migration.
 The original probes observed tool/sub-agent-start review surviving separate-VM
 restart in ETS/SQLite scenarios. Those pauses came from upstream interrupts,
 not new fork authorization. They do not establish Fabric's authenticated policy.
-Current source/fixtures own each present claim. ORACLE separates executed
+Current source/fixtures own each present claim. The design layer separates executed
 differential, inspired, original, anti-oracle and unverified behavior.
 
 Executed upstream hazards justify differences: nested sub-agent interruption
@@ -42,8 +42,8 @@ resolve later changes; retained gaps remain in ADR 0008.
 
 These observations support a normalized partial oracle and negative tests,
 without importing upstream middleware/channels/atom serialization or a universal
-runtime. Fixtures are recaptured rather than edited. Operational instructions
-remain in [ORACLE](../ORACLE.md).
+runtime. Fixtures are recaptured rather than edited. The pin, fixture rules and
+comparison limits are stated in [the oracle ledger](../ORACLE.md) and summarized by the design layer's oracle comparison.
 
 Provenance: research dated 27 September 2026 at Fabric
 `ab678abe3b49b2d8dedc8b63845c35a60e6f918f`:
@@ -71,6 +71,6 @@ also differed. Normalization did not establish equivalence for those structures,
 edit/respond answers, authorization, all timeouts or arbitrary child recovery.
 
 The [original ledger and result tables](https://github.com/gleam-dream/fabric/blob/ab678abe3b49b2d8dedc8b63845c35a60e6f918f/docs/ORACLE.md)
-retain the exact recorded comparison details. The working-tree oracle guide now
-owns current reproduction rules and evidence limits; dates and capture chronology
+retain the exact recorded comparison details at that revision. The retained [oracle ledger](../ORACLE.md)
+owns the current pin, reproduction rules and evidence limits, and the design layer states the rules it checks; dates and capture chronology
 are retained here and in the immutable raw fixture metadata.

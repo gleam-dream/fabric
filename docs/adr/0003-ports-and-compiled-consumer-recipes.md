@@ -12,4 +12,4 @@ Recipes are compiled verbatim and checked for drift. The later typed-reporting f
 
 Provenance: Fabric `d0f3eb9` removes the classification bridge, `c57af7c` replaces the Saga bridge, `137d3fd` adds invocation and replaces the Relay bridge, `f917cb8` updates the typed Saga projection. Oversight `3baff7030a96d5b6cf78b2335c16d8c203727da5`, `DECISIONS.md` Round 9 and `PLAN.md` Round 9/follow-ups record authorization and alternatives. New inferred historical dates are not assigned.
 
-Layer destinations: provider/recipe and invocation units, plus preserved README code and `consumers/saga_tool`, `relay_tools`, `approvers_warden` modules/tests. Former-package rows receive no current coverage entries.
+Layer destinations: provider/recipe and invocation units, plus module-documentation recipes and `consumers/saga_tool`, `relay_tools`, `approvers_warden` modules/tests. Former-package rows receive no current coverage entries.
