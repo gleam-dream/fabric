@@ -6,7 +6,7 @@ gleam = ">= 1.18.0"
 [dependencies]
 fabric_graph_authoring = { path = ".." }
 gleam_stdlib = ">= 0.70.0 and < 2.0.0"
-json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "8a67eb858d2476a87bd7cc76ab31628a6aeae813" }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "main" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

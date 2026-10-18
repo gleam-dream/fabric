@@ -20,5 +20,5 @@ without weakening those boundaries or duplicating provider controls in Fabric.
 
 Settings introduce no persisted fields or record version. Applications decide how
 configuration remains stable across deployments. Unpublished coordinated changes
-are tested through an explicitly normalized local-source graph; existing immutable
-Git pins do not claim to contain that unpublished API.
+reach this repository once the sibling's change is on `main` and `gleam update
+<package>` has re-locked it.

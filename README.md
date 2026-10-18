@@ -6,8 +6,9 @@ and recovery.
 
 ## Setup
 
-Fabric is not yet published to Hex. Its dependencies use immutable Git revisions
-and Gleam fetches them automatically. For local development, add a Fabric
+Fabric is not yet published to Hex. Its unpublished sibling packages are Git
+dependencies on `main`; each `manifest.toml` records the resolved commit, and
+Gleam fetches them automatically. For local development, add a Fabric
 checkout to your application's `gleam.toml`:
 
 ```toml

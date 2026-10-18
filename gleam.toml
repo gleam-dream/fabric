@@ -15,10 +15,10 @@ gleam_otp = ">= 1.0.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_crypto = ">= 1.0.0 and < 2.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
-http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "e4f00b8525e20a7b568b2cd585fe4e37db161b26" }
-json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "8a67eb858d2476a87bd7cc76ab31628a6aeae813" }
-llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "ec1f47b59247840d6588fbf461a7115e1dd42aeb" }
-sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "9727f9baab6ed4f796780a0c3a1027c3292c5fc7" }
+http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "main" }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "main" }
+llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "main" }
+sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "main" }
 
 [dev-dependencies]
 gleam_http = ">= 4.0.0 and < 5.0.0"
