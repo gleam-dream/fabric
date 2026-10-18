@@ -148,7 +148,7 @@ def checks(root: Path, profile: str) -> list[Check]:
 
 
 def dependencies(root: Path) -> list[dict[str, str]]:
-    """Validate the current path arrangement; publishing is a separate step."""
+    """Validate the path dependencies between the retained packages."""
     pending = [root / package for package in PACKAGES]
     seen: set[Path] = set()
     sources: list[dict[str, str]] = []
@@ -159,9 +159,7 @@ def dependencies(root: Path) -> list[dict[str, str]]:
         seen.add(path)
         manifest = path / "gleam.toml"
         if not manifest.is_file():
-            raise ValueError(
-                f"missing package: {manifest}; check out the required sibling"
-            )
+            raise ValueError(f"missing package: {manifest}")
         package = tomllib.loads(manifest.read_text())
         revision = subprocess.run(
             ("git", "-C", str(path), "rev-parse", "HEAD"),
@@ -185,8 +183,7 @@ def dependencies(root: Path) -> list[dict[str, str]]:
                     dependency_manifest = dependency / "gleam.toml"
                     if not dependency_manifest.is_file():
                         raise ValueError(
-                            f"{package['name']} needs {name} at {dependency}; "
-                            "check out the required sibling"
+                            f"{package['name']} needs {name} at {dependency}"
                         )
                     if tomllib.loads(dependency_manifest.read_text())["name"] != name:
                         raise ValueError(f"{dependency}: expected package {name}")
