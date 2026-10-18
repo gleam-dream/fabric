@@ -8,7 +8,6 @@ per batch, and a Saga-orchestrated loop. It is no production dependency.
 nix develop ../.. -c gleam test
 ```
 
-`saga-suspend-prototype.patch` is an experimental patch against a Saga revision
-for disposable inspection only. The rationale is in
+The rationale for keeping it is in
 [ADR 0002](../../docs/adr/0002-retain-agent-controller-and-managed-composition.md)
 and [ADR 0008](../../docs/adr/0008-carry-unbuilt-capability-intent.md).
