@@ -57,11 +57,11 @@ the native v2 envelope while reading genuine v1 nested arrays. Fork result codec
 construction changes retained its tagged JSON. Cassette conversion preserved
 headers and response bytes while moving to the owning HTTP Gun schema.
 
-Round 9 subsequently retired the bridge packages, framed composite invocation
-keys, preserved native answers and unresolved effects through cancellation, and
-separated fixed classification receipt bounds from fresh live settings. ADRs
-0003, 0005–0007 record those semantics and their remaining defect. Mechanical
-sibling revision refreshes, test executable lookup, check counts and formatting
+The bridge packages were subsequently retired, composite invocation keys were
+framed, native answers and unresolved effects were preserved through
+cancellation, and fixed classification receipt bounds were separated from fresh
+live settings. ADRs 0003, 0005–0007 record those semantics and their remaining
+defect. Mechanical sibling revision refreshes, test executable lookup, check counts and formatting
 diary entries do not create additional architecture decisions.
 
 Provenance: the former Fabric CHANGELOG and current source at

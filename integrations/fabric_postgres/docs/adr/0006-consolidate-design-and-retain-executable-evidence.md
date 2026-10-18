@@ -7,16 +7,16 @@
   PostgreSQL design context, canonical glossary and coverage map. Material
   rationale has concise ADR homes; usage and maintenance procedures remain in
   README and the parent design layer's operating section.
-- The former adapter CHANGELOG contained only Unreleased notes and its unpublished wave
-  names were replaced by current capabilities; the file is now removed (ADR 0007). The package version stays unchanged.
+- The former adapter CHANGELOG contained only Unreleased notes and its unpublished plan
+  labels were replaced by current capabilities; the file is now removed (ADR 0007). The package version stays unchanged.
   Exact source, SQL, fixture, example and FFI blocks remain evidence. The first
   README example remains byte-identical to its compiled test module.
 - Earlier Oversight release review proposed a `config` constructor and a single
   adapter Error. Current inspected source instead exposes opaque Settings,
   schema/store validation and operation-specific maintenance errors. The old
   proposal is not a supported alias or accepted runtime rewrite.
-- Round 9 retained the two PostgreSQL adapters while retiring Fabric bridge
-  packages. This adapter borrows a compatible shared pog/pgo pool without
+- The two PostgreSQL adapters are retained while the Fabric bridge
+  packages are retired. This adapter borrows a compatible shared pog/pgo pool without
   importing Grind or a universal durability abstraction. Parent Fabric ADRs own
   graph, agent and external-effect semantics.
 - Evidence: Fabric
