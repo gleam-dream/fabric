@@ -207,16 +207,19 @@ class GateTest(unittest.TestCase):
             module.write_text(
                 f"//// Doc.\n{check.RECIPE_HEADING}\n////\n//// ```gleam\n{doc}//// ```\n"
             )
-            readme = root / check.RECIPE_README
-            readme.write_text(f"# x\n{check.RECIPE_MARKER}\n\n```gleam\n{recipe}```\n")
             self.assertEqual(check.recipe_problems(root), [])
-            readme.write_text(
-                f"{check.RECIPE_MARKER}\n```gleam\n{recipe.replace('1', '2')}```\n"
+            changed = recipe.replace("1", "2")
+            changed_doc = "".join(
+                "////" + (" " + line if line else "") + "\n"
+                for line in changed.splitlines()
+            )
+            module.write_text(
+                f"//// Doc.\n{check.RECIPE_HEADING}\n////\n//// ```gleam\n{changed_doc}//// ```\n"
             )
             [problem] = check.recipe_problems(root)
-            self.assertIn("USAGE.md differs", problem)
+            self.assertIn(f"{check.RECIPE_MODULE} differs", problem)
             self.assertIn("+  2", problem)
-            readme.write_text("no marker\n")
+            module.write_text("no heading\n")
             with self.assertRaisesRegex(ValueError, "no gleam block"):
                 check.recipe_problems(root)
 
@@ -224,7 +227,6 @@ class GateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             for relative in [
-                "USAGE.md",
                 check.SAGA_RECIPE["consumer"],
                 check.SAGA_RECIPE["module"],
             ]:
@@ -245,7 +247,6 @@ class GateTest(unittest.TestCase):
                 root = Path(folder)
                 source_path = config.get("consumer", check.RECIPE_CONSUMER)
                 module_path = config.get("module", check.RECIPE_MODULE)
-                marker = config.get("marker", check.RECIPE_MARKER)
                 heading = config.get("heading", check.RECIPE_HEADING)
                 source = root / source_path
                 module = root / module_path
@@ -254,7 +255,6 @@ class GateTest(unittest.TestCase):
                 for count in [limit, limit + 1]:
                     recipe = "// recipe line\n" * count
                     source.write_text(recipe)
-                    (root / "USAGE.md").write_text(f"{marker}\n```gleam\n{recipe}```\n")
                     doc = "".join("//// " + line + "\n" for line in recipe.splitlines())
                     module.write_text(f"{heading}\n//// ```gleam\n{doc}//// ```\n")
                     expected = (
@@ -271,21 +271,25 @@ class GateTest(unittest.TestCase):
                 tempfile.TemporaryDirectory() as folder,
             ):
                 root = Path(folder)
-                for relative in ["USAGE.md", config["consumer"], config["module"]]:
+                for relative in [config["consumer"], config["module"]]:
                     destination = root / relative
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     destination.write_text((check.ROOT / relative).read_text())
                 self.assertEqual(check.recipe_problems(root, **config), [])
                 source = (root / config["consumer"]).read_text()
                 self.assertLessEqual(len(source.splitlines()), 50)
-                readme = root / "USAGE.md"
-                readme.write_text(
-                    readme.read_text().replace(
-                        source, source.replace("pub fn", "fn", 1), 1
-                    )
+                module = root / config["module"]
+                first = next(
+                    line for line in source.splitlines() if line.startswith("pub fn")
+                )
+                text = module.read_text()
+                start = text.index(config["heading"])
+                module.write_text(
+                    text[:start]
+                    + text[start:].replace("//// " + first, "//// " + first[4:], 1)
                 )
                 [problem] = check.recipe_problems(root, **config)
-                self.assertIn("USAGE.md differs", problem)
+                self.assertIn(f"{config['module']} differs", problem)
                 self.assertIn("-pub fn", problem)
                 self.assertIn("+fn", problem)
 

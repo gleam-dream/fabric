@@ -37,10 +37,16 @@ PACKAGES = (
     "consumers/jobs",
     "consumers/writing",
     "consumers/approvers_warden",
+    "examples/usage",
     "experiments/workflow_composition",
     "experiments/graph_authoring",
     "experiments/graph_authoring/consumer",
 )
+
+
+# The usage examples compile and run in the edit loop: they are the tested
+# form of the usage guidance, so API drift fails the fast gate.
+FAST_PACKAGES = (".", "examples/usage")
 
 
 def checks(root: Path, profile: str) -> list[Check]:
@@ -99,7 +105,7 @@ def checks(root: Path, profile: str) -> list[Check]:
             ),
         )
     )
-    for package in PACKAGES if profile != "fast" else (".",):
+    for package in PACKAGES if profile != "fast" else FAST_PACKAGES:
         name = "core" if package == "." else package.replace("/", "-")
         selected.append(
             Check(
@@ -163,26 +169,12 @@ def checks(root: Path, profile: str) -> list[Check]:
     return selected
 
 
-# The warden recipe of `fabric/approvers` is written three times: in the
-# USAGE.md (after the marker), in the module doc (after its heading) and as the
-# consumer package that compiles and tests it. They must be identical.
-RECIPE_README = "USAGE.md"
-RECIPE_MARKER = "<!-- approvers-recipe -->"
+# The warden recipe of `fabric/approvers` is written twice: in the module doc
+# (after its heading) and as the consumer package that compiles and tests it.
+# They must be identical.
 RECIPE_MODULE = "src/fabric/approvers.gleam"
 RECIPE_HEADING = "//// ## With warden"
 RECIPE_CONSUMER = "consumers/approvers_warden/src/approvers_warden.gleam"
-
-
-def readme_recipe(text: str, marker: str = RECIPE_MARKER) -> str:
-    """The first gleam block after the marker line."""
-    lines = text.splitlines()
-    try:
-        start = lines.index(marker)
-        opening = lines.index("```gleam", start)
-        closing = lines.index("```", opening)
-    except ValueError as error:
-        raise ValueError(f"{RECIPE_README}: no gleam block after {marker}") from error
-    return "\n".join(lines[opening + 1 : closing]) + "\n"
 
 
 def module_recipe(text: str, heading: str = RECIPE_HEADING) -> str:
@@ -206,7 +198,6 @@ def module_recipe(text: str, heading: str = RECIPE_HEADING) -> str:
 SAGA_RECIPE = dict(
     consumer="consumers/saga_tool/src/saga_tool.gleam",
     module="src/fabric/tool.gleam",
-    marker="<!-- saga-recipe -->",
     heading="//// ## With saga",
     max_lines=60,
 )
@@ -216,31 +207,26 @@ RELAY_RECIPES = [
     {
         "consumer": "consumers/relay_tools/src/relay_tools.gleam",
         "module": "src/fabric/tool.gleam",
-        "marker": "<!-- relay-tools-recipe -->",
         "heading": "//// ## Calling Relay tools",
     },
     {
         "consumer": "consumers/relay_tools/src/relay_discovery.gleam",
         "module": "src/fabric/tool.gleam",
-        "marker": "<!-- relay-discovery-recipe -->",
         "heading": "//// ## Discovering Relay tools",
     },
     {
         "consumer": "consumers/relay_tools/src/relay_operation.gleam",
         "module": "src/fabric/graph/operation.gleam",
-        "marker": "<!-- relay-operation-recipe -->",
         "heading": "//// ## Calling Relay tools from a graph",
     },
     {
         "consumer": "consumers/relay_tools/src/relay_serve.gleam",
         "module": "src/fabric/invoke.gleam",
-        "marker": "<!-- relay-serve-recipe -->",
         "heading": "//// ## Serving through Relay",
     },
     {
         "consumer": "consumers/relay_tools/src/relay_run.gleam",
         "module": "src/fabric/invoke.gleam",
-        "marker": "<!-- relay-run-recipe -->",
         "heading": "//// ## Reading a Relay run id",
     },
 ]
@@ -251,16 +237,12 @@ def recipe_problems(
     *,
     consumer: str = RECIPE_CONSUMER,
     module: str = RECIPE_MODULE,
-    marker: str = RECIPE_MARKER,
     heading: str = RECIPE_HEADING,
     max_lines: int = 50,
 ) -> list[str]:
-    """Where the two documentation copies differ from the compiled consumer."""
+    """Where the module documentation copy differs from the compiled consumer."""
     source = (root / consumer).read_text()
-    copies = {
-        RECIPE_README: readme_recipe((root / RECIPE_README).read_text(), marker),
-        module: module_recipe((root / module).read_text(), heading),
-    }
+    copies = {module: module_recipe((root / module).read_text(), heading)}
     problems = []
     if len(source.splitlines()) > max_lines:
         problems.append(f"{consumer}: recipe exceeds {max_lines} lines")
@@ -407,9 +389,7 @@ def main() -> None:
         for problem in problems:
             print(problem, flush=True)
         if not problems:
-            print(
-                "the recipe is the same in the README, the module doc and the consumer"
-            )
+            print("the recipe is the same in the module doc and the consumer")
         raise SystemExit(1 if problems else 0)
     logs = arguments.logs.resolve()
     logs.mkdir(parents=True, exist_ok=True)

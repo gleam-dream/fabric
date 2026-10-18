@@ -1,0 +1,19 @@
+# Unpublished usage examples: each module is a small program built from
+# Fabric's public modules only, and the tests run it.
+name = "fabric_usage"
+version = "0.0.0"
+target = "erlang"
+gleam = ">= 1.18.0"
+
+[dependencies]
+gleam_time = ">= 1.11.0 and < 2.0.0"
+gleam_stdlib = ">= 0.70.0 and < 2.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"
+fabric = { path = "../.." }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "8a67eb858d2476a87bd7cc76ab31628a6aeae813" }
+sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "9727f9baab6ed4f796780a0c3a1027c3292c5fc7" }
+
+[dev-dependencies]
+simplifile = ">= 2.0.0 and < 3.0.0"
+gleeunit = ">= 1.0.0 and < 2.0.0"

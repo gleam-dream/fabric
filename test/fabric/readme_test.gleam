@@ -1,6 +1,7 @@
-//// The usage guide's payment example is `readme_example.gleam`, verbatim: one
-//// test checks that the guide shows exactly that compiled module, the
-//// others run it with scripted models.
+//// The payment desk example is `readme_example.gleam`: a typed transfer tool
+//// whose large transfers wait for a treasurer's approval, a supervised durable
+//// store and a later request that approves, rejects or reconciles by run id.
+//// These tests run it with scripted models.
 
 import fabric
 import fabric/agent.{type Agent}
@@ -21,18 +22,6 @@ import gleam/result
 import gleam/string
 import gleam/time/duration
 import gleeunit/should
-
-pub fn the_readme_shows_the_compiled_example_test() {
-  let assert Ok(readme) = restart.read_file("USAGE.md")
-  let assert Ok(source) = restart.read_file("test/fabric/readme_example.gleam")
-  first_gleam_block(readme) |> should.equal(Ok(source))
-}
-
-fn first_gleam_block(markdown: String) -> Result(String, Nil) {
-  use #(_, rest) <- result.try(string.split_once(markdown, "```gleam\n"))
-  use #(block, _) <- result.try(string.split_once(rest, "```\n"))
-  Ok(block)
-}
 
 /// Pays up to 1000; a larger transfer times out after sending.
 fn pay(transfer: Transfer) -> Result(Receipt, TransferError) {
