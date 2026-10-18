@@ -47,178 +47,36 @@
 ////
 //// ## With saga
 ////
-//// Copy the recipe into a per-application module. Saga reports its outcome
-//// after task cancellation; Fabric accepts settlement up to `rollback_within`.
-//// The workflow and its steps inherit the run's correlation. The consumer
-//// compiles this block verbatim and the `saga-recipe` gate compares both docs.
-////
-//// ```gleam
-//// import fabric/tool
-//// import gleam/result
-//// import gleam/time/duration.{type Duration}
-//// import saga
-//// import saga/execution
-//// import saga/outcome.{Definitely, Unknown}
-//// import saga/reporting
-////
-//// pub fn tool(
-////   definition: tool.Definition(input, output),
-////   workflow: saga.Workflow(workflow_input, output, error, undo_error),
-////   config: execution.Config,
-////   input input: fn(context, tool.Call, input) -> workflow_input,
-////   explain explain: fn(error) -> String,
-////   rollback_within rollback_within: Duration,
-//// ) -> tool.Tool(context) {
-////   let project = fn(result) {
-////     case result {
-////       Ok(report) -> #(
-////         outcome.classify(report, explain)
-////           |> result.map_error(fn(failure) {
-////             case failure {
-////               Definitely(detail) -> tool.Explain(detail)
-////               Unknown(detail) -> tool.Uncertain(detail)
-////             }
-////           }),
-////         "Saga reported " <> outcome.summary(report),
-////       )
-////       Error(error) -> {
-////         let detail = reporting.describe_error(error)
-////         let failure = case reporting.effect_status(error) {
-////           reporting.NotStarted -> tool.Explain(detail)
-////           reporting.Unknown -> tool.Uncertain(detail)
-////         }
-////         #(Error(failure), detail)
-////       }
-////     }
-////   }
-////   tool.bind_settling(
-////     definition,
-////     fn(context, call: tool.Call, value, settlement) {
-////       let reported =
-////         reporting.run_owned(
-////           workflow,
-////           input(context, call, value),
-////           execution.with_correlation(config, call.correlation),
-////           fn(stopped) {
-////             let #(result, summary) = project(stopped)
-////             let _ = tool.settle(settlement, result, summary:)
-////             Nil
-////           },
-////           rollback_within,
-////         )
-////       project(reported).0
-////     },
-////     fn(failure) { failure },
-////     settle_within: rollback_within,
-////   )
-//// }
-//// ```
+//// Copy the module `saga_tool` of `consumers/saga_tool` into the
+//// application; that consumer compiles and tests it. Saga reports its outcome
+//// after task cancellation; Fabric accepts settlement up to
+//// `rollback_within`. The workflow and its steps inherit the run's
+//// correlation. `saga_tool.tool` binds a definition with `tool.bind_settling`
+//// and runs the workflow through `saga/reporting.run_owned`. A definite
+//// failure in the report is `tool.Explain` and an unknown one is
+//// `tool.Uncertain`; a reporting error whose effect never started is
+//// `Explain`, and one whose effect status is unknown is `Uncertain`.
 ////
 //// ## Calling Relay tools
 ////
-//// Copy `relay_tools` into the application; the consumer compiles this exact recipe.
-//// See the README and the design layer for composition and failure handling.
-////
-//// ```gleam
-//// import fabric/tool
-//// import gleam/option.{Some}
-//// import relay/client
-//// import relay/client/output
-//// import relay/tool as remote
-////
-//// pub fn tool(
-////   definition: remote.Definition(i, o),
-////   peer peer: fn(c) -> client.Client,
-//// ) -> tool.Tool(c) {
-////   let declaration = remote.declaration(definition)
-////   let assert Some(codec) = remote.output_codec(definition)
-////   tool.bind(
-////     tool.define(
-////       declaration.name,
-////       option.unwrap(declaration.description, ""),
-////       remote.input_codec(definition),
-////       codec,
-////     ),
-////     fn(context, call: tool.Call, input) {
-////       peer(context)
-////       |> client.with_correlation(call.correlation)
-////       |> client.with_idempotency_key(tool.idempotency_key(call))
-////       |> client.call(definition, input)
-////       |> output.require
-////     },
-////     failure(declaration, _),
-////   )
-//// }
-////
-//// pub fn failure(
-////   declaration: remote.Declaration,
-////   error: output.Error,
-//// ) -> tool.Failure {
-////   let message = output.describe_error(error)
-////   case output.evidence(error), declaration.annotations.read_only_hint {
-////     client.MaybeSent, hint if hint != Some(True) -> tool.Uncertain(message)
-////     _, _ -> tool.Explain(message)
-////   }
-//// }
-//// ```
+//// Copy the module `relay_tools` of `consumers/relay_tools` into the
+//// application; that consumer compiles and tests it. `relay_tools.tool` binds
+//// a Relay tool definition as a Fabric tool: it calls the peer with the
+//// call's correlation and idempotency key and requires the typed output.
+//// `relay_tools.failure` maps a failure to `Uncertain` when the request may
+//// have been sent and the tool is not marked read-only, and to `Explain`
+//// otherwise. See the README and the design layer for composition and failure
+//// handling.
 ////
 //// ## Discovering Relay tools
 ////
-//// Copy `relay_discovery` into the application; the consumer compiles this exact recipe.
-//// See the README and the design layer for composition and failure handling.
-////
-//// ```gleam
-//// import fabric/tool
-//// import gleam/option
-//// import gleam/result
-//// import json/blueprint/codec
-//// import json/blueprint/contract
-//// import relay/client
-//// import relay/client/output
-//// import relay/tool as remote
-//// import relay_tools
-////
-//// pub type Error {
-////   UnsupportedName(String)
-////   UnsupportedSchema(contract.DocumentError)
-//// }
-////
-//// pub fn describe_error(error: Error) -> String {
-////   case error {
-////     UnsupportedName(name) -> "unsupported model tool name: " <> name
-////     UnsupportedSchema(error) -> contract.describe_document_error(error)
-////   }
-//// }
-////
-//// pub fn discovered(
-////   declaration: remote.Declaration,
-////   peer peer: fn(c) -> client.Client,
-//// ) -> Result(tool.Tool(c), Error) {
-////   use Nil <- result.try(case tool.valid_name(declaration.name) {
-////     True -> Ok(Nil)
-////     False -> Error(UnsupportedName(declaration.name))
-////   })
-////   use schema <- result.map(
-////     remote.input_contract(declaration) |> result.map_error(UnsupportedSchema),
-////   )
-////   tool.bind(
-////     tool.define(
-////       declaration.name,
-////       option.unwrap(declaration.description, ""),
-////       contract.value_codec(schema),
-////       codec.value(),
-////     ),
-////     fn(context, call: tool.Call, input) {
-////       peer(context)
-////       |> client.with_correlation(call.correlation)
-////       |> client.with_idempotency_key(tool.idempotency_key(call))
-////       |> client.call_discovered(declaration, input)
-////       |> output.require_discovered
-////     },
-////     relay_tools.failure(declaration, _),
-////   )
-//// }
-//// ```
+//// Copy the module `relay_discovery` of `consumers/relay_tools` into the
+//// application; that consumer compiles and tests it.
+//// `relay_discovery.discovered` builds a tool from a discovered declaration.
+//// It refuses a name the model cannot use (`UnsupportedName`) and a schema
+//// outside the supported contract (`UnsupportedSchema`), calls with the
+//// discovered declaration, and maps failures with `relay_tools.failure`. See
+//// the README and the design layer for composition and failure handling.
 
 import gleam/int
 import json/blueprint/value

@@ -14,39 +14,13 @@
 ////
 //// ## Calling Relay tools from a graph
 ////
-//// Copy `relay_operation` into the application; the consumer compiles this exact recipe.
-//// See the README and the design layer for composition and failure handling.
-////
-//// ```gleam
-//// import fabric/graph/operation
-//// import fabric/run
-//// import gleam/option.{Some}
-//// import relay/client
-//// import relay/client/output
-//// import relay/tool
-//// import relay_tools
-////
-//// pub fn operation(
-////   definition: tool.Definition(i, o),
-////   version version: Int,
-////   peer peer: fn(c) -> client.Client,
-//// ) -> operation.Operation(c, i, o) {
-////   let assert Some(codec) = tool.output_codec(definition)
-////   operation.new(
-////     run.DefinitionId(tool.name(definition), version),
-////     tool.input_codec(definition),
-////     codec,
-////     fn(context, call: operation.Invocation, input) {
-////       peer(context)
-////       |> client.with_correlation(call.correlation)
-////       |> client.with_idempotency_key(operation.idempotency_key(call))
-////       |> client.call(definition, input)
-////       |> output.require
-////     },
-////     relay_tools.failure(tool.declaration(definition), _),
-////   )
-//// }
-//// ```
+//// Copy the module `relay_operation` of `consumers/relay_tools` into the
+//// application; that consumer compiles and tests it.
+//// `relay_operation.operation` builds a graph operation identified by the
+//// tool name and a version. It calls the peer with the invocation's
+//// correlation and idempotency key and maps failures with
+//// `relay_tools.failure`. See the README and the design layer for composition
+//// and failure handling.
 
 import fabric/graph/job
 import fabric/graph/signal

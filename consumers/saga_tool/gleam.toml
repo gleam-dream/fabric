@@ -1,4 +1,5 @@
-# Unpublished consumer; compiles the documented saga tool recipe verbatim.
+# Unpublished consumer; compiles and tests the saga tool recipe that the
+# `fabric/tool` documentation names.
 name = "saga_tool_consumer"
 version = "0.0.0"
 target = "erlang"

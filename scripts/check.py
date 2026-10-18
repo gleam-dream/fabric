@@ -3,7 +3,6 @@
 
 import argparse
 from dataclasses import dataclass
-import difflib
 import json
 import os
 from pathlib import Path
@@ -67,27 +66,6 @@ def checks(root: Path, profile: str) -> list[Check]:
             ("python3", "-B", "scripts/check.py", "static"),
         )
     ]
-    selected.append(
-        Check(
-            "approvers-recipe",
-            ".",
-            ("python3", "-B", "scripts/check.py", "recipe"),
-        )
-    )
-    selected.append(
-        Check(
-            "saga-recipe",
-            ".",
-            ("python3", "-B", "scripts/check.py", "saga-recipe"),
-        )
-    )
-    selected.append(
-        Check(
-            "relay-recipes",
-            ".",
-            ("python3", "-B", "scripts/check.py", "relay-recipes"),
-        )
-    )
     selected.append(
         Check(
             "gate-tests",
@@ -167,92 +145,6 @@ def checks(root: Path, profile: str) -> list[Check]:
             ]
         )
     return selected
-
-
-# The warden recipe of `fabric/approvers` is written twice: in the module doc
-# (after its heading) and as the consumer package that compiles and tests it.
-# They must be identical.
-RECIPE_MODULE = "src/fabric/approvers.gleam"
-RECIPE_HEADING = "//// ## With warden"
-RECIPE_CONSUMER = "consumers/approvers_warden/src/approvers_warden.gleam"
-
-
-def module_recipe(text: str, heading: str = RECIPE_HEADING) -> str:
-    """The first gleam block of the module doc after the heading."""
-    lines = text.splitlines()
-    try:
-        start = lines.index(heading)
-        opening = lines.index("//// ```gleam", start)
-        closing = lines.index("//// ```", opening)
-    except ValueError as error:
-        raise ValueError(f"{RECIPE_MODULE}: no gleam block after {heading}") from error
-    return (
-        "\n".join(
-            line.removeprefix("//// ").removeprefix("////")
-            for line in lines[opening + 1 : closing]
-        )
-        + "\n"
-    )
-
-
-SAGA_RECIPE = dict(
-    consumer="consumers/saga_tool/src/saga_tool.gleam",
-    module="src/fabric/tool.gleam",
-    heading="//// ## With saga",
-    max_lines=60,
-)
-
-
-RELAY_RECIPES = [
-    {
-        "consumer": "consumers/relay_tools/src/relay_tools.gleam",
-        "module": "src/fabric/tool.gleam",
-        "heading": "//// ## Calling Relay tools",
-    },
-    {
-        "consumer": "consumers/relay_tools/src/relay_discovery.gleam",
-        "module": "src/fabric/tool.gleam",
-        "heading": "//// ## Discovering Relay tools",
-    },
-    {
-        "consumer": "consumers/relay_tools/src/relay_operation.gleam",
-        "module": "src/fabric/graph/operation.gleam",
-        "heading": "//// ## Calling Relay tools from a graph",
-    },
-    {
-        "consumer": "consumers/relay_tools/src/relay_serve.gleam",
-        "module": "src/fabric/invoke.gleam",
-        "heading": "//// ## Serving through Relay",
-    },
-    {
-        "consumer": "consumers/relay_tools/src/relay_run.gleam",
-        "module": "src/fabric/invoke.gleam",
-        "heading": "//// ## Reading a Relay run id",
-    },
-]
-
-
-def recipe_problems(
-    root: Path,
-    *,
-    consumer: str = RECIPE_CONSUMER,
-    module: str = RECIPE_MODULE,
-    heading: str = RECIPE_HEADING,
-    max_lines: int = 50,
-) -> list[str]:
-    """Where the module documentation copy differs from the compiled consumer."""
-    source = (root / consumer).read_text()
-    copies = {module: module_recipe((root / module).read_text(), heading)}
-    problems = []
-    if len(source.splitlines()) > max_lines:
-        problems.append(f"{consumer}: recipe exceeds {max_lines} lines")
-    for name, copy in copies.items():
-        if copy != source:
-            diff = difflib.unified_diff(
-                source.splitlines(), copy.splitlines(), consumer, name, lineterm=""
-            )
-            problems.append(f"{name} differs from {consumer}:\n" + "\n".join(diff))
-    return problems
 
 
 def dependencies(root: Path) -> list[dict[str, str]]:
@@ -359,9 +251,6 @@ def main() -> None:
             "fast",
             "full",
             "ci",
-            "recipe",
-            "saga-recipe",
-            "relay-recipes",
             "static",
             "build",
         ),
@@ -372,25 +261,6 @@ def main() -> None:
         raise SystemExit(quality.static(ROOT))
     if arguments.profile == "build":
         raise SystemExit(quality.build(Path.cwd()))
-    if arguments.profile in ("recipe", "saga-recipe", "relay-recipes"):
-        try:
-            configurations = (
-                RELAY_RECIPES
-                if arguments.profile == "relay-recipes"
-                else [SAGA_RECIPE if arguments.profile == "saga-recipe" else {}]
-            )
-            problems = [
-                problem
-                for configuration in configurations
-                for problem in recipe_problems(ROOT, **configuration)
-            ]
-        except (ValueError, OSError) as error:
-            problems = [str(error)]
-        for problem in problems:
-            print(problem, flush=True)
-        if not problems:
-            print("the recipe is the same in the module doc and the consumer")
-        raise SystemExit(1 if problems else 0)
     logs = arguments.logs.resolve()
     logs.mkdir(parents=True, exist_ok=True)
     # Reset the result before preflight too: an old green must never describe

@@ -12,20 +12,6 @@ import quality
 
 
 class GateTest(unittest.TestCase):
-    def test_registered_recipe_commands_reach_their_public_cli(self) -> None:
-        recipes = {"approvers-recipe", "saga-recipe", "relay-recipes"}
-        for item in check.checks(check.ROOT, "fast"):
-            if item.name in recipes:
-                with self.subTest(recipe=item.name):
-                    result = subprocess.run(
-                        item.command,
-                        cwd=check.ROOT,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                    )
-                    self.assertEqual(result.returncode, 0, result.stdout)
-
     def test_invalid_or_incomplete_sibling_pins_fail_before_checkout(self) -> None:
         for pins in ("", "unknown=" + "a" * 40, "sinal=invalid", "sinal=" + "a" * 40):
             with self.subTest(pins=pins), tempfile.TemporaryDirectory() as folder:
@@ -192,106 +178,23 @@ class GateTest(unittest.TestCase):
             results = json.loads((root / "results.json").read_text())
             self.assertEqual(results[0]["exit_code"], 127)
 
-    def test_recipe_copies_must_match_the_consumer(self) -> None:
-        recipe = "import fabric/approvers\n\npub fn x() {\n  1\n}\n"
-        doc = "".join(
-            "////" + (" " + line if line else "") + "\n" for line in recipe.splitlines()
-        )
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            consumer = root / check.RECIPE_CONSUMER
-            consumer.parent.mkdir(parents=True)
-            consumer.write_text(recipe)
-            module = root / check.RECIPE_MODULE
-            module.parent.mkdir(parents=True)
-            module.write_text(
-                f"//// Doc.\n{check.RECIPE_HEADING}\n////\n//// ```gleam\n{doc}//// ```\n"
-            )
-            self.assertEqual(check.recipe_problems(root), [])
-            changed = recipe.replace("1", "2")
-            changed_doc = "".join(
-                "////" + (" " + line if line else "") + "\n"
-                for line in changed.splitlines()
-            )
-            module.write_text(
-                f"//// Doc.\n{check.RECIPE_HEADING}\n////\n//// ```gleam\n{changed_doc}//// ```\n"
-            )
-            [problem] = check.recipe_problems(root)
-            self.assertIn(f"{check.RECIPE_MODULE} differs", problem)
-            self.assertIn("+  2", problem)
-            module.write_text("no heading\n")
-            with self.assertRaisesRegex(ValueError, "no gleam block"):
-                check.recipe_problems(root)
-
-    def test_saga_recipe_changes_fail_with_a_diff(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            for relative in [
-                check.SAGA_RECIPE["consumer"],
-                check.SAGA_RECIPE["module"],
-            ]:
-                destination = root / relative
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_text((check.ROOT / relative).read_text())
-            self.assertEqual(check.recipe_problems(root, **check.SAGA_RECIPE), [])
-            module = root / check.SAGA_RECIPE["module"]
-            module.write_text(
-                module.read_text().replace("reporting.run_owned(", "reporting.changed(")
-            )
-            [problem] = check.recipe_problems(root, **check.SAGA_RECIPE)
-            self.assertIn("reporting.changed(", problem)
-
-    def test_recipe_line_bounds_include_the_complete_source(self) -> None:
-        for config, limit in [(check.SAGA_RECIPE, 60), ({}, 50)]:
-            with self.subTest(limit=limit), tempfile.TemporaryDirectory() as folder:
-                root = Path(folder)
-                source_path = config.get("consumer", check.RECIPE_CONSUMER)
-                module_path = config.get("module", check.RECIPE_MODULE)
-                heading = config.get("heading", check.RECIPE_HEADING)
-                source = root / source_path
-                module = root / module_path
-                source.parent.mkdir(parents=True, exist_ok=True)
-                module.parent.mkdir(parents=True, exist_ok=True)
-                for count in [limit, limit + 1]:
-                    recipe = "// recipe line\n" * count
-                    source.write_text(recipe)
-                    doc = "".join("//// " + line + "\n" for line in recipe.splitlines())
-                    module.write_text(f"{heading}\n//// ```gleam\n{doc}//// ```\n")
-                    expected = (
-                        []
-                        if count == limit
-                        else [f"{source_path}: recipe exceeds {limit} lines"]
-                    )
-                    self.assertEqual(check.recipe_problems(root, **config), expected)
-
-    def test_each_relay_recipe_is_compiled_verbatim_and_mismatch_has_diff(self) -> None:
-        for config in check.RELAY_RECIPES:
-            with (
-                self.subTest(recipe=config["consumer"]),
-                tempfile.TemporaryDirectory() as folder,
-            ):
-                root = Path(folder)
-                for relative in [config["consumer"], config["module"]]:
-                    destination = root / relative
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    destination.write_text((check.ROOT / relative).read_text())
-                self.assertEqual(check.recipe_problems(root, **config), [])
-                source = (root / config["consumer"]).read_text()
-                self.assertLessEqual(len(source.splitlines()), 50)
-                module = root / config["module"]
-                first = next(
-                    line for line in source.splitlines() if line.startswith("pub fn")
-                )
-                text = module.read_text()
-                start = text.index(config["heading"])
-                module.write_text(
-                    text[:start]
-                    + text[start:].replace("//// " + first, "//// " + first[4:], 1)
-                )
-                [problem] = check.recipe_problems(root, **config)
-                self.assertIn(f"{config['module']} differs", problem)
-                self.assertIn("-pub fn", problem)
-                self.assertIn("+fn", problem)
+    def test_compiled_recipes_stay_within_their_line_bounds(self) -> None:
+        # The recipes are compiled consumer modules that applications copy.
+        # The Saga recipe carries typed reporting errors and may use 60 lines;
+        # every other recipe stays within 50.
+        bounds = {
+            "consumers/approvers_warden/src/approvers_warden.gleam": 50,
+            "consumers/saga_tool/src/saga_tool.gleam": 60,
+            "consumers/relay_tools/src/relay_tools.gleam": 50,
+            "consumers/relay_tools/src/relay_discovery.gleam": 50,
+            "consumers/relay_tools/src/relay_operation.gleam": 50,
+            "consumers/relay_tools/src/relay_serve.gleam": 50,
+            "consumers/relay_tools/src/relay_run.gleam": 50,
+        }
+        for relative, limit in bounds.items():
+            with self.subTest(recipe=relative):
+                lines = (check.ROOT / relative).read_text().splitlines()
+                self.assertLessEqual(len(lines), limit, relative)
 
 
 if __name__ == "__main__":

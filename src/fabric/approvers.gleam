@@ -49,51 +49,16 @@
 ////
 //// ## With warden
 ////
-//// A warden access token must be valid for the application's audience
-//// and carry the scope
-//// `approve:<requirement name>`. The block is compiled and tested verbatim
-//// by `consumers/approvers_warden`, and `scripts/check.py` checks that it
-//// is the same in this module and that package.
-////
-//// ```gleam
-//// import fabric/approvers.{type Approvers}
-//// import fabric/reviewer
-//// import gleam/bool
-//// import gleam/list
-//// import gleam/result
-//// import warden/resource
-////
-//// /// Approvers that accept a warden access token issued for the validator's
-//// /// audience and carrying the scope `approve:<requirement name>`. The answer
-//// /// records the token's `sub` and `iss`, and the verifier `"warden"`. Call
-//// /// it once, at boot: the agent and the request handlers share the value.
-//// pub fn warden_approvers(validator: resource.Validator) -> Approvers(String) {
-////   use token, requirement <- approvers.new("warden")
-////   use claims <- result.try(
-////     resource.verify(validator, token) |> result.map_error(denial),
-////   )
-////   let scope = "approve:" <> requirement.name
-////   use <- bool.guard(
-////     !list.contains(resource.scopes(claims), scope),
-////     Error(approvers.NotAuthorized("the token lacks the scope " <> scope)),
-////   )
-////   reviewer.new(resource.subject(claims))
-////   |> result.try(reviewer.with_issuer(_, resource.issuer(claims)))
-////   |> result.map_error(fn(error) {
-////     approvers.NotAuthenticated(reviewer.describe_error(error))
-////   })
-//// }
-////
-//// fn denial(error: resource.TokenError) -> approvers.Denial {
-////   let reason = resource.describe_error(error)
-////   case resource.error_kind(error) {
-////     resource.Rejected | resource.WrongAudience ->
-////       approvers.NotAuthenticated(reason)
-////     resource.Forbidden -> approvers.NotAuthorized(reason)
-////     resource.Unavailable -> approvers.Unavailable(reason)
-////   }
-//// }
-//// ```
+//// A warden access token must be valid for the application's audience and
+//// carry the scope `approve:<requirement name>`. Copy the module
+//// `approvers_warden` of `consumers/approvers_warden` into the application;
+//// that consumer compiles it and tests it against warden's test issuer. Its
+//// function `warden_approvers(validator)` builds approvers named `"warden"`:
+//// they verify the token with `warden/resource.verify`, require the scope,
+//// and answer with a reviewer made of the token's `sub` and `iss`. A rejected
+//// or wrong-audience token is `NotAuthenticated`, a forbidden one
+//// `NotAuthorized` and an unavailable validator `Unavailable`. Call it once,
+//// at boot: the agent and the request handlers share the value.
 
 import fabric/internal/approvers as core
 import fabric/reviewer.{type Reviewer}

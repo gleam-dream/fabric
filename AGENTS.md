@@ -16,7 +16,7 @@
 
 - `nix develop -c python3 scripts/check.py fast`: formatting, static tooling and the core suite for the local edit loop.
 - `nix develop -c python3 scripts/check.py full`: every retained package, consumer, local service, compiler-negative check and temporary PostgreSQL. `ci` runs the same checks in hosted CI after the pinned sibling checkout (`sibling-revisions.txt`).
-- `nix develop -c python3 scripts/check.py recipe` (also `saga-recipe`, `relay-recipes`): each recipe in a module doc equals its compiled consumer.
+- The recipes that the module documentation describes are compiled consumers: `consumers/saga_tool`, `consumers/relay_tools` and `consumers/approvers_warden`. The gate builds and tests them, and `scripts/test_check.py` keeps each within 50 lines (60 for the Saga recipe).
 - `nix develop -c integrations/fabric_postgres/scripts/test-postgres.sh`: the adapter's tests against a private disposable cluster. Never select a production database.
 - `nix develop -c consumers/jobs/test-service.sh`: the jobs consumer against its own HTTP service.
 - Live-provider commands in `consumers/decision` and `consumers/writing` are explicit, make real requests and are never part of the gate. The gate removes provider credentials from child environments and never loads `.env.local`.

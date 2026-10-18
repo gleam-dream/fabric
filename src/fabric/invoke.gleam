@@ -39,72 +39,22 @@
 ////
 //// ## Serving through Relay
 ////
-//// Copy `relay_serve` into the application; the consumer compiles this exact recipe.
+//// Copy the module `relay_serve` of `consumers/relay_tools` into the
+//// application; that consumer compiles and tests it. `relay_serve.serve`
+//// checks the service with `invoke.check` and serves a Relay tool call
+//// through it. The call's idempotency key, correlation and cancellation reach
+//// the request, and the response's run id travels in the result metadata
+//// under `io.github.gleam-dream/run-id`. An answer completes the call; a
+//// response without one is a tool error that carries the response details.
 //// See the README and the design layer for composition and failure handling.
-////
-//// ```gleam
-//// import fabric/invoke
-//// import fabric/run
-//// import gleam/option.{None, Some}
-//// import gleam/result
-//// import json/blueprint/value
-//// import relay/content
-//// import relay/tool
-////
-//// pub fn serve(
-////   definition: tool.Definition(i, a),
-////   service: invoke.Service(c, input, a),
-////   start: fn(tool.Call(s), i) -> Result(invoke.Request(c, input), tool.ToolError),
-//// ) -> Result(tool.Tool(s), invoke.ConfigError) {
-////   use Nil <- result.map(invoke.check(service))
-////   tool.handle_call(definition, fn(call, input) {
-////     use request <- result.try(start(call, input))
-////     let request =
-////       request
-////       |> invoke.with_key(tool.idempotency_key(call))
-////       |> invoke.with_correlation(tool.correlation(call))
-////       |> invoke.with_cancelled(tool.cancelled(call))
-////     let response = invoke.call(service, request)
-////     let meta = [
-////       #(
-////         "io.github.gleam-dream/run-id",
-////         value.String(run.id_to_string(invoke.id(response))),
-////       ),
-////     ]
-////     case invoke.answer(response) {
-////       Some(answer) -> Ok(tool.complete_with_meta(answer, meta))
-////       None ->
-////         Error(tool.error_with(
-////           [
-////             content.text(invoke.describe_response(response))
-////             |> content.with_meta(meta),
-////           ],
-////           Some(invoke.details(response)),
-////         ))
-////     }
-////   })
-//// }
-//// ```
 ////
 //// ## Reading a Relay run id
 ////
-//// Copy `relay_run` into the application; the consumer compiles this exact recipe.
-//// See the README and the design layer for composition and failure handling.
-////
-//// ```gleam
-//// import fabric/run
-//// import gleam/option.{type Option, None, Some}
-//// import json/blueprint/value
-//// import relay/client
-//// import relay/client/output
-////
-//// pub fn run_of(result: client.ToolResult(a)) -> Option(run.RunId) {
-////   case output.meta(result, "io.github.gleam-dream/run-id") {
-////     Some(value.String(id)) -> run.parse_id(id) |> option.from_result
-////     _ -> None
-////   }
-//// }
-//// ```
+//// Copy the module `relay_run` of `consumers/relay_tools` into the
+//// application; that consumer compiles and tests it. `relay_run.run_of` reads
+//// the run id from a client tool result's metadata and returns `None` when
+//// the entry is absent or is not a valid run id. See the README and the
+//// design layer for composition and failure handling.
 
 import fabric
 import fabric/agent.{type Agent}
