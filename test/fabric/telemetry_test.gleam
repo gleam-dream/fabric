@@ -248,6 +248,56 @@ pub fn a_run_is_observed_after_each_commit_test() {
   ])
 }
 
+/// A dispatched tool whose output cannot be encoded reports a host failure,
+/// with the same action identity as its dispatch and the terminal failure.
+pub fn unencodable_tool_output_is_observed_as_a_host_failure_test() {
+  let events = process.new_subject()
+  let attachments = capture(events)
+  let refusing =
+    codec.string()
+    |> codec.try_map(
+      decode: Ok,
+      encode: fn(_: String) { Error("output cannot be encoded") },
+      placeholder: "",
+    )
+  let broken =
+    tool.define("broken", "", apps.city_codec(), refusing)
+    |> tool.bind(fn(_, _call, _) { Ok("completed tool output") }, fn(_: Nil) {
+      tool.Explain("failed")
+    })
+  let agent =
+    agent.new(
+      "encoding-failure",
+      scripted.plan([
+        scripted.call("broken-call", "broken", "{\"city\":\"Rome\"}"),
+      ]),
+      [broken],
+      policy.always_allow(),
+    )
+    |> support.agent
+  let assert Ok(handle) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "run the tool",
+      correlation: None,
+    )
+  let assert Ok(run.Finished(run.Failed(run.OutputEncodingFailed(..)))) =
+    fabric.await(handle, within: duration.milliseconds(5000))
+  let lines = until(events, "run_finished")
+  release(attachments)
+  about(lines, support.text(fabric.id(handle)))
+  |> should.equal([
+    "run_started R encoding-failure parent=none",
+    "model_turn R 1 ToolRequest tokens=15",
+    "tool_dispatched R 1/broken-call broken",
+    "tool_settled R 1/broken-call broken HostFailure",
+    "run_finished R Failed turns=1 tokens=15 unreported=0",
+  ])
+}
+
 /// A model attempt whose provider reported no usage is observed as
 /// unreported, never as zero tokens: a retried attempt got no reply, and a
 /// reply without usage counts in the run's `unreported_replies` instead of
