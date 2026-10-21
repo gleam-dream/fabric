@@ -48,6 +48,7 @@ pub fn configured_model_applies_settings_and_preserves_native_answer_test() {
       expected.method == actual.method && expected.path == actual.path
     })
   let assert Ok(client) = http_testing.playback(script, http_config.default())
+  // snips-start: generation-settings
   let settings =
     generation.default()
     |> generation.with_max_tokens(128)
@@ -61,6 +62,7 @@ pub fn configured_model_applies_settings_and_preserves_native_answer_test() {
     )
     |> agent.with_answer(codec.int())
     |> agent.build
+  // snips-end: generation-settings
   let runs = store.in_memory(process.new_name("generation-consumer"))
   let assert Ok(Nil) = store.start(runs)
   let assert Ok(handle) =

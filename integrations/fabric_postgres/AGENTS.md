@@ -7,7 +7,7 @@
   [vocabulary](docs/design/CONTEXT.typ), [coverage](docs/COVERAGE.md) and
   [ADRs](docs/adr/) before changing storage guarantees. Parent instructions,
   skills configuration and GitHub tracker continue to apply.
-- Preserve fixture and license provenance when changing retained evidence. README examples and SQL copies are maintained through review, without source-equality checks.
+- Preserve fixture and license provenance when changing retained evidence. README examples use the parent shared Snips command for synchronization; compiled adapter tests own their behavior. SQL copies are maintained through review.
 - Use the parent `nix develop` shell. Run database tests only through
   `integrations/fabric_postgres/scripts/test-postgres.sh`; it creates and removes
   its own private cluster. Never select a production database for verification.

@@ -25,6 +25,9 @@ waiting for the result. Supply a model built with
 `fabric/llm.model(client, config, model_id)` using the application's started
 HTTP Gun client and llm_wire configuration, or a custom `fabric/model.Model`.
 
+<!-- prettier-ignore-start -->
+
+<!-- snips: examples/usage/src/usage/summarize.gleam#summarize -->
 ```gleam
 import fabric
 import fabric/agent
@@ -74,6 +77,8 @@ pub fn summarize(
 }
 ```
 
+<!-- prettier-ignore-end -->
+
 The summarizer finishes with `run.Finished(run.Completed(answer))`, which
 records the model's final answer. A completed run does not prove that every
 action succeeded: an agent with tools can complete after a denied or failed
@@ -117,16 +122,30 @@ outcome, and how to operate, recover and upgrade a worker.
 
 ## Generation settings
 
-Generation controls can be configured without rebuilding the model adapter:
+Generation controls can be configured without rebuilding the model adapter.
+This tested consumer configures an agent with a typed integer answer; `client`
+and `config` come from its provider setup:
 
+<!-- prettier-ignore-start -->
+
+<!-- snips: consumers/app/test/generation_settings_test.gleam#generation-settings -->
 ```gleam
-import llm_wire/generation
-
-let settings = generation.default()
+let settings =
+  generation.default()
   |> generation.with_max_tokens(128)
   |> generation.with_temperature(0.2)
-let model = llm.configured_model(client, config, model_id, settings)
+let assert Ok(agent) =
+  agent.new(
+    "configured",
+    llm.configured_model(client, config, "fixture", settings),
+    [],
+    policy.always_allow(),
+  )
+  |> agent.with_answer(codec.int())
+  |> agent.build
 ```
+
+<!-- prettier-ignore-end -->
 
 Settings are fixed for that model instance. Fabric owns messages, tools, answer
 decoding and correlation. Applications supply their live settings again when

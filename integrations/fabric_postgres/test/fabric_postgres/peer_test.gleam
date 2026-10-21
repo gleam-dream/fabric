@@ -87,12 +87,14 @@ pub fn a_killed_peer_is_recovered_once_without_replaying_its_tool_test() {
     |> fabric_postgres.with_lease(duration.milliseconds(lease))
   let assert Ok(runs) =
     fabric_postgres.store(process.new_name("fabric_survivor_runs"), settings)
+  // snips-start: automatic-recovery
   let assert Ok(subtree) =
     sweeper.supervised(
       runs,
       [sweeper.agent(agent, fn(_) { Nil })],
       every: duration.milliseconds(25),
     )
+  // snips-end: automatic-recovery
   let assert Ok(_) =
     static_supervisor.new(static_supervisor.OneForOne)
     |> static_supervisor.add(subtree)

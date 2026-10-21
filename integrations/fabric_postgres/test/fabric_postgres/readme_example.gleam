@@ -1,3 +1,4 @@
+// snips-start: setup
 import fabric/store
 import fabric_postgres
 import gleam/erlang/process
@@ -25,3 +26,4 @@ pub fn start(database_url: String, node: String) -> store.Store {
   let assert Ok(Nil) = fabric_postgres.migrate(settings)
   runs
 }
+// snips-end: setup

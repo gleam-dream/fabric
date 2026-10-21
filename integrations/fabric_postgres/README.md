@@ -22,6 +22,9 @@ The application owns the pool. Start it before the store and keep it available
 until the store's runners have drained. This setup uses rest-for-one supervision
 to preserve that order:
 
+<!-- prettier-ignore-start -->
+
+<!-- snips: test/fabric_postgres/readme_example.gleam#setup -->
 ```gleam
 import fabric/store
 import fabric_postgres
@@ -52,6 +55,8 @@ pub fn start(database_url: String, node: String) -> store.Store {
 }
 ```
 
+<!-- prettier-ignore-end -->
+
 Apply migrations after the pool starts and before admitting runs or enabling
 recovery. `migrate` applies forward steps atomically and serializes callers per
 schema; repeating it after a lost acknowledgement is safe.
@@ -69,13 +74,23 @@ statements are available as [cigogne migrations](priv/migrations/).
 
 ## Automatic recovery
 
-Register complete root definitions with Fabric's sweeper:
+Register complete root definitions with Fabric's sweeper. This integration-test
+excerpt uses a 25-millisecond interval and a `Nil` context; choose the interval
+and context factory for your application:
 
+<!-- prettier-ignore-start -->
+
+<!-- snips: test/fabric_postgres/peer_test.gleam#automatic-recovery -->
 ```gleam
-let roots = [sweeper.agent(root_agent, context: context_for_run)]
 let assert Ok(subtree) =
-  sweeper.supervised(runs, roots, every: duration.seconds(1))
+  sweeper.supervised(
+    runs,
+    [sweeper.agent(agent, fn(_) { Nil })],
+    every: duration.milliseconds(25),
+  )
 ```
+
+<!-- prettier-ignore-end -->
 
 Use this subtree in place of `store.supervised(runs)`, after the pool and optional
 Sinal forwarder. Shutdown stops the sweeper before runners drain. For graph
@@ -95,13 +110,18 @@ readers accept 5–15 and write 15. Deploy compatible readers before enabling a
 newer writer or capability.
 
 Configure the returned store value before starting it and use that value for
-every handle and sweeper. To select agent writer 3:
+every handle and sweeper. To select agent writer 2:
 
+<!-- prettier-ignore-start -->
+
+<!-- snips: test/fabric_postgres/fabric_run_test.gleam#record-version -->
 ```gleam
-let assert Ok(runs) =
-  fabric_postgres.store(process.new_name("runs"), settings)
-let assert Ok(runs) = store.with_record_version(runs, 3)
+let assert Ok(old_writes) =
+  fabric_postgres.store(process.new_name("old-writes"), settings)
+let assert Ok(old_writes) = store.with_record_version(old_writes, 2)
 ```
+
+<!-- prettier-ignore-end -->
 
 Writer selection changes future agent writes; it neither rewrites rows nor
 downgrades graph records. Older writers refuse states they cannot represent before

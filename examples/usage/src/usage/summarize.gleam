@@ -1,3 +1,4 @@
+// snips-start: summarize
 import fabric
 import fabric/agent
 import fabric/model
@@ -44,3 +45,4 @@ pub fn summarize(
   use Nil <- result.try(store.stop(runs) |> result.map_error(StoreFailed))
   outcome
 }
+// snips-end: summarize

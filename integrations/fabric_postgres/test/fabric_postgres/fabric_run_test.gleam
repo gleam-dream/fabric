@@ -142,9 +142,11 @@ pub fn the_postgres_adapter_supports_the_write_version_window_test() {
   let backend = fabric_postgres.backend(settings)
   let gate = agents.gate()
   let agent = agents.agent(gate, 500)
+  // snips-start: record-version
   let assert Ok(old_writes) =
     fabric_postgres.store(process.new_name("old-writes"), settings)
   let assert Ok(old_writes) = store.with_record_version(old_writes, 2)
+  // snips-end: record-version
   let assert Ok(Nil) = store.start(old_writes)
   let assert Ok(started) =
     fabric.start(
