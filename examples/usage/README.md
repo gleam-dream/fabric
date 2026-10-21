@@ -3,7 +3,7 @@
 Small programs built from Fabric's public modules only. Each module shows one
 topic, runs offline against a scripted model, and is asserted by
 `test/fabric_usage_test.gleam`, so the usage stays true to the library: a
-changed signature fails the gate (`scripts/check.py fast`).
+changed signature fails the gate (`bash scripts/test.sh`).
 
 | Topic                                          | Module                                                 |
 | ---------------------------------------------- | ------------------------------------------------------ |

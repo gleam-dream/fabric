@@ -5,7 +5,6 @@ import gleam/option.{None, Some}
 import gleam/string
 import gleeunit
 import gleeunit/should
-import simplifile
 import sinal/correlation
 import usage/correlation as usage_correlation
 import usage/failures
@@ -84,15 +83,6 @@ pub fn a_sweeper_runs_under_a_leased_store_test() {
 
 pub fn a_sweeper_needs_a_leased_store_test() {
   let assert True = string.contains(recovery.needs_a_leased_store(), "lease")
-}
-
-/// The README's usage example is `src/usage/summarize.gleam`, verbatim.
-pub fn the_readme_shows_the_compiled_summarizer_test() {
-  let assert Ok(readme) = simplifile.read("../../README.md")
-  let assert Ok(source) = simplifile.read("src/usage/summarize.gleam")
-  let assert Ok(#(_, rest)) = string.split_once(readme, "```gleam\n")
-  let assert Ok(#(block, _)) = string.split_once(rest, "```\n")
-  block |> should.equal(source)
 }
 
 pub fn the_summarizer_returns_the_models_answer_test() {

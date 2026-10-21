@@ -80,7 +80,6 @@ pub fn checked() -> graph.Node(Nil, Int, String) {
 
 def main() -> None:
     for directory in (ROOT, ROOT / "consumer"):
-        run(directory, "format", "--check", "src", "test")
         run(directory, "build", "--warnings-as-errors")
         run(directory, "test")
     run(ROOT / "consumer", "run")

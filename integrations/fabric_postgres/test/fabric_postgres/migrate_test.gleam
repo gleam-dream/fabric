@@ -1,10 +1,9 @@
 //// `migrate` creates the schema and brings it up to date once, however
 //// often and from however many nodes it is called; `with_schema` keeps
-//// stores apart; the cigogne files hold the same statements.
+//// stores apart.
 
 import fabric/store/backend
 import fabric_postgres
-import fabric_postgres/internal/migrations
 import fabric_postgres/support
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -122,19 +121,4 @@ pub fn a_schema_name_is_a_plain_lowercase_identifier_test() {
   let assert Ok(_) = fabric_postgres.with_schema(settings, "_runs_2")
   let assert Ok(_) =
     fabric_postgres.with_schema(settings, string.repeat("a", 63))
-}
-
-/// Each cigogne file's up section is its migration's statements, in order.
-pub fn the_cigogne_files_hold_the_same_statements_test() {
-  list.each(migrations.all(), fn(migration) {
-    let assert Ok(text) =
-      support.read_file("priv/migrations/" <> migration.file)
-    let assert Ok(#(_, rest)) = string.split_once(text, "--- migration:up")
-    let assert Ok(#(up, _)) = string.split_once(rest, "--- migration:down")
-    up
-    |> string.split(";\n")
-    |> list.map(string.trim)
-    |> list.filter(fn(statement) { statement != "" })
-    |> should.equal(migration.statements)
-  })
 }

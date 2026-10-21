@@ -1,16 +1,10 @@
 -module(fabric_postgres_test_ffi).
--export([getenv/1, read_file/1, unique/0, with_process/2, kill_linked/1]).
+-export([getenv/1, unique/0, with_process/2, kill_linked/1]).
 
 getenv(Name) ->
     case os:getenv(binary_to_list(Name)) of
         false -> {error, nil};
         Value -> {ok, unicode:characters_to_binary(Value)}
-    end.
-
-read_file(Path) ->
-    case file:read_file(Path) of
-        {ok, Bytes} -> {ok, Bytes};
-        {error, _} -> {error, nil}
     end.
 
 unique() ->

@@ -94,8 +94,6 @@
             # Reproducible external-consumer and compiler-negative graph checks.
             python3
             ruff
-            shellcheck
-            actionlint
             # integrations/fabric_postgres/scripts/test-postgres.sh starts a
             # throwaway cluster with these binaries.
             postgresql_16

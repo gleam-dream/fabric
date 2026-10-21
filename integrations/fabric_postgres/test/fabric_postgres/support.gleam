@@ -15,9 +15,6 @@ fn getenv(name: String) -> Result(String, Nil)
 @external(erlang, "fabric_postgres_test_ffi", "unique")
 pub fn unique() -> Int
 
-@external(erlang, "fabric_postgres_test_ffi", "read_file")
-pub fn read_file(path: String) -> Result(String, Nil)
-
 /// The throwaway cluster's URL. These tests run only through
 /// `scripts/test-postgres.sh`, which sets it; without it they fail rather
 /// than pass untested.

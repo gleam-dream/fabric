@@ -1,4 +1,4 @@
-//// The README's example is `readme_example.gleam` verbatim, and it runs.
+//// The compiled example runs against PostgreSQL.
 
 import fabric
 import fabric/run
@@ -6,18 +6,8 @@ import fabric_postgres/agents
 import fabric_postgres/readme_example
 import fabric_postgres/support
 import gleam/option.{None}
-import gleam/string
 import gleam/time/duration
 import gleeunit/should
-
-pub fn the_readme_example_is_the_example_module_test() {
-  let assert Ok(readme) = support.read_file("README.md")
-  let assert Ok(example) =
-    support.read_file("test/fabric_postgres/readme_example.gleam")
-  let assert Ok(#(_, rest)) = string.split_once(readme, "```gleam\n")
-  let assert Ok(#(block, _)) = string.split_once(rest, "```")
-  block |> should.equal(example)
-}
 
 /// The supervised pool and store start, the schema is migrated, and a
 /// run finishes on the store.

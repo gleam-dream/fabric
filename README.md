@@ -103,7 +103,7 @@ outcome, and how to operate, recover and upgrade a worker.
 
 | Task                                                                                      | Example                                                                                                                                                                           |
 | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bounds, failures, correlation, waiting, budgets, stored reconciliation and sweeper wiring | [Usage examples](examples/usage/README.md), run by `scripts/check.py fast`                                                                                                        |
+| Bounds, failures, correlation, waiting, budgets, stored reconciliation and sweeper wiring | [Usage examples](examples/usage/README.md), run by `scripts/test.sh`                                                                                                              |
 | Typed tool, approval, restart and reconciliation                                          | The payment desk in [`test/fabric/readme_example.gleam`](test/fabric/readme_example.gleam), run by [`test/fabric/readme_test.gleam`](test/fabric/readme_test.gleam)               |
 | Typed answers, delegation and application settings                                        | [Application consumer](consumers/app/test/app_test.gleam)                                                                                                                         |
 | Conditional routing, signals and managed agents                                           | [Graph consumer](consumers/graph/README.md)                                                                                                                                       |
@@ -138,10 +138,12 @@ does not contain it yet.
 
 ```sh
 nix develop -c gleam test
-nix develop -c python3 scripts/check.py full
+nix flake check
+nix run .#design-gate-check -- docs/design . --nested-project integrations/fabric_postgres
+nix develop --command bash scripts/test.sh
 ```
 
-[AGENTS.md](AGENTS.md) lists the gate profiles, design-layer commands and references. The oracle pin and comparison ledger are in [docs/ORACLE.md](docs/ORACLE.md) and the dated live-provider measurements in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). The
+[AGENTS.md](AGENTS.md) lists the test and design-layer commands and references. The oracle pin and comparison ledger are in [docs/ORACLE.md](docs/ORACLE.md) and the dated live-provider measurements in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). The
 [design](docs/design/design.typ), its [vocabulary](docs/design/CONTEXT.typ),
 [coverage](docs/COVERAGE.md) and [decision records](docs/adr/) describe the
 supported contracts and the capabilities that remain unbuilt.
