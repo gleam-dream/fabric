@@ -26,5 +26,5 @@ account is needed.
 The service key is the pair of graph run id and activation, never the attempt,
 so recovery of an interrupted submission finds the same job. The service is
 an example and gives no general exactly-once guarantee. The
-[design](../../docs/design/design.typ) specifies the job, cancellation and
+[design](../../docs/design/design-layer.pdf) specifies the job, cancellation and
 deadline contracts.

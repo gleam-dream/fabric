@@ -55,6 +55,6 @@ Set `FABRIC_WRITING_REVIEWER` to `llm` or `typesafe` and:
 | `FABRIC_WRITING_EXPECTED_REVISION` | Revision returned by `inspect`, required for approve and reject         |
 | `FABRIC_WRITING_OPERATOR`          | Who answers an approval; the terminal authenticates, default `operator` |
 
-The [design walkthrough](../../docs/design/design.typ) specifies the flow, and
+The [design walkthrough](../../docs/design/design-layer.pdf) specifies the flow, and
 [ADR 0017](../../docs/adr/0017-retain-live-provider-evidence-as-dated-sanitized-captures.md)
 records the dated live timings, and [BENCHMARKS.md](../../docs/BENCHMARKS.md) keeps their method, rerun commands and limits.

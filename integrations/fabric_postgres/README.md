@@ -126,7 +126,7 @@ let assert Ok(old_writes) = store.with_record_version(old_writes, 2)
 Writer selection changes future agent writes; it neither rewrites rows nor
 downgrades graph records. Older writers refuse states they cannot represent before
 changing the record, and downgrading after newer writes needs a separate migration
-plan. The [design](docs/design/design.typ) states the compatibility contract.
+plan. The [design](docs/design/design-layer.pdf) states the compatibility contract.
 
 ## Pruning
 
@@ -195,7 +195,7 @@ The harness creates and removes a private PostgreSQL cluster. Direct `gleam test
 fails without its test URL. The cluster disables `fsync` and `synchronous_commit`;
 these tests do not establish production power-loss durability.
 
-The [design](docs/design/design.typ), [vocabulary](docs/design/CONTEXT.typ),
+The [design](docs/design/design-layer.pdf), [vocabulary](docs/design/design-layer.pdf),
 [coverage](docs/COVERAGE.md) and [ADRs](docs/adr/) describe the storage contracts,
 and the parent Fabric design layer describes startup, readiness, recovery and
 shutdown.

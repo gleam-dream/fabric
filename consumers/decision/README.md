@@ -29,6 +29,6 @@ nix develop -c sh -c 'cd consumers/decision && gleam run'
 nix develop -c sh -c 'cd consumers/decision && gleam run -m fabric_decision_classifier'
 ```
 
-The [design](../../docs/design/design.typ) specifies the adapters, and
+The [design](../../docs/design/design-layer.pdf) specifies the adapters, and
 [ADR 0017](../../docs/adr/0017-retain-live-provider-evidence-as-dated-sanitized-captures.md)
 records the dated live results; [BENCHMARKS.md](../../docs/BENCHMARKS.md) keeps their method and limits.

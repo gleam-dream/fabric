@@ -1,29 +1,44 @@
-# fabric
+# Fabric
 
-Fabric runs LLM agents and conditional graphs in Gleam. It combines typed
-tools, application policy and supervised execution with approval, cancellation
-and recovery.
+Fabric runs bounded LLM agents and durable control graphs in Gleam on Erlang/OTP.
+Typed tools and application policy govern effects; recorded outcomes support
+approval and recovery. Applications provide models, domain operations,
+authorization and resource supervision.
 
-## Setup
+Use Fabric when an agent or workflow needs typed boundaries, approval, or recovery across process loss. Fabric targets Erlang and requires Gleam 1.18 or later. It is not yet published to Hex.
 
-Fabric is not yet published to Hex. Its unpublished sibling packages are Git
-dependencies on `main`; each `manifest.toml` records the resolved commit, and
-Gleam fetches them automatically. For local development, add a Fabric
-checkout to your application's `gleam.toml`:
+## Capabilities
+
+- Build checked agents with typed tools, typed final answers, and explicit limits.
+- Bound model attempts, concurrent tool bodies, timeouts, and optional token or family budgets.
+- Gate actions with application policy; support approval, rejection, cancellation, and effect reconciliation.
+- Retain run records and inspect, reopen, or recover work through a supervised store.
+- Build conditional graphs with typed state and durable routes, signals, jobs, managed children, and structured forks.
+- Use a model callback or the `llm_wire` adapter, with provider generation settings.
+- Serve agents or graphs through protocol-neutral, optionally keyed invocation.
+
+## Typical uses
+
+- Approval-gated external actions such as payments, where an uncertain request must wait for review or reconciliation. See the [tested payment desk](test/fabric/readme_example.gleam) and its [test](test/fabric/readme_test.gleam).
+- Multi-stage workflows that route on typed results, wait for human signals, or observe external jobs. See the [graph consumer](consumers/graph/README.md) and [job consumer](consumers/jobs/README.md).
+- Request or job handlers that need to reopen a run by a stable id after a retry or restart. See the [usage examples](examples/usage/README.md).
+
+Fabric does not provide retrieval or vector storage, agent token streaming, remote agent protocols, distributed Erlang, or general workflow compensation. Saga, Relay, and Warden integrations are application recipes; see the [module documentation](src/fabric/tool.gleam) and [consumer examples](consumers/).
+
+## Install
+
+Add Fabric to your application's `gleam.toml`:
 
 ```toml
 [dependencies]
-fabric = { path = "../fabric" }
+fabric = { git = "https://github.com/gleam-dream/fabric.git", ref = "main" }
 ```
 
-The package targets Erlang and requires Gleam 1.18 or later.
+Gleam fetches Fabric and its Git dependencies. The application's `manifest.toml` records the exact commits used by that build.
 
-## Usage
+## Start with an agent
 
-This function runs a short-lived summarizer and stops its in-memory store after
-waiting for the result. Supply a model built with
-`fabric/llm.model(client, config, model_id)` using the application's started
-HTTP Gun client and llm_wire configuration, or a custom `fabric/model.Model`.
+This short-lived summarizer uses an in-memory store. Pass a model made with `fabric/llm.model(client, config, model_id)` and the application's started HTTP Gun client, or provide a custom `fabric/model.Model`.
 
 <!-- prettier-ignore-start -->
 
@@ -79,52 +94,39 @@ pub fn summarize(
 
 <!-- prettier-ignore-end -->
 
-The summarizer finishes with `run.Finished(run.Completed(answer))`, which
-records the model's final answer. A completed run does not prove that every
-action succeeded: an agent with tools can complete after a denied or failed
-action, so read the action records from `fabric.snapshot` before treating its
-answer as business success. Other statuses preserve refusal, exhaustion or
-unfinished work. The example discards stored runs when the store stops; a
-service that needs later recovery supervises a durable store and retains each
-run id.
+This example discards its in-memory records when the store stops. A service that needs recovery supervises a persistent store and keeps each run id. A completed answer also does not prove that every action succeeded; inspect `fabric.snapshot` before treating an agent's answer as business success.
 
-## Ownership and defaults
+## Core model
 
-The application starts and stops HTTP clients, database pools and store
-supervision. Fabric never starts or stops a supplied HTTP Gun client. Context
-and credentials stay live and are not stored with a run. Dropping a run handle
-does not cancel it.
+The application builds a checked `Agent` or `Graph` definition and starts runs in a `Store`. The store retains run state and supervises runners; a handle only addresses a run, not its worker. Typed `Tool` and graph `Operation` boundaries classify external results, while application `Policy` and approval verifiers decide who may proceed.
 
-Agent bounds default to eight model attempts, four concurrent tools, 600
-seconds per model call and 60 seconds per tool body, and approval requests
-expire after seven days. Token and family budgets are opt-in. Interrupted
-external effects can require reconciliation, and replay is enabled only when
-repeating the effect is safe. Directory storage supports process and VM restart
-on one host; production power-loss durability needs a database backend. The
-[design](docs/design/design.typ) states every bound, its setting and its
-outcome, and how to operate, recover and upgrade a worker.
+```mermaid
+flowchart LR
+  app[Application] -->|defines and starts| control[Agent or graph]
+  app -->|owns| supervisor[OTP supervisor]
+  supervisor --> store[Store]
+  control -->|committed transitions| store
+  store -->|supervises| runners[Runners]
+  store --> backend[Memory, directory, or custom backend]
+  runners --> model[Model or provider]
+  runners --> effects[Tools and graph operations]
+```
+
+## Ownership and recovery
+
+- The application starts and stops HTTP clients, database pools, verifiers, and store supervision. Context and credentials stay live in the application and are not stored with runs.
+- Dropping a run handle does not cancel its run. `open` reads or commands a run; `recover` takes over work only when its prior runner is gone. On an unleased store, recover after the prior owner has stopped. A leased store checks ownership before takeover.
+- If a tool or operation may have reached an external system without a saved result, Fabric retains it as uncertain and blocks dependent progress until it is reconciled. Declare replay only when repeating that effect is safe.
+- The directory store supports process or VM restart on one host, but does not promise power-loss durability. Use an application backend for production durability; see the [PostgreSQL adapter](integrations/fabric_postgres/README.md).
+- Set execution bounds before starting work. Model/tool timeouts are not a whole-run
+  deadline; token and family budgets are opt-in. See [agent](src/fabric/agent.gleam)
+  and [graph](src/fabric/graph.gleam) for the available limits.
 
 ## Examples
 
-| Task                                                                                      | Example                                                                                                                                                                           |
-| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bounds, failures, correlation, waiting, budgets, stored reconciliation and sweeper wiring | [Usage examples](examples/usage/README.md), run by `scripts/test.sh`                                                                                                              |
-| Typed tool, approval, restart and reconciliation                                          | The payment desk in [`test/fabric/readme_example.gleam`](test/fabric/readme_example.gleam), run by [`test/fabric/readme_test.gleam`](test/fabric/readme_test.gleam)               |
-| Typed answers, delegation and application settings                                        | [Application consumer](consumers/app/test/app_test.gleam)                                                                                                                         |
-| Conditional routing, signals and managed agents                                           | [Graph consumer](consumers/graph/README.md)                                                                                                                                       |
-| Structured LLM or TypeSafe decisions                                                      | [Decision consumer](consumers/decision/README.md)                                                                                                                                 |
-| External job completion, cancellation and deadlines                                       | [Job consumer](consumers/jobs/README.md)                                                                                                                                          |
-| Generation, review and artifact publication                                               | [Writing consumer](consumers/writing/README.md)                                                                                                                                   |
-| A Saga workflow as a tool                                                                 | The `With saga` recipe described in the `fabric/tool` module documentation, compiled by [`consumers/saga_tool`](consumers/saga_tool)                                              |
-| MCP calls, discovery and serving                                                          | The Relay recipes described in the `fabric/tool`, `fabric/graph/operation` and `fabric/invoke` module documentation, compiled by [`consumers/relay_tools`](consumers/relay_tools) |
-| Authenticated Warden approval                                                             | The `With warden` recipe described in the `fabric/approvers` module documentation, compiled by [`consumers/approvers_warden`](consumers/approvers_warden)                         |
-| PostgreSQL leases, migrations and pruning                                                 | [PostgreSQL adapter](integrations/fabric_postgres/README.md)                                                                                                                      |
+The [usage examples](examples/usage/README.md) cover bounds, failure classification, waiting, budgets, reconciliation, and recovery. The [graph consumer](consumers/graph/README.md), [decision consumer](consumers/decision/README.md), [jobs consumer](consumers/jobs/README.md), and [writing consumer](consumers/writing/README.md) show larger applications. The [PostgreSQL adapter](integrations/fabric_postgres/README.md) documents database-backed leases and operations.
 
-## Generation settings
-
-Generation controls can be configured without rebuilding the model adapter.
-This tested consumer configures an agent with a typed integer answer; `client`
-and `config` come from its provider setup:
+Generation settings are fixed on a model instance and supplied again when rebuilding a runtime. Fabric retains its own messages, tools, answer decoding, and correlation. This checked excerpt assumes imports from `fabric/agent`, `fabric/llm`, `fabric/policy`, `llm_wire/generation`, and `json/blueprint/codec`; `client` and `config` come from your provider setup.
 
 <!-- prettier-ignore-start -->
 
@@ -147,22 +149,4 @@ let assert Ok(agent) =
 
 <!-- prettier-ignore-end -->
 
-Settings are fixed for that model instance. Fabric owns messages, tools, answer
-decoding and correlation. Applications supply their live settings again when
-reconstructing a runtime, and no settings enter persisted execution records.
-This coordinated API is unpublished; the recorded immutable LLM Wire dependency
-does not contain it yet.
-
-## Development
-
-```sh
-nix develop -c gleam test
-nix flake check
-nix run .#design-gate-check -- docs/design . --nested-project integrations/fabric_postgres
-nix develop --command bash scripts/test.sh
-```
-
-[AGENTS.md](AGENTS.md) lists the test and design-layer commands and references. The oracle pin and comparison ledger are in [docs/ORACLE.md](docs/ORACLE.md) and the dated live-provider measurements in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). The
-[design](docs/design/design.typ), its [vocabulary](docs/design/CONTEXT.typ),
-[coverage](docs/COVERAGE.md) and [decision records](docs/adr/) describe the
-supported contracts and the capabilities that remain unbuilt.
+The [design](docs/design/design-layer.pdf) defines supported contracts, limits, and capabilities still unbuilt. Historical live-provider measurements and their limitations are recorded in [BENCHMARKS.md](docs/BENCHMARKS.md); Fabric has no runtime benchmark harness. See [AGENTS.md](AGENTS.md) for repository development and validation commands.
