@@ -1,0 +1,35 @@
+{
+  "format": "fabric.graph",
+  "version": 14,
+  "write": "7795a545be7d24223f822ed07b58e1c2",
+  "run": "graph-job",
+  "definition": {
+    "identity": { "name": "fixture-job", "version": 1 },
+    "signature": "{\"entry\":\"poll\",\"nodes\":[{\"node\":\"poll\",\"operation\":\"fixture-job-read\",\"version\":1,\"kind\":\"job\",\"recovery\":{\"tag\":\"reconcile\"},\"destinations\":[]}]}",
+    "max_activations": 3
+  },
+  "incarnation": 1,
+  "allocated": 1,
+  "approvals_issued": 0,
+  "value": "3",
+  "initial": "3",
+  "parent": null,
+  "receipts": [],
+  "phase": {
+    "tag": "waiting_job",
+    "activation": {
+      "id": 1,
+      "attempt": 1,
+      "prepared": {
+        "node": "poll",
+        "operation": { "name": "fixture-job-read", "version": 1 },
+        "input": "\"receipt-3\"",
+        "kind": "job",
+        "recovery": { "tag": "reconcile" }
+      },
+      "deadline": null
+    }
+  },
+  "forks": [],
+  "family_budget": null
+}

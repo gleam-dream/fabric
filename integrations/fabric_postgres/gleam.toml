@@ -1,0 +1,27 @@
+# Fabric's PostgreSQL store: a leased store backend over one table, for
+# several nodes that share one database. A separate package, so that Fabric
+# itself does not depend on pog.
+name = "fabric_postgres"
+version = "0.1.0"
+target = "erlang"
+gleam = ">= 1.18.0"
+licenses = ["Apache-2.0"]
+description = "A PostgreSQL leased store for Fabric runs."
+
+[dependencies]
+gleam_stdlib = ">= 0.70.0 and < 2.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_json = ">= 3.0.0 and < 4.0.0"
+gleam_time = ">= 1.11.0 and < 2.0.0"
+fabric = { path = "../.." }
+# Pinned tight, not the usual `>= x.y.0 and < (x+1).0.0`: an application that
+# uses both fabric_postgres and grind shares one pog/pgo pool, and grind pins
+# these exact minor ranges because its FFI matches pog's and pgo's private
+# connection shapes. Keep both ranges aligned with grind's gleam.toml.
+pog = ">= 4.1.0 and < 4.2.0"
+pgo = ">= 0.20.0 and < 0.21.0"
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "main" }

@@ -1,0 +1,22 @@
+# An external application that uses Fabric through its public modules only.
+name = "app"
+version = "0.0.0"
+target = "erlang"
+gleam = ">= 1.18.0"
+
+[dependencies]
+gleam_time = ">= 1.11.0 and < 2.0.0"
+gleam_stdlib = ">= 0.70.0 and < 2.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"
+fabric = { path = "../.." }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "main" }
+saga = { git = "https://github.com/gleam-dream/saga.git", ref = "main" }
+sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "main" }
+
+[dev-dependencies]
+simplifile = ">= 2.0.0 and < 3.0.0"
+http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "main" }
+llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "main" }
+gleam_json = ">= 3.0.0 and < 4.0.0"
+gleeunit = ">= 1.0.0 and < 2.0.0"

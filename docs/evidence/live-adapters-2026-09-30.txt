@@ -1,0 +1,20 @@
+Live checks: synthetic arithmetic input; one bounded request per provider; credentials redacted.
+
+OpenAI structured decision — exit 0
+publish
+requested model: gpt-4.1-nano-2025-04-14
+typed answer: {"decision":"approve"}
+usage: Usage(77, 6, 83)
+warning: Git tree '/code/gleam-dream/fabric' is dirty
+   Compiled in 0.31s
+    Running fabric_decision_demo.main
+
+TypeSafe classifier decision — exit 0
+publish
+requested model: jev-latest
+resolved model: jev-1.13.0
+typed answers: #(Noul(0.99), #(Choice(Approve, "approve", [Probability("approve", Approve, 1.0), Probability("revise", Revise, 0.0)], 1.0), Score(2.0, [#(0, 0.0), #(1, 0.0), #(2, 1.0)], 1.0, [String("Incorrect"), String("Partially correct or unclear"), String("Correct")])))
+usage: Usage(384, 62)
+warning: Git tree '/code/gleam-dream/fabric' is dirty
+   Compiled in 0.22s
+    Running fabric_decision_classifier.main

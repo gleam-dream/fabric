@@ -1,0 +1,18 @@
+#let terms = (
+  (slug: "term-pg-settings", title: [PostgreSQL settings], body: [The immutable adapter configuration containing a borrowed connection, node identity, lease duration and schema identifier.]),
+  (slug: "term-pg-row", title: [Stored row], body: [The persistence aggregate for one Fabric record, addressed by its storage key and advanced by an expected revision.]),
+  (slug: "term-pg-bytes", title: [Record bytes], body: [The exact encoded Fabric record retained as text, including its write token. Equivalent decoded values do not establish byte identity.]),
+  (slug: "term-pg-revision", title: [Storage revision], body: [The positive counter identifying one committed version of a stored row. It is independent of record format version and execution incarnation.]),
+  (slug: "term-pg-lease", title: [Stored lease], body: [The optional owner and absolute expiry associated with a stored row. A lease is live only while its expiry is ahead of the backend clock.]),
+  (slug: "term-pg-owner", title: [Lease owner], body: [The node, store name and random process identity identifying one Fabric store incarnation. Node identity alone does not identify the process.]),
+  (slug: "term-pg-cas", title: [Conditional commit], body: [A record update that atomically requires the expected storage revision and the declared lease condition.]),
+  (slug: "term-pg-clock", title: [Backend time], body: [UTC Unix milliseconds from the database clock that judges lease expiry and automatic wait eligibility. Clock correction can make consecutive samples decrease.]),
+  (slug: "term-pg-projection", title: [Metadata projection], body: [A derived interpretation of supported record bytes, tagged with a projection version and the storage revision inspected. It is not another execution record.]),
+  (slug: "term-pg-unknown", title: [Unknown projection], body: [A current-version metadata marker whose source record has no validated interpretation. It grants no pruning or scheduling permission.]),
+  (slug: "term-pg-observation", title: [Wait observation], body: [The last claimed observation key, dependency revision map and backend claim time associated with a discoverable wait.]),
+  (slug: "term-pg-ready", title: [Ready claim], body: [A lease acquisition for a free wait whose validated dependency, polling or deadline trigger is eligible. Eligibility supplies a reason to inspect the run, not authority to execute it.]),
+  (slug: "term-pg-closure", title: [Pruning closure], body: [The complete stored membership reachable from a Fabric root through validated reciprocal attachments, including its matching family budget record when declared. The parent Fabric layer owns family semantics.]),
+  (slug: "term-pg-age", title: [Record age], body: [Elapsed backend time since the latest execution-record write. Lease renewal, discovery and metadata refresh do not restart it.]),
+  (slug: "term-pg-snapshot", title: [Diagnostic snapshot], body: [One database observation of classified records, intervention flags, record ages and lease backlog at one sampled time. It authorizes no execution or maintenance.]),
+  (slug: "term-pg-migration", title: [Schema migration], body: [One numbered transition of the storage schema, recorded after its statements apply. Its number is independent of record and projection versions.]),
+)

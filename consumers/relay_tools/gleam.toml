@@ -1,0 +1,19 @@
+# Unpublished consumer of the compiled Relay recipes.
+name = "relay_tools_consumer"
+version = "0.0.0"
+target = "erlang"
+gleam = ">= 1.18.0"
+licenses = ["Apache-2.0"]
+description = "Relay MCP tools for Fabric agents and graphs, and Fabric agents served as Relay MCP tools."
+
+[dependencies]
+gleam_stdlib = ">= 0.70.0 and < 2.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_time = ">= 1.11.0 and < 2.0.0"
+fabric = { path = "../.." }
+relay = { git = "https://github.com/gleam-dream/relay.git", ref = "main" }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "main" }
+sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "main" }
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"

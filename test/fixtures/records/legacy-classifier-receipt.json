@@ -1,0 +1,5 @@
+[
+  "fabric.typesafe.receipt.v1",
+  "{\"model\":\"jev-latest\",\"state\":\"2 + 2 = 4\",\"questions\":{\"correct\":{\"type\":\"noul\",\"instructions\":\"Is the statement correct?\"},\"decision\":{\"type\":\"choice\",\"instructions\":\"What should happen?\",\"criteria\":{\"approve\":\"Correct\",\"revise\":\"Incorrect\"}},\"quality\":{\"type\":\"score\",\"instructions\":\"How correct?\",\"criteria\":[\"incorrect\",\"partial\",\"correct\"]}}}",
+  "{\"model\": \"protocol-fixture-only\", \"answers\": {\"correct\": {\"type\": \"noul\", \"noul\": 0.9}, \"decision\": {\"type\": \"choice\", \"choice\": \"approve\", \"probabilities\": {\"approve\": 0.8, \"revise\": 0.2}, \"confidence\": 0.7}, \"quality\": {\"type\": \"score\", \"score\": 1.8, \"probabilities\": {\"0\": 0.0, \"1\": 0.2, \"2\": 0.8}, \"legend\": {\"0\": \"incorrect\", \"1\": \"partial\", \"2\": \"correct\"}, \"confidence\": 0.7}}, \"usage\": {\"input_tokens\": 12, \"output_tokens\": 8}}"
+]

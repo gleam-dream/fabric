@@ -1,0 +1,1127 @@
+//// An external package uses only public graph APIs on the real PostgreSQL
+//// backend. Approval survives store loss and completion releases its lease.
+
+import fabric
+import fabric/approvers
+import fabric/budget
+import fabric/graph
+import fabric/graph/agent as agent_node
+import fabric/graph/child
+import fabric/graph/definition
+import fabric/graph/job
+import fabric/graph/operation
+import fabric/graph/signal
+import fabric/internal/store as store_core
+import fabric/policy
+import fabric/reviewer
+import fabric/run
+import fabric/store
+import fabric/store/backend
+import fabric/sweeper
+import fabric/testing as fabric_testing
+import fabric/tool
+import fabric_postgres
+import fabric_postgres/agents
+import fabric_postgres/support
+import gleam/dynamic/decode
+import gleam/erlang/process
+import gleam/int
+import gleam/json
+import gleam/option.{None}
+import gleam/time/duration
+import gleeunit/should
+import json/blueprint/codec
+
+pub fn a_graph_survives_store_restart_and_completes_on_postgres_test() {
+  let effects = process.new_subject()
+  let node_id = definition.node_id("increment")
+  let op =
+    operation.new(
+      run.DefinitionId("increment", 1),
+      codec.int(),
+      codec.int(),
+      fn(_, invocation, n) {
+        process.send(effects, invocation.activation)
+        Ok(n + 1)
+      },
+      fn(_error: Nil) { tool.Explain("cannot fail") },
+    )
+  let node =
+    definition.node(
+      node_id,
+      op,
+      fn(n) { Ok(n) },
+      fn(_, n) { Ok(definition.Finish(n, n)) },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(
+      definition.new(
+        run.DefinitionId("postgres-graph", 1),
+        entry: node_id,
+        nodes: [node],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  let settings = support.migrated(support.pool(4), "graph", support.schema())
+  let assert Ok(id) = run.parse_id("postgres-graph-run")
+  let #(owner, approval) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("graph-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let runtime =
+        graph.new(spec, runs, fn(_) { Nil }, fn(_, _) {
+          Ok(policy.RequireApproval(run.Requirement("increment", 1)))
+        })
+        |> graph.with_approvers(fabric_testing.trusting_approvers())
+        |> graph.build
+        |> should.be_ok
+      let assert Ok(handle) = graph.start(runtime, id, 41, correlation: None)
+      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+      let assert graph.AwaitingApproval(approval) = waiting
+      approval
+    })
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("graph-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let runtime =
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.with_approvers(fabric_testing.trusting_approvers())
+    |> graph.build
+    |> should.be_ok
+  let handle = open_graph(runtime, id)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(_) =
+    graph.approve(
+      handle,
+      approval,
+      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
+      context: Nil,
+    )
+  let assert Ok(_) = graph.await(handle, within: duration.seconds(30))
+  let assert Ok(done) = graph.snapshot(handle)
+  done.value |> should.equal(42)
+  done.status |> should.equal(graph.Completed(42))
+  process.receive(effects, 30_000) |> should.equal(Ok(1))
+  process.receive(effects, 0) |> should.equal(Error(Nil))
+  let assert Ok(row) =
+    fabric_postgres.backend(settings).get(run.id_to_string(id))
+  row.holder |> should.equal(backend.Free)
+  json.parse(row.record, decode.field("format", decode.string, decode.success))
+  |> should.equal(Ok("fabric.graph"))
+}
+
+pub fn a_signal_wait_releases_its_lease_and_another_store_consumes_it_once_test() {
+  let response = signal.new(run.DefinitionId("human-review", 1), codec.bool())
+  let node_id = definition.node_id("review")
+  let node =
+    definition.node(
+      node_id,
+      operation.await_signal(codec.int(), response),
+      fn(n) { Ok(n) },
+      fn(n, approved) { Ok(definition.Finish(n, approved)) },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(
+      definition.new(
+        run.DefinitionId("postgres-signal", 1),
+        entry: node_id,
+        nodes: [node],
+        state: codec.int(),
+        answer: codec.bool(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  let settings =
+    support.migrated(support.pool(4), "graph-signal", support.schema())
+  let assert Ok(id) = run.parse_id("postgres-signal-run")
+  let #(owner, reference) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("signal-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let runtime =
+        graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.with_approvers(fabric_testing.trusting_approvers())
+        |> graph.build
+        |> should.be_ok
+      let assert Ok(handle) = graph.start(runtime, id, 41, correlation: None)
+      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+      let assert graph.AwaitingSignal(reference) = waiting
+      let assert Ok(entry) = store_core.get(runs, run.id_to_string(id))
+      entry.live |> should.equal(None)
+      reference
+    })
+  let assert Ok(row) =
+    fabric_postgres.backend(settings).get(run.id_to_string(id))
+  row.holder |> should.equal(backend.Free)
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("signal-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let handle =
+    open_graph(
+      graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.with_approvers(fabric_testing.trusting_approvers())
+        |> graph.build
+        |> should.be_ok,
+      id,
+    )
+  let assert Ok(_) = graph.deliver(handle, reference, response, True)
+  let assert Ok(done) = graph.snapshot(handle)
+  done.status |> should.equal(graph.Completed(True))
+  let assert Ok(_) = graph.deliver(handle, reference, response, True)
+  let assert Ok(duplicate) = graph.snapshot(handle)
+  duplicate.revision |> should.equal(done.revision)
+}
+
+pub fn a_job_wait_survives_store_loss_without_holding_a_lease_test() {
+  let observer =
+    job.observe(
+      run.DefinitionId("postgres-job", 1),
+      codec.string(),
+      codec.int(),
+      fn(_, receipt) {
+        receipt |> should.equal("accepted-job")
+        Ok(job.Completed(42))
+      },
+    )
+  let node_id = definition.node_id("observe")
+  let node =
+    definition.node(
+      node_id,
+      operation.await_job(observer),
+      fn(receipt) { Ok(receipt) },
+      fn(receipt, output) { Ok(definition.Finish(receipt, output)) },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(
+      definition.new(
+        run.DefinitionId("postgres-job-flow", 1),
+        entry: node_id,
+        nodes: [node],
+        state: codec.string(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  let settings =
+    support.migrated(support.pool(4), "graph-job", support.schema())
+  let assert Ok(id) = run.parse_id("postgres-job-run")
+  let #(owner, reference) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("job-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let runtime =
+        graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.with_approvers(fabric_testing.trusting_approvers())
+        |> graph.build
+        |> should.be_ok
+      let assert Ok(handle) =
+        graph.start(runtime, id, "accepted-job", correlation: None)
+      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+      let assert graph.AwaitingJob(reference) = waiting
+      reference
+    })
+  let backend = fabric_postgres.backend(settings)
+  let assert Ok(row) = backend.get(run.id_to_string(id))
+  row.holder |> should.equal(backend.Free)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
+  |> should.equal(Ok(0))
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("job-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let handle =
+    open_graph(
+      graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+        |> graph.with_approvers(fabric_testing.trusting_approvers())
+        |> graph.build
+        |> should.be_ok,
+      id,
+    )
+  let assert Ok(waiting) = graph.recover(handle)
+  waiting |> should.equal(graph.AwaitingJob(reference))
+  let assert Ok(_) = graph.poll_job(handle, reference)
+  let assert Ok(done) = graph.snapshot(handle)
+  done.status |> should.equal(graph.Completed(42))
+  graph.poll_job(handle, reference) |> should.equal(Ok(done.status))
+  let assert Ok(row) = backend.get(run.id_to_string(id))
+  row.holder |> should.equal(backend.Free)
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
+  |> should.equal(Ok(1))
+}
+
+pub fn scheduled_job(runs, every, read) {
+  let observer =
+    job.observe(
+      run.DefinitionId("pg-scheduled-observer", 1),
+      codec.string(),
+      codec.int(),
+      fn(_, receipt) { read(receipt) },
+    )
+  let observer = job.with_poll_interval(observer, duration.milliseconds(every))
+  let id = definition.node_id("observe")
+  let node =
+    definition.node(
+      id,
+      operation.await_job(observer),
+      fn(receipt) { Ok(receipt) },
+      fn(receipt, n) { Ok(definition.Finish(receipt, n)) },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(
+      definition.new(
+        run.DefinitionId("pg-scheduled-job", 1),
+        entry: id,
+        nodes: [node],
+        state: codec.string(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.with_approvers(fabric_testing.trusting_approvers())
+  |> graph.build
+  |> should.be_ok
+}
+
+fn owned_job(runs, read, request) {
+  let observer =
+    job.observe(
+      run.DefinitionId("pg-owned-observer", 1),
+      codec.string(),
+      codec.int(),
+      fn(_, receipt) { read(receipt) },
+    )
+  let observer = job.with_poll_interval(observer, duration.milliseconds(100))
+  let id = definition.node_id("observe")
+  let op =
+    operation.own_job(
+      observer,
+      fn(_, _, receipt) { request(receipt) },
+      fn(error) { error },
+    )
+  let node =
+    definition.node(
+      id,
+      op,
+      fn(receipt) { Ok(receipt) },
+      fn(_, _) { panic as "owned cancellation must not route" },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(
+      definition.new(
+        run.DefinitionId("pg-owned-job", 1),
+        entry: id,
+        nodes: [node],
+        state: codec.string(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+  |> graph.with_approvers(fabric_testing.trusting_approvers())
+  |> graph.build
+  |> should.be_ok
+}
+
+pub fn owned_job_cancellation_survives_postgres_restart_and_sweeps_before_pruning_test() {
+  let settings =
+    support.migrated(support.pool(4), "owned-job", support.schema())
+  let assert Ok(id) = run.parse_id("pg-owned-stop")
+  let #(owner, reference) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("owned-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let assert Ok(handle) =
+        graph.start(
+          support.budgeted(
+            owned_job(runs, fn(_) { Ok(job.Pending) }, fn(receipt) {
+              receipt |> should.equal("accepted")
+              Ok(Nil)
+            }),
+            budget.limits(work: 1)
+              |> budget.with_children(1)
+              |> budget.with_depth(1),
+          ),
+          id,
+          "accepted",
+          correlation: None,
+        )
+      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+      let assert graph.AwaitingJob(reference) = waiting
+      let assert Ok(_) = graph.cancel(handle)
+      let assert Ok(pending) = graph.await(handle, within: duration.seconds(30))
+      pending
+      |> should.equal(graph.CancellingJob(
+        reference,
+        job.RequestAccepted,
+        operation.CancellationRequested,
+      ))
+      reference
+    })
+  released(settings, id, 3000) |> should.be_true
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
+  |> should.equal(Ok(0))
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("owned-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let build = fn(runs) {
+    owned_job(runs, fn(_) { Ok(job.Cancelled) }, fn(_) {
+      panic as "saved request must not repeat"
+    })
+  }
+  let handle = open_graph(build(runs), id)
+  let assert Ok(pending) = graph.snapshot(handle)
+  pending.status
+  |> should.equal(graph.CancellingJob(
+    reference,
+    job.RequestAccepted,
+    operation.CancellationRequested,
+  ))
+  let assert Ok(sweeper_pid) =
+    sweeper.start(
+      runs,
+      [sweeper.graph(run.DefinitionId("pg-owned-job", 1), build)],
+      every: duration.milliseconds(20),
+    )
+  let done = await_owned_settlement(handle, 3000)
+  done.status |> should.equal(graph.Cancelled(graph.JobStopped(reference)))
+  released(settings, id, 3000) |> should.be_true
+  process.unlink(sweeper_pid)
+  agents.kill(sweeper_pid)
+  // The root and its shared-capacity ledger settle and prune together.
+  fabric_postgres.prune(
+    settings,
+    ended_for: duration.milliseconds(0),
+    limit: 10,
+  )
+  |> should.equal(Ok(2))
+}
+
+fn await_owned_settlement(handle, left) {
+  let assert Ok(snapshot) = graph.snapshot(handle)
+  case snapshot.status, left {
+    graph.Cancelled(_), _ -> snapshot
+    _, n if n > 0 -> {
+      process.sleep(20)
+      await_owned_settlement(handle, n - 1)
+    }
+    _, _ -> panic as "owned cancellation did not settle"
+  }
+}
+
+pub fn a_postgres_sweeper_retains_the_next_poll_across_store_loss_test() {
+  let settings =
+    support.migrated(support.pool(4), "scheduled-job", support.schema())
+  let observed = process.new_subject()
+  let assert Ok(id) = run.parse_id("pg-scheduled")
+  let #(owner, #(_runs, reference)) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(
+          process.new_name("job-schedule-original"),
+          settings,
+        )
+      let assert Ok(Nil) = store.start(runs)
+      let build = fn(runs) {
+        scheduled_job(runs, 1000, fn(_) {
+          process.send(observed, Nil)
+          Ok(job.Pending)
+        })
+      }
+      let assert Ok(handle) =
+        graph.start(
+          support.budgeted(
+            build(runs),
+            budget.limits(work: 1)
+              |> budget.with_children(1)
+              |> budget.with_depth(1),
+          ),
+          id,
+          "receipt",
+          correlation: None,
+        )
+      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+      let assert graph.AwaitingJob(reference) = waiting
+      let assert Ok(_) =
+        sweeper.start(
+          runs,
+          [sweeper.graph(run.DefinitionId("pg-scheduled-job", 1), build)],
+          every: duration.milliseconds(20),
+        )
+      #(runs, reference)
+    })
+  process.receive(observed, 30_000) |> should.equal(Ok(Nil))
+  released(settings, id, 3000) |> should.be_true
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("job-schedule-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let build = fn(runs) {
+    scheduled_job(runs, 1000, fn(receipt) {
+      receipt |> should.equal("receipt")
+      Ok(job.Completed(42))
+    })
+  }
+  let handle = open_graph(build(runs), id)
+  let assert Ok(waiting) = graph.snapshot(handle)
+  waiting.status |> should.equal(graph.AwaitingJob(reference))
+  let assert Ok(sweeper_pid) =
+    sweeper.start(
+      runs,
+      [sweeper.graph(run.DefinitionId("pg-scheduled-job", 1), build)],
+      every: duration.milliseconds(20),
+    )
+  let done = await_idle_completion(handle, 3000)
+  done.status |> should.equal(graph.Completed(42))
+  released(settings, id, 3000) |> should.be_true
+  process.unlink(sweeper_pid)
+  agents.kill(sweeper_pid)
+}
+
+pub fn managed_pair(
+  runs: store.Store,
+) -> #(graph.Runtime(Nil, Int, Int), graph.Runtime(Nil, Int, Int)) {
+  managed_pair_with(runs, fn(_, _, n) { Ok(n + 1) }, fn(_, _) {
+    Ok(policy.RequireApproval(run.Requirement("child-increment", 1)))
+  })
+}
+
+pub fn an_idle_parent_discovers_a_completed_child_after_losing_its_wakeup_test() {
+  let settings =
+    support.migrated(support.pool(4), "idle-discovery", support.schema())
+  let assert Ok(id) = run.parse_id("postgres-idle-parent")
+  let #(owner, #(reference, approval)) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("idle-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let #(parent, runtime) = managed_pair(runs)
+      let assert Ok(handle) = graph.start(parent, id, 41, correlation: None)
+      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+      let assert graph.Child(reference, child.Approval(_)) = waiting
+      let assert Ok(child_handle) =
+        graph.child(handle, reference.activation, runtime)
+      let assert Ok(snapshot) = graph.snapshot(child_handle)
+      let assert graph.AwaitingApproval(approval) = snapshot.status
+      released(settings, id, 3000) |> should.be_true
+      released(settings, reference.child, 3000) |> should.be_true
+      #(reference, approval)
+    })
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("idle-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let #(parent, child) = managed_pair(runs)
+  let handle = open_graph(parent, id)
+  let assert Ok(child) = graph.child(handle, reference.activation, child)
+  let assert Ok(_) =
+    graph.approve(
+      child,
+      approval,
+      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
+      context: Nil,
+    )
+  let assert Ok(done) = graph.await(child, within: duration.seconds(30))
+  done |> should.equal(graph.Completed(42))
+  released(settings, id, 3000) |> should.be_true
+  released(settings, reference.child, 3000) |> should.be_true
+  let assert Ok(sweeper_pid) =
+    sweeper.start(
+      runs,
+      [
+        sweeper.graph(run.DefinitionId("pg-parent", 1), fn(pinned) {
+          managed_pair(pinned).0
+        }),
+      ],
+      every: duration.milliseconds(20),
+    )
+  await_idle_completion(handle, 3000).status
+  |> should.equal(graph.Completed(42))
+  process.unlink(sweeper_pid)
+  agents.kill(sweeper_pid)
+}
+
+fn await_idle_completion(handle, tries) {
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(25))
+  let assert Ok(snapshot) = graph.snapshot(handle)
+  case snapshot.status {
+    graph.Completed(_) -> snapshot
+    _ if tries > 0 -> {
+      process.sleep(10)
+      await_idle_completion(handle, tries - 1)
+    }
+    _ -> panic as "free parent never discovered its completed child"
+  }
+}
+
+fn managed_pair_with(
+  runs: store.Store,
+  perform: fn(Nil, operation.Invocation, Int) -> Result(Int, Nil),
+  policy: policy.Policy(Nil),
+) -> #(graph.Runtime(Nil, Int, Int), graph.Runtime(Nil, Int, Int)) {
+  let node_id = definition.node_id("increment")
+  let op =
+    operation.new(
+      run.DefinitionId("increment", 1),
+      codec.int(),
+      codec.int(),
+      perform,
+      fn(_error: Nil) { tool.Explain("cannot fail") },
+    )
+  let node =
+    definition.node(
+      node_id,
+      op,
+      fn(n) { Ok(n) },
+      fn(_, n) { Ok(definition.Finish(n, n)) },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(
+      definition.new(
+        run.DefinitionId("pg-child", 1),
+        entry: node_id,
+        nodes: [node],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  let child =
+    graph.new(spec, runs, fn(_) { Nil }, policy)
+    |> graph.with_approvers(fabric_testing.trusting_approvers())
+    |> graph.build
+    |> should.be_ok
+  let node =
+    definition.node(
+      node_id,
+      graph.as_subgraph(child),
+      fn(n) { Ok(n) },
+      fn(_, n) { Ok(definition.Finish(n, n)) },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(
+      definition.new(
+        run.DefinitionId("pg-parent", 1),
+        entry: node_id,
+        nodes: [node],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  #(
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+      |> graph.with_approvers(fabric_testing.trusting_approvers())
+      |> graph.build
+      |> should.be_ok,
+    child,
+  )
+}
+
+pub fn a_managed_subgraph_adopts_its_approved_child_after_postgres_restart_test() {
+  let settings =
+    support.migrated(support.pool(4), "managed-graph", support.schema())
+    |> fabric_postgres.with_lease(duration.milliseconds(600))
+  let assert Ok(id) = run.parse_id("postgres-managed-graph")
+  let #(owner, #(reference, approval)) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("managed-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let #(parent, child) = managed_pair(runs)
+      let assert Ok(handle) = graph.start(parent, id, 41, correlation: None)
+      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+      let assert graph.Child(reference, child.Approval(_)) = waiting
+      let assert Ok(child_handle) =
+        graph.child(handle, reference.activation, child)
+      let assert Ok(waiting) = graph.snapshot(child_handle)
+      let assert graph.AwaitingApproval(approval) = waiting.status
+      released(settings, id, 3000) |> should.be_true
+      released(settings, reference.child, 3000) |> should.be_true
+      #(reference, approval)
+    })
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("managed-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let #(parent, child) = managed_pair(runs)
+  let handle = open_graph(parent, id)
+  // An idle parent has already released its lease before the store dies.
+  released(settings, id, 3000) |> should.be_true
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(child_handle) = graph.child(handle, reference.activation, child)
+  graph.id(child_handle) |> should.equal(reference.child)
+  let assert Ok(_) =
+    graph.approve(
+      child_handle,
+      approval,
+      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
+      context: Nil,
+    )
+  let assert Ok(done) = graph.await(handle, within: duration.seconds(30))
+  done |> should.equal(graph.Completed(42))
+  let assert Ok(parent_row) =
+    fabric_postgres.backend(settings).get(run.id_to_string(id))
+  let assert Ok(child_row) =
+    fabric_postgres.backend(settings).get(run.id_to_string(reference.child))
+  parent_row.holder |> should.equal(backend.Free)
+  child_row.holder |> should.equal(backend.Free)
+}
+
+pub fn child_cancellation_settlement_survives_postgres_restart_test() {
+  let settings =
+    support.migrated(support.pool(4), "cancel-settle", support.schema())
+  let effects = process.new_subject()
+  let perform = fn(_, _, _) {
+    process.send(effects, Nil)
+    panic as "external effect has no saved result"
+  }
+  let #(owner, runs) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("cancel-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      runs
+    })
+  let #(parent, child) =
+    managed_pair_with(runs, perform, fn(_, _) { Ok(policy.Allow) })
+  let assert Ok(id) = run.parse_id("postgres-cancel-settlement")
+  let assert Ok(handle) = graph.start(parent, id, 41, correlation: None)
+  let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+  let assert graph.Child(reference, child.Uncertain(_)) = waiting
+  let assert Ok(_) = graph.cancel(handle)
+  let assert Ok(cancelled) = graph.await(handle, within: duration.seconds(30))
+  let assert graph.Cancelled(graph.ChildUnresolved(_, _)) = cancelled
+  let assert Ok(child_handle) = graph.child(handle, reference.activation, child)
+  let assert Ok(child_cancelled) = graph.snapshot(child_handle)
+  let assert graph.Cancelled(graph.Unresolved(reconciliation, _)) =
+    child_cancelled.status
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("cancel-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let #(parent, child) =
+    managed_pair_with(runs, perform, fn(_, _) {
+      panic as "settlement must not admit work"
+    })
+  let handle = open_graph(parent, id)
+  let assert Ok(child_handle) = graph.child(handle, reference.activation, child)
+  let assert Ok(_) = graph.reconcile(child_handle, reconciliation, "42")
+  let assert Ok(sweeper_pid) =
+    sweeper.start(
+      runs,
+      [
+        sweeper.graph(run.DefinitionId("pg-parent", 1), fn(pinned) {
+          managed_pair_with(pinned, perform, fn(_, _) {
+            panic as "settlement must not admit work"
+          }).0
+        }),
+      ],
+      every: duration.milliseconds(20),
+    )
+  let settled = await_settlement(handle, 3000)
+  process.unlink(sweeper_pid)
+  agents.kill(sweeper_pid)
+  settled.status |> should.equal(graph.Cancelled(graph.ChildSettled(reference)))
+  settled.value |> should.equal(41)
+  settled.receipts |> should.equal([])
+  graph.recover(handle) |> should.equal(Ok(settled.status))
+  let assert Ok(parent_row) =
+    fabric_postgres.backend(settings).get(run.id_to_string(id))
+  let assert Ok(child_row) =
+    fabric_postgres.backend(settings).get(run.id_to_string(reference.child))
+  parent_row.holder |> should.equal(backend.Free)
+  child_row.holder |> should.equal(backend.Free)
+  process.receive(effects, 30_000) |> should.equal(Ok(Nil))
+  process.receive(effects, 0) |> should.equal(Error(Nil))
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
+  |> should.equal(Ok(2))
+}
+
+fn await_settlement(handle, tries) {
+  let assert Ok(snapshot) = graph.snapshot(handle)
+  case snapshot.status {
+    graph.Cancelled(graph.ChildSettled(_)) -> snapshot
+    _ if tries > 0 -> {
+      process.sleep(10)
+      await_settlement(handle, tries - 1)
+    }
+    _ -> panic as "canceled parent did not discover child settlement"
+  }
+}
+
+fn released(
+  settings: fabric_postgres.Settings,
+  id: run.RunId,
+  tries: Int,
+) -> Bool {
+  let assert Ok(row) =
+    fabric_postgres.backend(settings).get(run.id_to_string(id))
+  case row.holder {
+    backend.Free -> True
+    backend.Held(_, _) if tries > 0 -> {
+      process.sleep(10)
+      released(settings, id, tries - 1)
+    }
+    _ -> False
+  }
+}
+
+fn managed_agent(runs: store.Store, gate: agents.Gate) {
+  let assert Ok(agent) =
+    agent_node.new(
+      run.DefinitionId("pg-agent-node", 1),
+      agents.agent(gate, 120),
+      input: codec.int(),
+      prompt: int.to_string,
+    )
+    |> agent_node.runtime(runs, context: fn(_) { Nil })
+  let id = definition.node_id("agent")
+  let node =
+    definition.node(
+      id,
+      agent_node.as_operation(agent),
+      fn(n) { Ok(n) },
+      fn(n, answer) { Ok(definition.Finish(n, answer)) },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(
+      definition.new(
+        run.DefinitionId("pg-agent-graph", 1),
+        entry: id,
+        nodes: [node],
+        state: codec.int(),
+        answer: codec.string(),
+      )
+      |> definition.with_max_activations(1),
+    )
+  #(
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+      |> graph.with_approvers(fabric_testing.trusting_approvers())
+      |> graph.build
+      |> should.be_ok,
+    agent,
+  )
+}
+
+pub fn a_managed_agent_keeps_its_approval_and_identity_after_postgres_restart_test() {
+  let settings =
+    support.migrated(support.pool(4), "graph-agent", support.schema())
+    |> fabric_postgres.with_lease(duration.milliseconds(600))
+  let gate = agents.gate()
+  let assert Ok(id) = run.parse_id("postgres-managed-agent")
+  let #(owner, #(reference, approval)) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("agent-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let #(parent, _) = managed_agent(runs, gate)
+      let assert Ok(handle) =
+        graph.start(
+          support.budgeted(
+            parent,
+            budget.limits(work: 4)
+              |> budget.with_children(1)
+              |> budget.with_depth(1),
+          ),
+          id,
+          41,
+          correlation: None,
+        )
+      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+      let assert graph.Child(reference, child.AgentInput([approval], [])) =
+        waiting
+      released(settings, id, 3000) |> should.be_true
+      released(settings, reference.child, 3000) |> should.be_true
+      #(reference, approval)
+    })
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("agent-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let #(parent, agent) = managed_agent(runs, gate)
+  let handle = open_graph(parent, id)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(agent) = agent_node.child(handle, reference.activation, agent)
+  fabric.id(agent) |> should.equal(reference.child)
+  let assert Ok(_) =
+    fabric.approve(
+      agent,
+      approval.reference,
+      proof: proof_for(approval.reference.requirement, as_reviewer("reviewer")),
+      context: Nil,
+    )
+  let arrival = agents.arrival(gate)
+  arrival.amount |> should.equal(120)
+  agents.release(arrival)
+  let assert Ok(_) = graph.await(handle, within: duration.seconds(30))
+  let assert Ok(done) = graph.snapshot(handle)
+  done.status |> should.equal(graph.Completed("done: {\"done\":120}"))
+  agents.another(gate, 0) |> should.be_false
+  released(settings, id, 3000) |> should.be_true
+  released(settings, reference.child, 3000) |> should.be_true
+  // Root, agent and shared budget ledger form one settled retention family.
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
+  |> should.equal(Ok(3))
+  fabric_postgres.backend(settings).get(run.id_to_string(reference.child))
+  |> should.equal(Error(backend.NotFound))
+}
+
+pub fn a_restarted_managed_agent_cannot_reset_its_family_work_budget_test() {
+  let settings =
+    support.migrated(support.pool(4), "agent-budget", support.schema())
+    |> fabric_postgres.with_lease(duration.milliseconds(600))
+  let gate = agents.gate()
+  let assert Ok(id) = run.parse_id("postgres-agent-budget")
+  let #(owner, #(reference, approval)) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("budget-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let #(parent, _) = managed_agent(runs, gate)
+      // The graph activation and initial model attempt consume both units.
+      let assert Ok(handle) =
+        graph.start(
+          support.budgeted(
+            parent,
+            budget.limits(work: 2)
+              |> budget.with_children(1)
+              |> budget.with_depth(1),
+          ),
+          id,
+          41,
+          correlation: None,
+        )
+      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+      let assert graph.Child(reference, child.AgentInput([approval], [])) =
+        waiting
+      released(settings, id, 3000) |> should.be_true
+      released(settings, reference.child, 3000) |> should.be_true
+      #(reference, approval)
+    })
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("budget-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let #(parent, worker) = managed_agent(runs, gate)
+  let handle = open_graph(parent, id)
+  graph.recover(handle) |> should.be_ok
+  let assert Ok(worker) = agent_node.child(handle, reference.activation, worker)
+  fabric.approve(
+    worker,
+    approval.reference,
+    proof: proof_for(approval.reference.requirement, as_reviewer("reviewer")),
+    context: Nil,
+  )
+  |> should.be_ok
+  fabric.await(worker, within: duration.seconds(30))
+  |> should.equal(
+    Ok(run.Finished(run.BudgetExhausted(run.FamilyLimit(budget.WorkLimit(2))))),
+  )
+  let assert Ok(snapshot) = fabric.snapshot(worker)
+  let assert [action] = snapshot.actions
+  action.state |> should.equal(run.NotStarted)
+  graph.await(handle, within: duration.seconds(30)) |> should.be_ok
+  agents.another(gate, 0) |> should.be_false
+  released(settings, id, 3000) |> should.be_true
+  released(settings, reference.child, 3000) |> should.be_true
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
+  |> should.equal(Ok(3))
+}
+
+pub fn a_registered_graph_recovers_its_agent_after_postgres_store_loss_test() {
+  let settings =
+    support.migrated(support.pool(4), "graph-sweep", support.schema())
+    |> fabric_postgres.with_lease(duration.milliseconds(600))
+  let gate = agents.gate()
+  let assert Ok(id) = run.parse_id("postgres-swept-graph")
+  let #(owner, #(handle, worker, approval)) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("sweep-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let #(runtime, worker) = managed_agent(runs, gate)
+      let assert Ok(handle) =
+        graph.start(
+          support.budgeted(
+            runtime,
+            budget.limits(work: 4)
+              |> budget.with_children(1)
+              |> budget.with_depth(1),
+          ),
+          id,
+          41,
+          correlation: None,
+        )
+      let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+      let assert graph.Child(reference, child.AgentInput([approval], [])) =
+        waiting
+      let assert Ok(worker) =
+        agent_node.child(handle, reference.activation, worker)
+      #(handle, worker, approval)
+    })
+  fabric.approve(
+    worker,
+    approval.reference,
+    proof: proof_for(approval.reference.requirement, as_reviewer("reviewer")),
+    context: Nil,
+  )
+  |> should.be_ok
+  let _started = agents.arrival(gate)
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("sweep-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  let assert Ok(sweeper_pid) =
+    sweeper.start(
+      runs,
+      [
+        sweeper.graph(run.DefinitionId("pg-agent-graph", 1), fn(pinned) {
+          managed_agent(pinned, gate).0
+        }),
+      ],
+      every: duration.milliseconds(20),
+    )
+  let #(runtime, worker) = managed_agent(runs, gate)
+  let handle = open_graph(runtime, graph.id(handle))
+  let effect = swept_uncertainty(handle, 3000)
+  let assert Ok(worker) = agent_node.child(handle, 1, worker)
+  fabric.reconcile(worker, effect.reference, "effect confirmed") |> should.be_ok
+  let assert Ok(_) = graph.await(handle, within: duration.seconds(30))
+  let assert Ok(done) = graph.snapshot(handle)
+  done.status |> should.equal(graph.Completed("done: effect confirmed"))
+  agents.another(gate, 0) |> should.be_false
+  process.unlink(sweeper_pid)
+  agents.kill(sweeper_pid)
+}
+
+fn swept_uncertainty(handle, tries) {
+  let assert Ok(snapshot) =
+    graph.await(handle, within: duration.milliseconds(25))
+  case snapshot {
+    graph.Child(_, child.AgentInput([], [effect])) -> effect
+    _ if tries > 0 -> {
+      process.sleep(10)
+      swept_uncertainty(handle, tries - 1)
+    }
+    _ -> panic as "automatic graph recovery did not expose the interrupted tool"
+  }
+}
+
+pub fn canceled_agent_evidence_settles_after_postgres_restart_test() {
+  let settings =
+    support.migrated(support.pool(4), "agent-settlement", support.schema())
+    |> fabric_postgres.with_lease(duration.milliseconds(600))
+  let gate = agents.gate()
+  let assert Ok(id) = run.parse_id("postgres-canceled-agent")
+  let #(owner, #(handle, worker)) =
+    agents.owned(fn() {
+      let assert Ok(runs) =
+        fabric_postgres.store(process.new_name("cancel-original"), settings)
+      let assert Ok(Nil) = store.start(runs)
+      let #(parent, worker) = managed_agent(runs, gate)
+      let assert Ok(handle) = graph.start(parent, id, 41, correlation: None)
+      #(handle, worker)
+    })
+  let assert Ok(waiting) = graph.await(handle, within: duration.seconds(30))
+  let assert graph.Child(reference, child.AgentInput([approval], [])) = waiting
+  let assert Ok(worker) = agent_node.child(handle, reference.activation, worker)
+  let assert Ok(_) =
+    fabric.approve(
+      worker,
+      approval.reference,
+      proof: proof_for(approval.reference.requirement, as_reviewer("reviewer")),
+      context: Nil,
+    )
+  let _started = agents.arrival(gate)
+  let assert Ok(_) = graph.cancel(handle)
+  let assert Ok(done) = graph.await(handle, within: duration.seconds(30))
+  let assert graph.Cancelled(graph.ChildUnresolved(_, _)) = done
+  let assert Ok(before) = fabric.snapshot(worker)
+  let assert [action] = before.actions
+  let effect = run.ActionRef(reference.child, action.id)
+  released(settings, id, 3000) |> should.be_true
+  released(settings, reference.child, 3000) |> should.be_true
+  agents.kill(owner)
+  let assert Ok(runs) =
+    fabric_postgres.store(process.new_name("cancel-restored"), settings)
+  let assert Ok(Nil) = store.start(runs)
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
+  |> should.equal(Ok(0))
+  let assert Ok(settled) =
+    fabric.reconcile_stored(runs, effect, "effect confirmed")
+  settled.status |> should.equal(run.Finished(run.Cancelled))
+  fabric.settle_stored(runs, reference.child) |> should.be_ok
+  let #(parent, worker) = managed_agent(runs, gate)
+  let handle = open_graph(parent, id)
+  let assert Ok(_) = graph.recover(handle)
+  let assert Ok(done) = graph.snapshot(handle)
+  done.status |> should.equal(graph.Cancelled(graph.ChildSettled(reference)))
+  done.receipts |> should.equal([])
+  let assert Ok(worker) = agent_node.child(handle, reference.activation, worker)
+  let assert Ok(after) = fabric.snapshot(worker)
+  after.status |> should.equal(before.status)
+  after.transcript |> should.equal(before.transcript)
+  after.turns_used |> should.equal(before.turns_used)
+  after.usage |> should.equal(before.usage)
+  agents.another(gate, 0) |> should.be_false
+  released(settings, id, 3000) |> should.be_true
+  released(settings, reference.child, 3000) |> should.be_true
+  fabric_postgres.prune(settings, ended_for: duration.milliseconds(0), limit: 1)
+  |> should.equal(Ok(2))
+  fabric_postgres.backend(settings).get(run.id_to_string(reference.child))
+  |> should.equal(Error(backend.NotFound))
+}
+
+fn as_reviewer(subject: String) -> reviewer.Reviewer {
+  let assert Ok(reviewer) = reviewer.new(subject)
+  reviewer
+}
+
+fn open_graph(
+  runtime: graph.Runtime(context, state, answer),
+  id: run.RunId,
+) -> graph.Handle(context, state, answer) {
+  let assert Ok(handle) = graph.open(runtime, id)
+  handle
+}
+
+/// A proof that `reviewer` answers a request waiting for `requirement`,
+/// from the trusting approvers the test's agents and runtimes are given.
+fn proof_for(
+  requirement: run.Requirement,
+  reviewer: reviewer.Reviewer,
+) -> approvers.Proof {
+  let assert Ok(proof) =
+    approvers.check(fabric_testing.trusting_approvers(), reviewer, requirement)
+  proof
+}

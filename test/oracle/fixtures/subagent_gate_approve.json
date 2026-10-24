@@ -1,0 +1,146 @@
+{
+  "captured": "2026-09-28",
+  "command": "cd <scratch clone> && PATH=/nix/store/5fbjxaaizi26pmghbyn09llww48qg01q-elixir-1.19.5/bin:/nix/store/cyr4xsis8csd0sjvmy6lxaw9214f1sjf-erlang-28.5/bin:$PATH MIX_ENV=test FIXTURE_DIR=<fabric>/test/oracle/fixtures mix run --no-compile <fabric>/test/oracle/capture/capture.exs < /dev/null",
+  "description": "Starting the researcher sub-agent (the task tool) requires approval: invoke pauses before the child exists; approve runs the child (its model and its lookup) once and its answer is the task result.",
+  "effects": [
+    "model:go:tool_msgs=0",
+    "model:Paris:tool_msgs=0",
+    "tool:lookup:Paris",
+    "model:Paris:tool_msgs=1",
+    "model:go:tool_msgs=1"
+  ],
+  "license": "Output of running BeamWeaver (Apache-2.0); not copied source.",
+  "oracle": {
+    "commit": "d0aa1f90d31c55d49be2f7b5a24224b5e18145a1",
+    "elixir": "1.19.5",
+    "otp": "28",
+    "repository": "lostbean/beam_weaver (fork of caudena/beam_weaver)"
+  },
+  "result": {
+    "tag": "ok",
+    "transcript": [
+      {
+        "content": "go",
+        "role": "user"
+      },
+      {
+        "calls": [
+          {
+            "id": "call_task",
+            "name": "task"
+          }
+        ],
+        "role": "assistant_calls"
+      },
+      {
+        "content": "final: sunny in Paris",
+        "id": "call_task",
+        "role": "tool",
+        "status": "success"
+      },
+      {
+        "content": "final: final: sunny in Paris",
+        "role": "assistant"
+      }
+    ]
+  },
+  "scenario": "subagent_gate_approve",
+  "script": "test/oracle/capture/capture.exs",
+  "steps": [
+    {
+      "call": "invoke",
+      "effects": ["model:go:tool_msgs=0"],
+      "interrupt": {
+        "action_requests": [
+          {
+            "args": {
+              "description": "Paris",
+              "subagent_type": "researcher"
+            },
+            "description": "Tool execution requires approval\n\nTool: task\nArgs: %{\"description\" => \"Paris\", \"subagent_type\" => \"researcher\"}",
+            "name": "task"
+          }
+        ],
+        "id_matches_snapshot": true,
+        "nodes": ["human_in_the_loop.after_model"],
+        "review_configs": [
+          {
+            "action_name": "task",
+            "allowed_decisions": ["approve", "edit", "reject", "respond"]
+          }
+        ],
+        "timing": "during",
+        "under_review": [
+          {
+            "id": "call_task",
+            "name": "task"
+          }
+        ]
+      },
+      "snapshot": {
+        "interrupts": 1,
+        "next": ["human_in_the_loop.after_model"],
+        "transcript": [
+          {
+            "content": "go",
+            "role": "user"
+          },
+          {
+            "calls": [
+              {
+                "id": "call_task",
+                "name": "task"
+              }
+            ],
+            "role": "assistant_calls"
+          }
+        ]
+      },
+      "tag": "interrupted"
+    },
+    {
+      "call": "resume",
+      "decision": {
+        "decisions": [
+          {
+            "type": "approve"
+          }
+        ]
+      },
+      "effects": [
+        "model:Paris:tool_msgs=0",
+        "tool:lookup:Paris",
+        "model:Paris:tool_msgs=1",
+        "model:go:tool_msgs=1"
+      ],
+      "result": {
+        "tag": "ok",
+        "transcript": [
+          {
+            "content": "go",
+            "role": "user"
+          },
+          {
+            "calls": [
+              {
+                "id": "call_task",
+                "name": "task"
+              }
+            ],
+            "role": "assistant_calls"
+          },
+          {
+            "content": "final: sunny in Paris",
+            "id": "call_task",
+            "role": "tool",
+            "status": "success"
+          },
+          {
+            "content": "final: final: sunny in Paris",
+            "role": "assistant"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,109 @@
+{
+  "format": "fabric.run",
+  "version": 7,
+  "write": "177b68f21d4cf9465fcd1f6db427bcb6",
+  "run": "run-round-7",
+  "agent": {
+    "name": "desk",
+    "version": 1
+  },
+  "incarnation": 1,
+  "parent": null,
+  "depth": 0,
+  "limits": {
+    "max_turns": 8,
+    "token_budget": null,
+    "max_children": 0,
+    "max_depth": 0
+  },
+  "turns_used": 1,
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "unreported_replies": 0
+  },
+  "transcript": [
+    {
+      "tag": "user",
+      "text": "pay bob"
+    }
+  ],
+  "history": [],
+  "approvals_issued": 2,
+  "phase": {
+    "tag": "acting",
+    "turn": 1,
+    "actions": [
+      {
+        "id": {
+          "turn": 1,
+          "call_id": "a"
+        },
+        "call": {
+          "id": "a",
+          "name": "transfer_funds",
+          "arguments": "{\"to\":\"bob\",\"amount\":10}",
+          "provider_id": null,
+          "provider_state": null
+        },
+        "state": {
+          "tag": "awaiting_approval",
+          "requirement": {
+            "name": "transfer",
+            "version": 1
+          },
+          "revision": 2,
+          "expires_at": 4102444800000
+        },
+        "approvals": [
+          {
+            "requirement": {
+              "name": "transfer",
+              "version": 1
+            },
+            "revision": 1,
+            "answer": {
+              "tag": "approve"
+            },
+            "reviewer": "alice",
+            "reviewer_issuer": "https://id.example"
+          }
+        ],
+        "child": null
+      },
+      {
+        "id": {
+          "turn": 1,
+          "call_id": "b"
+        },
+        "call": {
+          "id": "b",
+          "name": "transfer_funds",
+          "arguments": "{\"to\":\"bob\",\"amount\":10}",
+          "provider_id": null,
+          "provider_state": null
+        },
+        "state": {
+          "tag": "rejected",
+          "reason": "no"
+        },
+        "approvals": [
+          {
+            "requirement": {
+              "name": "transfer",
+              "version": 1
+            },
+            "revision": 1,
+            "answer": {
+              "tag": "reject",
+              "reason": "no"
+            },
+            "reviewer": null
+          }
+        ],
+        "child": null
+      }
+    ]
+  },
+  "family_budget": null
+}

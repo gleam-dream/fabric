@@ -1,0 +1,21 @@
+# Compiles and tests the hellhound recipe of `fabric/approvers`:
+# src/approvers_hellhound.gleam is the module that the `fabric/approvers`
+# documentation names. Fabric itself does not depend on
+# hellhound.
+name = "approvers_hellhound"
+version = "0.0.0"
+target = "erlang"
+gleam = ">= 1.18.0"
+
+[dependencies]
+gleam_stdlib = ">= 0.70.0 and < 2.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_http = ">= 4.4.0 and < 5.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"
+gleam_time = ">= 1.11.0 and < 2.0.0"
+fabric = { path = "../.." }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "main" }
+hellhound = { git = "https://github.com/gleam-dream/hellhound.git", ref = "main" }
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
