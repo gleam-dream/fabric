@@ -1,0 +1,33 @@
+{
+  "format": "fabric.run",
+  "version": 7,
+  "write": "6a489a5ff748a44d23a4d19a0bec1123",
+  "run": "run-legacy",
+  "agent": { "name": "desk", "version": 1 },
+  "incarnation": 1,
+  "parent": null,
+  "depth": 0,
+  "limits": {
+    "max_turns": 8,
+    "token_budget": null,
+    "max_children": 0,
+    "max_depth": 0
+  },
+  "turns_used": 1,
+  "usage": { "input_tokens": 10, "output_tokens": 5, "unreported_replies": 0 },
+  "transcript": [{ "tag": "user", "text": "pay bob" }],
+  "history": [],
+  "approvals_issued": 2,
+  "phase": {
+    "tag": "ended",
+    "outcome": {
+      "tag": "failed",
+      "failure": {
+        "tag": "model_failed",
+        "reason": "HTTP status 503",
+        "retryable": true
+      }
+    }
+  },
+  "family_budget": null
+}

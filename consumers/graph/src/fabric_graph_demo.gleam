@@ -1,0 +1,234 @@
+//// A typed generation/review loop using the production graph runtime.
+//// Decisions are scripted; changing their producer does not change routing.
+
+import fabric/agent
+import fabric/graph
+import fabric/graph/agent as agent_node
+import fabric/graph/definition
+import fabric/graph/operation
+import fabric/graph/signal
+import fabric/model
+import fabric/policy
+import fabric/run
+import fabric/store
+import fabric/tool
+import gleam/erlang/process
+import gleam/int
+import gleam/io
+import gleam/list
+import gleam/option.{None}
+import gleam/string
+import gleam/time/duration
+import json/blueprint/codec
+
+fn infallible(_error: Nil) -> tool.Failure {
+  tool.Explain("cannot fail")
+}
+
+pub fn execute(limit: Int) -> graph.Snapshot(Int, Int) {
+  let handle = start_with_reviewer(limit, scripted_reviewer())
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(snapshot) = graph.snapshot(handle)
+  snapshot
+}
+
+fn scripted_reviewer() -> operation.Operation(Nil, Int, Bool) {
+  operation.new(
+    run.DefinitionId("scripted-reviewer", 1),
+    codec.int(),
+    codec.bool(),
+    fn(_, _, revision) { Ok(revision >= 3) },
+    infallible,
+  )
+}
+
+/// Each revision enters its own bounded review loop. The batch keeps only the
+/// joined answers; members own their private state and policy-gated operations.
+pub fn execute_batch(
+  initial: List(Int),
+) -> graph.Snapshot(List(Int), List(Int)) {
+  let runs = store.in_memory(process.new_name("batch-review-demo"))
+  let assert Ok(Nil) = store.start(runs)
+  let child = review_runtime(runs, 6, scripted_reviewer())
+  let review =
+    graph.map(
+      run.DefinitionId("batch-review", 1),
+      child,
+      max_members: 16,
+      concurrency: 3,
+    )
+  let batch = definition.node_id("batch")
+  let node =
+    definition.node(
+      batch,
+      review,
+      fn(state) { Ok(state) },
+      fn(state, outcome) {
+        case outcome {
+          Ok(answers) -> Ok(definition.Finish(state, answers))
+          Error(failure) ->
+            Error(
+              "review "
+              <> int.to_string(failure.member)
+              <> ": "
+              <> failure.reason,
+            )
+        }
+      },
+      [],
+    )
+  let values = codec.list(codec.int())
+  let assert Ok(spec) =
+    definition.build(
+      definition.new(
+        run.DefinitionId("review-batch", 1),
+        entry: batch,
+        nodes: [node],
+        state: values,
+        answer: values,
+      )
+      |> definition.with_max_activations(1),
+    )
+  let assert Ok(runtime) =
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+  let assert Ok(id) = run.parse_id("batch-demo")
+  let assert Ok(handle) = graph.start(runtime, id, initial, correlation: None)
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
+  done
+}
+
+/// The graph's state, routes and bounds are identical; only the source of
+/// its boolean decision changes. A caller supplies it through `graph.deliver`.
+pub fn start_manual(
+  limit: Int,
+) -> #(graph.Handle(Nil, Int, Int), signal.Signal(Bool)) {
+  let decision = signal.new(run.DefinitionId("human-review", 1), codec.bool())
+  #(
+    start_with_reviewer(limit, operation.await_signal(codec.int(), decision)),
+    decision,
+  )
+}
+
+/// The same boolean decision is supplied by an ordinary managed agent whose
+/// typed answer (`agent.with_answer`) is the decision: the operation's
+/// output codec is the agent's. This model is scripted; the graph binding
+/// does not depend on its producer.
+pub fn execute_agent(limit: Int) -> graph.Snapshot(Int, Int) {
+  let runs = store.in_memory(process.new_name("agent-review-demo"))
+  let assert Ok(Nil) = store.start(runs)
+  let model =
+    model.new(fn(request) {
+      let assert Ok(model.UserMessage(prompt)) = list.last(request.messages)
+      let assert Ok(revision) = int.parse(prompt)
+      Ok(model.FinalAnswer(
+        case revision >= 3 {
+          True -> "{\"approve\":true}"
+          False -> "{\"approve\":false}"
+        },
+        None,
+      ))
+    })
+  let verdict = {
+    use approve <- codec.field("approve", codec.bool(), get: fn(approve) {
+      approve
+    })
+    codec.success(approve)
+  }
+  let assert Ok(agent) =
+    agent.new("reviewer", model, [], policy.always_allow())
+    |> agent.with_answer(verdict)
+    |> agent.build
+  let assert Ok(reviewer) =
+    agent_node.new(
+      run.DefinitionId("agent-reviewer", 1),
+      agent,
+      input: codec.int(),
+      prompt: int.to_string,
+    )
+    |> agent_node.runtime(runs, context: fn(_) { Nil })
+  let handle = start_on(runs, limit, agent_node.as_operation(reviewer))
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
+  done
+}
+
+fn start_with_reviewer(
+  limit: Int,
+  reviewer: operation.Operation(Nil, Int, Bool),
+) -> graph.Handle(Nil, Int, Int) {
+  let runs = store.in_memory(process.new_name("graph-demo"))
+  let assert Ok(Nil) = store.start(runs)
+  start_on(runs, limit, reviewer)
+}
+
+fn start_on(
+  runs: store.Store,
+  limit: Int,
+  reviewer: operation.Operation(Nil, Int, Bool),
+) -> graph.Handle(Nil, Int, Int) {
+  let runtime = review_runtime(runs, limit, reviewer)
+  let assert Ok(id) = run.parse_id("demo")
+  let assert Ok(handle) = graph.start(runtime, id, 0, correlation: None)
+  handle
+}
+
+fn review_runtime(
+  runs: store.Store,
+  limit: Int,
+  reviewer: operation.Operation(Nil, Int, Bool),
+) -> graph.Runtime(Nil, Int, Int) {
+  let generate = definition.node_id("generate")
+  let review = definition.node_id("review")
+  let generator =
+    operation.new(
+      run.DefinitionId("scripted-generator", 1),
+      codec.int(),
+      codec.int(),
+      fn(_, _, revision) { Ok(revision + 1) },
+      infallible,
+    )
+  let generate_node =
+    definition.node(
+      generate,
+      generator,
+      fn(revision) { Ok(revision) },
+      fn(_, next_revision) { Ok(definition.Continue(next_revision, review)) },
+      [review],
+    )
+  let review_node =
+    definition.node(
+      review,
+      reviewer,
+      fn(revision) { Ok(revision) },
+      fn(revision, approved) {
+        case approved {
+          True -> Ok(definition.Finish(revision, revision))
+          False -> Ok(definition.Continue(revision, generate))
+        }
+      },
+      [generate],
+    )
+  let assert Ok(spec) =
+    definition.build(
+      definition.new(
+        run.DefinitionId("generation-review", 1),
+        entry: generate,
+        nodes: [generate_node, review_node],
+        state: codec.int(),
+        answer: codec.int(),
+      )
+      |> definition.with_max_activations(limit),
+    )
+  let assert Ok(runtime) =
+    graph.new(spec, runs, fn(_) { Nil }, fn(_, _) { Ok(policy.Allow) })
+    |> graph.build
+  runtime
+}
+
+pub fn main() -> Nil {
+  let snapshot = execute(6)
+  io.println(string.inspect(snapshot.status))
+  io.println(string.inspect(snapshot.receipts))
+}

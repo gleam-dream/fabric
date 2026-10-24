@@ -1,0 +1,58 @@
+{
+  "captured": "2026-09-28",
+  "command": "cd <scratch clone> && PATH=/nix/store/5fbjxaaizi26pmghbyn09llww48qg01q-elixir-1.19.5/bin:/nix/store/cyr4xsis8csd0sjvmy6lxaw9214f1sjf-erlang-28.5/bin:$PATH MIX_ENV=test FIXTURE_DIR=<fabric>/test/oracle/fixtures mix run --no-compile <fabric>/test/oracle/capture/capture.exs < /dev/null",
+  "description": "Two tool calls with distinct ids are executed and fed back in call order.",
+  "effects": [
+    "model:tool_msgs=0",
+    "tool:lookup:Paris",
+    "tool:pay:bob",
+    "model:tool_msgs=2"
+  ],
+  "license": "Output of running BeamWeaver (Apache-2.0); not copied source.",
+  "oracle": {
+    "commit": "d0aa1f90d31c55d49be2f7b5a24224b5e18145a1",
+    "elixir": "1.19.5",
+    "otp": "28",
+    "repository": "lostbean/beam_weaver (fork of caudena/beam_weaver)"
+  },
+  "result": {
+    "tag": "ok",
+    "transcript": [
+      {
+        "content": "go",
+        "role": "user"
+      },
+      {
+        "calls": [
+          {
+            "id": "call_a",
+            "name": "lookup"
+          },
+          {
+            "id": "call_b",
+            "name": "pay"
+          }
+        ],
+        "role": "assistant_calls"
+      },
+      {
+        "content": "sunny in Paris",
+        "id": "call_a",
+        "role": "tool",
+        "status": "success"
+      },
+      {
+        "content": "paid bob",
+        "id": "call_b",
+        "role": "tool",
+        "status": "success"
+      },
+      {
+        "content": "final: sunny in Paris|paid bob",
+        "role": "assistant"
+      }
+    ]
+  },
+  "scenario": "two_tool_calls",
+  "script": "test/oracle/capture/capture.exs"
+}

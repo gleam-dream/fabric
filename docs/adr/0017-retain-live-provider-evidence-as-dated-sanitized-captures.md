@@ -1,0 +1,11 @@
+# Live provider evidence is retained as dated, sanitized captures and never as a performance claim
+
+<a id="adr-0017"></a>
+
+- Two consumers exercise real providers through explicit commands: the decision consumer (one OpenAI structured-output request and one TypeSafe classification request) and the writing consumer (a paired review comparison and full workflows). The deterministic gate never loads credentials or contacts a provider.
+- On 30 September 2026 both decision entry points completed against their actual providers and selected `publish` for a synthetic statement. OpenAI served `gpt-4.1-nano-2025-04-14`, and TypeSafe resolved the requested `jev-latest` to `jev-1.13.0` and returned three typed answers. The [sanitized capture](../evidence/live-adapters-2026-09-30.txt) retains the observed values, usage and scope.
+- On the same date the frozen twelve-case writing corpus ran once through each reviewer, alternating reviewer order, without retries or exclusions. The GPT-4.1 nano reviewer had a median of 2,698.5 ms (minimum 1,110 ms, maximum 4,576 ms) over 12 samples, and the TypeSafe reviewer a median of 465 ms (minimum 425 ms, maximum 506 ms) over 12 samples.
+- The timing covers graph start through the recorded decision, including adapter, network and graph overhead, with a fresh VM and connection per sample. Generation, compilation and VM startup are excluded. The runtime versions and hardware were not recorded, and the LLM receipt records only the requested model.
+- These observations establish neither current latency, Fabric-only overhead nor production throughput. The [raw capture](../evidence/writing-20260930.json) keeps all 24 measurements, provider receipts and source-file digests, and the corpus digest is `1ad083bdb7a6dd4898de7b4e6577c8e40023aefd4c90dada21977b58be18a207`. A rerun resolves possibly different provider versions and is a new measurement.
+- Typed decisions and label matches are not performance measurements. Review quality is judged separately in [ADR 0012](0012-keep-review-producers-interchangeable.md), and the original comparison is retrievable at Fabric revision `ab678abe3b49b2d8dedc8b63845c35a60e6f918f`.
+- The method, rerun commands, results table and limits are kept together in [BENCHMARKS.md](../BENCHMARKS.md), which links the [oracle ledger](../ORACLE.md) as the other retained reference.

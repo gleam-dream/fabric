@@ -1,0 +1,334 @@
+//// Storage-owned discovery of idle dependencies, job reads and wait deadlines,
+//// and of approval requests that expire (`agent.with_approval_expiry`,
+//// `graph.with_approval_expiry`).
+//// This projection is a
+//// scheduling hint, never permission to execute. Recovery must revalidate the
+//// stored attachment and deployed definition through the registered root.
+
+import fabric/graph/job
+import fabric/graph/operation
+import fabric/internal/clock
+import fabric/internal/controller as agent
+import fabric/internal/graph/attachment
+import fabric/internal/graph/controller as graph
+import fabric/internal/graph/fork as scope
+import fabric/internal/graph/record
+import fabric/internal/record as agent_record
+import fabric/internal/run_id
+import fabric/run
+import fabric/store/retention
+import gleam/int
+import gleam/json
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/result
+
+/// Bump when a record format or state changes discovery eligibility or keys.
+/// Backends must refresh older projections before using them for scheduling.
+pub const version = 13
+
+pub type Trigger {
+  Changed(dependencies: List(run.RunId), deadline: Option(Int))
+  Poll(every: Int, deadline: Option(Int))
+  /// Absolute UTC Unix milliseconds; backend time alone judges eligibility.
+  At(due: Int)
+}
+
+/// `key` identifies one observation scope. It excludes run incarnation and
+/// execution revision so recovering an unchanged wait cannot make it new work.
+pub type Wait {
+  Wait(run: run.RunId, key: String, trigger: Trigger)
+}
+
+/// Inspect supported records without deployed code. Unknown/corrupt records
+/// fail; readable records without an automatic wait return `None`.
+pub fn inspect(encoded: String) -> Result(Option(Wait), Nil) {
+  classify(encoded) |> result.map(fn(entry) { entry.1 })
+}
+
+fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
+  case record.decode(encoded) {
+    Error(_) ->
+      case agent_record.decode(encoded) {
+        Ok(state) ->
+          Ok(#(run_id.from_string(state.run), approval_expiry(state)))
+        Error(_) ->
+          retention.inspect(encoded)
+          |> result.map(fn(metadata) { #(metadata.run, None) })
+      }
+    Ok(state) -> {
+      let wait = case state.phase {
+        graph.WaitingFork(a, mode) ->
+          case graph.current_fork(state, a.id) {
+            Error(_) -> None
+            Ok(members) ->
+              Some(
+                dependency(
+                  state,
+                  a,
+                  list.map(scope.unsettled(members), fn(ref) {
+                    attachment.branch_id(state.run, a.id, ref.member)
+                  }),
+                  case mode {
+                    graph.JoiningFork -> "observe_fork"
+                    graph.ClosingFork(_) -> "settle_fork"
+                  },
+                  case mode {
+                    graph.JoiningFork -> a.deadline
+                    graph.ClosingFork(_) -> None
+                  },
+                ),
+              )
+          }
+        graph.WaitingSignal(activation) ->
+          case activation.deadline {
+            None -> None
+            Some(due) ->
+              Some(Wait(
+                run_id.from_string(state.run),
+                json.array(
+                  [
+                    json.string("signal_deadline"),
+                    json.int(activation.id),
+                    json.int(activation.attempt),
+                    json.int(due),
+                  ],
+                  fn(value) { value },
+                )
+                  |> json.to_string,
+                At(due),
+              ))
+          }
+        graph.AwaitingApproval(activation, approval) ->
+          case approval.expires {
+            None -> None
+            Some(due) ->
+              Some(Wait(
+                run_id.from_string(state.run),
+                json.array(
+                  [
+                    json.string("approval_expiry"),
+                    json.int(activation.id),
+                    json.int(approval.revision),
+                    json.int(due),
+                  ],
+                  fn(value) { value },
+                )
+                  |> json.to_string,
+                At(due),
+              ))
+          }
+        graph.StoppingJob(_, job.RequestQueued, _)
+        | graph.StoppingJob(_, job.RequestStarted, _) -> None
+        graph.WaitingJob(activation) | graph.StoppingJob(activation, _, _) -> {
+          let due = case state.phase {
+            graph.WaitingJob(_) -> activation.deadline
+            _ -> None
+          }
+          case activation.prepared.kind {
+            operation.Job(job.Every(every))
+            | operation.OwnedJob(job.Every(every)) ->
+              Some(Wait(
+                run_id.from_string(state.run),
+                json.array(
+                  list.append(
+                    [
+                      json.string(case state.phase {
+                        graph.StoppingJob(_, _, _) -> "stop_poll"
+                        _ -> "poll"
+                      }),
+                      json.int(activation.id),
+                      json.int(activation.attempt),
+                      json.int(every),
+                    ],
+                    case due {
+                      None -> []
+                      Some(at) -> [json.int(at)]
+                    },
+                  ),
+                  fn(value) { value },
+                )
+                  |> json.to_string,
+                Poll(every, due),
+              ))
+            _ ->
+              case due {
+                None -> None
+                Some(at) ->
+                  Some(Wait(
+                    run_id.from_string(state.run),
+                    json.array(
+                      [
+                        json.string("job_deadline"),
+                        json.int(activation.id),
+                        json.int(activation.attempt),
+                        json.int(at),
+                      ],
+                      fn(value) { value },
+                    )
+                      |> json.to_string,
+                    At(at),
+                  ))
+              }
+          }
+        }
+        graph.WaitingChild(activation, id)
+        | graph.ChildBlocked(activation, id, _) ->
+          Some(dependency(
+            state,
+            activation,
+            [id],
+            "observe",
+            activation.deadline,
+          ))
+        graph.Blocked(a, graph.InvalidResult(_, _)) ->
+          case a.prepared.kind, a.deadline {
+            operation.Fork(..), Some(due) -> Some(fork_deadline(state, a, due))
+            operation.Agent, Some(_) | operation.Subgraph, Some(_) ->
+              Some(dependency(
+                state,
+                a,
+                [attachment.reserved_id(state.run, a.id)],
+                "observe",
+                a.deadline,
+              ))
+            _, _ -> None
+          }
+        graph.Ended(graph.Cancelled(activation, graph.UnresolvedCancellation(_)))
+        | graph.Ended(graph.Expired(activation, graph.UnresolvedCancellation(_))) ->
+          case activation.prepared.kind {
+            operation.Agent | operation.Subgraph ->
+              Some(dependency(
+                state,
+                activation,
+                [attachment.reserved_id(state.run, activation.id)],
+                "settle",
+                None,
+              ))
+            _ -> None
+          }
+        _ -> None
+      }
+      Ok(#(run_id.from_string(state.run), wait))
+    }
+  }
+}
+
+/// An idle agent run with approval requests, the earliest of which expires
+/// at `due`: the sweeper recovers it then, which rejects it. A run with work
+/// in flight is left to its runner until it is idle.
+fn approval_expiry(state: agent.State) -> Option(Wait) {
+  case state.phase, agent.needs_runner(state) {
+    agent.Acting(turn, actions), False -> {
+      let deadlines =
+        list.filter_map(actions, fn(action) {
+          case action.state {
+            run.AwaitingApproval(revision:, expires: Some(at), ..) ->
+              Ok(#(revision, clock.to_milliseconds(at)))
+            _ -> Error(Nil)
+          }
+        })
+      case list.sort(deadlines, fn(a, b) { int.compare(a.1, b.1) }) {
+        [#(revision, due), ..] ->
+          Some(Wait(
+            run_id.from_string(state.run),
+            json.array(
+              [
+                json.string("approval_expiry"),
+                json.int(turn),
+                json.int(revision),
+                json.int(due),
+              ],
+              fn(value) { value },
+            )
+              |> json.to_string,
+            At(due),
+          ))
+        [] -> None
+      }
+    }
+    _, _ -> None
+  }
+}
+
+fn dependency(
+  state: graph.State,
+  activation: graph.Activation,
+  ids: List(String),
+  mode: String,
+  deadline: Option(Int),
+) -> Wait {
+  let key =
+    json.array(
+      [
+        json.string(mode),
+        json.int(activation.id),
+        json.int(activation.attempt),
+        json.array(ids, json.string),
+      ],
+      fn(value) { value },
+    )
+    |> json.to_string
+  Wait(
+    run_id.from_string(state.run),
+    key,
+    Changed(list.map(ids, run_id.from_string), deadline),
+  )
+}
+
+fn fork_deadline(state: graph.State, a: graph.Activation, due: Int) -> Wait {
+  let key =
+    json.array(
+      [
+        json.string("fork_deadline"),
+        json.int(a.id),
+        json.int(a.attempt),
+        json.int(due),
+      ],
+      fn(value) { value },
+    )
+    |> json.to_string
+  Wait(run_id.from_string(state.run), key, At(due))
+}
+
+/// Metadata for a backend index. Check its version and source revision before
+/// using it. Unknown or misfiled records retain only the projection version.
+pub fn encode(stored_id: String, encoded: String) -> String {
+  let fields = case classify(encoded) {
+    Ok(#(id, wait)) ->
+      case run.id_to_string(id) == stored_id {
+        False -> []
+        True -> [
+          #(
+            "wait",
+            json.nullable(wait, fn(wait) {
+              let trigger = case wait.trigger {
+                Changed(ids, due) -> [
+                  #(
+                    "dependencies",
+                    json.array(ids, fn(id) { json.string(run.id_to_string(id)) }),
+                  ),
+                  ..deadline_fields(due)
+                ]
+                Poll(every, due) -> [
+                  #("every", json.int(every)),
+                  ..deadline_fields(due)
+                ]
+                At(due) -> [#("due", json.int(due))]
+              }
+              json.object([#("key", json.string(wait.key)), ..trigger])
+            }),
+          ),
+        ]
+      }
+    Error(_) -> []
+  }
+  json.object([#("version", json.int(version)), ..fields]) |> json.to_string
+}
+
+fn deadline_fields(due: Option(Int)) -> List(#(String, json.Json)) {
+  case due {
+    None -> []
+    Some(at) -> [#("due", json.int(at))]
+  }
+}

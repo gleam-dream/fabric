@@ -1,0 +1,323 @@
+import fabric
+import fabric/agent.{type Agent}
+import fabric/approvers.{type Approvers}
+import fabric/model.{type Model}
+import fabric/policy
+import fabric/run
+import fabric/store
+import fabric/tool
+import gleam/erlang/process
+import gleam/option.{None, Some}
+import gleam/otp/actor
+import gleam/otp/static_supervisor
+import gleam/result
+import gleam/time/duration
+import json/blueprint/codec
+
+/// The live context of a run: who acts. It is never stored.
+pub type Context {
+  Context(user: String)
+}
+
+pub type Transfer {
+  Transfer(to: String, amount: Int)
+}
+
+pub type Receipt {
+  Receipt(id: String)
+}
+
+pub type TransferError {
+  InsufficientFunds
+  GatewayTimeout
+}
+
+/// A tool's definition owns its name and its input and output codecs: the
+/// declaration the model sees and the decoder of its arguments.
+pub fn transfer_definition() -> tool.Definition(Transfer, Receipt) {
+  let input = {
+    use to <- codec.field("to", codec.string(), get: fn(t) { t.to })
+    use amount <- codec.field("amount", codec.int(), get: fn(t) { t.amount })
+    codec.success(Transfer(to:, amount:))
+  }
+  let output = {
+    use id <- codec.field("receipt", codec.string(), get: fn(r) { r.id })
+    codec.success(Receipt(id:))
+  }
+  tool.define("transfer_funds", "Transfer an amount.", input, output)
+}
+
+/// Binding a typed handler says what each of its errors means: a definite
+/// failure the model sees, or an effect that may have happened, which is
+/// never retried and waits for a person to reconcile it. The handler also
+/// gets the `tool.Call` it answers: its run, its action and the run's
+/// correlation, for the requests it makes. A body runs for at most the
+/// agent's tool timeout (`agent.with_tool_timeout`, 60 s by default).
+pub fn transfer_tool(
+  pay: fn(Transfer) -> Result(Receipt, TransferError),
+) -> tool.Tool(Context) {
+  tool.bind(
+    transfer_definition(),
+    fn(_context, _call, transfer) { pay(transfer) },
+    fn(error) {
+      case error {
+        InsufficientFunds -> tool.Explain("insufficient funds")
+        GatewayTimeout -> tool.Uncertain("the gateway timed out after sending")
+      }
+    },
+  )
+}
+
+/// One policy gates every effect. `tool.input` matches an action on a
+/// tool's definition and gives its typed input (`None` for another tool);
+/// arguments that definition cannot read are an error, which stops the run.
+pub fn desk_policy(
+  _context: Context,
+  action: policy.Action,
+) -> Result(policy.Decision, String) {
+  use transfer <- result.try(tool.input(transfer_definition(), action))
+  case transfer {
+    Some(transfer) if transfer.amount > 100 ->
+      Ok(policy.RequireApproval(run.Requirement("treasurer", 1)))
+    _ -> Ok(policy.Allow)
+  }
+}
+
+/// The desk's final answer, typed: the model is asked for its JSON Schema,
+/// and a run completes with the decoded value.
+pub type Resolution {
+  Resolution(summary: String)
+}
+
+pub fn resolution_codec() -> codec.Codec(Resolution) {
+  use summary <- codec.field("summary", codec.string(), get: fn(r) { r.summary })
+  codec.success(Resolution(summary:))
+}
+
+/// An agent is described, then built once: `build` reports every problem.
+/// A provider's model comes from `fabric/llm.model(client, settings, model_id)`,
+/// given the application's started HTTP Gun client. Without `with_answer`
+/// the answer is the model's text (`Agent(Context, String)`).
+///
+/// `treasurers` decide who may answer the desk's approval requests: the
+/// application's own `approvers.new(name, verify)`, whose `verify`
+/// authenticates a credential (a token) and checks that it may answer the
+/// request's requirement. `fabric/approvers` shows one for warden tokens.
+/// Build them once, at boot, and give the same value to `review`: a proof
+/// from any other approvers is refused.
+pub fn desk(
+  model: Model,
+  pay: fn(Transfer) -> Result(Receipt, TransferError),
+  treasurers: Approvers(credential),
+) -> Result(Agent(Context, Resolution), List(agent.ConfigError)) {
+  agent.new("desk", model, [transfer_tool(pay)], desk_policy)
+  |> agent.with_approvers(treasurers)
+  |> agent.with_answer(resolution_codec())
+  |> agent.with_max_turns(6)
+  |> agent.with_token_budget(20_000)
+  |> agent.build
+}
+
+/// A store is a named value. Its subtree, the store's process and the
+/// factory its runners start under, runs under the application's supervisor
+/// (`store.start(runs)` in a script or a test). When the application stops,
+/// each runner drains for up to the drain window: it starts nothing new,
+/// lets its running tools and model call finish, commits their results, and
+/// hands its run off to `resume` below. A runner still busy when the window
+/// ends is killed, and its running tools become uncertain effects. A
+/// directory store suits development, tests and one host; it does not
+/// survive a power loss, so production uses a database backend through
+/// `store.new`.
+pub fn supervise(path: String) -> Result(store.Store, actor.StartError) {
+  let assert Ok(runs) =
+    store.directory(process.new_name("runs"), path)
+    |> store.with_drain(duration.seconds(10))
+  static_supervisor.new(static_supervisor.OneForOne)
+  |> static_supervisor.add(store.supervised(runs))
+  |> static_supervisor.start
+  |> result.replace(runs)
+}
+
+/// A request starts a run under an id it chooses and keeps (in a link, a
+/// job, a table). A job derives the id from its own
+/// (`run.id_from_parts("job", [job_id])`), so a retried start finds the run
+/// (`fabric.AlreadyStarted`) instead of paying twice. The run's correlation is in every event, model request and tool
+/// call of the run; `None` derives it from the id.
+pub fn start_payment(
+  runs: store.Store,
+  desk: Agent(Context, Resolution),
+  context: Context,
+  prompt: String,
+) -> Result(String, fabric.Error) {
+  let id = run.new_id()
+  use _handle <- result.map(fabric.start(
+    runs,
+    desk,
+    id:,
+    context:,
+    prompt:,
+    correlation: None,
+  ))
+  run.id_to_string(id)
+}
+
+pub type Verdict {
+  Approve
+  Reject(reason: String)
+  /// What actually happened to an effect of unknown status, as the model
+  /// will see it (`tool.reconciliation` encodes a typed result).
+  Happened(content: String)
+  /// No one can say yet: the model is told so, and the run goes on.
+  StillUnknown(note: String)
+}
+
+/// Why a review did nothing.
+pub type ReviewError {
+  /// The credential may not answer the request: not authenticated, not
+  /// authorized for its requirement, or the verifier is unavailable.
+  Denied(approvers.Denial)
+  Failed(fabric.Error)
+}
+
+/// A later request opens the run by the id it kept and acts on its status.
+/// Opening takes nothing over, and every command is checked against the
+/// stored record. An approval checks the policy again with the context
+/// passed here, and one that comes after the request expired (7 days by
+/// default, `agent.with_approval_expiry`) is `fabric.ApprovalExpired`.
+/// Every command returns the run's status, as `await` does; a finished
+/// run's is `run.Finished(run.Completed(Resolution(..)))`.
+///
+/// An answer takes a proof: `approvers.check` verifies the reviewer's
+/// credential for the request's requirement with the desk's approvers, and
+/// the desk refuses a proof from any other approvers
+/// (`fabric.ProofRefused`). The reviewer the verifier returned and the
+/// approvers' name are recorded with the answer.
+pub fn review(
+  runs: store.Store,
+  desk: Agent(Context, Resolution),
+  treasurers: Approvers(credential),
+  context: Context,
+  credential: credential,
+  stored_id: String,
+  verdict: Verdict,
+) -> Result(run.Status(Resolution), ReviewError) {
+  use id <- result.try(
+    run.parse_id(stored_id)
+    |> result.replace_error(Failed(fabric.RunNotFound)),
+  )
+  use handle <- result.try(
+    fabric.open(runs, desk, context, id) |> result.map_error(Failed),
+  )
+  use status <- result.try(
+    fabric.await(handle, within: duration.seconds(5))
+    |> result.map_error(Failed),
+  )
+  let prove = fn(pending: run.PendingApproval) {
+    approvers.check(treasurers, credential, pending.reference.requirement)
+    |> result.map_error(Denied)
+  }
+  case status, verdict {
+    run.Suspended([pending, ..], _), Approve -> {
+      use proof <- result.try(prove(pending))
+      fabric.approve(handle, pending.reference, proof:, context:)
+      |> result.map_error(Failed)
+    }
+    run.Suspended([pending, ..], _), Reject(reason) -> {
+      use proof <- result.try(prove(pending))
+      fabric.reject(handle, pending.reference, proof:, reason:)
+      |> result.map_error(Failed)
+    }
+    run.Suspended(_, [uncertain, ..]), Happened(content) ->
+      fabric.reconcile(handle, uncertain.reference, content)
+      |> result.map_error(Failed)
+    run.Suspended(_, [uncertain, ..]), StillUnknown(note) ->
+      fabric.reconcile(
+        handle,
+        uncertain.reference,
+        tool.unconfirmed_reconciliation(note),
+      )
+      |> result.map_error(Failed)
+    // `Working`: the time ran out. `Unattended`: its runner was lost.
+    // `Finished`: nothing more can change it.
+    status, _ -> Ok(status)
+  }
+}
+
+/// At boot, when the previous owner is known to be gone, `recover` takes
+/// over work whose runner was lost. A run handed off by a drained shutdown
+/// goes on with nothing uncertain; after a crash, running tools become
+/// uncertain effects, never retried, unless a tool is replayable
+/// (`tool.with_replay`). On an unleased store, never recover
+/// a run another process may drive; a leased store's `recover` leaves a run
+/// alone while another node holds its lease.
+pub fn resume(
+  runs: store.Store,
+  desk: Agent(Context, Resolution),
+  context: Context,
+  stored_id: String,
+) -> Result(fabric.Run(Context, Resolution), fabric.Error) {
+  use id <- result.try(
+    run.parse_id(stored_id)
+    |> result.replace_error(fabric.RunNotFound),
+  )
+  fabric.recover(runs, desk, context, id)
+}
+
+pub type Topic {
+  Topic(name: String)
+}
+
+pub type Summary {
+  Summary(text: String)
+}
+
+pub fn summary_codec() -> codec.Codec(Summary) {
+  use text <- codec.field("summary", codec.string(), get: fn(s) { s.text })
+  codec.success(Summary(text:))
+}
+
+/// A sub-agent is a typed delegation whose start the policy gates like a
+/// tool (`action.target` is `policy.StartAgent(..)`). Its approvals surface
+/// in the parent's status, cancelling the parent cancels it, and
+/// recovering the parent recovers it. The researcher's typed answer is the
+/// delegation's output (`Summary`); any other ending is a definite failure
+/// the model sees. A sub-agent without approvers of its own is answered
+/// with its parent's.
+pub fn front_desk(
+  model: Model,
+  researcher: Agent(Context, Summary),
+  treasurers: Approvers(credential),
+) -> Result(Agent(Context, String), List(agent.ConfigError)) {
+  let research =
+    tool.define(
+      "research",
+      "Research a topic.",
+      {
+        use name <- codec.field("topic", codec.string(), get: fn(t) { t.name })
+        codec.success(Topic(name:))
+      },
+      summary_codec(),
+    )
+  agent.new("front-desk", model, [], desk_policy)
+  |> agent.with_sub_agent(research, to: researcher, prompt: fn(topic) {
+    topic.name
+  })
+  |> agent.with_approvers(treasurers)
+  |> agent.build
+}
+
+/// A tool whose effect outlives its task settles its result late: its
+/// handler gets a `tool.Settlement`, and a stopped run waits up to
+/// `settle_within` for `tool.settle(settlement, result, summary:)`.
+/// The summary is observed if the settlement is refused, so it must not
+/// carry secrets.
+pub fn settling_transfer(
+  pay: fn(Transfer, tool.Settlement(Receipt)) -> Result(Receipt, TransferError),
+) -> tool.Tool(Context) {
+  tool.bind_settling(
+    transfer_definition(),
+    fn(_context, _call, transfer, settlement) { pay(transfer, settlement) },
+    fn(_error) { tool.Uncertain("the transfer did not report") },
+    settle_within: duration.seconds(5),
+  )
+}

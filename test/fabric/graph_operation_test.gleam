@@ -1,0 +1,139 @@
+import fabric/graph/operation
+import fabric/graph/signal
+import fabric/internal/graph/contract
+import fabric/run
+import fabric/support
+import fabric/tool
+import gleam/erlang/process
+import gleam/option.{None}
+import gleeunit/should
+import json/blueprint/codec
+import sinal/correlation
+
+fn invocation(attempt: Int) -> operation.Invocation {
+  let assert Ok(id) = run.parse_id("effect-key")
+  operation.Invocation(id, 3, attempt, correlation.from_key("operation"))
+}
+
+fn no_error(_error: Nil) -> tool.Failure {
+  tool.Explain("cannot fail")
+}
+
+pub fn native_body_receives_the_stable_logical_identity_and_current_attempt_test() {
+  let calls = process.new_subject()
+  let op =
+    operation.new(
+      run.DefinitionId("counter", 1),
+      codec.int(),
+      codec.int(),
+      fn(calls, invocation, n) {
+        process.send(calls, invocation)
+        Ok(n + 1)
+      },
+      no_error,
+    )
+  contract.invoker(op)(calls, invocation(1), "6") |> should.equal(Ok("7"))
+  contract.invoker(op)(calls, invocation(2), "6") |> should.equal(Ok("7"))
+  let assert Ok(first) = process.receive(calls, 30_000)
+  let assert Ok(second) = process.receive(calls, 30_000)
+  first.run |> should.equal(second.run)
+  first.activation |> should.equal(second.activation)
+  first.attempt |> should.equal(1)
+  second.attempt |> should.equal(2)
+  operation.with_replay(op, 0)
+  |> support.operation_problems
+  |> should.equal([operation.InvalidLimit(operation.ReplayAttempts, 0, 1, 100)])
+  // At most 100 attempts, as `tool.with_replay`.
+  operation.with_replay(op, 101)
+  |> support.operation_problems
+  |> should.equal([
+    operation.InvalidLimit(operation.ReplayAttempts, 101, 1, 100),
+  ])
+  operation.with_replay(op, 100)
+  |> support.operation_problems
+  |> should.equal([])
+  let replayable = operation.with_replay(op, 2)
+  operation.recovery(replayable) |> should.equal(operation.ReplayInterrupted(2))
+}
+
+pub fn undecodable_input_does_not_enter_the_native_body_test() {
+  let calls = process.new_subject()
+  let op =
+    operation.new(
+      run.DefinitionId("counter", 1),
+      codec.int(),
+      codec.int(),
+      fn(_, _, n) {
+        process.send(calls, Nil)
+        Ok(n)
+      },
+      no_error,
+    )
+  let assert Error(operation.InputDecodingFailed(_)) =
+    contract.invoker(op)(Nil, invocation(1), "true")
+  process.receive(calls, 0) |> should.equal(Error(Nil))
+}
+
+pub fn unusable_output_retains_evidence_of_the_returned_value_test() {
+  let reason = codec.encode_failure("not persistable")
+  let output =
+    codec.custom(
+      encode: fn(_n: Int) { Error(reason) },
+      decode: codec.decode(codec.int(), _),
+      schema: None,
+      placeholder: 0,
+    )
+  let op =
+    operation.new(
+      run.DefinitionId("counter", 1),
+      codec.int(),
+      output,
+      fn(_, _, n) { Ok(n + 1) },
+      no_error,
+    )
+  contract.invoker(op)(Nil, invocation(1), "6")
+  |> should.equal(Error(operation.OutputEncodingFailed("7", reason)))
+}
+
+type DomainFailure {
+  Rejected
+  LostReceipt
+}
+
+pub fn application_error_classification_preserves_uncertainty_test() {
+  let op =
+    operation.new(
+      run.DefinitionId("external", 1),
+      codec.int(),
+      codec.int(),
+      fn(failure: DomainFailure, _, _) { Error(failure) },
+      fn(failure) {
+        case failure {
+          Rejected -> tool.Explain("rejected before submission")
+          LostReceipt -> tool.Uncertain("submission may have succeeded")
+        }
+      },
+    )
+  contract.invoker(op)(Rejected, invocation(1), "0")
+  |> should.equal(
+    Error(operation.BodyFailed(tool.Explain("rejected before submission"))),
+  )
+  contract.invoker(op)(LostReceipt, invocation(1), "0")
+  |> should.equal(
+    Error(operation.BodyFailed(tool.Uncertain("submission may have succeeded"))),
+  )
+}
+
+pub fn signal_operations_cannot_be_executed_or_declared_replayable_test() {
+  let op =
+    operation.await_signal(
+      codec.int(),
+      signal.new(run.DefinitionId("human", 1), codec.bool()),
+    )
+  operation.kind(op) |> should.equal(operation.Signal)
+  contract.invoker(op)(Nil, invocation(1), "1")
+  |> should.equal(Error(operation.NotExecutable))
+  operation.with_replay(op, 2)
+  |> support.operation_problems
+  |> should.equal([operation.ReplayRequiresActivity])
+}
