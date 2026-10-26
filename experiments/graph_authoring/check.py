@@ -24,15 +24,20 @@ def check_types() -> None:
     with tempfile.TemporaryDirectory(prefix="fabric-graph-types-") as folder:
         project = Path(folder)
         (project / "src").mkdir()
+        blueprint = (
+            json.dumps(BLUEPRINT)
+            if isinstance(BLUEPRINT, str)
+            else "{ "
+            + ", ".join(
+                key + " = " + json.dumps(value) for key, value in BLUEPRINT.items()
+            )
+            + " }"
+        )
         (project / "gleam.toml").write_text(
             'name = "graph_type_probe"\nversion = "0.0.0"\ntarget = "erlang"\n'
             "[dependencies]\n"
             f"fabric_graph_authoring = {{ path = {json.dumps(str(ROOT))} }}\n"
-            "json_blueprint = { "
-            + ", ".join(
-                key + " = " + json.dumps(value) for key, value in BLUEPRINT.items()
-            )
-            + " }\n"
+            f"json_blueprint = {blueprint}\n"
         )
         source = """import fabric_graph_authoring as graph
 import json/blueprint/codec
