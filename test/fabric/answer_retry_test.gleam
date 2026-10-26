@@ -121,7 +121,7 @@ pub fn one_attempt_ends_the_run_on_the_first_refused_answer_test() {
   |> should.equal(
     run.Finished(run.AnswerInvalid(
       raw: "sunny, probably",
-      reason: "invalid JSON at line 1, column 1: unexpected character",
+      reason: "invalid JSON: native parser rejected the document",
     )),
   )
   snapshot.turns_used |> should.equal(1)

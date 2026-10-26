@@ -402,7 +402,7 @@ pub fn a_run_that_ends_otherwise_names_its_outcome_test() {
   let assert Ok(client.ToolFailed([content.TextContent(text:, ..)], _)) = result
   text
   |> should.equal(
-    "the model's final answer is invalid: invalid JSON at line 1, column 1: unexpected character",
+    "the model's final answer is invalid: invalid JSON: native parser rejected the document",
   )
   // The default corrective turn: two answers.
   count(turns) |> should.equal(2)

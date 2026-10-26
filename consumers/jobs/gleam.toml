@@ -6,11 +6,11 @@ gleam = ">= 1.18.0"
 [dependencies]
 gleam_time = ">= 1.11.0 and < 2.0.0"
 fabric = { path = "../.." }
-json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "main" }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "8bc8ab4e7d04b23d209680f849e976074bf7c90f" }
 gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
-sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "main" }
+sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "95f2dbce4459942e16e819e3527eb00d9c503c9d" }

@@ -32,7 +32,7 @@ it does not wrap formatting or design validation.
 - `nix develop -c consumers/jobs/test-service.sh`: the jobs consumer against its own HTTP service.
 - Live-provider commands in `consumers/decision` and `consumers/writing` are explicit, make real requests and are never part of the gate. The gate removes provider credentials from child environments and never loads `.env.local`.
 - Oracle fixtures under `test/oracle/fixtures` are recaptured with the committed capture script and never hand-edited. The pin, rules and limits are in [docs/ORACLE.md](docs/ORACLE.md).
-- Unpublished sibling packages (`gleam-dream/*` and `lostbean/json_blueprint`) are Git dependencies with `ref = "main"`; each `manifest.toml` is the lock. Update one by hand with `gleam update <package>` when needed. No gate or job updates them.
+- Unpublished sibling packages (`gleam-dream/*` and `lostbean/json_blueprint`) are Git dependencies pinned to verified commits; each `manifest.toml` is the lock. Update one by hand with `gleam update <package>` when needed. No gate or job updates them.
 
 ## References
 

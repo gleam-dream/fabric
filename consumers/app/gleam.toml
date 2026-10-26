@@ -10,13 +10,13 @@ gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 fabric = { path = "../.." }
-json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "main" }
-saga = { git = "https://github.com/gleam-dream/saga.git", ref = "main" }
-sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "main" }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "8bc8ab4e7d04b23d209680f849e976074bf7c90f" }
+saga = { git = "https://github.com/gleam-dream/saga.git", ref = "fed752110dccb4ee5978c0f42d2fd10d77cb0a15" }
+sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "95f2dbce4459942e16e819e3527eb00d9c503c9d" }
 
 [dev-dependencies]
 simplifile = ">= 2.0.0 and < 3.0.0"
-http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "main" }
-llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "main" }
+http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "b2fe1d7cd0ea121e679cdf2c4af5b078330c33e7" }
+llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "2c5eaea0e4af4db68ebc02f0ae10a7f0e6642276" }
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleeunit = ">= 1.0.0 and < 2.0.0"
