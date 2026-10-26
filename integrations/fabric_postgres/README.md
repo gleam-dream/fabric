@@ -5,13 +5,16 @@ across Erlang nodes. It borrows the application's `pog.Connection`.
 
 ## Installation
 
-For the current checkout, add this directory as a path dependency in your
-application's `gleam.toml`. For an application beside the Fabric checkout:
+Add Fabric and Pog from Hex and the PostgreSQL adapter from its Git subdirectory:
 
 ```toml
 [dependencies]
-fabric_postgres = { path = "../fabric/integrations/fabric_postgres" }
+fabric = ">= 0.1.0 and < 0.2.0"
+pog = ">= 4.1.0 and < 4.2.0"
+fabric_postgres = { git = "https://github.com/gleam-dream/fabric.git", ref = "main", path = "integrations/fabric_postgres" }
 ```
+
+Commit `gleam.toml` and `manifest.toml` to retain the resolved versions and Git commit.
 
 The package targets Erlang, requires Gleam 1.18 or later, and is tested against
 PostgreSQL 16. Its pog 4.1 and pgo 0.20 ranges match Grind's shared-pool requirements.

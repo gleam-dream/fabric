@@ -5,7 +5,7 @@ Typed tools and application policy govern effects; recorded outcomes support
 approval and recovery. Applications provide models, domain operations,
 authorization and resource supervision.
 
-Use Fabric when an agent or workflow needs typed boundaries, approval, or recovery across process loss. Fabric targets Erlang and requires Gleam 1.18 or later. It is not yet published to Hex.
+Use Fabric when an agent or workflow needs typed boundaries, approval, or recovery across process loss. Fabric targets Erlang and requires Gleam 1.18 or later.
 
 ## Capabilities
 
@@ -27,14 +27,15 @@ Fabric does not provide retrieval or vector storage, agent token streaming, remo
 
 ## Install
 
-Add Fabric to your application's `gleam.toml`:
+Add Fabric from Hex:
 
-```toml
-[dependencies]
-fabric = { git = "https://github.com/gleam-dream/fabric.git", ref = "main" }
+```sh
+gleam add fabric
 ```
 
-Gleam fetches Fabric and its Git dependencies. The application's `manifest.toml` records the exact commits used by that build.
+Commit `gleam.toml` and `manifest.toml` to retain the resolved versions.
+The optional [PostgreSQL adapter](integrations/fabric_postgres/README.md)
+installs from a Git subdirectory.
 
 ## Start with an agent
 
