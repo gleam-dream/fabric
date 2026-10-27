@@ -1,5 +1,9 @@
 # External job consumer
 
+[![CI](https://github.com/gleam-dream/fabric/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gleam-dream/fabric/actions/workflows/ci.yml)
+[![fabric on Hex](https://img.shields.io/hexpm/v/fabric?label=Hex%3A%20fabric)](https://hex.pm/packages/fabric)
+[![Gleam](https://img.shields.io/badge/Gleam-FFAFF3?logo=gleam&logoColor=000000)](https://gleam.run/)
+
 Submits an artifact job through a fenced Fabric graph operation and observes,
 cancels and expires it against a separate HTTP service with its own SQLite
 journal. The graph answer is a typed acceptance receipt, and business

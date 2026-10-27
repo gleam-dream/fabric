@@ -1,5 +1,9 @@
 # Fabric
 
+[![CI](https://github.com/gleam-dream/fabric/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gleam-dream/fabric/actions/workflows/ci.yml)
+[![fabric on Hex](https://img.shields.io/hexpm/v/fabric?label=Hex%3A%20fabric)](https://hex.pm/packages/fabric)
+[![Gleam](https://img.shields.io/badge/Gleam-FFAFF3?logo=gleam&logoColor=000000)](https://gleam.run/)
+
 Fabric runs bounded LLM agents and durable control graphs in Gleam on Erlang/OTP.
 Typed tools and application policy govern effects; recorded outcomes support
 approval and recovery. Applications provide models, domain operations,

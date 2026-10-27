@@ -1,5 +1,9 @@
 # Public graph consumer
 
+[![CI](https://github.com/gleam-dream/fabric/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gleam-dream/fabric/actions/workflows/ci.yml)
+[![fabric on Hex](https://img.shields.io/hexpm/v/fabric?label=Hex%3A%20fabric)](https://hex.pm/packages/fabric)
+[![Gleam](https://img.shields.io/badge/Gleam-FFAFF3?logo=gleam&logoColor=000000)](https://gleam.run/)
+
 A separate package that runs the production Fabric graph API: an integer
 generator and a boolean reviewer share native integer state, rejected drafts
 return to the generator and the third draft is accepted.

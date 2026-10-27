@@ -1,5 +1,9 @@
 # Usage examples
 
+[![CI](https://github.com/gleam-dream/fabric/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gleam-dream/fabric/actions/workflows/ci.yml)
+[![fabric on Hex](https://img.shields.io/hexpm/v/fabric?label=Hex%3A%20fabric)](https://hex.pm/packages/fabric)
+[![Gleam](https://img.shields.io/badge/Gleam-FFAFF3?logo=gleam&logoColor=000000)](https://gleam.run/)
+
 Small programs built from Fabric's public modules only. Each module shows one
 topic, runs offline against a scripted model, and is asserted by
 `test/fabric_usage_test.gleam`, so the usage stays true to the library: a
