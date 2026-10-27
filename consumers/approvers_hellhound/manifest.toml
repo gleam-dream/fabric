@@ -23,7 +23,7 @@ packages = [
   { name = "gleeunit", version = "1.11.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleeunit", source = "hex", outer_checksum = "EC31ABA74256AEA531EDF8169931D775BBB384FED0A8A1BDC4DD9354E3E21826" },
   { name = "gose", version = "2.2.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib", "gleam_time", "kryptos", "splitter"], otp_app = "gose", source = "hex", outer_checksum = "D46667C0A6634A38F0C5D90B5F6BA9D68107F90EA0950EEBC95C2ADC41DDA118" },
   { name = "gun", version = "2.6.0", build_tools = ["make", "rebar3"], requirements = ["cowlib"], otp_app = "gun", source = "hex", outer_checksum = "69BB957F4BD6C475B5714460FD65C26FC7EB85760AA64B74754DE36CE5CCED7D" },
-  { name = "hellhound", version = "0.1.0", build_tools = ["gleam"], requirements = ["exception", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "gose", "http_gun", "kryptos", "sinal", "telemetry"], source = "git", repo = "https://github.com/gleam-dream/hellhound.git", commit = "47c56cb8f313597cf457a08873b7ae441fd657e6" },
+  { name = "hellhound", version = "0.1.0", build_tools = ["gleam"], requirements = ["exception", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "gose", "http_gun", "kryptos", "sinal", "telemetry"], otp_app = "hellhound", source = "hex", outer_checksum = "C441CACC0202419F941BDEAA188D9AD3D038711BEBE094AA7973CE5C99B92671" },
   { name = "http_gun", version = "0.1.0", build_tools = ["gleam"], requirements = ["cowlib", "file_streams", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "gun", "simplifile", "sinal", "youid"], otp_app = "http_gun", source = "hex", outer_checksum = "D217888729822DCC5E68B88D6FED819674299DA9E1AAC1843884A7BC8B1EA98A" },
   { name = "json_blueprint", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_json", "gleam_stdlib"], otp_app = "json_blueprint", source = "hex", outer_checksum = "CFF98414EDD9A7F969F46FF6CAA17BAD1A5DAC4CB80D45938ED41239CEBC6E25" },
   { name = "kryptos", version = "1.5.0", build_tools = ["gleam"], requirements = ["bigi", "gleam_stdlib", "gleam_time"], otp_app = "kryptos", source = "hex", outer_checksum = "0707A1492E8585CEC8218315C69A182B43CD25E22C216CB530330C94F5D62944" },
@@ -43,5 +43,5 @@ gleam_otp = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_stdlib = { version = ">= 0.70.0 and < 2.0.0" }
 gleam_time = { version = ">= 1.11.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
-hellhound = { git = "https://github.com/gleam-dream/hellhound.git", ref = "47c56cb8f313597cf457a08873b7ae441fd657e6" }
+hellhound = { version = ">= 0.1.0 and < 0.2.0" }
 json_blueprint = { version = ">= 2.0.0 and < 3.0.0" }

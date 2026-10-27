@@ -32,7 +32,7 @@ it does not wrap formatting or design validation.
 - `nix develop -c consumers/jobs/test-service.sh`: the jobs consumer against its own HTTP service.
 - Live-provider commands in `consumers/decision` and `consumers/writing` are explicit, make real requests and are never part of the gate. The gate removes provider credentials from child environments and never loads `.env.local`.
 - Oracle fixtures under `test/oracle/fixtures` are recaptured with the committed capture script and never hand-edited. The pin, rules and limits are in [docs/ORACLE.md](docs/ORACLE.md).
-- Published sibling packages use Hex version requirements. The authentication consumer uses a verified Git Hellhound commit until that package is published; each `manifest.toml` is the lock. Update dependencies with `gleam deps update <package>` when needed. No gate or job updates them.
+- Published sibling packages, including Hellhound in the authentication consumer and Fabric in its PostgreSQL adapter, use Hex version requirements; each `manifest.toml` is the lock. Update dependencies with `gleam deps update <package>` when needed. No gate or job updates them.
 
 ## References
 
