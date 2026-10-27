@@ -99,7 +99,7 @@ pub fn summarize(
 
 <!-- prettier-ignore-end -->
 
-This example discards its in-memory records when the store stops. A service that needs recovery supervises a persistent store and keeps each run id. A completed answer also does not prove that every action succeeded; inspect `fabric.snapshot` before treating an agent's answer as business success.
+The in-memory records disappear when the store stops. Services needing recovery supervise a persistent store and keep each run id. A completed answer does not prove every action succeeded; inspect `fabric.snapshot` before treating it as business success.
 
 ## Core model
 
@@ -154,4 +154,4 @@ let assert Ok(agent) =
 
 <!-- prettier-ignore-end -->
 
-The [design](docs/design/design-layer.pdf) defines supported contracts, limits, and capabilities still unbuilt. Historical live-provider measurements and their limitations are recorded in [BENCHMARKS.md](docs/BENCHMARKS.md); Fabric has no runtime benchmark harness. See [AGENTS.md](AGENTS.md) for repository development and validation commands.
+The [design](docs/design/design-layer.pdf) defines supported contracts, limits, and unbuilt capabilities. [BENCHMARKS.md](docs/BENCHMARKS.md) records historical live-provider measurements and their limits; Fabric has no runtime benchmark harness. See [AGENTS.md](AGENTS.md) for development and validation commands.

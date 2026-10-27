@@ -4,10 +4,9 @@
 [![fabric on Hex](https://img.shields.io/hexpm/v/fabric?label=Hex%3A%20fabric)](https://hex.pm/packages/fabric)
 [![Gleam](https://img.shields.io/badge/Gleam-FFAFF3?logo=gleam&logoColor=000000)](https://gleam.run/)
 
-Small programs built from Fabric's public modules only. Each module shows one
-topic, runs offline against a scripted model, and is asserted by
-`test/fabric_usage_test.gleam`, so the usage stays true to the library: a
-changed signature fails the gate (`bash scripts/test.sh`).
+Small programs using only Fabric's public modules. Each covers one topic offline
+against a scripted model. `test/fabric_usage_test.gleam` checks their behavior;
+changed signatures fail the gate (`bash scripts/test.sh`).
 
 | Topic                                          | Module                                                 |
 | ---------------------------------------------- | ------------------------------------------------------ |

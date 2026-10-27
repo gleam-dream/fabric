@@ -178,8 +178,8 @@ timeout bounds only a worker wait.
 
 ## Examples
 
-Each usage topic is a compiled test that the disposable-cluster harness below
-runs, so a changed signature fails the gate.
+The disposable-cluster harness runs each usage topic as a compiled test, so
+changed signatures fail the gate.
 
 | Topic                                                 | Example                                                                                                                                                                                                 |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
