@@ -70,8 +70,9 @@
 //// After a restart, `recover` reopens a stored run under the same agent. If
 //// work was in flight when its runner was lost, recovery takes it over as a
 //// new incarnation: tools that had started become uncertain effects, which
-//// are never retried and must be reconciled; queued tools and a lost model
-//// call are started again, except approved ones, which ask for their
+//// are never retried and must be reconciled; queued tools pass the policy
+//// again with the recovering context and run if it still allows them, and
+//// a lost model call is started again; approved queued tools ask for their
 //// approval again. "Never retried" holds as long as the store keeps
 //// every commit it acknowledged: the directory store does not flush the
 //// directory entry, so after an operating-system crash or power loss (not
@@ -424,8 +425,12 @@ fn original_messages(state: State) -> List(model.Message) {
 /// over as a new incarnation (committed with compare-and-set, so concurrent
 /// recoveries have one winner): running tools become uncertain effects
 /// (replayable ones, `tool.with_replay`, are started again while they have
-/// attempts left), queued tools are dispatched again, and a lost model call
-/// is issued again against the turn budget. A suspended or finished run is
+/// attempts left), queued tools pass the policy again with `context` and
+/// are dispatched only if it still allows them (a denial is shown to the
+/// model as a fresh denial is, and a required approval is requested anew),
+/// and a lost model call is issued again against the turn budget. The
+/// store is trusted like its database: this recheck keeps an edited record
+/// from running a queued tool past the policy, but records are not signed. A suspended or finished run is
 /// opened unchanged, except that an approval request whose deadline passed
 /// is rejected (the model sees it, and the run goes on). Calling it again
 /// is harmless.
@@ -443,9 +448,9 @@ fn original_messages(state: State) -> List(model.Message) {
 ///
 /// A run handed off by a drained shutdown (`store.supervised`) has nothing
 /// running: its results are committed, a model call it never issued is
-/// issued as the same turn, and its queued tools are dispatched, except
-/// approved ones, which ask for their approval again (the handoff already
-/// asked).
+/// issued as the same turn, and its queued tools pass the policy again and
+/// are dispatched, except approved ones, which ask for their approval again
+/// (the handoff already asked).
 ///
 /// On a leased store (`store.leased`) it is safe to call at any time: a run
 /// whose lease another node holds live is left exactly as it is (the

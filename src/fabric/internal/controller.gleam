@@ -1904,9 +1904,10 @@ pub fn abandon(state: State) -> State {
 }
 
 /// `abandon`, then restarts the work that is safe to restart: queued
-/// actions are dispatched again and a lost model call is issued again as a
-/// new attempt against the turn budget. A queued action that was approved
-/// is not: it asks for its approval again (`ask_again`).
+/// actions pass the policy again (`regate`) and are dispatched if it still
+/// allows them, and a lost model call is issued again as a new attempt
+/// against the turn budget. A queued action that was approved is not
+/// dispatched: it asks for its approval again (`ask_again`).
 ///
 /// Delegated actions are left to the runtime, which reattaches their child
 /// runs; a stop still waiting for child runs asks to cancel them again.
@@ -1914,13 +1915,103 @@ pub fn recover(env: Env(context), state: State) -> #(State, List(Effect)) {
   let state = abandon(replay_running(env, state))
   case state.phase {
     AwaitingModel(_) -> call_model(env, state)
-    Acting(turn, actions) -> {
-      let state = ask_again(env, state, turn, actions)
-      #(state, dispatch(current(state)))
-    }
+    Acting(turn, actions) ->
+      case regate(env, state, actions) {
+        Error(#(failure, actions)) ->
+          stop(state, turn, actions, HostFault(failure))
+        Ok(#(issued, regated)) -> {
+          let state =
+            State(
+              ..state,
+              approvals_issued: issued,
+              phase: Acting(turn, regated),
+            )
+          let state = ask_again(env, state, turn, regated)
+          let queued =
+            list.append(
+              dispatch(current(state)),
+              start_children(current(state)),
+            )
+          case regated == actions {
+            True -> #(state, queued)
+            // A recheck refused work: the batch may now be complete.
+            False -> {
+              let #(state, effects) = settle(env, state)
+              #(state, list.append(queued, effects))
+            }
+          }
+        }
+      }
     Stopping(actions:, ..) -> #(state, cancel_children(actions))
     Ended(_) | NeverStarted -> #(state, [])
   }
+}
+
+/// Queued actions that no answer approved pass the gate again with the
+/// recovering `env`, as a graph's queued activation returns to policy
+/// inspection: the decision that queued them was made with a context this
+/// incarnation does not have, and a record is only as trusted as its
+/// store. Still allowed, an action stays queued; a denial or a refusal
+/// becomes that action's model-visible state, as for a fresh request; a
+/// required approval issues a new request. Approved actions are left to
+/// `ask_again`, which asks for the approval they had again, and a policy
+/// that fails returns the actions so far with the host failure.
+fn regate(
+  env: Env(context),
+  state: State,
+  actions: List(ActionRecord),
+) -> Result(#(Int, List(ActionRecord)), #(HostFailure, List(ActionRecord))) {
+  list.try_fold(actions, #(state.approvals_issued, []), fn(acc, action) {
+    let #(issued, done) = acc
+    case action.state, action.approvals {
+      run.Queued, [] -> {
+        let others =
+          list.flatten([
+            state.history,
+            list.reverse(done),
+            list.filter(actions, fn(other) { other.id != action.id }),
+          ])
+        case gate(env, state, action.id, action.call, others) {
+          Error(failure) ->
+            Error(#(
+              failure,
+              list.append(
+                list.reverse([action, ..done]),
+                list.drop(actions, list.length(done) + 1),
+              ),
+            ))
+          Ok(gated) -> {
+            let rechecked =
+              admitted(
+                env,
+                state,
+                action.id,
+                action.call,
+                gated,
+                issued,
+                others,
+              )
+            let issued = case rechecked.state {
+              run.AwaitingApproval(..) -> issued + 1
+              _ -> issued
+            }
+            // The recheck keeps the action's replay count; an allowed
+            // delegation (never queued by Fabric itself) is committed
+            // running with its child id, as a fresh one is.
+            let action =
+              ActionRecord(
+                ..action,
+                state: rechecked.state,
+                child: rechecked.child,
+              )
+            Ok(#(issued, [action, ..done]))
+          }
+        }
+      }
+      _, _ -> Ok(#(issued, [action, ..done]))
+    }
+  })
+  |> result.map(fn(acc) { #(acc.0, list.reverse(acc.1)) })
 }
 
 /// The record a draining runner leaves when it hands its run off: the work
