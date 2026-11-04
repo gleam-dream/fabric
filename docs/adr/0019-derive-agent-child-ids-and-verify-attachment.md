@@ -24,10 +24,17 @@ the parent id and the provider call id can compute the child id and store a
 run there first. The enforced rule is therefore reciprocal attachment: a
 record under a child id counts as the child only when its parent link names
 exactly that parent run and action, and the parent's record names that child
-on that action. Adoption, reattachment, cancellation, stopping cleanup and
-lookup refuse any other record. The delegation records the refusal as lost
-child evidence, so it becomes an uncertain effect for the application to
-reconcile. A pre-created foreign run can block a delegation; it cannot
+on that action. Adoption after a lost start, recovery reattachment, stopping
+cleanup and cancellation, including any command sent through the child's
+setup, refuse any other record, and the delegation records the refusal as
+lost child evidence, so it becomes an uncertain effect for the application
+to reconcile. Lookup through the parent (`fabric.child` and the routing of
+approvals, rejections and reconciliations to a descendant) walks the
+child's parent links upward and reaches no other record. Family reads
+(status, await, pending approvals, snapshots) treat such a record as an
+unreadable child: none of its approvals, arguments or status are reported
+as the family's, and the family waits for recovery to settle the
+delegation. A pre-created foreign run can block a delegation; it cannot
 answer, run under or be cancelled by it.
 
 Rejected: a reserved caller-id prefix refused by `parse_id`, which would break

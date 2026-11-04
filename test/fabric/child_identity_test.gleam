@@ -8,6 +8,9 @@
 
 import fabric
 import fabric/agent.{type Agent}
+import fabric/internal/checked_agent
+import fabric/internal/controller
+import fabric/internal/runner
 import fabric/internal/store as store_core
 import fabric/model
 import fabric/policy
@@ -20,6 +23,7 @@ import fabric/support/scripted
 import fabric/testing
 import fabric/tool
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import gleam/time/duration
 import gleeunit/should
@@ -324,5 +328,58 @@ pub fn cancellation_and_lookup_refuse_a_foreign_child_record_test() {
   let assert [run.ActionRecord(state: run.Uncertain(evidence), ..)] =
     snapshot.actions
   string.contains(evidence, "not the child") |> should.be_true
+  restart.remove_dir(dir)
+}
+
+/// A foreign run paused on an approval, stored under a delegation's child
+/// id, is not part of the parent's family: its approval is not pending on
+/// the parent and the parent's status does not report it.
+pub fn family_reads_refuse_a_foreign_child_record_test() {
+  let dir = restart.temp_dir()
+  let #(parent, child) = paused_family(dir)
+  let runs = numbered_directory(dir)
+  replace_with_foreign(runs, child, paying_researcher(), False)
+
+  let assert Ok(opened) =
+    fabric.open(runs, delegating(paying_researcher()), Nil, parent)
+  let pending = fabric.pending(opened)
+  { pending == Ok([]) || result.is_error(pending) } |> should.be_true
+  let assert Ok(status) = fabric.await(opened, within: duration.milliseconds(0))
+  case status {
+    run.Suspended([_, ..], _) -> panic as "a foreign approval surfaced"
+    _ -> Nil
+  }
+  restart.remove_dir(dir)
+}
+
+/// A command sent through a delegation's child setup, such as the
+/// cancellation of a stopping parent, does not reach a foreign run stored
+/// under the child id, even when it is read only after the parent checked.
+pub fn a_child_command_does_not_reach_a_foreign_record_test() {
+  let dir = restart.temp_dir()
+  let #(parent, child) = paused_family(dir)
+  let runs = numbered_directory(dir)
+  replace_with_foreign(runs, child, paying_researcher(), False)
+
+  let setup =
+    runner.setup(
+      runs,
+      checked_agent.admitted(delegating(paying_researcher())),
+      Nil,
+      None,
+    )
+  let assert Ok(child_setup) =
+    runner.child_setup(
+      setup,
+      "research",
+      support.text(parent),
+      run.ActionId(1, "r"),
+    )
+  let assert Error(runner.Unreadable(runner.Corrupt(_))) =
+    runner.command(child_setup, child, child_setup.env, controller.Cancel, 3)
+  let assert Ok(foreign) =
+    fabric.open(runs, paying_researcher(), Nil, support.id(child))
+  let assert Ok(run.Suspended([_], [])) =
+    fabric.await(foreign, within: duration.milliseconds(0))
   restart.remove_dir(dir)
 }

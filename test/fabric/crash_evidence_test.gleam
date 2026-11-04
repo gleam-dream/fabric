@@ -9,6 +9,7 @@ import fabric/agent
 import fabric/graph
 import fabric/graph/definition
 import fabric/graph/operation
+import fabric/internal/executor
 import fabric/internal/store as store_core
 import fabric/policy
 import fabric/run
@@ -156,4 +157,21 @@ pub fn a_graph_operation_crash_keeps_its_terms_out_of_the_evidence_test() {
   names_the_crash(evidence)
   let assert Ok(stored) = store_core.get(runs, "leaky-graph")
   string.contains(stored.record, sentinel) |> should.be_false
+}
+
+@external(erlang, "fabric_test_ffi", "raise_atom")
+fn raise_atom(text: String) -> Nil
+
+@external(erlang, "fabric_test_ffi", "raise_tagged")
+fn raise_tagged(text: String) -> Nil
+
+/// An atom made from data is not a known exception kind: the evidence
+/// names the crash as an exception and never prints the atom.
+pub fn an_atom_made_from_data_stays_out_of_the_evidence_test() {
+  let assert Error(evidence) = executor.rescue(fn() { raise_atom(sentinel) })
+  string.contains(evidence, sentinel) |> should.be_false
+  string.starts_with(evidence, "error: exception in ") |> should.be_true
+  let assert Error(evidence) = executor.rescue(fn() { raise_tagged(sentinel) })
+  string.contains(evidence, sentinel) |> should.be_false
+  string.starts_with(evidence, "error: exception in ") |> should.be_true
 }

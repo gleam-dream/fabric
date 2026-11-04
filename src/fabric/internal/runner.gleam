@@ -1987,6 +1987,17 @@ pub fn command(
     controller.Cancel -> load(setup.store, id)
     _ -> load_checked(setup, id)
   }
+  // A sub-agent's setup names the delegation it belongs to: a record under
+  // its id that names another parent is not this run, and no command,
+  // cancellation included, reaches it (`load_child`).
+  let loaded = case setup.parent, loaded {
+    Some(Parent(run: parent, action:, ..)), Ok(#(_, state)) ->
+      case controller.attached(state, parent, action) {
+        True -> loaded
+        False -> Error(Corrupt(not_the_child(id)))
+      }
+    _, _ -> loaded
+  }
   use #(entry, state) <- result.try(loaded |> result.map_error(Unreadable))
   use env <- result.try(case controller.reads_clock(event) {
     True ->

@@ -75,22 +75,27 @@ describe_crash(Class, Reason, Stack) ->
         [atom_to_binary(Class), ": ", crash_kind(Reason), Where]).
 
 %% The kind of an exception or exit reason, without its terms: an atom
-%% reason, the tag of a tagged tuple, or the kind of a Gleam error.
+%% reason, the tag of a tagged tuple, or the kind of a Gleam error, each
+%% printed only when it is a known exception kind. Any other atom reads as
+%% `exception`, since an application can raise an atom made from data.
 crash_kind(#{gleam_error := Kind}) when is_atom(Kind) ->
-    [<<"gleam ">>, bounded_atom(Kind)];
+    [<<"gleam ">>, known_kind(Kind)];
 crash_kind(Reason) when is_atom(Reason) ->
-    bounded_atom(Reason);
+    known_kind(Reason);
 crash_kind(Reason) when is_tuple(Reason), tuple_size(Reason) > 0,
                         is_atom(element(1, Reason)) ->
-    bounded_atom(element(1, Reason));
+    known_kind(element(1, Reason));
 crash_kind(_) ->
     <<"unrecognized reason">>.
 
-bounded_atom(Atom) ->
-    Text = atom_to_binary(Atom),
-    case byte_size(Text) > 64 of
-        true -> <<(binary:part(Text, 0, 64))/binary, "...">>;
-        false -> Text
+known_kind(Kind) ->
+    Known = [badmatch, case_clause, function_clause, if_clause, try_clause,
+             badarg, badarith, badarity, badfun, badkey, badmap, badrecord,
+             undef, noproc, nocatch, system_limit, timeout, shutdown, killed,
+             normal, noconnection, let_assert, assert, panic, todo],
+    case lists:member(Kind, Known) of
+        true -> atom_to_binary(Kind);
+        false -> <<"exception">>
     end.
 
 frame({Module, Function, Arity, Location}) when is_atom(Module),

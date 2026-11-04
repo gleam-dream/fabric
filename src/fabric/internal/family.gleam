@@ -67,7 +67,10 @@ pub fn settle(
 
 const retries = 3
 
-/// `state` of `id` with its active descendants read now.
+/// `state` of `id` with its active descendants read now. A record under a
+/// child id that does not name the delegation as its parent is not the
+/// child: it reads as corrupt, and none of its approvals, arguments or
+/// status are reported as the family's (`runner.load_child`).
 pub fn with_children(
   store: store.Store,
   id: String,
@@ -77,9 +80,24 @@ pub fn with_children(
   let children =
     list.map(controller.active_children(state), fn(active) {
       let #(action, _, child) = active
-      Child(action, child, load(store, child))
+      Child(action, child, load_attached(store, id, action, child))
     })
   Node(id, entry, state, children)
+}
+
+fn load_attached(
+  store: store.Store,
+  parent: String,
+  action: ActionId,
+  child: String,
+) -> Result(Node, ReadError) {
+  use #(entry, state) <- result.map(runner.load_child(
+    store,
+    parent,
+    action,
+    child,
+  ))
+  with_children(store, child, entry, state)
 }
 
 /// What a family is doing, and whether everything in flight has an owner
