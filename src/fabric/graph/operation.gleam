@@ -127,11 +127,13 @@ pub type Error {
   OutputDecodingFailed(String)
 }
 
-/// The evidence of an output that could not be encoded: the native value
-/// itself is retained nowhere, since the record and the caller's view
-/// would expose whatever it holds.
+/// The evidence of an output that could not be encoded. Fabric does not
+/// itself print the native value into it, since the record and the
+/// caller's view would expose whatever it holds. The codec's encode error,
+/// carried beside it, is application-authored and does reach evidence, so
+/// a codec must not embed the value in its error message.
 pub const unencodable_output =
-  "the operation returned an output its codec could not encode; the value is not retained"
+  "the operation returned an output its codec could not encode; Fabric does not record the value"
 
 /// An activity: `perform` runs once policy admits it, in its own task,
 /// bounded by the runtime's operation timeout. `classify` says what each

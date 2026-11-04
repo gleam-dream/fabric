@@ -21,9 +21,12 @@ encryption at rest as they protect their other data.
 
 Agent recovery now re-runs the policy gate, with the recovering context, for
 every queued action that no answer approved, matching the graph runtime.
-Allowed work stays queued and runs; a denial, unknown tool or malformed
-argument becomes that action's model-visible state as a fresh request's
-would; a required approval issues a new request. Queued actions that an
+Allowed work stays queued and runs; a denial becomes that action's
+model-visible state as a fresh request's would; a required approval issues
+a new request. A queued action that names an unknown tool or carries
+arguments the tool no longer decodes never reaches the gate: loading the
+record for recovery refuses it, so `fabric.recover` returns
+`IncompatibleAgent` and the model receives no result for that action. Queued actions that an
 answer approved keep their earlier rule: they ask for the same approval
 again, and the answer rechecks the policy. Actions that passed are not given
 a new approval requirement the policy does not ask for.
