@@ -119,6 +119,7 @@ pub fn setup(
       answer: admitted.answer_schema,
       check_answer: admitted.check_answer,
       answer_attempts: admitted.answer_attempts,
+      child_ids: store.child_ids(store),
     ),
     model: admitted.model,
     max_concurrency: admitted.max_concurrency,
@@ -1048,14 +1049,14 @@ fn exited(
           turn,
           model.error(
             model.Crashed,
-            "the model task exited: " <> string.inspect(reason),
+            "the model task exited: " <> executor.describe_exit(reason),
           ),
         ),
       )
     _, _, Some(lost) if lost == pid ->
       lose_all(
         Runner(..runner, executor: None),
-        "the executor exited: " <> string.inspect(reason),
+        "the executor exited: " <> executor.describe_exit(reason),
       )
     // Any other exit signal (its factory crashed) stops the runner, and with
     // it the executor and the model task.
@@ -1521,7 +1522,11 @@ fn adopt_child(
   let lost = fn(detail) {
     controller.ChildEnded(id, controller.ChildLost(detail))
   }
-  case load(setup.store, first.run) {
+  let parent = case first.parent {
+    Some(run.AgentParent(parent, _)) -> run.id_to_string(parent)
+    _ -> ""
+  }
+  case load_child(setup.store, parent, id, first.run) {
     Error(problem) -> lost(describe_read(problem))
     Ok(#(entry, stored)) ->
       case driven(entry, stored), controller.child_result(stored) {
@@ -1620,6 +1625,10 @@ fn cancel_until_stopping(
       False -> Error(detail)
     }
   }
+  use Nil <- result.try(case foreign_child(setup.store, parent, action, child) {
+    Some(detail) -> Error(detail)
+    None -> Ok(Nil)
+  })
   case command(setup, child, setup.env, controller.Cancel, 8) {
     // Committed, or already ended.
     Ok(_) | Error(CommandRefused(_)) -> Ok(Nil)
@@ -1676,7 +1685,12 @@ pub fn bury(
 /// committed: a delivery of its end may have been lost, and a duplicate is
 /// refused by the parent. A child still stopping delivers its end itself.
 fn report_cancelled(child_setup: Setup(context), child: String) -> Nil {
-  case load(child_setup.store, child) {
+  let loaded = case child_setup.parent {
+    Some(Parent(run: parent, action:, ..)) ->
+      load_child(child_setup.store, parent, action, child)
+    None -> load(child_setup.store, child)
+  }
+  case loaded {
     Error(NotFound) -> notify_parent(child_setup, controller.ChildMissing)
     Error(problem) ->
       notify_parent(child_setup, controller.ChildLost(describe_read(problem)))
@@ -1765,8 +1779,22 @@ pub fn end_child(
   within: Int,
   tries: Int,
 ) -> controller.ChildResult {
+  case foreign_child(store, parent, action, child) {
+    Some(detail) -> controller.ChildLost(detail)
+    None -> end_attached_child(store, parent, action, child, within, tries)
+  }
+}
+
+fn end_attached_child(
+  store: Store,
+  parent: State,
+  action: ActionId,
+  child: String,
+  within: Int,
+  tries: Int,
+) -> controller.ChildResult {
   let _ = cancel_unattended(store, child, within, tries)
-  case load(store, child) {
+  case load_child(store, parent.run, action, child) {
     Error(NotFound) ->
       case bury(store, parent, action, child, run.DefinitionId("", 0)) {
         Ok(Buried) -> controller.ChildMissing
@@ -1890,6 +1918,44 @@ pub type Failure {
   Unreadable(ReadError)
 }
 
+/// The stored record of `child`, the child run of `parent`'s delegation
+/// `action`. A record stored under that id that does not name exactly that
+/// delegation as its parent is another run, never the child: it is refused
+/// as corrupt evidence of the delegation, and nothing adopts, drives or
+/// cancels it on the delegation's behalf.
+pub fn load_child(
+  store: Store,
+  parent: String,
+  action: ActionId,
+  child: String,
+) -> Result(#(store.Entry, State), ReadError) {
+  use #(entry, state) <- result.try(load(store, child))
+  case controller.attached(state, parent, action) {
+    True -> Ok(#(entry, state))
+    False -> Error(Corrupt(not_the_child(child)))
+  }
+}
+
+pub fn not_the_child(child: String) -> String {
+  "the run "
+  <> child
+  <> " is not the child of this delegation: its record names another parent"
+}
+
+/// Why the run stored under `child` must not be treated as `parent`'s
+/// child, when a record exists there that names another parent.
+fn foreign_child(
+  store: Store,
+  parent: State,
+  action: ActionId,
+  child: String,
+) -> Option(String) {
+  case load_child(store, parent.run, action, child) {
+    Error(Corrupt(_) as problem) -> Some(describe_read(problem))
+    _ -> None
+  }
+}
+
 pub fn describe_read(error: ReadError) -> String {
   case error {
     NotFound -> "the record does not exist"
@@ -1920,6 +1986,17 @@ pub fn command(
   let loaded = case event {
     controller.Cancel -> load(setup.store, id)
     _ -> load_checked(setup, id)
+  }
+  // A sub-agent's setup names the delegation it belongs to: a record under
+  // its id that names another parent is not this run, and no command,
+  // cancellation included, reaches it (`load_child`).
+  let loaded = case setup.parent, loaded {
+    Some(Parent(run: parent, action:, ..)), Ok(#(_, state)) ->
+      case controller.attached(state, parent, action) {
+        True -> loaded
+        False -> Error(Corrupt(not_the_child(id)))
+      }
+    _, _ -> loaded
   }
   use #(entry, state) <- result.try(loaded |> result.map_error(Unreadable))
   use env <- result.try(case controller.reads_clock(event) {

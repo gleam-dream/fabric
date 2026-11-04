@@ -18,7 +18,6 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/string
 
 pub type Report(identity, outcome) {
   Reported(identity, outcome)
@@ -176,7 +175,7 @@ fn task_exited(
     Ok(id) -> {
       case list.contains(state.reported, id), reason {
         True, _ | False, process.Normal -> Nil
-        False, _ -> state.hooks.report(Lost(id, string.inspect(reason)))
+        False, _ -> state.hooks.report(Lost(id, describe_exit(reason)))
       }
       Loop(
         ..state,
@@ -258,5 +257,14 @@ fn report(
   }
 }
 
+/// Runs `body`, turning a raised exception into its description: its
+/// class, kind and the frames it was raised in, never its terms, which can
+/// hold the values a body was called with (the raw exception goes only to
+/// the logger, as a debug event in the domain `[fabric, crash]`).
 @external(erlang, "fabric_ffi", "rescue")
 pub fn rescue(body: fn() -> a) -> Result(a, String)
+
+/// An exit reason described as `rescue` describes an exception: its kind,
+/// never its terms.
+@external(erlang, "fabric_ffi", "describe_exit")
+pub fn describe_exit(reason: process.ExitReason) -> String

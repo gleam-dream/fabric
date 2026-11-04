@@ -74,7 +74,7 @@ pub fn undecodable_input_does_not_enter_the_native_body_test() {
   process.receive(calls, 0) |> should.equal(Error(Nil))
 }
 
-pub fn unusable_output_retains_evidence_of_the_returned_value_test() {
+pub fn unusable_output_evidence_does_not_retain_the_returned_value_test() {
   let reason = codec.encode_failure("not persistable")
   let output =
     codec.custom(
@@ -92,7 +92,9 @@ pub fn unusable_output_retains_evidence_of_the_returned_value_test() {
       no_error,
     )
   contract.invoker(op)(Nil, invocation(1), "6")
-  |> should.equal(Error(operation.OutputEncodingFailed("7", reason)))
+  |> should.equal(
+    Error(operation.OutputEncodingFailed(operation.unencodable_output, reason)),
+  )
 }
 
 type DomainFailure {

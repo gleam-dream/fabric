@@ -69,6 +69,14 @@ pub fn parse_id(text: String) -> Result(RunId, Nil) {
 ///
 /// When a retry must start a fresh run rather than find the old one,
 /// include the attempt among the parts.
+///
+/// Child runs that delegations start are named by Fabric, not by
+/// `id_from_parts`: from record version 9 by a hash prefixed `agent-`, and
+/// with an older record writer by the parent id, `-` and a sequence number,
+/// which an application id such as `job-42-1` can also take. Either way a
+/// run stored under such an id is a child only when its record names the
+/// delegation as its parent; any other run there is never adopted,
+/// cancelled or reached through the parent.
 pub fn id_from_parts(prefix: String, parts: List(String)) -> RunId {
   let letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
   let length = string.length(prefix)

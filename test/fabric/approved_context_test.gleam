@@ -365,7 +365,7 @@ pub fn an_approved_sub_agent_never_stored_is_asked_for_again_test() {
   let assert Ok(run.Suspended([pending], [])) =
     fabric.await(run, within: duration.milliseconds(5000))
   // The answer commits; its runner is lost while it stores the child.
-  let held = flaky.hold(backend, string.ends_with(_, "-1"))
+  let held = flaky.hold(backend, support.is_child)
   let assert Ok(_) = approve(run, pending, "alice")
   let assert Ok(_) = process.receive(held, 30_000)
   restart.crash(owner, first)

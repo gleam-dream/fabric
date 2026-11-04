@@ -31,7 +31,6 @@ import fabric/run
 import fabric/tool
 import gleam/int
 import gleam/result
-import gleam/string
 import json/blueprint/value
 
 import json/blueprint/codec.{type Codec}
@@ -120,11 +119,21 @@ pub type Error {
   InputEncodingFailed(codec.EncodeError)
   InputDecodingFailed(String)
   BodyFailed(tool.Failure)
-  /// A native value could not be encoded; its printed representation is
-  /// diagnostic evidence only, never a result eligible for routing.
+  /// A native value could not be encoded. `evidence` says so without
+  /// printing the value, which can hold anything the application put in
+  /// its output type (`unencodable_output`); it is never a result eligible
+  /// for routing.
   OutputEncodingFailed(evidence: String, error: codec.EncodeError)
   OutputDecodingFailed(String)
 }
+
+/// The evidence of an output that could not be encoded. Fabric does not
+/// itself print the native value into it, since the record and the
+/// caller's view would expose whatever it holds. The codec's encode error,
+/// carried beside it, is application-authored and does reach evidence, so
+/// a codec must not embed the value in its error message.
+pub const unencodable_output =
+  "the operation returned an output its codec could not encode; Fabric does not record the value"
 
 /// An activity: `perform` runs once policy admits it, in its own task,
 /// bounded by the runtime's operation timeout. `classify` says what each
@@ -152,7 +161,7 @@ pub fn new(
     )
     codec.encode_json(output, result)
     |> result.map_error(fn(error) {
-      OutputEncodingFailed(string.inspect(result), error)
+      OutputEncodingFailed(unencodable_output, error)
     })
   }
   contract.new(

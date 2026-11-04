@@ -7,6 +7,7 @@ import fabric/graph
 import fabric/graph/definition
 import fabric/graph/job
 import fabric/graph/operation
+import fabric/internal/controller
 import fabric/internal/graph/runtime as graph_runtime
 import fabric/policy
 import fabric/reviewer.{type Reviewer}
@@ -19,6 +20,7 @@ import fabric/testing
 import gleam/erlang/process
 import gleam/int
 import gleam/list
+import gleam/string
 import gleam/time/duration
 
 /// The run id `text`, which must have the shape Fabric issues.
@@ -130,9 +132,24 @@ pub fn text(id: RunId) -> String {
   run.id_to_string(id)
 }
 
-/// The id of the `n`th sub-agent run that `parent` starts.
-pub fn child_id(parent: RunId, n: Int) -> RunId {
+/// The id of the sub-agent run that `parent`'s delegation `call` in model
+/// turn `turn` starts (record version 9).
+pub fn child_id(parent: RunId, turn: Int, call: String) -> RunId {
+  id(controller.derived_child_id(
+    run.id_to_string(parent),
+    run.ActionId(turn, call),
+  ))
+}
+
+/// The id of the `n`th sub-agent run that `parent` starts when an earlier
+/// record writer (version 8 or before) is selected.
+pub fn numbered_child_id(parent: RunId, n: Int) -> RunId {
   id(run.id_to_string(parent) <> "-" <> int.to_string(n))
+}
+
+/// Whether `id` names a sub-agent run (record version 9).
+pub fn is_child(id: String) -> Bool {
+  string.starts_with(id, "agent-")
 }
 
 /// The agent `spec` describes, which must be valid, answered by the

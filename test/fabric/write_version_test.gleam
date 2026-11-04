@@ -22,9 +22,9 @@ import gleeunit/should
 
 pub fn unsupported_write_versions_are_refused_before_startup_test() {
   let runs = store.in_memory(process.new_name("version-window"))
-  list.each([-1, 0, 1, 9], fn(version) {
+  list.each([-1, 0, 1, 10], fn(version) {
     store.with_record_version(runs, version)
-    |> should.equal(Error(store.UnwritableVersion(version, 2, 8)))
+    |> should.equal(Error(store.UnwritableVersion(version, 2, 9)))
   })
 }
 
@@ -191,7 +191,7 @@ pub fn a_child_cancelled_before_storage_is_a_version_2_tombstone_test() {
   let assert Ok(_) = fabric.cancel(root)
   fabric.await(root, within: duration.milliseconds(5000))
   |> should.equal(Ok(run.Finished(run.Cancelled)))
-  let child_id = support.child_id(fabric.id(root), 1)
+  let child_id = support.numbered_child_id(fabric.id(root), 1)
   writes(memory.backend, child_id, 2)
   let assert Ok(row) = memory.backend.get(run.id_to_string(child_id))
   let assert Ok(decoded) = old_record.decode(row.record)

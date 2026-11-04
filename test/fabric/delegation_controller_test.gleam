@@ -35,6 +35,12 @@ fn ask() -> tool.Tool(Nil) {
   )
 }
 
+/// The derived id of the child run that the delegation `call` of `run-p`
+/// starts in turn 1.
+fn child(call: String) -> String {
+  controller.derived_child_id("run-p", ActionId(1, call))
+}
+
 fn env() -> controller.Env(Nil) {
   let assert Ok(tools) = registry.new([ask(), scripted_slow()])
   controller.Env(
@@ -47,6 +53,7 @@ fn env() -> controller.Env(Nil) {
     answer: None,
     check_answer: fn(_) { Ok(Nil) },
     answer_attempts: 1,
+    child_ids: controller.DerivedChildIds,
   )
 }
 
@@ -120,8 +127,8 @@ pub fn an_allowed_delegation_names_its_child_before_the_child_exists_test() {
   let #(state, effects) = acting([ask_call("a"), ask_call("b")], 4)
   effects
   |> should.equal([
-    StartChild(ActionId(1, "a"), "run-p-1", ask_call("a")),
-    StartChild(ActionId(1, "b"), "run-p-2", ask_call("b")),
+    StartChild(ActionId(1, "a"), child("a"), ask_call("a")),
+    StartChild(ActionId(1, "b"), child("b"), ask_call("b")),
   ])
   action(state, "a")
   |> should.equal(run.ActionRecord(
@@ -129,7 +136,7 @@ pub fn an_allowed_delegation_names_its_child_before_the_child_exists_test() {
     ask_call("a"),
     run.Running,
     [],
-    Some(support.id("run-p-1")),
+    Some(support.id(child("a"))),
     0,
   ))
   // Starting a child is work in flight; waiting on a started child is not.
@@ -154,7 +161,7 @@ pub fn a_child_end_is_mapped_by_the_delegation_test() {
       ),
     )
   action(state, "a").state |> should.equal(run.Succeeded("\"because\""))
-  action(state, "a").child |> should.equal(Some(support.id("run-p-1")))
+  action(state, "a").child |> should.equal(Some(support.id(child("a"))))
   let assert [CallModel(2, _)] = effects
 }
 
@@ -219,8 +226,8 @@ pub fn a_stopping_run_waits_for_its_children_and_ends_cancelled_test() {
   |> should.equal([
     StopTools,
     CancelChildren([
-      #(ActionId(1, "a"), "run-p-1"),
-      #(ActionId(1, "b"), "run-p-2"),
+      #(ActionId(1, "a"), child("a")),
+      #(ActionId(1, "b"), child("b")),
     ]),
   ])
   let assert #(state, []) = step(state, controller.ToolsStopped)
@@ -258,7 +265,7 @@ pub fn recovery_keeps_delegations_waiting_on_their_children_test() {
   let #(stopping, _) = step(state, controller.Cancel)
   let #(recovered, effects) = controller.recover(env(), stopping)
   controller.status(recovered) |> should.equal(run.Working)
-  effects |> should.equal([CancelChildren([#(ActionId(1, "a"), "run-p-1")])])
+  effects |> should.equal([CancelChildren([#(ActionId(1, "a"), child("a"))])])
 }
 
 /// Cancelling a run that is already stopping asks again to cancel the
@@ -272,7 +279,7 @@ pub fn cancelling_a_stopping_run_cancels_its_children_again_test() {
     step(stopping, ChildEnded(ActionId(1, "b"), ChildMissing))
   let #(again, effects) = step(stopping, controller.Cancel)
   again |> should.equal(stopping)
-  effects |> should.equal([CancelChildren([#(ActionId(1, "a"), "run-p-1")])])
+  effects |> should.equal([CancelChildren([#(ActionId(1, "a"), child("a"))])])
 }
 
 /// The tools offered to the model with `limits` at `depth`.

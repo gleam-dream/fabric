@@ -171,12 +171,12 @@ pub fn unreadable_future_or_wrongly_keyed_records_cannot_claim_retention_metadat
     [
       "not json",
       "{}",
-      string.replace(encoded, "\"version\":8", "\"version\":999"),
+      string.replace(encoded, "\"version\":9", "\"version\":999"),
     ],
     fn(encoded) {
       retention.inspect(encoded) |> should.equal(Error(Nil))
-      retention.encode("root", encoded) |> should.equal("{\"version\":12}")
+      retention.encode("root", encoded) |> should.equal("{\"version\":13}")
     },
   )
-  retention.encode("different", encoded) |> should.equal("{\"version\":12}")
+  retention.encode("different", encoded) |> should.equal("{\"version\":13}")
 }

@@ -81,7 +81,7 @@ pub fn a_child_is_recovered_beneath_a_live_foreign_parent_test() {
     )
   let running = probe.arrival(body)
   let _ = probe.arrival(calls)
-  let child = support.child_id(fabric.id(root), 1)
+  let child = support.child_id(fabric.id(root), 1, "r")
   let assert Ok(child_runner) = restart.runner(a, child)
   restart.kill(child_runner)
   let assert Ok(current) = memory.backend.get(run.id_to_string(child))
@@ -191,7 +191,7 @@ pub fn a_stopping_child_is_recovered_beneath_a_live_cancelling_parent_test() {
       correlation: None,
     )
   process.receive(entered, 30_000) |> should.equal(Ok(Nil))
-  let child = support.child_id(fabric.id(root), 1)
+  let child = support.child_id(fabric.id(root), 1, "r")
   let assert Ok(_) = fabric.cancel(root)
   await_stopping(a, child, 3000)
   let assert Ok(child_runner) = restart.runner(a, child)

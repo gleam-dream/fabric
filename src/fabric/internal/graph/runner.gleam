@@ -734,7 +734,7 @@ fn receive(runner: Runner) -> Nil {
             Runner(..runner, executor: None),
             g.Unresolved(
               g.reference(runner.state, a),
-              g.Uncertain("executor lost: " <> string.inspect(reason)),
+              g.Uncertain("executor lost: " <> executor.describe_exit(reason)),
             ),
           )
         _ -> Error(OwnerUnknown)

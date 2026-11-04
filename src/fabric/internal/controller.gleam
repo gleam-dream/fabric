@@ -80,6 +80,7 @@ import sinal/correlation.{type Correlation}
 /// many final answers the run asks for in all: an answer the check refuses
 /// gets a corrective turn while attempts and the turn and token budgets
 /// last, and ends the run as `AnswerInvalid` once they do not.
+/// `child_ids` names the child runs that delegations start (`ChildIds`).
 pub type Env(context) {
   Env(
     registry: Registry(context),
@@ -91,7 +92,36 @@ pub type Env(context) {
     answer: Option(codec.Schema),
     check_answer: fn(String) -> Result(Nil, String),
     answer_attempts: Int,
+    child_ids: ChildIds,
   )
+}
+
+/// How a delegation names the child run it starts. `DerivedChildIds` hash
+/// the parent run and the delegating action (`derived_child_id`), so that
+/// a child id never has the shape of an id a caller chooses. Record writers
+/// before version 9 store `NumberedChildIds` instead: the parent's id and a
+/// sequence number, which older readers require. Either way a stored child
+/// counts as the child only when it names the delegation as its parent
+/// (`attached`).
+pub type ChildIds {
+  DerivedChildIds
+  NumberedChildIds
+}
+
+/// The child run id that `parent`'s delegation `action` starts under
+/// `DerivedChildIds`.
+pub fn derived_child_id(parent: String, action: ActionId) -> String {
+  agent_child_id(parent, action.turn, action.call_id)
+}
+
+@external(erlang, "fabric_ffi", "agent_child_id")
+fn agent_child_id(parent: String, turn: Int, call_id: String) -> String
+
+/// Whether the stored run `child` is the child run of `parent`'s
+/// delegation `action`: its record names exactly that action as its
+/// parent. A run stored under a child id by anyone else is not.
+pub fn attached(child: State, parent: String, action: ActionId) -> Bool {
+  child.parent == Some(run.AgentParent(run_id.from_string(parent), action))
 }
 
 /// `max_depth` counts levels below the root run: a run at `depth` may start
@@ -894,11 +924,21 @@ fn children_reserved(env: Env(context), records: List(ActionRecord)) -> Int {
   })
 }
 
-/// The id of the next child run: the parent's id and a sequence number, so
-/// that it is deterministic and a valid run id.
-fn next_child(state: State, records: List(ActionRecord)) -> String {
-  let started = list.count(records, fn(record) { record.child != None })
-  state.run <> "-" <> int.to_string(started + 1)
+/// The id of the child run that the delegation `id` starts: deterministic
+/// and a valid run id (`ChildIds`).
+fn next_child(
+  env: Env(context),
+  state: State,
+  id: ActionId,
+  records: List(ActionRecord),
+) -> String {
+  case env.child_ids {
+    DerivedChildIds -> derived_child_id(state.run, id)
+    NumberedChildIds -> {
+      let started = list.count(records, fn(record) { record.child != None })
+      state.run <> "-" <> int.to_string(started + 1)
+    }
+  }
 }
 
 fn start_children(actions: List(ActionRecord)) -> List(Effect) {
@@ -1509,7 +1549,7 @@ fn admitted(
         True ->
           ActionRecord(
             ..record(run.Running),
-            child: Some(run_id.from_string(next_child(state, others))),
+            child: Some(run_id.from_string(next_child(env, state, id, others))),
           )
       }
   }
@@ -1864,9 +1904,10 @@ pub fn abandon(state: State) -> State {
 }
 
 /// `abandon`, then restarts the work that is safe to restart: queued
-/// actions are dispatched again and a lost model call is issued again as a
-/// new attempt against the turn budget. A queued action that was approved
-/// is not: it asks for its approval again (`ask_again`).
+/// actions pass the policy again (`regate`) and are dispatched if it still
+/// allows them, and a lost model call is issued again as a new attempt
+/// against the turn budget. A queued action that was approved is not
+/// dispatched: it asks for its approval again (`ask_again`).
 ///
 /// Delegated actions are left to the runtime, which reattaches their child
 /// runs; a stop still waiting for child runs asks to cancel them again.
@@ -1874,13 +1915,103 @@ pub fn recover(env: Env(context), state: State) -> #(State, List(Effect)) {
   let state = abandon(replay_running(env, state))
   case state.phase {
     AwaitingModel(_) -> call_model(env, state)
-    Acting(turn, actions) -> {
-      let state = ask_again(env, state, turn, actions)
-      #(state, dispatch(current(state)))
-    }
+    Acting(turn, actions) ->
+      case regate(env, state, actions) {
+        Error(#(failure, actions)) ->
+          stop(state, turn, actions, HostFault(failure))
+        Ok(#(issued, regated)) -> {
+          let state =
+            State(
+              ..state,
+              approvals_issued: issued,
+              phase: Acting(turn, regated),
+            )
+          let state = ask_again(env, state, turn, regated)
+          let queued =
+            list.append(
+              dispatch(current(state)),
+              start_children(current(state)),
+            )
+          case regated == actions {
+            True -> #(state, queued)
+            // A recheck refused work: the batch may now be complete.
+            False -> {
+              let #(state, effects) = settle(env, state)
+              #(state, list.append(queued, effects))
+            }
+          }
+        }
+      }
     Stopping(actions:, ..) -> #(state, cancel_children(actions))
     Ended(_) | NeverStarted -> #(state, [])
   }
+}
+
+/// Queued actions that no answer approved pass the gate again with the
+/// recovering `env`, as a graph's queued activation returns to policy
+/// inspection: the decision that queued them was made with a context this
+/// incarnation does not have, and a record is only as trusted as its
+/// store. Still allowed, an action stays queued; a denial or a refusal
+/// becomes that action's model-visible state, as for a fresh request; a
+/// required approval issues a new request. Approved actions are left to
+/// `ask_again`, which asks for the approval they had again, and a policy
+/// that fails returns the actions so far with the host failure.
+fn regate(
+  env: Env(context),
+  state: State,
+  actions: List(ActionRecord),
+) -> Result(#(Int, List(ActionRecord)), #(HostFailure, List(ActionRecord))) {
+  list.try_fold(actions, #(state.approvals_issued, []), fn(acc, action) {
+    let #(issued, done) = acc
+    case action.state, action.approvals {
+      run.Queued, [] -> {
+        let others =
+          list.flatten([
+            state.history,
+            list.reverse(done),
+            list.filter(actions, fn(other) { other.id != action.id }),
+          ])
+        case gate(env, state, action.id, action.call, others) {
+          Error(failure) ->
+            Error(#(
+              failure,
+              list.append(
+                list.reverse([action, ..done]),
+                list.drop(actions, list.length(done) + 1),
+              ),
+            ))
+          Ok(gated) -> {
+            let rechecked =
+              admitted(
+                env,
+                state,
+                action.id,
+                action.call,
+                gated,
+                issued,
+                others,
+              )
+            let issued = case rechecked.state {
+              run.AwaitingApproval(..) -> issued + 1
+              _ -> issued
+            }
+            // The recheck keeps the action's replay count; an allowed
+            // delegation (never queued by Fabric itself) is committed
+            // running with its child id, as a fresh one is.
+            let action =
+              ActionRecord(
+                ..action,
+                state: rechecked.state,
+                child: rechecked.child,
+              )
+            Ok(#(issued, [action, ..done]))
+          }
+        }
+      }
+      _, _ -> Ok(#(issued, [action, ..done]))
+    }
+  })
+  |> result.map(fn(acc) { #(acc.0, list.reverse(acc.1)) })
 }
 
 /// The record a draining runner leaves when it hands its run off: the work

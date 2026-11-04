@@ -69,9 +69,9 @@ pub fn unknown_records_have_no_invented_execution_status_test() {
     "different-id",
     record.encode(state(agent.AwaitingModel(1))),
   )
-  |> should.equal("{\"version\":2}")
+  |> should.equal("{\"version\":3}")
   record.encode(state(agent.AwaitingModel(1)))
-  |> string.replace("\"version\":8", "\"version\":999")
+  |> string.replace("\"version\":9", "\"version\":999")
   |> statistics.inspect
   |> should.equal(Error(Nil))
 }

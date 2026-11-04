@@ -1,6 +1,7 @@
 -module(fabric_test_ffi).
 -export([temp_dir/0, remove_dir/1, list_dir/1, write_file/2, read_file/1, age_file/2, waits_on/2, waits_in/2,
-         suspend/1, resume/1, queued/1, leasing/0, set_leasing/1, linked/1]).
+         suspend/1, resume/1, queued/1, leasing/0, set_leasing/1, linked/1,
+         raise_atom/1, raise_tagged/1]).
 
 %% A fresh, empty directory under the system temporary directory.
 temp_dir() ->
@@ -90,3 +91,11 @@ linked(Pid) ->
         {links, Links} -> [L || L <- Links, is_pid(L), L =/= self()];
         undefined -> []
     end.
+
+%% Raises an atom made from Text, as code that turns data into an atom does.
+raise_atom(Text) ->
+    erlang:error(binary_to_atom(Text)).
+
+%% Raises a tuple tagged with an atom made from Text.
+raise_tagged(Text) ->
+    erlang:error({binary_to_atom(Text), Text}).

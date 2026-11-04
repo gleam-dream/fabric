@@ -78,7 +78,9 @@ pub fn crash_stays_distinct_from_a_returned_result_test() {
   let assert Ok(executor.Crashed(found, evidence)) =
     process.receive(reports, 1000)
   found |> should.equal(crashing)
-  string.contains(evidence, "body failed") |> should.be_true
+  // The evidence names the crash, not what it was raised with.
+  string.starts_with(evidence, "error: gleam panic in ") |> should.be_true
+  string.contains(evidence, "body failed") |> should.be_false
   process.receive(reports, 1000)
   |> should.equal(Ok(executor.Reported(succeeding, Score(2))))
   executor.stop(executor)

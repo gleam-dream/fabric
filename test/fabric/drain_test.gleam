@@ -436,7 +436,8 @@ pub fn a_child_run_drains_on_its_own_and_is_recovered_with_its_parent_test() {
   states(run) |> should.equal([run.Delegated])
   fabric.await(run, within: duration.milliseconds(0))
   |> should.equal(Ok(run.Unattended))
-  let assert Ok(child) = fabric.child(run, support.child_id(fabric.id(run), 1))
+  let assert Ok(child) =
+    fabric.child(run, support.child_id(fabric.id(run), 1, "r"))
   states(child) |> should.equal([run.Succeeded("\"a\"")])
   turns_used(child) |> should.equal(1)
 
