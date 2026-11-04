@@ -92,7 +92,9 @@ pub fn unusable_output_retains_evidence_of_the_returned_value_test() {
       no_error,
     )
   contract.invoker(op)(Nil, invocation(1), "6")
-  |> should.equal(Error(operation.OutputEncodingFailed("7", reason)))
+  |> should.equal(
+    Error(operation.OutputEncodingFailed(operation.unencodable_output, reason)),
+  )
 }
 
 type DomainFailure {

@@ -4,7 +4,6 @@
 
 import fabric/internal/executor
 import gleam/erlang/process
-import gleam/string
 
 pub type Failure {
   TimedOut
@@ -53,7 +52,7 @@ pub fn call(timeout: Int, body: fn() -> a) -> Result(a, Failure) {
     process.new_selector()
     |> process.select(reply)
     |> process.select_specific_monitor(monitor, fn(down) {
-      Error(Crashed(string.inspect(down.reason)))
+      Error(Crashed(executor.describe_exit(down.reason)))
     })
     |> process.selector_receive_forever
   process.demonitor_process(monitor)

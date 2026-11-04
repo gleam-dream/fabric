@@ -1,5 +1,5 @@
 -module(fabric_ffi).
--export([rescue/1, random_id/0, now_ms/0, ensure_directory/1, directory_get/2,
+-export([rescue/1, describe_exit/1, random_id/0, now_ms/0, ensure_directory/1, directory_get/2,
          directory_insert/3, directory_compare_and_set/4, claim_new/0,
          claim_take/2, exit_shutdown/0, shut_down/1, factory_name/1,
          await_or_shutdown/3, requeue_shutdown/1, take_shutdown/1, graph_child_id/2, agent_child_id/3,
@@ -47,11 +47,81 @@ graph_branch_id(Parent, Activation, Member) ->
     <<"branch-", (binary:encode_hex(Hash))/binary>>.
 
 %% Runs Body, turning any raised exception into {error, Description}.
+%%
+%% The description is durable evidence that callers can read, so it names
+%% only the exception's class, its kind and where it was raised (module,
+%% function, arity and line of at most five frames). It never contains the
+%% exception's terms: a badmatch, a function clause or a Gleam assertion
+%% carries the values involved, such as a context holding credentials. The
+%% raw exception is passed only to the application's logger, as a debug
+%% event in the domain [fabric, crash], which the default logger
+%% configuration drops.
 rescue(Body) ->
     try {ok, Body()}
-    catch Class:Reason ->
-        {error, unicode:characters_to_binary(io_lib:format("~p: ~P", [Class, Reason, 20]))}
+    catch Class:Reason:Stack ->
+        logger:debug(#{fabric => crash, class => Class, reason => Reason,
+                       stacktrace => Stack},
+                     #{domain => [fabric, crash]}),
+        {error, describe_crash(Class, Reason, Stack)}
     end.
+
+describe_crash(Class, Reason, Stack) ->
+    Frames = [frame(Frame) || Frame <- lists:sublist(Stack, 5)],
+    Where = case Frames of
+        [] -> [];
+        [Top | Below] -> [" in ", Top, [[" <- ", Frame] || Frame <- Below]]
+    end,
+    unicode:characters_to_binary(
+        [atom_to_binary(Class), ": ", crash_kind(Reason), Where]).
+
+%% The kind of an exception or exit reason, without its terms: an atom
+%% reason, the tag of a tagged tuple, or the kind of a Gleam error.
+crash_kind(#{gleam_error := Kind}) when is_atom(Kind) ->
+    [<<"gleam ">>, bounded_atom(Kind)];
+crash_kind(Reason) when is_atom(Reason) ->
+    bounded_atom(Reason);
+crash_kind(Reason) when is_tuple(Reason), tuple_size(Reason) > 0,
+                        is_atom(element(1, Reason)) ->
+    bounded_atom(element(1, Reason));
+crash_kind(_) ->
+    <<"unrecognized reason">>.
+
+bounded_atom(Atom) ->
+    Text = atom_to_binary(Atom),
+    case byte_size(Text) > 64 of
+        true -> <<(binary:part(Text, 0, 64))/binary, "...">>;
+        false -> Text
+    end.
+
+frame({Module, Function, Arity, Location}) when is_atom(Module),
+                                                 is_atom(Function) ->
+    Count = case Arity of
+        Arguments when is_list(Arguments) -> length(Arguments);
+        N when is_integer(N) -> N;
+        _ -> 0
+    end,
+    Line = case proplists:get_value(line, Location) of
+        L when is_integer(L) -> [":", integer_to_binary(L)];
+        _ -> []
+    end,
+    [atom_to_binary(Module), ":", atom_to_binary(Function), "/",
+     integer_to_binary(Count), Line];
+frame(_) ->
+    <<"?">>.
+
+%% A Gleam process exit reason (`process.ExitReason`) described without
+%% its terms, for evidence; the raw reason goes only to the logger, as in
+%% `rescue`.
+describe_exit(normal) -> <<"normal">>;
+describe_exit(killed) -> <<"killed">>;
+describe_exit({abnormal, Reason}) ->
+    logger:debug(#{fabric => exit, reason => Reason},
+                 #{domain => [fabric, crash]}),
+    unicode:characters_to_binary([<<"exit: ">>, crash_kind(Reason)]);
+describe_exit(Reason) ->
+    logger:debug(#{fabric => exit, reason => Reason},
+                 #{domain => [fabric, crash]}),
+    unicode:characters_to_binary([<<"exit: ">>, crash_kind(Reason)]).
 
 %% Exits the calling process with reason `shutdown`: a supervisor it
 %% started stops its children in order, and no crash is logged.

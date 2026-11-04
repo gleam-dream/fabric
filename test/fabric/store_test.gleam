@@ -180,7 +180,8 @@ pub fn a_crashing_backend_is_unavailable_not_fatal_test() {
     |> support.started
   let assert Error(backend.Unavailable(reason)) =
     store_core.get(broken, "run-x")
-  string.contains(reason, "database driver bug") |> should.be_true
+  string.contains(reason, "error: gleam panic") |> should.be_true
+  string.contains(reason, "database driver bug") |> should.be_false
   store_core.insert(broken, "run-x", "r", store_core.Keep)
   |> should.equal(Error(backend.Unavailable("read-only replica")))
 }

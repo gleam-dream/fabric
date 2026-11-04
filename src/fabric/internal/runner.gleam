@@ -1049,14 +1049,14 @@ fn exited(
           turn,
           model.error(
             model.Crashed,
-            "the model task exited: " <> string.inspect(reason),
+            "the model task exited: " <> executor.describe_exit(reason),
           ),
         ),
       )
     _, _, Some(lost) if lost == pid ->
       lose_all(
         Runner(..runner, executor: None),
-        "the executor exited: " <> string.inspect(reason),
+        "the executor exited: " <> executor.describe_exit(reason),
       )
     // Any other exit signal (its factory crashed) stops the runner, and with
     // it the executor and the model task.
