@@ -80,6 +80,7 @@ import sinal/correlation.{type Correlation}
 /// many final answers the run asks for in all: an answer the check refuses
 /// gets a corrective turn while attempts and the turn and token budgets
 /// last, and ends the run as `AnswerInvalid` once they do not.
+/// `child_ids` names the child runs that delegations start (`ChildIds`).
 pub type Env(context) {
   Env(
     registry: Registry(context),
@@ -91,7 +92,36 @@ pub type Env(context) {
     answer: Option(codec.Schema),
     check_answer: fn(String) -> Result(Nil, String),
     answer_attempts: Int,
+    child_ids: ChildIds,
   )
+}
+
+/// How a delegation names the child run it starts. `DerivedChildIds` hash
+/// the parent run and the delegating action (`derived_child_id`), so that
+/// a child id never has the shape of an id a caller chooses. Record writers
+/// before version 9 store `NumberedChildIds` instead: the parent's id and a
+/// sequence number, which older readers require. Either way a stored child
+/// counts as the child only when it names the delegation as its parent
+/// (`attached`).
+pub type ChildIds {
+  DerivedChildIds
+  NumberedChildIds
+}
+
+/// The child run id that `parent`'s delegation `action` starts under
+/// `DerivedChildIds`.
+pub fn derived_child_id(parent: String, action: ActionId) -> String {
+  agent_child_id(parent, action.turn, action.call_id)
+}
+
+@external(erlang, "fabric_ffi", "agent_child_id")
+fn agent_child_id(parent: String, turn: Int, call_id: String) -> String
+
+/// Whether the stored run `child` is the child run of `parent`'s
+/// delegation `action`: its record names exactly that action as its
+/// parent. A run stored under a child id by anyone else is not.
+pub fn attached(child: State, parent: String, action: ActionId) -> Bool {
+  child.parent == Some(run.AgentParent(run_id.from_string(parent), action))
 }
 
 /// `max_depth` counts levels below the root run: a run at `depth` may start
@@ -894,11 +924,21 @@ fn children_reserved(env: Env(context), records: List(ActionRecord)) -> Int {
   })
 }
 
-/// The id of the next child run: the parent's id and a sequence number, so
-/// that it is deterministic and a valid run id.
-fn next_child(state: State, records: List(ActionRecord)) -> String {
-  let started = list.count(records, fn(record) { record.child != None })
-  state.run <> "-" <> int.to_string(started + 1)
+/// The id of the child run that the delegation `id` starts: deterministic
+/// and a valid run id (`ChildIds`).
+fn next_child(
+  env: Env(context),
+  state: State,
+  id: ActionId,
+  records: List(ActionRecord),
+) -> String {
+  case env.child_ids {
+    DerivedChildIds -> derived_child_id(state.run, id)
+    NumberedChildIds -> {
+      let started = list.count(records, fn(record) { record.child != None })
+      state.run <> "-" <> int.to_string(started + 1)
+    }
+  }
 }
 
 fn start_children(actions: List(ActionRecord)) -> List(Effect) {
@@ -1509,7 +1549,7 @@ fn admitted(
         True ->
           ActionRecord(
             ..record(run.Running),
-            child: Some(run_id.from_string(next_child(state, others))),
+            child: Some(run_id.from_string(next_child(env, state, id, others))),
           )
       }
   }

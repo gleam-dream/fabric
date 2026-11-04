@@ -581,7 +581,12 @@ pub fn canceled_delegated_agent_evidence_survives_restart_and_settles_outward_te
   let assert Ok(before) = graph.snapshot(handle)
   let assert graph.Cancelled(graph.ChildUnresolved(reference, _)) =
     before.status
-  let leaf_id = support.child_id(support.child_id(reference.child, 1), 1)
+  let leaf_id =
+    support.child_id(
+      support.child_id(reference.child, 1, "delegate"),
+      1,
+      "delegate",
+    )
   restart.crash(owner, runs)
   let runs = support.directory(dir)
   let runtime = runtime(runs, worker)

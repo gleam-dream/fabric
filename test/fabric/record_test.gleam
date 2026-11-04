@@ -243,8 +243,8 @@ pub fn legacy_records_cannot_hide_provider_data_and_malformed_data_is_corrupt_te
   let encoded = record.encode(state)
   list.each(
     [
-      string.replace(encoded, "\"version\":8", "\"version\":3"),
-      string.replace(encoded, "\"version\":8", "\"version\":2"),
+      string.replace(encoded, "\"version\":9", "\"version\":3"),
+      string.replace(encoded, "\"version\":9", "\"version\":2"),
       string.replace(encoded, "\"format\":\"example.v1\"", "\"format\":7"),
       string.replace(encoded, "\"value\":\"opaque\"", "\"value\":null"),
     ],
@@ -260,15 +260,15 @@ pub fn legacy_records_cannot_hide_provider_data_and_malformed_data_is_corrupt_te
 
 pub fn the_record_is_versioned_json_test() {
   let encoded = record.encode(base())
-  string.starts_with(encoded, "{\"format\":\"fabric.run\",\"version\":8,")
+  string.starts_with(encoded, "{\"format\":\"fabric.run\",\"version\":9,")
   |> should.be_true
 }
 
 pub fn another_version_is_unsupported_test() {
   let encoded =
     record.encode(base())
-    |> string.replace("\"version\":8,", "\"version\":9,")
-  record.decode(encoded) |> should.equal(Error(record.UnsupportedVersion(9)))
+    |> string.replace("\"version\":9,", "\"version\":10,")
+  record.decode(encoded) |> should.equal(Error(record.UnsupportedVersion(10)))
 }
 
 /// A version 1 record (written before sub-agents) is read as a root run
@@ -428,7 +428,7 @@ pub fn a_child_that_never_started_is_explicit_test() {
     )
   let version_2 =
     record.encode(tombstone)
-    |> string.replace("\"version\":8,", "\"version\":2,")
+    |> string.replace("\"version\":9,", "\"version\":2,")
   let assert Ok(read) = record.decode(version_2)
   read.phase |> should.equal(controller.NeverStarted)
   controller.child_result(read) |> should.equal(Ok(controller.ChildMissing))
@@ -503,7 +503,7 @@ pub fn a_version_2_tombstone_keeps_its_old_meaning_test() {
   string.contains(encoded, "never_started") |> should.be_false
   record.decode(encoded) |> should.equal(Ok(tombstone))
   old_record.decode(record.encode(tombstone))
-  |> should.equal(Error(old_record.UnsupportedVersion(8)))
+  |> should.equal(Error(old_record.UnsupportedVersion(9)))
 }
 
 pub fn a_version_2_write_never_discards_or_reinterprets_a_transcript_test() {
@@ -553,7 +553,7 @@ pub fn terminal_child_settlement_is_versioned_and_requires_its_parent_link_test(
     },
   )
   let legacy =
-    record.encode(state) |> string.replace("\"version\":8", "\"version\":5")
+    record.encode(state) |> string.replace("\"version\":9", "\"version\":5")
   let assert Error(record.Corrupt(_)) = record.decode(legacy)
   list.each(
     [
@@ -568,4 +568,48 @@ pub fn terminal_child_settlement_is_versioned_and_requires_its_parent_link_test(
         record.decode(record.encode(invalid))
     },
   )
+}
+
+/// Version 9 names a delegation's child by its derived id, and keeps the
+/// numbered ids of delegations started before; earlier writers refuse a
+/// derived id, and an earlier version holding one is corrupt.
+pub fn derived_child_ids_require_version_9_test() {
+  let derived =
+    run.ActionRecord(
+      ..action("d", run.Delegated),
+      child: Some(
+        support.id(controller.derived_child_id("run-01-3", ActionId(1, "d"))),
+      ),
+    )
+  let numbered =
+    run.ActionRecord(
+      ..action("n", run.Delegated),
+      child: Some(support.id("run-01-3-1")),
+    )
+  let state =
+    controller.State(..base(), phase: controller.Acting(1, [numbered, derived]))
+  record.decode(record.encode(state)) |> should.equal(Ok(state))
+  let assert Error(record.Unrepresentable(8, _)) =
+    record.encode_as(state, record.V8)
+  let assert Ok(_) =
+    record.encode_as(
+      controller.State(..state, phase: controller.Acting(1, [numbered])),
+      record.V8,
+    )
+  let assert Error(record.Corrupt(_)) =
+    record.decode(
+      record.encode(state) |> string.replace("\"version\":9", "\"version\":8"),
+    )
+  // A child id derived for another action is not this delegation's child.
+  let misnamed =
+    run.ActionRecord(
+      ..derived,
+      child: Some(
+        support.id(controller.derived_child_id("run-01-3", ActionId(2, "d"))),
+      ),
+    )
+  let assert Error(record.Corrupt(_)) =
+    record.decode(record.encode(
+      controller.State(..state, phase: controller.Acting(1, [misnamed])),
+    ))
 }

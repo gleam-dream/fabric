@@ -246,7 +246,7 @@ pub fn boundary_and_original_history_are_validated_on_record_reads_and_writes_te
     |> string.replace("\"initial_message_count\":3", "\"other_field\":3")
   record.decode(missing) |> should.be_error
   let old_tag =
-    record.encode(state) |> string.replace("\"version\":8", "\"version\":7")
+    record.encode(state) |> string.replace("\"version\":9", "\"version\":7")
   record.decode(old_tag) |> should.be_error
   fabric.start_with_input(
     runs,

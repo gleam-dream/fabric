@@ -192,7 +192,7 @@ fn states(run: fabric.Run(ctx, String)) -> List(run.ActionState) {
 /// started nor starts the second one.
 pub fn a_held_child_is_cancelled_through_its_record_test() {
   let probe = probe.new()
-  let #(holds, attached) = hold_runner(string.ends_with(_, "-1"))
+  let #(holds, attached) = hold_runner(support.is_child)
   let child =
     two_payments_spec(probe, policy.always_allow())
     |> agent.with_command_timeout(duration.milliseconds(20))
@@ -618,7 +618,7 @@ pub fn a_start_racing_an_ancestor_cancellation_never_runs_test() {
   let starts = process.new_subject()
   let attached =
     sinal.observe(o.model_turn(), fn(_, turn: o.ModelTurn) {
-      case string.ends_with(turn.run, "-1"), turn.turn {
+      case support.is_child(turn.run), turn.turn {
         // The child's first turn queued `t1`: its next write stores the
         // start of `t1`. The test holds that write before the runner goes
         // on.
@@ -751,7 +751,8 @@ pub fn cancel_stored_of_a_parent_with_a_settling_child_test() {
   string.contains(evidence, "still stopping") |> should.be_true
   string.contains(evidence, "cannot be continued") |> should.be_false
 
-  let assert Ok(child) = fabric.child(run, support.child_id(fabric.id(run), 1))
+  let assert Ok(child) =
+    fabric.child(run, support.child_id(fabric.id(run), 1, "r"))
   tool.settle(settlement, Ok(apps.Forecast("cloudy")), summary: "")
   |> should.equal(Ok(Nil))
   fabric.await(child, within: duration.milliseconds(5000))

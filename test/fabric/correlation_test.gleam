@@ -302,7 +302,7 @@ pub fn a_sub_agent_carries_its_parents_correlation_test() {
     fabric.await(handle, within: duration.seconds(5))
   let assert Ok(request) = process.receive(requests, 30_000)
   request.correlation |> should.equal(ticket)
-  request.run |> should.equal(support.child_id(fabric.id(handle), 1))
+  request.run |> should.equal(support.child_id(fabric.id(handle), 1, "r1"))
 }
 
 /// Every event of a family names its root run: a sub-agent's, and its
@@ -365,8 +365,9 @@ pub fn a_families_events_carry_its_root_test() {
     let _ = sinal.detach(attachment)
     Nil
   })
-  let child = support.text(support.child_id(id, 1))
-  let grandchild = support.text(support.child_id(support.child_id(id, 1), 1))
+  let child = support.text(support.child_id(id, 1, "r1"))
+  let grandchild =
+    support.text(support.child_id(support.child_id(id, 1, "r1"), 1, "r1"))
   let family =
     list.filter(events, fn(event) {
       event.1 == "family-root" || event.1 == child || event.1 == grandchild
@@ -410,6 +411,7 @@ pub fn a_sub_agents_record_keeps_its_root_test() {
       answer: None,
       check_answer: fn(_) { Ok(Nil) },
       answer_attempts: 1,
+      child_ids: controller.DerivedChildIds,
     )
   let #(root, _) =
     controller.start(
@@ -458,6 +460,7 @@ pub fn the_record_keeps_only_a_chosen_correlation_test() {
         answer: None,
         check_answer: fn(_) { Ok(Nil) },
         answer_attempts: 1,
+        child_ids: controller.DerivedChildIds,
       ),
       "plain-run",
       run.DefinitionId("desk", 1),

@@ -477,6 +477,8 @@ pub fn sub_agents_cancellation_and_recovery_are_observed_test() {
   // interleave as their processes run.
   let lines = list.flatten([started, recovered, cancelled])
   let id = support.text(fabric.id(run))
+  let child = support.text(support.child_id(fabric.id(run), 1, "r"))
+  let lines = list.map(lines, string.replace(_, child, id <> "-1"))
   of_run(lines, id, id)
   |> should.equal([
     "run_started R lead parent=none",

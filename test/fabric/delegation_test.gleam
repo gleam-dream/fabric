@@ -1050,7 +1050,7 @@ fn eager_family(probe: Probe) -> Agent(Nil, String) {
 
 /// Whether `run` is the first child run of some run.
 fn first_child(run: String) -> Bool {
-  string.ends_with(run, "-1")
+  support.is_child(run)
 }
 
 /// A cancellation through another store while the parent's runner is
@@ -1200,7 +1200,10 @@ pub fn an_identical_child_record_by_another_writer_is_recovered_test() {
   let assert Ok(run.Finished(run.Completed(_))) =
     fabric.await(run, within: duration.milliseconds(5000))
   let assert Ok(store_core.Entry(record: stored, ..)) =
-    store_core.get(flaky.store(backend), support.text(fabric.id(run)) <> "-1")
+    store_core.get(
+      flaky.store(backend),
+      support.text(support.child_id(fabric.id(run), 1, "r")),
+    )
   let assert Ok(child) = record.decode(stored)
   child.incarnation |> should.equal(2)
   probe.count(probe, "pay:bob") |> should.equal(1)

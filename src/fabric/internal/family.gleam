@@ -19,7 +19,6 @@ import fabric/store/backend
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
-import gleam/string
 
 /// A run's record and its active child runs, recursively.
 pub type Node {
@@ -225,7 +224,11 @@ pub fn ids(node: Node) -> List(String) {
 }
 
 /// The setup of `target`, a descendant of `id` (or `id` itself), found by
-/// following the child links of each record, current and past.
+/// following `target`'s parent links up to `id`. Each link must be
+/// reciprocal: the child's record names the delegation as its parent and
+/// the parent's record, current or past, names the child on that
+/// delegation. A run stored under a child id that names another parent is
+/// not reached.
 pub fn locate(
   setup: Setup(context),
   id: String,
@@ -234,32 +237,47 @@ pub fn locate(
   case id == target {
     True -> Ok(setup)
     False -> {
-      use #(_, state) <- result.try(runner.load(setup.store, id))
-      let links =
-        list.filter_map(actions(state), fn(action) {
-          case option.map(action.child, run.id_to_string) {
-            Some(child) ->
-              case child == target || string.starts_with(target, child <> "-") {
-                True -> Ok(#(action, child))
-                False -> Error(Nil)
-              }
-            None -> Error(Nil)
-          }
+      use links <- result.try(lineage(setup.store, id, target, 64, []))
+      list.try_fold(links, setup, fn(setup, link) {
+        let #(parent, action) = link
+        runner.child_setup(setup, action.call.name, parent, action.id)
+        |> result.replace_error(
+          runner.Incompatible([
+            run.ToolNotRegistered(action.id, action.call.name),
+          ]),
+        )
+      })
+    }
+  }
+}
+
+/// The delegations from `root` down to `target`, outermost first, read
+/// from `target` upwards through at most `left` links.
+fn lineage(
+  store: store.Store,
+  root: String,
+  target: String,
+  left: Int,
+  below: List(#(String, run.ActionRecord)),
+) -> Result(List(#(String, run.ActionRecord)), ReadError) {
+  use #(_, state) <- result.try(runner.load(store, target))
+  case state.parent, left > 0 {
+    Some(run.AgentParent(parent, action)), True -> {
+      let parent = run.id_to_string(parent)
+      use #(_, parent_state) <- result.try(runner.load(store, parent))
+      let link =
+        list.find(actions(parent_state), fn(record) {
+          record.id == action
+          && record.child == Some(run_id.from_string(target))
         })
-      case links {
-        [#(action, child), ..] ->
-          case runner.child_setup(setup, action.call.name, id, action.id) {
-            Ok(child_setup) -> locate(child_setup, child, target)
-            Error(Nil) ->
-              Error(
-                runner.Incompatible([
-                  run.ToolNotRegistered(action.id, action.call.name),
-                ]),
-              )
-          }
-        [] -> Error(runner.NotFound)
+      case link, parent == root {
+        Error(Nil), _ -> Error(runner.NotFound)
+        Ok(record), True -> Ok([#(parent, record), ..below])
+        Ok(record), False ->
+          lineage(store, root, parent, left - 1, [#(parent, record), ..below])
       }
     }
+    _, _ -> Error(runner.NotFound)
   }
 }
 
@@ -404,7 +422,10 @@ fn reattach_stopping(setup: Setup(context), parent: State) -> Nil {
     case runner.child_setup(setup, name, parent.run, action) {
       Error(Nil) -> Nil
       Ok(child_setup) ->
-        case runner.load_checked(child_setup, id) {
+        case
+          runner.load_child(setup.store, parent.run, action, id)
+          |> result.try(fn(_) { runner.load_checked(child_setup, id) })
+        {
           Ok(#(_, controller.State(phase: controller.Stopping(..), ..))) -> {
             let _ = take_over(child_setup, id, 3)
             Nil
@@ -432,7 +453,7 @@ fn reattach_child(
     // The compatibility check refuses a parent whose delegation is gone.
     Error(Nil) -> Nil
     Ok(child_setup) ->
-      case runner.load(setup.store, child) {
+      case runner.load_child(setup.store, parent.run, action.id, child) {
         Error(runner.NotFound) if action.approvals != [] ->
           runner.notify_parent(child_setup, controller.ChildMissing)
         Error(runner.NotFound) ->

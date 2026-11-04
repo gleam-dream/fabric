@@ -48,6 +48,12 @@
 //// or zero from an empty terminal record. Earlier writers refuse imported
 //// history. The boundary and its complete prefix are validated on reads and
 //// checked writes; generated messages never become original input on recovery.
+//// Version 9 names a delegation's child run by a domain-separated hash of
+//// the parent run and the delegating action (`controller.derived_child_id`)
+//// instead of the parent id and a sequence number, which a caller could
+//// choose for an unrelated run. Earlier writers keep numbered ids, which
+//// every reader still accepts; they refuse a derived id. A version 9 record
+//// can hold both, for delegations started before and after the change.
 ////
 //// A run whose correlation the caller chose (`fabric.start`) or inherited
 //// from its parent stores it as `"correlation"`, in any version; a reader
@@ -113,7 +119,7 @@ import sinal/correlation.{type Correlation}
 
 pub const format = "fabric.run"
 
-pub const version = 8
+pub const version = 9
 
 /// The writer window is narrower than the reader's accepted versions.
 pub type WriteVersion {
@@ -124,6 +130,7 @@ pub type WriteVersion {
   V6
   V7
   V8
+  V9
 }
 
 pub fn writer(version: Int) -> Result(WriteVersion, Nil) {
@@ -135,6 +142,7 @@ pub fn writer(version: Int) -> Result(WriteVersion, Nil) {
     6 -> Ok(V6)
     7 -> Ok(V7)
     8 -> Ok(V8)
+    9 -> Ok(V9)
     _ -> Error(Nil)
   }
 }
@@ -153,14 +161,24 @@ pub fn encode_as(
     validate_initial(state)
     |> result.map_error(Unrepresentable(writer_number(target), _)),
   )
-  use Nil <- result.try(case target != V8 && state.initial_message_count > 1 {
+  use Nil <- result.try(case target != V9 && has_derived_child_ids(state) {
     True ->
       Error(Unrepresentable(
         writer_number(target),
-        "imported history requires version 8",
+        "derived child run ids require version 9",
       ))
     False -> Ok(Nil)
   })
+  use Nil <- result.try(
+    case target != V9 && target != V8 && state.initial_message_count > 1 {
+      True ->
+        Error(Unrepresentable(
+          writer_number(target),
+          "imported history requires version 8",
+        ))
+      False -> Ok(Nil)
+    },
+  )
   use Nil <- result.try(case state.parent {
     Some(run.GraphBranch(..)) ->
       Error(Unrepresentable(
@@ -174,7 +192,7 @@ pub fn encode_as(
     |> result.map_error(Unrepresentable(writer_number(target), _)),
   )
   use Nil <- result.try(case target, state.family_budget {
-    V8, _ | V7, _ | _, None -> Ok(Nil)
+    V9, _ | V8, _ | V7, _ | _, None -> Ok(Nil)
     _, Some(_) ->
       Error(Unrepresentable(
         writer_number(target),
@@ -182,7 +200,9 @@ pub fn encode_as(
       ))
   })
   use Nil <- result.try(
-    case target == V8 || target == V7 || !has_family_refusal(state) {
+    case
+      target == V9 || target == V8 || target == V7 || !has_family_refusal(state)
+    {
       True -> Ok(Nil)
       False ->
         Error(Unrepresentable(
@@ -192,7 +212,7 @@ pub fn encode_as(
     },
   )
   use Nil <- result.try(case target, state.parent {
-    V5, _ | V6, _ | V7, _ | V8, _ -> Ok(Nil)
+    V5, _ | V6, _ | V7, _ | V8, _ | V9, _ -> Ok(Nil)
     _, Some(run.GraphParent(..)) ->
       Error(Unrepresentable(
         writer_number(target),
@@ -201,7 +221,7 @@ pub fn encode_as(
     _, _ -> Ok(Nil)
   })
   use Nil <- result.try(case target {
-    V6 | V7 | V8 -> Ok(Nil)
+    V6 | V7 | V8 | V9 -> Ok(Nil)
     _ -> {
       let settled =
         list.any(state_actions(state), fn(action) {
@@ -235,7 +255,8 @@ pub fn encode_as(
     _, _ -> Ok(Nil)
   })
   case target, state.phase, state.transcript {
-    V8, _, _ -> Ok(encode(state))
+    V9, _, _ -> Ok(encode(state))
+    V8, _, _ -> Ok(encode_version(state, 8, state.phase))
     V7, _, _ -> Ok(encode_version(state, 7, state.phase))
     V6, _, _ -> Ok(encode_version(state, 6, state.phase))
     V5, _, _ -> Ok(encode_version(state, 5, state.phase))
@@ -263,6 +284,7 @@ fn writer_number(target: WriteVersion) -> Int {
     V6 -> 6
     V7 -> 7
     V8 -> 8
+    V9 -> 9
   }
 }
 
@@ -712,7 +734,7 @@ pub fn decode(text: String) -> Result(State, DecodeError) {
           False -> Ok(state)
         }
       })
-      |> result.try(linked)
+      |> result.try(linked(_, found))
   }
 }
 
@@ -728,11 +750,18 @@ fn never_started_before_3(state: State, found: Int) -> State {
   }
 }
 
-/// An agent delegation appends a positive sequence number to its parent's
-/// id. A graph attachment uses the activation's stable reserved id instead.
-/// Descendants started by this agent still follow the agent naming rule.
-/// Cross-runtime ancestry is checked separately with a bounded walk.
-fn linked(state: State) -> Result(State, DecodeError) {
+/// An agent delegation names its child by the derived id of the parent and
+/// the action (version 9), or by its parent's id and a positive sequence
+/// number (every version). A graph attachment uses the activation's stable
+/// reserved id instead. Descendants started by this agent still follow the
+/// agent naming rule. Cross-runtime ancestry is checked separately with a
+/// bounded walk.
+fn linked(state: State, found: Int) -> Result(State, DecodeError) {
+  let names = fn(child, parent, action) {
+    extends(child, parent)
+    || found >= 9
+    && child == controller.derived_child_id(parent, action)
+  }
   use Nil <- result.try(validate_initial(state) |> result.map_error(Corrupt))
   use Nil <- result.try(
     budget_config.validate(state.parent == None, state.family_budget)
@@ -740,8 +769,8 @@ fn linked(state: State) -> Result(State, DecodeError) {
   )
   let parent = case state.parent {
     Some(run.GraphBranch(..)) -> False
-    Some(run.AgentParent(parent, _)) ->
-      extends(state.run, run.id_to_string(parent))
+    Some(run.AgentParent(parent, action)) ->
+      names(state.run, run.id_to_string(parent), action)
     Some(run.GraphParent(parent, activation)) ->
       activation > 0
       && result.is_ok(run.parse_id(run.id_to_string(parent)))
@@ -753,7 +782,7 @@ fn linked(state: State) -> Result(State, DecodeError) {
   let children =
     list.all(actions, fn(action) {
       case action.child {
-        Some(child) -> extends(run.id_to_string(child), state.run)
+        Some(child) -> names(run.id_to_string(child), state.run, action.id)
         None -> True
       }
     })
@@ -844,6 +873,23 @@ fn state_actions(state: State) -> List(ActionRecord) {
     | controller.Ended(_)
     | controller.NeverStarted -> state.history
   }
+}
+
+/// Whether a delegation of `state`, or `state` itself as a child, uses a
+/// derived child run id, which only version 9 represents.
+fn has_derived_child_ids(state: State) -> Bool {
+  let own = case state.parent {
+    Some(run.AgentParent(parent, action)) ->
+      state.run == controller.derived_child_id(run.id_to_string(parent), action)
+    _ -> False
+  }
+  own
+  || list.any(state_actions(state), fn(action) {
+    action.child
+    == Some(
+      run_id.from_string(controller.derived_child_id(state.run, action.id)),
+    )
+  })
 }
 
 fn extends(child: String, parent: String) -> Bool {

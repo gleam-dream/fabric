@@ -2,7 +2,7 @@
 -export([rescue/1, random_id/0, now_ms/0, ensure_directory/1, directory_get/2,
          directory_insert/3, directory_compare_and_set/4, claim_new/0,
          claim_take/2, exit_shutdown/0, shut_down/1, factory_name/1,
-         await_or_shutdown/3, requeue_shutdown/1, take_shutdown/1, graph_child_id/2,
+         await_or_shutdown/3, requeue_shutdown/1, take_shutdown/1, graph_child_id/2, agent_child_id/3,
          family_budget_id/1, system_time_ms/0, graph_branch_id/3,
          sha256_hex/1, memoized/2]).
 
@@ -32,6 +32,14 @@ family_budget_id(Root) ->
 graph_child_id(Parent, Activation) ->
     Hash = crypto:hash(sha256, [<<"fabric.graph.child:">>, Parent, 0, integer_to_binary(Activation)]),
     <<"graph-", (binary:encode_hex(Hash))/binary>>.
+
+%% A delegation's child run id: a domain-separated hash of the parent run
+%% and the delegating action, so that it never has the shape of an id a
+%% caller writes by hand (a parent id and a suffix).
+agent_child_id(Parent, Turn, CallId) ->
+    Hash = crypto:hash(sha256, [<<"fabric.agent.child:">>, Parent, 0,
+                              integer_to_binary(Turn), 0, CallId]),
+    <<"agent-", (binary:encode_hex(Hash))/binary>>.
 
 graph_branch_id(Parent, Activation, Member) ->
     Hash = crypto:hash(sha256, [<<"fabric.graph.branch:">>, Parent, 0,
