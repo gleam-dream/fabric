@@ -23,7 +23,7 @@ packages = [
   { name = "http_gun", version = "0.1.1", build_tools = ["gleam"], requirements = ["cowlib", "file_streams", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "gun", "simplifile", "sinal", "youid"], otp_app = "http_gun", source = "hex", outer_checksum = "8123CC4AB403FB36BE8458845370D59F54267C4DC92A9F8B6ACB783AA850A7CB" },
   { name = "json_blueprint", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_json", "gleam_stdlib"], otp_app = "json_blueprint", source = "hex", outer_checksum = "CFF98414EDD9A7F969F46FF6CAA17BAD1A5DAC4CB80D45938ED41239CEBC6E25" },
   { name = "llm_wire", version = "0.1.1", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "http_gun", "json_blueprint", "sinal"], otp_app = "llm_wire", source = "hex", outer_checksum = "1B153FB16651A5F2DCBF09DA06245CE3BCD7CA7F0A7FB200353078B77F1A77FA" },
-  { name = "saga", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "sinal"], otp_app = "saga", source = "hex", outer_checksum = "7DE0A6A05BB53A107E1E0005DC1C8F4A8CB48F0A942B0897D8A6504035578111" },
+  { name = "saga", version = "0.2.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "sinal"], otp_app = "saga", source = "hex", outer_checksum = "EE48DB94E6D192C5330149C94282412693C6A17DD7EFA6148053CE90ECE167E0" },
   { name = "simplifile", version = "2.7.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "A2727627B063E87351934C7F7F008F2D1FDB16F6DE0B8C79F9E46459CFC9C164" },
   { name = "sinal", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib", "telemetry"], otp_app = "sinal", source = "hex", outer_checksum = "358D776FDFD6B0BE56E6FA63BBE3FA8D5A9A05C2DDD256270E54E133EB4A71FC" },
   { name = "splitter", version = "1.3.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "splitter", source = "hex", outer_checksum = "8F1485306E0D59168A39E12ED8844F9F616EC59C3C63AFCFDAE04DBD68690CBC" },
@@ -38,5 +38,5 @@ gleam_stdlib = { version = ">= 0.70.0 and < 2.0.0" }
 gleam_time = { version = ">= 1.11.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 json_blueprint = { version = ">= 2.0.0 and < 3.0.0" }
-saga = { version = ">= 0.1.0 and < 0.2.0" }
+saga = { version = ">= 0.2.0 and < 0.3.0" }
 sinal = { version = ">= 0.1.0 and < 0.2.0" }
