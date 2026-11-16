@@ -100,7 +100,12 @@ pub type Decision {
   /// other calls of the same model reply that had not started are
   /// withdrawn (`run.NotStarted`), and work of that reply already in
   /// flight is stopped as a cancellation stops it. The application
-  /// continues the work from the outcome, keyed by its action.
+  /// continues the work from the outcome, keyed by its action
+  /// (`run.action_ref_to_string`), for example in a follow-on run
+  /// (`fabric.handover_history`). That run has the same agent and policy,
+  /// so a policy that always hands this call over hands it over again if
+  /// the follow-on model repeats it: recognise the follow-on, for example
+  /// from the context, and deny or allow the call there.
   ///
   /// A graph run takes no handover: it fails with `graph.PolicyFailed`, and
   /// the node's operation does not run. A graph that hands a decision to

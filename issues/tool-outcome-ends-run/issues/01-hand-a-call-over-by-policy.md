@@ -42,3 +42,10 @@ reply with refused and withdrawn calls. The telemetry test found that the
 `run_finished` metadata enum lacked `HandedOver`, so typed handlers skipped the
 event; fixed in `src/fabric/telemetry.gleam`. A published 0.2.0 reader refuses
 a version 10 record as `UnsupportedVersion(10)`; ADR 0021 states the rollout.
+
+AI-assisted contribution. Consumer follow-up before 0.3.0: added
+`input.continuation` (a follow-on run with no invented prompt; its boundary is
+part of record version 10), the action key text forms
+(`run.action_id_to_string`, `run.parse_action_id`, `run.action_ref_to_string`,
+`run.parse_action_ref`), documentation that the follow-on's policy must
+recognise it, and that a cancelled parked run has no handover history.

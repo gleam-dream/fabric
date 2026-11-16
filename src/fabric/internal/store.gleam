@@ -77,6 +77,12 @@ pub fn supports_handover(store: Store) -> Bool {
   store.write_version == record.V10
 }
 
+/// Whether records written through `store` can hold original input that
+/// continues from tool results (`input.continuation`): from version 10.
+pub fn supports_continuation(store: Store) -> Bool {
+  store.write_version == record.V10
+}
+
 /// How delegations name their child runs in records written through
 /// `store`: derived ids from version 9, numbered ids before.
 pub fn child_ids(store: Store) -> controller.ChildIds {

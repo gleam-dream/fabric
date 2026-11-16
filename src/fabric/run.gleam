@@ -8,6 +8,7 @@ import fabric/reviewer.{type Reviewer}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option}
+import gleam/result
 import gleam/string
 import gleam/time/calendar
 import gleam/time/duration.{type Duration}
@@ -120,6 +121,46 @@ pub type ActionId {
 /// run, or an uncertain effect to reconcile.
 pub type ActionRef {
   ActionRef(run: RunId, id: ActionId)
+}
+
+/// The standard text form of an action id: its turn in decimal, `.`, and
+/// its call id as the provider sent it, such as `2.call_7`. A key for an
+/// application's own records (an occurrence, an idempotency row).
+/// `parse_action_id` reads it back: the turn has no `.`, so the first `.`
+/// separates, and a call id may itself contain `.` or `/`.
+pub fn action_id_to_string(id: ActionId) -> String {
+  int.to_string(id.turn) <> "." <> id.call_id
+}
+
+/// Reads `action_id_to_string`'s form back. Anything else, including a
+/// turn not written as `int.to_string` writes it (`+2`, `02`), is
+/// `Error(Nil)`. For every action id,
+/// `parse_action_id(action_id_to_string(id)) == Ok(id)`.
+pub fn parse_action_id(text: String) -> Result(ActionId, Nil) {
+  use #(turn_text, call_id) <- result.try(string.split_once(text, "."))
+  use turn <- result.try(int.parse(turn_text))
+  case int.to_string(turn) == turn_text {
+    True -> Ok(ActionId(turn, call_id))
+    False -> Error(Nil)
+  }
+}
+
+/// The standard text form of an action reference: its run id, `/`, and its
+/// action id's text form (`action_id_to_string`), such as
+/// `run-1f2e/2.call_7`. A run id never contains `/`, so the first `/`
+/// separates. `parse_action_ref` reads it back.
+pub fn action_ref_to_string(reference: ActionRef) -> String {
+  id_to_string(reference.run) <> "/" <> action_id_to_string(reference.id)
+}
+
+/// Reads `action_ref_to_string`'s form back; the run id must be one
+/// `parse_id` accepts. For every reference whose run id has the shape
+/// Fabric issues, `parse_action_ref(action_ref_to_string(r)) == Ok(r)`.
+pub fn parse_action_ref(text: String) -> Result(ActionRef, Nil) {
+  use #(run_text, action_text) <- result.try(string.split_once(text, "/"))
+  use run <- result.try(parse_id(run_text))
+  use id <- result.try(parse_action_id(action_text))
+  Ok(ActionRef(run, id))
 }
 
 /// The durable attachment that owns a run. Graph visits and chat actions

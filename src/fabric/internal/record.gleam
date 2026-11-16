@@ -60,6 +60,12 @@
 //// reason of a batch that stops for a handover. Earlier writers refuse a
 //// handover; the controller does not issue one for them
 //// (`controller.Env.handovers`), so nothing is ever refused at a commit.
+//// Version 10 also lets original input end with the tool results of its
+//// last assistant turn instead of a user prompt (`input.continuation`):
+//// `initial_message_count` still marks the boundary, and the boundary is
+//// validated as a continuation. Earlier writers refuse such a run before
+//// it is stored (`fabric.HistoryUnsupported`), and earlier versions read
+//// such a boundary as corrupt.
 ////
 //// A run whose correlation the caller chose (`fabric.start`) or inherited
 //// from its parent stores it as `"correlation"`, in any version; a reader
@@ -166,7 +172,7 @@ pub fn encode_as(
   target: WriteVersion,
 ) -> Result(String, EncodeError) {
   use Nil <- result.try(
-    validate_initial(state)
+    validate_initial(state, writer_number(target))
     |> result.map_error(Unrepresentable(writer_number(target), _)),
   )
   use Nil <- result.try(case target != V10 && has_handover(state) {
@@ -827,7 +833,9 @@ fn linked(state: State, found: Int) -> Result(State, DecodeError) {
     || found >= 9
     && child == controller.derived_child_id(parent, action)
   }
-  use Nil <- result.try(validate_initial(state) |> result.map_error(Corrupt))
+  use Nil <- result.try(
+    validate_initial(state, found) |> result.map_error(Corrupt),
+  )
   use Nil <- result.try(
     budget_config.validate(state.parent == None, state.family_budget)
     |> result.map_error(Corrupt),
@@ -883,7 +891,9 @@ fn linked(state: State, found: Int) -> Result(State, DecodeError) {
 
 /// The original prefix is closed history followed by exactly one current
 /// user prompt. It must not include generated messages or unfinished calls.
-fn validate_initial(state: State) -> Result(Nil, String) {
+/// Original input ends with the current user prompt, or, from version 10,
+/// with the tool results of its last assistant turn (`input.continuation`).
+fn validate_initial(state: State, version: Int) -> Result(Nil, String) {
   case state.phase, state.transcript, state.initial_message_count {
     controller.NeverStarted, [], 0 -> Ok(Nil)
     controller.Ended(_), [], 0 -> Ok(Nil)
@@ -900,6 +910,14 @@ fn validate_initial(state: State) -> Result(Nil, String) {
               input.new(list.take(original, count - 1), prompt)
               |> result.replace(Nil)
               |> result.replace_error("invalid original input transcript")
+            Ok(model.ToolResultMessage(..)) if version >= 10 ->
+              input.continuation(original)
+              |> result.replace(Nil)
+              |> result.replace_error("invalid original input transcript")
+            Ok(model.ToolResultMessage(..)) ->
+              Error(
+                "original input that continues from tool results requires version 10",
+              )
             _ -> Error("original input must end with the current user prompt")
           }
         }

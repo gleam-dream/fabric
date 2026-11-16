@@ -134,47 +134,105 @@ policy hands it over with `policy.HandOver(reason)`. The run ends at once as
 `run.HandedOver`, with the call's action, tool and arguments as recorded: the
 tool never runs, the model takes no further turn, and no approval is left to
 answer or expire. Other calls of the same model reply that had not started are
-withdrawn. The application files the call keyed by its action, and when the
-decision is recorded `fabric.handover_history` gives a follow-on run the
-conversation with the decision as the call's result.
+withdrawn. The application files the call keyed by its action's text form
+(`run.action_ref_to_string`, read back with `run.parse_action_ref`). When the
+decision is recorded, `fabric.handover_history` returns the conversation with
+the decision as the call's result, and `input.continuation` starts a follow-on
+run from it with no new user message, so the model continues from the decision
+as it would have in the original run. Add a prompt with `input.new` only when
+the application has something new to tell the model.
+
+The follow-on run has the same agent and the same policy. A policy that always
+hands the call over hands it over again if the follow-on model repeats the
+call, so the policy recognises the follow-on, here from its context, and denies
+the repeat.
 
 <!-- prettier-ignore-start -->
 
 <!-- snips: examples/usage/src/usage/handover.gleam#handover -->
 ```gleam
-/// Refunds are decided by finance, never by the agent's run.
-fn refund_policy(_context: Nil, action: policy.Action) {
-  case action.name {
-    "refund_fee" -> Ok(policy.HandOver("refunds are decided by finance"))
-    _ -> Ok(policy.Allow)
+/// Which run the policy decides for: the one that proposes, or the
+/// follow-on that tells the customer what was decided.
+pub type Stage {
+  Deciding
+  Telling
+}
+
+/// Refunds are decided by finance, never by the agent's run. The follow-on
+/// run has the same agent and policy: there a repeated refund call is
+/// denied, or it would be handed over again.
+fn refund_policy(stage: Stage, action: policy.Action) {
+  case action.name, stage {
+    "refund_fee", Deciding ->
+      Ok(policy.HandOver("refunds are decided by finance"))
+    "refund_fee", Telling -> Ok(policy.Deny("the refund is already decided"))
+    _, _ -> Ok(policy.Allow)
   }
 }
 
 /// Runs the agent until it rests. A handover gives the application the
-/// call to file, keyed by its run and action.
+/// call to file, keyed by its action's text form.
 fn file_refund(
   runs: store.Store,
-  desk: agent.Agent(Nil, String),
+  desk: agent.Agent(Stage, String),
   id: run.RunId,
-) -> Result(#(run.ActionRef, String), String) {
+) -> Result(#(String, String), String) {
   let assert Ok(handle) =
     fabric.start(
       runs,
       desk,
       id:,
-      context: Nil,
+      context: Deciding,
       prompt: "Refund Ana's fee.",
       correlation: None,
     )
   case fabric.await(handle, within: duration.seconds(5)) {
     Ok(run.Finished(run.HandedOver(action:, arguments_json:, ..))) ->
-      Ok(#(action, arguments_json))
+      Ok(#(run.action_ref_to_string(action), arguments_json))
     other -> Error(string.inspect(other))
   }
+}
+
+/// Once the decision is recorded: a follow-on run continues the handed-over
+/// conversation from the decision, given as the call's result.
+fn tell(
+  runs: store.Store,
+  desk: agent.Agent(Stage, String),
+  handed: run.RunId,
+  decided: String,
+) -> Result(fabric.Run(Stage, String), String) {
+  use first <- result.try(
+    fabric.open(runs, desk, Deciding, handed)
+    |> result.map_error(string.inspect),
+  )
+  use snapshot <- result.try(
+    fabric.snapshot(first) |> result.map_error(string.inspect),
+  )
+  use history <- result.try(
+    fabric.handover_history(snapshot, result: decided)
+    |> result.map_error(string.inspect),
+  )
+  use follow <- result.try(
+    input.continuation(history) |> result.map_error(string.inspect),
+  )
+  fabric.start_with_input(
+    runs,
+    desk,
+    id: run.new_id(),
+    context: Telling,
+    input: follow,
+    correlation: None,
+  )
+  |> result.map_error(string.inspect)
 }
 ```
 
 <!-- prettier-ignore-end -->
+
+Only a run that ended `HandedOver` has a handover history. A run parked on an
+approval under the earlier approach and then ended with `fabric.cancel` cannot
+be continued this way in 0.3.0: an application moving from parking to handing
+over tells those in-flight cases from its own record or starts a fresh run.
 
 A graph run takes no handover; it waits for the other system as a signal. See
 [`usage/handover`](examples/usage/src/usage/handover.gleam) and
