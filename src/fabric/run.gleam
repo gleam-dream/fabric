@@ -65,11 +65,23 @@ pub fn parse_id(text: String) -> Result(RunId, Nil) {
 /// is `job-42-1`. When that text is not a valid id (a part has other
 /// characters, or it is longer than 128 characters), the id is the prefix,
 /// `_` and the SHA-256 of the parts in hexadecimal instead, which stays
-/// unique and stable. Give each part a fixed shape (digits, a uuid), since
-/// `["4-2"]` and `["4", "2"]` join to the same text.
+/// unique and stable.
 ///
-/// When a retry must start a fresh run rather than find the old one,
-/// include the attempt among the parts.
+/// The join does not keep parts apart: `["4-2"]` and `["4", "2"]` give the
+/// same text, and so do `["x", "1"]` and `["x-1"]`. Two rules keep the ids
+/// of one prefix from colliding:
+///
+/// - One prefix names one shape: the same number of parts, of the same
+///   kinds, every time. A second shape, such as a retry beside a first
+///   attempt, gets a prefix of its own.
+/// - Parts that cannot contain `-` or have a fixed length (digits, a uuid)
+///   come first. At most one part is free text, and it comes last.
+///
+/// When a retry must start a fresh run rather than find the old one, give
+/// retries their own prefix and put the attempt before the key:
+/// `id_from_parts("jobretry", ["1", key])`. Adding the attempt after a
+/// free-text key under the first attempt's prefix collides: key `x` at
+/// attempt 1 and key `x-1` at its first attempt are both `job-x-1`.
 ///
 /// Child runs that delegations start are named by Fabric, not by
 /// `id_from_parts`: from record version 9 by a hash prefixed `agent-`, and
