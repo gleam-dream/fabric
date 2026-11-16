@@ -256,6 +256,15 @@ pub fn ids_from_known_parts_are_total_and_stable_test() {
   // Too long for an id: hashed too.
   let long = run.id_from_parts("job", [string.repeat("a", 200)])
   string.length(run.id_to_string(long)) |> should.equal(4 + 64)
+  // The join does not keep parts apart, so one prefix names one shape: a
+  // retry under the first attempt's prefix collides with another key, and
+  // under a prefix of its own, with the attempt first, it does not.
+  run.id_from_parts("job", ["x", "1"])
+  |> should.equal(run.id_from_parts("job", ["x-1"]))
+  run.id_from_parts("jobretry", ["1", "x"])
+  |> should.not_equal(run.id_from_parts("job", ["x-1"]))
+  run.id_from_parts("jobretry", ["1", "x"])
+  |> should.not_equal(run.id_from_parts("jobretry", ["11", "x"]))
   // A prefix written in source that is not letters and digits is a bug.
   executor.rescue(fn() { run.id_from_parts("bad-prefix", []) })
   |> result_is_error
