@@ -147,7 +147,8 @@ pub type Error {
   /// the store writes agent records older than version 7, which cannot hold
   /// one. Nothing was stored.
   FamilyBudgetUnsupported
-  /// Imported history requires record writer version 8. Nothing was stored.
+  /// Imported history requires record writer version 8, and a
+  /// continuation (`input.continuation`) version 10. Nothing was stored.
   HistoryUnsupported
   RunNotFound
   /// The store failed. A write it reported unavailable has an unknown
@@ -272,7 +273,7 @@ pub fn describe_error(error: Error) -> String {
     FamilyBudgetUnsupported ->
       "a family budget needs a store that writes agent records of version 7 or later"
     HistoryUnsupported ->
-      "imported history needs a store that writes agent records of version 8 or later"
+      "imported history needs a store that writes agent records of version 8 or later, and a continuation version 10 or later"
     RunNotFound -> "the run does not exist"
     StoreUnavailable(reason) -> "the store is unavailable: " <> reason
     UnsupportedVersion(found) ->
@@ -336,9 +337,15 @@ pub fn start(
   )
 }
 
-/// Starts one run from validated history and a current prompt. Historical
-/// calls are context only. The writer must retain the original boundary;
-/// unsupported history is refused before any write or execution.
+/// Starts one run from validated original input: history and a current
+/// prompt (`input.new`), or a history that ends with tool results
+/// (`input.continuation`), from which the first model turn continues.
+/// Historical calls are context only. The writer must retain the original
+/// boundary; unsupported history is refused before any write or execution
+/// (`HistoryUnsupported`). A retried start under the same id is
+/// `AlreadyStarted(id, same)`, with `same` true when the stored run's
+/// original input equals this one message for message: a continuation and
+/// a prompted input of the same history differ.
 pub fn start_with_input(
   store: Store,
   agent: Agent(context, answer),
@@ -347,13 +354,18 @@ pub fn start_with_input(
   input input: input.Input,
   correlation correlation: Option(Correlation),
 ) -> Result(Run(context, answer), Error) {
+  let messages = input.messages(input)
+  let continues = case list.last(messages) {
+    Ok(model.ToolResultMessage(..)) -> True
+    _ -> False
+  }
   use Nil <- result.try(
     case
-      list.length(input.messages(input)) > 1
-      && !store_core.supports_history(store)
+      list.length(messages) > 1 && !store_core.supports_history(store),
+      continues && !store_core.supports_continuation(store)
     {
-      True -> Error(HistoryUnsupported)
-      False -> Ok(Nil)
+      False, False -> Ok(Nil)
+      _, _ -> Error(HistoryUnsupported)
     },
   )
   let admitted = checked_agent.admitted(agent)
@@ -434,10 +446,26 @@ pub type HandoverHistoryError {
 /// handed over, its delegation) gets `result`: what the other system
 /// decided, as the tool's content, which `tool.reconciliation` encodes
 /// with the tool's output codec. A call with a recorded result gets that
-/// result, and a call withdrawn by the handover gets an error that says it
-/// never ran. Start the follow-on run with
-/// `input.new(history, prompt)` and `start_with_input`, under a run id of
-/// its own: the handed-over run itself never continues.
+/// result, a refused call its refusal as the model would have seen it, and
+/// a call withdrawn by the handover an error that says it never ran.
+///
+/// Start the follow-on run with `input.continuation(history)` and
+/// `start_with_input`, under a run id of its own: its model continues from
+/// the decision as it would have in the handed-over run, with no prompt
+/// invented for it. Use `input.new(history, prompt)` instead only when the
+/// application has something new to tell the model, such as the
+/// customer's next message. The handed-over run itself never continues.
+///
+/// The follow-on run is driven by the same agent and the same policy. A
+/// policy that always hands the call over hands it over again if the
+/// follow-on model repeats the call: the policy must recognise the
+/// follow-on, for example from its context, and deny or allow the call
+/// there.
+///
+/// Only a run that ended `HandedOver` has this history. A run parked on an
+/// approval and then cancelled (`cancel`) ended `Cancelled`, and is
+/// `NotHandedOver` here: an application moving from parking to handing
+/// over tells those cases from its own record or starts a fresh run.
 pub fn handover_history(
   snapshot: Snapshot(answer),
   result content: String,

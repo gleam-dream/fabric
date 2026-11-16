@@ -24,8 +24,10 @@ returns a result lets the run continue at once.
   they run.
 - Recovery around the handover reaches the same ending on every store.
 - A sub-agent's handover ends its parent; a graph takes no handover.
-- `fabric.handover_history` lets a follow-on run continue the conversation with
-  the decision as the call's result.
+- `fabric.handover_history` and `input.continuation` let a follow-on run
+  continue the conversation from the decision as the call's result, with no
+  invented prompt; `run.action_ref_to_string` and `run.parse_action_ref` give
+  the handed-over action a standard key.
 
 The design and its rationale are in `docs/design/design.typ` (section "Handing
 an action over") and `docs/adr/0021-hand-a-call-over-by-policy-and-end-the-run.md`.
@@ -36,3 +38,5 @@ an action over") and `docs/adr/0021-hand-a-call-over-by-policy-and-end-the-run.m
   example and design layer.
 - `issues/02-release-and-consumer-follow-up.md`: the release and the consumer
   changes this work leaves open.
+- `issues/03-read-an-ended-run-without-its-agent.md`: deferred.
+- `issues/04-typed-handover-history.md`: deferred.

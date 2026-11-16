@@ -1115,3 +1115,326 @@ pub fn the_handover_history_answers_every_call_of_the_reply_test() {
   let assert Ok(_) = input.new(history, "Finance decided.")
   probe.entries(effects) |> should.equal([])
 }
+
+// --- continuing without a prompt -------------------------------------------------
+
+/// `input.continuation` takes a history that ends with the results of its
+/// last assistant turn, and says why any other history is refused.
+pub fn a_continuation_needs_a_history_ending_in_results_test() {
+  let user = model.UserMessage("Refund Ana's fee.")
+  let turn = fn(ids: List(String)) {
+    model.AssistantMessage(model.AssistantTurn(
+      "",
+      list.map(ids, fn(id) { scripted.call(id, "refund_fee", "{}") }),
+      None,
+    ))
+  }
+  let result = fn(id) { model.ToolResultMessage(id, "\"done\"") }
+  input.continuation([]) |> should.equal(Error(input.HistoryMustStartWithUser))
+  input.continuation([user])
+  |> should.equal(Error(input.NotEndingInToolResults))
+  input.continuation([user, turn(["a"])])
+  |> should.equal(Error(input.UnresolvedCalls(["a"])))
+  input.continuation([user, turn(["a", "b"]), result("a")])
+  |> should.equal(Error(input.UnresolvedCalls(["b"])))
+  input.continuation([user, turn(["a"]), result("a"), user])
+  |> should.equal(Error(input.NotEndingInToolResults))
+  input.continuation([user, turn(["a"]), result("b")])
+  |> should.equal(Error(input.UnexpectedToolResult("b")))
+  let history = [user, turn(["a", "b"]), result("b"), result("a")]
+  let assert Ok(continuing) = input.continuation(history)
+  input.messages(continuing) |> should.equal(history)
+  // `new` with a prompt is unchanged: it appends the prompt.
+  let assert Ok(prompted) = input.new(history, "Tell Ana.")
+  input.messages(prompted)
+  |> should.equal(list.append(history, [model.UserMessage("Tell Ana.")]))
+}
+
+/// The follow-on run starts from the handover history with no user
+/// message added: its first model call ends with the decided result, the
+/// record keeps that history as its original input (record version 10),
+/// and a retried start compares it message for message.
+pub fn a_follow_on_continues_from_the_decision_without_a_prompt_test() {
+  let calls = probe.new()
+  let effects = probe.new()
+  let seen = process.new_subject()
+  let runs = support.store()
+  let first =
+    start(
+      runs,
+      support_agent(calls, effects, policy.HandOver(reason)),
+      "decided",
+    )
+  let assert Ok(run.Finished(run.HandedOver(..))) =
+    fabric.await(first, within: duration.seconds(5))
+  let assert Ok(snapshot) = fabric.snapshot(first)
+  let assert Ok(decided) =
+    tool.reconciliation(refund_definition(), Ok("refunded 60.00"))
+  let assert Ok(history) = fabric.handover_history(snapshot, result: decided)
+  let assert Ok(continuing) = input.continuation(history)
+
+  let teller =
+    agent.new(
+      "support",
+      model.new(fn(request: model.Request) {
+        process.send(seen, request.messages)
+        Ok(model.FinalAnswer("Ana, finance refunded 60.00.", None))
+      }),
+      [fee_history(effects), refund_fee(effects)],
+      gate(policy.HandOver(reason)),
+    )
+    |> support.agent
+  let id = support.id("follow-on-continued")
+  let assert Ok(next) =
+    fabric.start_with_input(
+      runs,
+      teller,
+      id:,
+      context: Nil,
+      input: continuing,
+      correlation: None,
+    )
+  fabric.await(next, within: duration.seconds(5))
+  |> should.equal(
+    Ok(run.Finished(run.Completed("Ana, finance refunded 60.00."))),
+  )
+  let assert Ok(messages) = process.receive(seen, 1000)
+  messages |> should.equal(history)
+  let assert Ok(model.ToolResultMessage("c2", last)) = list.last(messages)
+  last |> should.equal(decided)
+
+  // The record: the history is the original input, the answer the only
+  // generated message, and the transcript survives the history codec.
+  let assert Ok(follow_snapshot) = fabric.snapshot(next)
+  follow_snapshot.transcript
+  |> should.equal(
+    list.append(history, [
+      model.AssistantMessage(model.AssistantTurn(
+        "Ana, finance refunded 60.00.",
+        [],
+        None,
+      )),
+    ]),
+  )
+  fabric.matches_initial(next, continuing) |> should.equal(Ok(True))
+  let assert Ok([model.AssistantMessage(_)]) = fabric.generated_messages(next)
+  let assert Ok(encoded) =
+    codec.encode_json(history.codec(), follow_snapshot.transcript)
+  codec.decode_json(history.codec(), encoded)
+  |> should.equal(Ok(follow_snapshot.transcript))
+  let assert Ok(#(_, state)) = runner.load(runs, run.id_to_string(id))
+  state.initial_message_count |> should.equal(list.length(history))
+  let assert Ok(written) = record.encode_as(state, record.V10)
+  record.decode(written) |> should.equal(Ok(state))
+  let assert Error(record.Unrepresentable(9, _)) =
+    record.encode_as(state, record.V9)
+  let assert Error(record.Corrupt(_)) =
+    record.decode(string.replace(written, "\"version\":10", "\"version\":9"))
+
+  // A retried start finds the run; the same history with a prompt is
+  // another input.
+  let assert Error(fabric.AlreadyStarted(_, True)) =
+    fabric.start_with_input(
+      runs,
+      teller,
+      id:,
+      context: Nil,
+      input: continuing,
+      correlation: None,
+    )
+  let assert Ok(prompted) = input.new(history, "Tell Ana.")
+  let assert Error(fabric.AlreadyStarted(_, False)) =
+    fabric.start_with_input(
+      runs,
+      teller,
+      id:,
+      context: Nil,
+      input: prompted,
+      correlation: None,
+    )
+  probe.entries(effects) |> should.equal(["fee_history"])
+}
+
+/// A store that writes a record version before 10 cannot hold a
+/// continuation: the start is refused before anything is stored.
+pub fn an_older_writer_refuses_a_continuation_test() {
+  let assert Ok(runs) =
+    store.in_memory(process.new_name("continuation-v9"))
+    |> store.with_record_version(9)
+  let runs = support.started(runs)
+  let assert Ok(continuing) =
+    input.continuation([
+      model.UserMessage("Refund Ana's fee."),
+      model.AssistantMessage(model.AssistantTurn(
+        "",
+        [scripted.call("c2", "refund_fee", refund_arguments)],
+        None,
+      )),
+      model.ToolResultMessage("c2", "\"refunded\""),
+    ])
+  fabric.start_with_input(
+    runs,
+    support_agent(probe.new(), probe.new(), policy.HandOver(reason)),
+    id: support.id("too-old"),
+    context: Nil,
+    input: continuing,
+    correlation: None,
+  )
+  |> result_error
+  |> should.equal(Some(fabric.HistoryUnsupported))
+}
+
+fn result_error(result: Result(a, e)) -> option.Option(e) {
+  case result {
+    Ok(_) -> None
+    Error(error) -> Some(error)
+  }
+}
+
+/// The follow-on run has the same agent and policy. A model that repeats
+/// the handed-over call there meets the policy again: a policy that always
+/// hands the call over ends the follow-on with a second handover, and a
+/// policy that recognises the follow-on from its context denies the call,
+/// so the model answers from the decision.
+pub fn a_follow_on_whose_model_repeats_the_call_test() {
+  let effects = probe.new()
+  // The model calls the refund again whenever the decision is its last
+  // result, and answers once the repeat was refused.
+  let repeating =
+    model.new(fn(request: model.Request) {
+      Ok(case scripted.results(request.messages) {
+        [] ->
+          ask([scripted.call("c1", "fee_history", "{\"customer\":\"ana\"}")])
+        [_] -> ask([scripted.call("c2", "refund_fee", refund_arguments)])
+        [_, _] -> ask([scripted.call("c3", "refund_fee", refund_arguments)])
+        _ -> model.FinalAnswer("Ana, finance refunded 60.00.", None)
+      })
+    })
+  let desk = fn(policy) {
+    agent.new(
+      "support",
+      repeating,
+      [fee_history(effects), refund_fee(effects)],
+      policy,
+    )
+    |> support.agent
+  }
+  let staged = fn(follow_on: Bool, action: policy.Action) {
+    case action.name, follow_on {
+      "refund_fee", False -> Ok(policy.HandOver(reason))
+      "refund_fee", True -> Ok(policy.Deny("the refund is already decided"))
+      _, _ -> Ok(policy.Allow)
+    }
+  }
+  let runs = support.store()
+  let assert Ok(first) =
+    fabric.start(
+      runs,
+      desk(staged),
+      id: support.id("repeat-first"),
+      context: False,
+      prompt: "Refund Ana's fee.",
+      correlation: None,
+    )
+  let assert Ok(run.Finished(run.HandedOver(..))) =
+    fabric.await(first, within: duration.seconds(5))
+  let assert Ok(snapshot) = fabric.snapshot(first)
+  let assert Ok(history) =
+    fabric.handover_history(snapshot, result: "\"refunded 60.00\"")
+  let assert Ok(continuing) = input.continuation(history)
+
+  // A policy that always hands the refund over: the follow-on hands it
+  // over again.
+  let always = fn(_follow_on: Bool, action: policy.Action) {
+    gate(policy.HandOver(reason))(Nil, action)
+  }
+  let assert Ok(again) =
+    fabric.start_with_input(
+      runs,
+      desk(always),
+      id: support.id("repeat-always"),
+      context: True,
+      input: continuing,
+      correlation: None,
+    )
+  let assert Ok(run.Finished(run.HandedOver(action:, ..))) =
+    fabric.await(again, within: duration.seconds(5))
+  action
+  |> should.equal(ActionRef(support.id("repeat-always"), ActionId(1, "c3")))
+
+  // A policy that recognises the follow-on denies the repeat.
+  let assert Ok(told) =
+    fabric.start_with_input(
+      runs,
+      desk(staged),
+      id: support.id("repeat-staged"),
+      context: True,
+      input: continuing,
+      correlation: None,
+    )
+  fabric.await(told, within: duration.seconds(5))
+  |> should.equal(
+    Ok(run.Finished(run.Completed("Ana, finance refunded 60.00."))),
+  )
+  let assert Ok(told_snapshot) = fabric.snapshot(told)
+  let assert [run.ActionRecord(state: run.Denied(_), ..)] =
+    told_snapshot.actions
+  probe.count(effects, "refund") |> should.equal(0)
+}
+
+/// A run parked on an approval and then cancelled ended `Cancelled`; it has
+/// no handover history, which only a run that ended `HandedOver` has.
+pub fn a_cancelled_parked_run_has_no_handover_history_test() {
+  let desk =
+    support_agent(
+      probe.new(),
+      probe.new(),
+      policy.RequireApproval(Requirement("decision-point", 1)),
+    )
+  let handle = start(support.store(), desk, "parked-then-cancelled")
+  let assert Ok(run.Suspended([_], [])) =
+    fabric.await(handle, within: duration.seconds(5))
+  let assert Ok(run.Finished(run.Cancelled)) = fabric.cancel(handle)
+  let assert Ok(snapshot) = fabric.snapshot(handle)
+  fabric.handover_history(snapshot, result: "\"decided\"")
+  |> should.equal(Error(fabric.NotHandedOver))
+}
+
+// --- action keys ---------------------------------------------------------------
+
+/// The text forms of an action id and an action reference read back to
+/// the same values, also for call ids that contain the separators `.` and
+/// `/`. A run id never contains either.
+pub fn action_keys_round_trip_test() {
+  let ids = [
+    ActionId(1, "c1"),
+    ActionId(42, "call.with.dots"),
+    ActionId(3, "a/b.c"),
+    ActionId(0, ""),
+    ActionId(-2, "1.2"),
+    ActionId(7, "toolu_01A-x/y"),
+  ]
+  let runs = [
+    support.id("run-1f2e"),
+    support.id("job-42_1"),
+    support.id("agent-ABCDEF0123"),
+  ]
+  list.each(ids, fn(id) {
+    run.parse_action_id(run.action_id_to_string(id)) |> should.equal(Ok(id))
+    list.each(runs, fn(owner) {
+      let reference = ActionRef(owner, id)
+      run.parse_action_ref(run.action_ref_to_string(reference))
+      |> should.equal(Ok(reference))
+    })
+  })
+  run.action_id_to_string(ActionId(2, "c2")) |> should.equal("2.c2")
+  run.action_ref_to_string(ActionRef(support.id("run-1"), ActionId(2, "c2")))
+  |> should.equal("run-1/2.c2")
+  list.each(["", "2", "x.c", "+2.c", "02.c", " 2.c"], fn(text) {
+    run.parse_action_id(text) |> should.equal(Error(Nil))
+  })
+  list.each(
+    ["", "run-1", "run-1/2", "/2.c", "bad id/2.c", "run-1/x.c"],
+    fn(text) { run.parse_action_ref(text) |> should.equal(Error(Nil)) },
+  )
+}

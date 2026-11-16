@@ -62,16 +62,48 @@ action's record keeps the call as the model sent it, in the new action state
   run. A managed agent node whose child run hands over is a definite child
   failure for its graph.
 - **Continuing elsewhere.** The application files the call keyed by
-  `HandedOver.action` (run and action id). When the other system has decided,
-  `fabric.handover_history(snapshot, result:)` returns the run's transcript
-  with a result for every call of the ending reply (the handed-over call gets
-  the decision, encoded with `tool.reconciliation`), from which
-  `input.new` and `fabric.start_with_input` start a follow-on run under its own
-  id. The handed-over run itself never continues.
+  `HandedOver.action`, in its standard text form `run.action_ref_to_string`
+  (`<run id>/<turn>.<call id>`, read back with `run.parse_action_ref`; the
+  action id alone is `run.action_id_to_string`, `<turn>.<call id>`). A run
+  id never contains `/` or `.` and a turn never contains `.`, so the first
+  separator splits and a call id may contain either. When the other system
+  has decided, `fabric.handover_history(snapshot, result:)` returns the run's
+  transcript with a result for every call of the ending reply (the
+  handed-over call gets the decision, encoded with `tool.reconciliation`; a
+  refused call its refusal; a withdrawn call an error saying it never ran).
+  `input.continuation(history)` takes that history as the follow-on run's
+  whole original input, with no user message appended, and
+  `fabric.start_with_input` starts it under its own id: the first model turn
+  continues from the decision as the handed-over run's next turn would have.
+  `input.new(history, prompt)` stays for an application that has something
+  new to tell the model. The handed-over run itself never continues.
+- **The follow-on and the policy.** The follow-on run is driven by the same
+  agent and policy. A policy that always hands the call over hands it over
+  again if the follow-on model repeats the call, so the application's policy
+  recognises the follow-on (from its context, say) and denies or allows the
+  call there. Fabric does not mark a follow-on run: the application decides
+  what a follow-on is.
 - **Parked runs.** A run already parked on an approval is ended without a
   model turn by `fabric.cancel`: the request is voided, its expiry passes
   without effect, and the parked action stays `NotStarted` with its arguments.
-  No second mechanism is added for it.
+  No second mechanism is added for it. Such a run ended `Cancelled`, not
+  `HandedOver`, so `handover_history` refuses it (`NotHandedOver`): an
+  application moving from parking to handing over tells its in-flight parked
+  cases from its own record or starts a fresh run. Continuing a cancelled
+  parked run from its history is not supported in 0.3.0.
+
+A continuation's original input ends with tool results instead of a user
+prompt. The record keeps it as any original input: `initial_message_count`
+marks the boundary, the snapshot's transcript starts with it, and
+`fabric/history` stores the messages unchanged (its format did not change).
+`AlreadyStarted(id, same)` and `matches_initial` compare original input
+message for message, so a continuation and a prompted input of the same
+history are different inputs. Readers before version 10 validated that
+original input ends with a user prompt, so such a boundary is part of version
+10: a version 10 reader accepts either ending, an earlier version still
+requires the prompt, and a store whose writer is older than 10 refuses a
+continuation before storing anything (`fabric.HistoryUnsupported`). No version
+11 was added; version 10 is unreleased.
 
 Record version 10 stores the handover (the action state, the outcome, and the
 stop reason of a stopping batch). Readers accept versions 1–10. A store whose
@@ -125,8 +157,11 @@ The change adds a variant to four public types: `policy.Decision`
 `fabric/telemetry.OutcomeKind` (`HandedOver`). `run.Outcome`,
 `run.ActionState` and `OutcomeKind` are documented as unions that may grow;
 `policy.Decision` is not, and an application that matches a decision
-exhaustively no longer compiles. The public additions are
-`fabric.handover_history` and `fabric.HandoverHistoryError`. The agent record
+exhaustively no longer compiles. `input.InputError` gains
+`NotEndingInToolResults`. The public additions are `fabric.handover_history`,
+`fabric.HandoverHistoryError`, `input.continuation`,
+`run.action_id_to_string`, `run.parse_action_id`, `run.action_ref_to_string`
+and `run.parse_action_ref`. The agent record
 format moves to version 10, and the default writer of every store is 10. The
 change therefore needs fabric 0.3.0; consumers that pin `< 0.3.0` keep 0.2.0
 until they opt in. `fabric_postgres` stores records as opaque bytes and needs

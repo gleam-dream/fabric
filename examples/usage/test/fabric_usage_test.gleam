@@ -96,6 +96,8 @@ pub fn a_handed_over_call_ends_the_run_and_a_follow_on_run_continues_test() {
   shown.tool |> should.equal("refund_fee")
   shown.arguments_json |> should.equal("{\"amount\":80.0}")
   let assert True = string.ends_with(shown.key, "/1.c1")
+  let assert Ok(action) = run.parse_action_ref(shown.key)
+  run.action_ref_to_string(action) |> should.equal(shown.key)
   let assert run.Finished(run.HandedOver(tool: "refund_fee", ..)) =
     shown.first_run
   shown.follow_on
