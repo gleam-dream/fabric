@@ -8,6 +8,7 @@
   (slug: "term-attempt", title: [Attempt], body: [One execution attempt within a graph activation. An explicitly authorized replay increases the attempt while preserving the logical activation.]),
   (slug: "term-incarnation", title: [Incarnation], body: [The increasing ownership generation retained when lost work is recovered. A report from an older incarnation has no authority over current work.]),
   (slug: "term-policy", title: [Policy], body: [The application decision that allows an exact decoded action, denies it, or requires approval with current context.]),
+  (slug: "term-handover", title: [Handover], body: [A policy decision that an exact agent action belongs to another system, which decides it outside the run. The action never runs and the run ends with no further model turn, naming the action as its outcome. _Avoid_: escalation, which suggests the run waits for the answer; delegation, which names a sub-agent run.]),
   (slug: "term-approval", title: [Approval], body: [An action-scoped question identified by a requirement and monotonically issued revision. An answer is evidence of an authenticated decision, not a permanent grant.]),
   (slug: "term-proof", title: [Proof], body: [Short-lived evidence minted by one configured Approvers value after authenticating and authorizing a credential for one requirement.]),
   (slug: "term-context", title: [Context], body: [A live application value supplied at execution or reopening. It is not serialized into the durable run.]),
