@@ -48,3 +48,17 @@ AI-assisted contribution. The owner decided the four open points on
   used `policy.HandOver` and `fabric.handover_history` before the API is
   published. After the release the pin moves to Hex, the branch merges, and
   the `decisions` design, its ADR 0017 and its README are updated.
+
+AI-assisted contribution. State on 2026-11-16, after the release:
+
+- fabric 0.3.0 is published to Hex and tagged `v0.3.0`.
+- `fabric_postgres` requires `fabric >= 0.3.0 and < 0.4.0` from Hex again,
+  its README names that line, and it is released as 0.2.0, because its
+  requirement on fabric moved to a line that 0.2 consumers cannot take.
+- `payout_desk` was converted on a branch of `gleam-dream/oversight` before
+  the release. It found four gaps that were fixed before 0.3.0
+  (`input.continuation`, the text form of an action, and two points of
+  documentation) and one in the documentation of `run.id_from_parts`.
+- Still open, in other repositories: that branch moves its pin from Git to the
+  Hex release and merges, and the `decisions` design, its ADR 0017 and its
+  README are updated.
