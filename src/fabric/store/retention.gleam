@@ -169,7 +169,8 @@ fn agent_metadata(state: agent.State) -> Metadata {
         | run.ChildSettled(_)
         | run.NotStarted
         | run.Faulted(_)
-        | run.LimitReached(_) -> True
+        | run.LimitReached(_)
+        | run.Handover(_) -> True
       }
     })
   Metadata(

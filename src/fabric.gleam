@@ -91,6 +91,7 @@ import fabric/internal/checked_agent
 import fabric/internal/clock
 import fabric/internal/controller.{type State}
 import fabric/internal/family
+import fabric/internal/invocation
 import fabric/internal/run_id
 import fabric/internal/runner
 import fabric/internal/settlement
@@ -414,6 +415,60 @@ pub fn generated_messages(
     |> result.map_error(record_error),
   )
   list.drop(state.transcript, state.initial_message_count)
+}
+
+/// Why `handover_history` has no history for a snapshot.
+pub type HandoverHistoryError {
+  /// The run did not end with a handover (`run.HandedOver`).
+  NotHandedOver
+  /// A call of the reply that ended the run has no result a model can be
+  /// given: its effect is uncertain (`fabric.reconcile` it first), or the
+  /// host faulted on it.
+  CallWithoutResult(id: run.ActionId)
+}
+
+/// The history a follow-on run continues from after the run of `snapshot`
+/// ended with a handover (`run.HandedOver`): its whole transcript, then a
+/// result for every call of the model reply that ended it, in the reply's
+/// call order. The handed-over call (or, for a parent whose sub-agent
+/// handed over, its delegation) gets `result`: what the other system
+/// decided, as the tool's content, which `tool.reconciliation` encodes
+/// with the tool's output codec. A call with a recorded result gets that
+/// result, and a call withdrawn by the handover gets an error that says it
+/// never ran. Start the follow-on run with
+/// `input.new(history, prompt)` and `start_with_input`, under a run id of
+/// its own: the handed-over run itself never continues.
+pub fn handover_history(
+  snapshot: Snapshot(answer),
+  result content: String,
+) -> Result(List(model.Message), HandoverHistoryError) {
+  use Nil <- result.try(case snapshot.status {
+    run.Finished(run.HandedOver(..)) -> Ok(Nil)
+    _ -> Error(NotHandedOver)
+  })
+  let last =
+    list.fold(snapshot.actions, 0, fn(turn, action) {
+      int.max(turn, action.id.turn)
+    })
+  let batch =
+    list.filter(snapshot.actions, fn(action) { action.id.turn == last })
+  use results <- result.map(
+    list.try_map(batch, fn(action) {
+      case action.state {
+        run.Handover(_) -> Ok(content)
+        run.NotStarted ->
+          Ok(invocation.error_detail_content(
+            "not_started",
+            "the run was handed over before this call started",
+          ))
+        state ->
+          controller.model_content(state)
+          |> result.replace_error(CallWithoutResult(action.id))
+      }
+      |> result.map(model.ToolResultMessage(action.call.id, _))
+    }),
+  )
+  list.append(snapshot.transcript, results)
 }
 
 fn original_messages(state: State) -> List(model.Message) {

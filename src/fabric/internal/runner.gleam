@@ -120,6 +120,7 @@ pub fn setup(
       check_answer: admitted.check_answer,
       answer_attempts: admitted.answer_attempts,
       child_ids: store.child_ids(store),
+      handovers: store.supports_handover(store),
     ),
     model: admitted.model,
     max_concurrency: admitted.max_concurrency,

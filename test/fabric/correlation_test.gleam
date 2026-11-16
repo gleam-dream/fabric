@@ -412,6 +412,7 @@ pub fn a_sub_agents_record_keeps_its_root_test() {
       check_answer: fn(_) { Ok(Nil) },
       answer_attempts: 1,
       child_ids: controller.DerivedChildIds,
+      handovers: True,
     )
   let #(root, _) =
     controller.start(
@@ -461,6 +462,7 @@ pub fn the_record_keeps_only_a_chosen_correlation_test() {
         check_answer: fn(_) { Ok(Nil) },
         answer_attempts: 1,
         child_ids: controller.DerivedChildIds,
+        handovers: True,
       ),
       "plain-run",
       run.DefinitionId("desk", 1),

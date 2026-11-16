@@ -12,6 +12,7 @@ import fabric/policy
 import fabric/run
 import fabric/store/backend
 import fabric/support
+import fabric/support/codecs
 import fabric/support/flaky
 import fabric/support/probe
 import fabric/support/restart
@@ -823,4 +824,49 @@ pub fn canceled_agent_settlement_does_not_call_the_reply_adapter_test() {
   done.value |> should.equal(41)
   // The agent's two answers; settling the cancellation asks for none.
   probe.entries(calls) |> should.equal(["model", "model"])
+}
+
+/// A managed agent whose run hands a call over ends as `run.HandedOver`;
+/// for its graph parent that is a definite child failure, so the graph
+/// fails and routes nothing. The child's record keeps the handover.
+pub fn a_managed_agents_handover_fails_its_graph_test() {
+  let runs = support.store()
+  let effects = probe.new()
+  let worker =
+    agent.new(
+      "worker",
+      scripted.plan([scripted.call("r", "refund", "{\"x\":\"80\"}")]),
+      [
+        tool.define(
+          "refund",
+          "Refunds.",
+          codecs.one_field("x", codec.string()),
+          codec.string(),
+        )
+        |> tool.bind(
+          fn(_, _, x: String) -> Result(String, Nil) {
+            probe.record(effects, "refund")
+            Ok(x)
+          },
+          fn(_) { tool.Explain("failed") },
+        ),
+      ],
+      fn(_, _) { Ok(policy.HandOver("finance decides")) },
+    )
+    |> agent.with_answer(codec.int())
+    |> support.agent
+  let runtime = runtime(runs, worker)
+  let assert Ok(handle) =
+    graph.start(
+      parent(runs, runtime),
+      support.id("graph-handover"),
+      1,
+      correlation: None,
+    )
+  let assert Ok(graph.Failed(graph.OperationFailed(_))) =
+    graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(child_run) = node.child(handle, 1, runtime)
+  let assert Ok(snapshot) = fabric.snapshot(child_run)
+  let assert run.Finished(run.HandedOver(tool: "refund", ..)) = snapshot.status
+  probe.entries(effects) |> should.equal([])
 }

@@ -178,6 +178,11 @@ fn delegated(
       explain("the sub-agent's token budget could not be enforced")
     run.Cancelled -> explain("the sub-agent was cancelled")
     run.Failed(_) -> explain("the sub-agent failed")
+    // A live delegation never maps a handover: the parent hands its own
+    // delegation over instead (`controller.child_ended`). This is what a
+    // finished parent's settlement from stored child evidence records.
+    run.HandedOver(tool:, ..) ->
+      explain("the sub-agent handed its call of " <> tool <> " over")
   }
 }
 

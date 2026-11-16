@@ -416,6 +416,8 @@ pub type OutcomeKind {
   BudgetUnverifiable
   Cancelled
   Failed
+  /// The policy handed an action over (`run.HandedOver`).
+  HandedOver
 }
 
 pub type RunFinished {
@@ -852,6 +854,7 @@ pub fn run_finished() -> Event(RunTotals, RunFinished) {
             BudgetUnverifiable,
             Cancelled,
             Failed,
+            HandedOver,
           ],
           outcome_name,
         ),
@@ -963,6 +966,7 @@ fn outcome_name(outcome: OutcomeKind) -> String {
     BudgetExhausted -> "budget_exhausted"
     BudgetUnverifiable -> "budget_unverifiable"
     Cancelled -> "cancelled"
+    HandedOver -> "handed_over"
     Failed -> "failed"
   }
 }

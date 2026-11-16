@@ -5,8 +5,9 @@
 //// (`step`: a tool call of an agent's model turn, or an attempt of a graph
 //// node's activation), what it calls (`name`), the exact arguments (already
 //// validated against the input codec), and what it does once allowed
-//// (`target`). It allows the action, denies it with a reason, or requires
-//// an approval. An `Error` is a policy failure: an agent run stops as a
+//// (`target`). It allows the action, denies it with a reason, requires an
+//// approval, or hands the action over to another system, which ends an
+//// agent run there. An `Error` is a policy failure: an agent run stops as a
 //// host failure, a graph run fails, and nothing is allowed by default.
 ////
 //// ```gleam
@@ -92,6 +93,19 @@ pub type Decision {
   /// The action waits for an approval. A run whose remaining work is only
   /// waiting approvals suspends as stored data.
   RequireApproval(Requirement)
+  /// The action is not this run's to perform: another system (a person, a
+  /// decision point) takes it over, possibly much later. The action never
+  /// runs, and an agent run ends at once as `run.HandedOver`, with no
+  /// further model turn and no approval left to answer or expire: the
+  /// other calls of the same model reply that had not started are
+  /// withdrawn (`run.NotStarted`), and work of that reply already in
+  /// flight is stopped as a cancellation stops it. The application
+  /// continues the work from the outcome, keyed by its action.
+  ///
+  /// A graph run takes no handover: it fails with `graph.PolicyFailed`, and
+  /// the node's operation does not run. A graph that hands a decision to
+  /// another system waits for it as a signal (`operation.await_signal`).
+  HandOver(reason: String)
 }
 
 pub type Policy(context) =

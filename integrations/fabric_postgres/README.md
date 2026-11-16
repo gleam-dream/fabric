@@ -111,10 +111,12 @@ A live parent and an expired child retain independent leases.
 
 ## Record versions
 
-Agent readers accept versions 1–9; writers support 2–9 and default to 9. Imported
-initial history requires version 8; older writers refuse it before admission.
-Version 9 names delegations' child runs by derived ids; older writers keep
-numbered child ids, which every reader accepts. Graph
+Agent readers accept versions 1–10; writers support 2–10 and default to 10.
+Imported initial history requires version 8; older writers refuse it before
+admission. Version 9 names delegations' child runs by derived ids; older writers
+keep numbered child ids, which every reader accepts. Version 10 records a
+handover (`policy.HandOver`); with an older writer a handover fails the run as a
+policy failure and the tool still never runs. Graph
 readers accept 5–15 and write 15. Deploy compatible readers before enabling a
 newer writer or capability.
 

@@ -253,6 +253,20 @@ pub type Outcome(answer) {
   BudgetUnverifiable(turn: Int)
   Cancelled
   Failed(HostFailure)
+  /// The policy handed the action `action` over to another system
+  /// (`policy.HandOver`): the run ended there, with no further model turn
+  /// and without running the action's tool. `tool` and `arguments_json` are
+  /// the call as the model sent it and the record keeps it; `reason` is the
+  /// policy's. `action` names this run's action, or for a sub-agent's
+  /// handover the child run's action, which ended its delegating parent
+  /// too. The run has no answer: the application continues the work from
+  /// these fields, keyed by `action`.
+  HandedOver(
+    action: ActionRef,
+    tool: String,
+    arguments_json: String,
+    reason: String,
+  )
 }
 
 /// One line for logs and for a caller that reports why a run did not
@@ -278,6 +292,8 @@ pub fn describe_outcome(outcome: Outcome(answer)) -> String {
       <> ", so the token budget cannot be enforced"
     Cancelled -> "the run was cancelled"
     Failed(failure) -> describe_host_failure(failure)
+    HandedOver(tool:, reason:, ..) ->
+      "the run handed its call of " <> tool <> " over: " <> reason
   }
 }
 
@@ -388,6 +404,12 @@ pub type ActionState {
   /// The host could not complete the action: its output could not be
   /// encoded, or its tool changed after admission. The run stopped.
   Faulted(detail: String)
+  /// The policy handed the action over to another system
+  /// (`policy.HandOver`), with `reason`: its tool never ran, the model never
+  /// sees a result for it, and the run ended `HandedOver`. A delegation
+  /// whose sub-agent run handed one of its own actions over is in this
+  /// state too.
+  Handover(reason: String)
 }
 
 /// A stable classification of `ActionState`, by what the caller does next.
@@ -403,7 +425,7 @@ pub type ActionStateKind {
   /// `fabric.reconcile` it.
   NeedsReconciliation
   /// The action has its final state: a result the model sees or saw, a
-  /// refusal, a settlement, a withdrawal or a host fault.
+  /// refusal, a settlement, a withdrawal, a host fault or a handover.
   Ended
 }
 
@@ -422,7 +444,8 @@ pub fn action_state_kind(state: ActionState) -> ActionStateKind {
     | ChildSettled(_)
     | NotStarted
     | LimitReached(_)
-    | Faulted(_) -> Ended
+    | Faulted(_)
+    | Handover(_) -> Ended
   }
 }
 
@@ -467,6 +490,7 @@ pub fn describe_action_state(state: ActionState) -> String {
       <> int.to_string(limit)
       <> " levels below the root run"
     Faulted(detail) -> "the host could not complete it: " <> detail
+    Handover(reason) -> "handed over to another system: " <> reason
   }
 }
 
