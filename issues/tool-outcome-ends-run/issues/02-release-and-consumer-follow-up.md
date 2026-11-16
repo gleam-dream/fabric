@@ -22,9 +22,29 @@ Category: enhancement
   continue with `fabric.handover_history` and a follow-on run. Those
   repositories are not changed by this work.
 
-## Open questions
+## Decided
 
-- Whether a running sibling of a handover decided on an approval recheck
-  should finish instead of being stopped. ADR 0021 keeps the cancellation stop;
-  it is reversible without a format change only if a new stopping mode is
-  added.
+- A running sibling of a handover decided on an approval's or recovery's
+  recheck is stopped as a cancellation stops it, as ADR 0021 states. "Let it
+  finish" is not built; it waits for a consumer whose policy changes its
+  answer within one reply.
+
+## Comments
+
+AI-assisted contribution. The owner decided the four open points on
+2026-11-16:
+
+- **The shape.** `policy.HandOver` as built. An outcome returned by the tool
+  body is not built; it waits for a consumer that must start work before it
+  can know the call is another system's.
+- **A running sibling.** Stopped as a cancellation stops it, as built.
+- **The release.** A separate step after pull request 6 merges, in the three
+  commits the 0.2.0 release used: release fabric 0.3.0 with its tag and Hex
+  publication, consume it in the adapter and the consumers, then release
+  `fabric_postgres` with its requirement on fabric 0.3.
+- **The consumers.** `payout_desk` in `gleam-dream/oversight` is converted
+  now, on a branch that pins this repository by Git and is not merged. The
+  0.3.0 release waits for that branch to pass, so that a real consumer has
+  used `policy.HandOver` and `fabric.handover_history` before the API is
+  published. After the release the pin moves to Hex, the branch merges, and
+  the `decisions` design, its ADR 0017 and its README are updated.
