@@ -801,6 +801,21 @@ fn inspect(
     Error(reason) -> Ok(ended(state, Failed(activation, PolicyFailed(reason))))
     Ok(policy.Deny(reason)) ->
       Ok(ended(state, Failed(activation, Denied(reason))))
+    // A graph takes no handover: its routes are the application's, and an
+    // operation another system decides is a signal wait. The run fails
+    // closed, as for any decision it cannot take.
+    Ok(policy.HandOver(reason)) ->
+      Ok(ended(
+        state,
+        Failed(
+          activation,
+          PolicyFailed(
+            "the policy handed the operation over ("
+            <> reason
+            <> "); a graph run takes no handover",
+          ),
+        ),
+      ))
     Ok(policy.Allow) -> Ok(queue(state, activation))
     Ok(policy.RequireApproval(requirement)) ->
       case string.trim(requirement.name) == "" || requirement.version < 1 {

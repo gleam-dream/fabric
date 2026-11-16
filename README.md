@@ -127,6 +127,59 @@ flowchart LR
   deadline; token and family budgets are opt-in. See [agent](src/fabric/agent.gleam)
   and [graph](src/fabric/graph.gleam) for the available limits.
 
+## Handing a call over to another system
+
+When a person or another system decides a call, possibly days later, the
+policy hands it over with `policy.HandOver(reason)`. The run ends at once as
+`run.HandedOver`, with the call's action, tool and arguments as recorded: the
+tool never runs, the model takes no further turn, and no approval is left to
+answer or expire. Other calls of the same model reply that had not started are
+withdrawn. The application files the call keyed by its action, and when the
+decision is recorded `fabric.handover_history` gives a follow-on run the
+conversation with the decision as the call's result.
+
+<!-- prettier-ignore-start -->
+
+<!-- snips: examples/usage/src/usage/handover.gleam#handover -->
+```gleam
+/// Refunds are decided by finance, never by the agent's run.
+fn refund_policy(_context: Nil, action: policy.Action) {
+  case action.name {
+    "refund_fee" -> Ok(policy.HandOver("refunds are decided by finance"))
+    _ -> Ok(policy.Allow)
+  }
+}
+
+/// Runs the agent until it rests. A handover gives the application the
+/// call to file, keyed by its run and action.
+fn file_refund(
+  runs: store.Store,
+  desk: agent.Agent(Nil, String),
+  id: run.RunId,
+) -> Result(#(run.ActionRef, String), String) {
+  let assert Ok(handle) =
+    fabric.start(
+      runs,
+      desk,
+      id:,
+      context: Nil,
+      prompt: "Refund Ana's fee.",
+      correlation: None,
+    )
+  case fabric.await(handle, within: duration.seconds(5)) {
+    Ok(run.Finished(run.HandedOver(action:, arguments_json:, ..))) ->
+      Ok(#(action, arguments_json))
+    other -> Error(string.inspect(other))
+  }
+}
+```
+
+<!-- prettier-ignore-end -->
+
+A graph run takes no handover; it waits for the other system as a signal. See
+[`usage/handover`](examples/usage/src/usage/handover.gleam) and
+[ADR 0021](docs/adr/0021-hand-a-call-over-by-policy-and-end-the-run.md).
+
 ## Examples
 
 The [usage examples](examples/usage/README.md) cover bounds, failure classification, waiting, budgets, reconciliation, and recovery. The [graph consumer](consumers/graph/README.md), [decision consumer](consumers/decision/README.md), [jobs consumer](consumers/jobs/README.md), and [writing consumer](consumers/writing/README.md) show larger applications. The [PostgreSQL adapter](integrations/fabric_postgres/README.md) documents database-backed leases and operations.

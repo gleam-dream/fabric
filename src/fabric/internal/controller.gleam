@@ -13,8 +13,17 @@
 //// AwaitingModel(turn) --answer refused, attempts left--> AwaitingModel(turn + 1)
 //// Acting(batch)       --all model-visible--> AwaitingModel(turn + 1)
 //// Acting(batch)       --cancel or host fault, tools or children active--> Stopping
+//// Acting(batch)       --handover, nothing in flight--> Ended(HandedOver)
+//// Acting(batch)       --handover, tools or children active--> Stopping
 //// Stopping            --tools stopped, settlements in, children ended--> Ended
 //// ```
+////
+//// A handover (`policy.HandOver`) ends the run without a model turn. Admitted
+//// with the model's reply, it withdraws every other call of that reply that
+//// is not refused, and the calls after it are not shown to the policy; the
+//// run ends in the same transition. Decided later (an approval's recheck, a
+//// recovery's recheck, or a sub-agent run that handed over), it stops the
+//// batch as a cancellation does and the run ends `HandedOver`.
 ////
 //// A stopped tool bound with `tool.bind_settling` stays running after the
 //// executor stops until its late settlement (`Settled`) arrives or its
@@ -81,6 +90,9 @@ import sinal/correlation.{type Correlation}
 /// gets a corrective turn while attempts and the turn and token budgets
 /// last, and ends the run as `AnswerInvalid` once they do not.
 /// `child_ids` names the child runs that delegations start (`ChildIds`).
+/// `handovers` says whether the run's records can hold a handover (record
+/// version 10): when they cannot, a policy that hands an action over fails
+/// the run instead (`PolicyFailed`), so the action still never runs.
 pub type Env(context) {
   Env(
     registry: Registry(context),
@@ -93,6 +105,7 @@ pub type Env(context) {
     check_answer: fn(String) -> Result(Nil, String),
     answer_attempts: Int,
     child_ids: ChildIds,
+    handovers: Bool,
   )
 }
 
@@ -139,6 +152,14 @@ pub type StopReason {
   CancelRequested
   HostFault(HostFailure)
   FamilyBudget(quota.Denial)
+  /// The policy handed `action` over (`policy.HandOver`): the run ends as
+  /// `run.HandedOver` with these fields once the batch has stopped.
+  HandedOver(
+    action: run.ActionRef,
+    tool: String,
+    arguments_json: String,
+    reason: String,
+  )
 }
 
 pub type Phase {
@@ -522,15 +543,15 @@ fn step_phase(
     Acting(turn, actions), ChildEnded(id, ChildMissing) ->
       child_missing(env, state, turn, actions, id)
     Acting(turn, actions), ChildEnded(id, result) -> {
-      use #(actions, fault) <- result.try(child_ended(
+      use #(actions, ending) <- result.try(child_ended(
         actions,
         id,
         result,
         settle_with(env),
       ))
       let state = State(..state, phase: Acting(turn, actions))
-      case fault {
-        Some(failure) -> Ok(stop(state, turn, actions, HostFault(failure)))
+      case ending {
+        Some(reason) -> Ok(stop(state, turn, actions, reason))
         None -> Ok(settle(env, state))
       }
     }
@@ -842,15 +863,18 @@ fn settle_with(env: Env(context)) -> Settle {
   fn(name, outcome) { registry.settle(env.registry, name, outcome) }
 }
 
-/// Applies a child run's end to its delegation. A child that left effects
-/// of unknown status, or cannot be read, makes the delegation uncertain;
-/// otherwise the delegation maps the child's outcome.
+/// Applies a child run's end to its delegation. A child that handed one of
+/// its actions over hands the delegation over and ends this run the same
+/// way, naming the child's action, whatever else the child left. A child
+/// that left effects of unknown status, or cannot be read, makes the
+/// delegation uncertain; otherwise the delegation maps the child's outcome.
+/// The second element is why this run must stop, if it must.
 fn child_ended(
   actions: List(ActionRecord),
   id: ActionId,
   result: ChildResult,
   settle: Settle,
-) -> Result(#(List(ActionRecord), Option(HostFailure)), Rejection) {
+) -> Result(#(List(ActionRecord), Option(StopReason)), Rejection) {
   use action <- result.try(
     list.find(actions, fn(action) { action.id == id })
     |> result.replace_error(UnknownAction(id)),
@@ -861,6 +885,10 @@ fn child_ended(
   })
   let named = "the sub-agent run " <> run.id_to_string(child)
   let #(action_state, fault) = case result {
+    ChildFinished(run.HandedOver(action:, tool:, arguments_json:, reason:), _) -> #(
+      run.Handover(reason),
+      Some(HandedOver(action:, tool:, arguments_json:, reason:)),
+    )
     ChildMissing -> #(run.NotStarted, None)
     ChildLost(detail) -> #(
       run.Uncertain(named <> " cannot be continued: " <> detail),
@@ -889,11 +917,11 @@ fn child_ended(
         )
         Ok(invocation.OutputUnencodable(detail)) -> #(
           run.Faulted(detail),
-          Some(run.OutputEncodingFailed(id, detail)),
+          Some(HostFault(run.OutputEncodingFailed(id, detail))),
         )
         Ok(invocation.ArgumentsRejected(detail)) -> #(
           run.Faulted(detail),
-          Some(run.ToolChanged(id, detail)),
+          Some(HostFault(run.ToolChanged(id, detail))),
         )
         Error(Nil) -> #(
           run.Uncertain(named <> " ended, and no delegation maps its outcome"),
@@ -1220,6 +1248,15 @@ fn decide(
       case gate(env, state, action.id, action.call, others) {
         Error(failure) ->
           stop(state, turn, replace(answered(action.state)), HostFault(failure))
+        // The recheck hands the action over: the approval authorizes
+        // nothing, and the batch stops for the handover.
+        Ok(Decided(policy.HandOver(reason))) ->
+          stop(
+            state,
+            turn,
+            replace(answered(run.Handover(reason))),
+            handed_over(state, action, reason),
+          )
         Ok(Decided(policy.RequireApproval(required)))
           if required != approval.requirement
         -> {
@@ -1443,27 +1480,93 @@ fn admit_batch(
     list.try_fold(calls, #(state.approvals_issued, []), fn(acc, call) {
       let #(issued, records) = acc
       let id = ActionId(turn, call.id)
-      let others = list.append(state.history, records)
-      use gated <- result.map(gate(env, state, id, call, others))
-      let record = admitted(env, state, id, call, gated, issued, others)
-      let issued = case record.state {
-        run.AwaitingApproval(..) -> issued + 1
-        _ -> issued
+      case handover(state, records) {
+        // A call after a handover is never admitted, so the policy does
+        // not see it.
+        Some(_) -> {
+          let record = ActionRecord(id, call, run.NotStarted, [], None, 0)
+          Ok(#(issued, list.append(records, [record])))
+        }
+        None -> {
+          let others = list.append(state.history, records)
+          use gated <- result.map(gate(env, state, id, call, others))
+          let record = admitted(env, state, id, call, gated, issued, others)
+          let issued = case record.state {
+            run.AwaitingApproval(..) -> issued + 1
+            _ -> issued
+          }
+          #(issued, list.append(records, [record]))
+        }
       }
-      #(issued, list.append(records, [record]))
     })
   case admitted {
     Error(failure) -> #(end(state, withdrawn, run.Failed(failure)), [])
-    Ok(#(issued, actions)) -> {
-      let state =
-        State(..state, approvals_issued: issued, phase: Acting(turn, actions))
-      let #(state, effects) = settle(env, state)
-      #(
-        state,
-        list.flatten([dispatch(actions), start_children(actions), effects]),
-      )
-    }
+    Ok(#(issued, actions)) ->
+      case handover(state, actions) {
+        // Nothing of this reply has started: every call that is not
+        // refused is withdrawn, and the run ends in this transition.
+        Some(reason) -> {
+          let state = State(..state, approvals_issued: issued)
+          #(end(state, unstarted(actions), stop_outcome(reason)), [])
+        }
+        None -> admit_admitted(env, state, turn, issued, actions)
+      }
   }
+}
+
+/// The calls of one reply, none handed over: the allowed ones are
+/// dispatched and the delegations started.
+fn admit_admitted(
+  env: Env(context),
+  state: State,
+  turn: Int,
+  issued: Int,
+  actions: List(ActionRecord),
+) -> #(State, List(Effect)) {
+  let state =
+    State(..state, approvals_issued: issued, phase: Acting(turn, actions))
+  let #(state, effects) = settle(env, state)
+  #(state, list.flatten([dispatch(actions), start_children(actions), effects]))
+}
+
+/// Why the run must stop for a handover among `actions`: the first action
+/// the policy handed over, named as this run's action.
+fn handover(state: State, actions: List(ActionRecord)) -> Option(StopReason) {
+  list.find_map(actions, fn(action) {
+    case action.state {
+      run.Handover(reason) -> Ok(handed_over(state, action, reason))
+      _ -> Error(Nil)
+    }
+  })
+  |> option.from_result
+}
+
+/// The stop reason of this run's `action`, handed over with `reason`.
+fn handed_over(
+  state: State,
+  action: ActionRecord,
+  reason: String,
+) -> StopReason {
+  HandedOver(
+    action: run.ActionRef(run_id.from_string(state.run), action.id),
+    tool: action.call.name,
+    arguments_json: action.call.arguments_json,
+    reason:,
+  )
+}
+
+/// The calls of a reply that ends in a handover before anything of it
+/// started: every call admitted to run or to wait for an approval is
+/// withdrawn, an allowed delegation without its child run; refusals keep
+/// their states.
+fn unstarted(actions: List(ActionRecord)) -> List(ActionRecord) {
+  list.map(actions, fn(action) {
+    case action.state {
+      run.Queued | run.AwaitingApproval(..) | run.Running ->
+        ActionRecord(..action, state: run.NotStarted, child: None)
+      _ -> action
+    }
+  })
 }
 
 /// What the gate says about a call: refused before the policy (unknown
@@ -1519,8 +1622,17 @@ fn decide_policy(
       target,
     ),
   )
-  |> result.map(Decided)
   |> result.map_error(run.PolicyFailed(id, _))
+  |> result.try(fn(decision) {
+    case decision, env.handovers {
+      policy.HandOver(_), False ->
+        Error(run.PolicyFailed(
+          id,
+          "the policy handed the action over, and this store writes a record version older than 10, which cannot hold a handover",
+        ))
+      _, _ -> Ok(Decided(decision))
+    }
+  })
 }
 
 /// The record of a gated call. An allowed tool is queued for the executor;
@@ -1541,6 +1653,7 @@ fn admitted(
   case gated {
     Refused(action_state) -> record(action_state)
     Decided(policy.Deny(reason)) -> record(run.Denied(reason))
+    Decided(policy.HandOver(reason)) -> record(run.Handover(reason))
     Decided(policy.RequireApproval(requirement)) ->
       record(run.AwaitingApproval(requirement, issued + 1, deadline(env)))
     Decided(policy.Allow) ->
@@ -1680,6 +1793,8 @@ fn stop_outcome(reason: StopReason) -> Outcome(String) {
     CancelRequested -> run.Cancelled
     HostFault(failure) -> run.Failed(failure)
     FamilyBudget(reason) -> run.BudgetExhausted(run.FamilyLimit(reason))
+    HandedOver(action:, tool:, arguments_json:, reason:) ->
+      run.HandedOver(action:, tool:, arguments_json:, reason:)
   }
 }
 
@@ -1855,7 +1970,8 @@ pub fn model_content(action_state: ActionState) -> Result(String, Nil) {
     | run.NotStarted
     | run.Delegated
     | run.ChildSettled(_)
-    | run.Faulted(_) -> Error(Nil)
+    | run.Faulted(_)
+    | run.Handover(_) -> Error(Nil)
   }
 }
 
@@ -1926,24 +2042,36 @@ pub fn recover(env: Env(context), state: State) -> #(State, List(Effect)) {
               approvals_issued: issued,
               phase: Acting(turn, regated),
             )
-          let state = ask_again(env, state, turn, regated)
-          let queued =
-            list.append(
-              dispatch(current(state)),
-              start_children(current(state)),
-            )
-          case regated == actions {
-            True -> #(state, queued)
-            // A recheck refused work: the batch may now be complete.
-            False -> {
-              let #(state, effects) = settle(env, state)
-              #(state, list.append(queued, effects))
-            }
+          case handover(state, regated) {
+            Some(ending) -> stop(state, turn, regated, ending)
+            None -> resume(env, state, turn, actions, regated)
           }
         }
       }
     Stopping(actions:, ..) -> #(state, cancel_children(actions))
     Ended(_) | NeverStarted -> #(state, [])
+  }
+}
+
+/// A recovered batch whose recheck handed nothing over: approved queued
+/// actions ask again, and the work still allowed is dispatched.
+fn resume(
+  env: Env(context),
+  state: State,
+  turn: Int,
+  actions: List(ActionRecord),
+  regated: List(ActionRecord),
+) -> #(State, List(Effect)) {
+  let state = ask_again(env, state, turn, regated)
+  let queued =
+    list.append(dispatch(current(state)), start_children(current(state)))
+  case regated == actions {
+    True -> #(state, queued)
+    // A recheck refused work: the batch may now be complete.
+    False -> {
+      let #(state, effects) = settle(env, state)
+      #(state, list.append(queued, effects))
+    }
   }
 }
 
@@ -1963,8 +2091,10 @@ fn regate(
 ) -> Result(#(Int, List(ActionRecord)), #(HostFailure, List(ActionRecord))) {
   list.try_fold(actions, #(state.approvals_issued, []), fn(acc, action) {
     let #(issued, done) = acc
-    case action.state, action.approvals {
-      run.Queued, [] -> {
+    case action.state, action.approvals, handover(state, done) {
+      // After a handover nothing more is admitted: the stop withdraws it.
+      _, _, Some(_) -> Ok(#(issued, [action, ..done]))
+      run.Queued, [], None -> {
         let others =
           list.flatten([
             state.history,
@@ -2008,7 +2138,7 @@ fn regate(
           }
         }
       }
-      _, _ -> Ok(#(issued, [action, ..done]))
+      _, _, None -> Ok(#(issued, [action, ..done]))
     }
   })
   |> result.map(fn(acc) { #(acc.0, list.reverse(acc.1)) })

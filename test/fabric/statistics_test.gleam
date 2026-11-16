@@ -71,7 +71,7 @@ pub fn unknown_records_have_no_invented_execution_status_test() {
   )
   |> should.equal("{\"version\":3}")
   record.encode(state(agent.AwaitingModel(1)))
-  |> string.replace("\"version\":9", "\"version\":999")
+  |> string.replace("\"version\":10", "\"version\":999")
   |> statistics.inspect
   |> should.equal(Error(Nil))
 }

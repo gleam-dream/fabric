@@ -98,7 +98,8 @@ pub type UnwritableVersion {
 }
 
 /// Chooses the record format for writes through this Store value. The
-/// default is 9; versions 2 through 9 can be written, and 1 through 9 read.
+/// default is 10; versions 2 through 10 can be written, and 1 through 10
+/// read.
 /// Configure before starting the store and use the returned value for
 /// every handle and sweeper. Existing values and runners are unchanged.
 ///
@@ -108,7 +109,10 @@ pub type UnwritableVersion {
 /// version 6; family budgets require version 7; imported history requires
 /// version 8. Version 9 names delegations' child runs by derived ids that
 /// a caller cannot pick by accident; earlier writers keep numbered child
-/// ids. Upgrade all readers before selecting a newer writer.
+/// ids. Version 10 records a handover (`policy.HandOver`); with an earlier
+/// writer a handover fails the run with `run.PolicyFailed` instead, and the
+/// action still never runs. Upgrade all readers before selecting a newer
+/// writer.
 /// Records are changed only by ordinary writes, never by this setting.
 pub fn with_record_version(
   store: Store,

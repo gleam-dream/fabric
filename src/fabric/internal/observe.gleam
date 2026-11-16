@@ -205,7 +205,8 @@ fn turn_result(turn: Int, before: State, after: State) -> Option(o.TurnResult) {
     controller.Ended(run.Failed(run.ModelFailed(_))) -> Some(o.ModelFailure)
     controller.Ended(run.Failed(run.ModelProtocolViolation(_))) ->
       Some(o.ProtocolViolation)
-    controller.Ended(run.Failed(_)) -> Some(o.ToolRequest)
+    controller.Ended(run.Failed(_)) | controller.Ended(run.HandedOver(..)) ->
+      Some(o.ToolRequest)
     controller.Ended(run.BudgetExhausted(_))
     | controller.Ended(run.BudgetUnverifiable(_)) -> Some(o.BudgetStop)
     controller.Ended(run.Cancelled) | controller.NeverStarted -> None
@@ -442,6 +443,7 @@ fn outcome_kind(outcome: run.Outcome(String)) -> o.OutcomeKind {
     run.BudgetUnverifiable(_) -> o.BudgetUnverifiable
     run.Cancelled -> o.Cancelled
     run.Failed(_) -> o.Failed
+    run.HandedOver(..) -> o.HandedOver
   }
 }
 

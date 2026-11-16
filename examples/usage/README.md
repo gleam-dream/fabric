@@ -18,6 +18,7 @@ changed signatures fail the gate (`bash scripts/test.sh`).
 | A family budget                                | [`usage/family_budget`](src/usage/family_budget.gleam) |
 | Uncertain effects and `reconcile_stored`       | [`usage/reconcile`](src/usage/reconcile.gleam)         |
 | A sweeper over a leased store                  | [`usage/recovery`](src/usage/recovery.gleam)           |
+| A call handed over to another system           | [`usage/handover`](src/usage/handover.gleam)           |
 
 ```sh
 nix develop -c sh -c 'cd examples/usage && gleam test && gleam run'

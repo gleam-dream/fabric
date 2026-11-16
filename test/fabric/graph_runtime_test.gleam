@@ -479,6 +479,30 @@ pub fn denial_and_a_crashed_policy_never_enter_the_operation_test() {
   probe.entries(ledger) |> should.equal([])
 }
 
+/// A graph run takes no handover (`policy.HandOver`): its routes are the
+/// application's, and an operation another system decides is a signal
+/// wait. The run fails closed as a policy failure, and the operation's body
+/// never runs.
+pub fn a_handover_fails_a_graph_run_closed_test() {
+  let ledger = probe.new()
+  let handing =
+    graph.new(effect(ledger), support.store(), fn(_) { Nil }, fn(_, _) {
+      Ok(policy.HandOver("finance decides"))
+    })
+    |> graph.with_approvers(testing.trusting_approvers())
+    |> graph.build
+    |> should.be_ok
+  let assert Ok(handle) =
+    graph.start(handing, run_id("handed"), 0, correlation: None)
+  let assert Ok(graph.Failed(graph.PolicyFailed(reason))) =
+    graph.await(handle, within: duration.milliseconds(1000))
+  reason
+  |> should.equal(
+    "the policy handed the operation over (finance decides); a graph run takes no handover",
+  )
+  probe.entries(ledger) |> should.equal([])
+}
+
 pub fn runtime_stops_cycles_at_the_saved_activation_bound_test() {
   let ledger = probe.new()
   let spec =

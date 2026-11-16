@@ -776,6 +776,7 @@ fn outcome_name(outcome: run.Outcome(answer)) -> String {
     run.BudgetUnverifiable(_) -> "budget_unverifiable"
     run.Cancelled -> "cancelled"
     run.Failed(_) -> "failed"
+    run.HandedOver(..) -> "handed_over"
   }
 }
 

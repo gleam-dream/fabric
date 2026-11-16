@@ -62,17 +62,26 @@ pub fn supports_family_budget(store: Store) -> Bool {
   store.write_version == record.V7
   || store.write_version == record.V8
   || store.write_version == record.V9
+  || store.write_version == record.V10
 }
 
 pub fn supports_history(store: Store) -> Bool {
-  store.write_version == record.V8 || store.write_version == record.V9
+  store.write_version == record.V8
+  || store.write_version == record.V9
+  || store.write_version == record.V10
+}
+
+/// Whether records written through `store` can hold a handover
+/// (`policy.HandOver`): from version 10.
+pub fn supports_handover(store: Store) -> Bool {
+  store.write_version == record.V10
 }
 
 /// How delegations name their child runs in records written through
 /// `store`: derived ids from version 9, numbered ids before.
 pub fn child_ids(store: Store) -> controller.ChildIds {
   case store.write_version {
-    record.V9 -> controller.DerivedChildIds
+    record.V9 | record.V10 -> controller.DerivedChildIds
     _ -> controller.NumberedChildIds
   }
 }
@@ -162,7 +171,7 @@ pub fn new(
     None,
     default_drain,
     None,
-    record.V9,
+    record.V10,
   )
 }
 
@@ -173,7 +182,7 @@ pub fn in_memory(name: Name(Message)) -> Store {
     None,
     default_drain,
     None,
-    record.V9,
+    record.V10,
   )
 }
 
@@ -195,7 +204,7 @@ pub fn directory(name: Name(Message), path: String) -> Store {
     None,
     default_drain,
     None,
-    record.V9,
+    record.V10,
   )
 }
 
@@ -211,7 +220,7 @@ pub fn leased(
     None,
     default_drain,
     Some(Leasing(node, ttl)),
-    record.V9,
+    record.V10,
   )
 }
 

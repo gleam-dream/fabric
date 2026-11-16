@@ -54,6 +54,12 @@
 //// choose for an unrelated run. Earlier writers keep numbered ids, which
 //// every reader still accepts; they refuse a derived id. A version 9 record
 //// can hold both, for delegations started before and after the change.
+//// Version 10 records a handover (`policy.HandOver`): the action state
+//// `handed_over`, the outcome `handed_over` naming the handed-over action,
+//// its call and the policy's reason, and the same fields as the stop
+//// reason of a batch that stops for a handover. Earlier writers refuse a
+//// handover; the controller does not issue one for them
+//// (`controller.Env.handovers`), so nothing is ever refused at a commit.
 ////
 //// A run whose correlation the caller chose (`fabric.start`) or inherited
 //// from its parent stores it as `"correlation"`, in any version; a reader
@@ -119,7 +125,7 @@ import sinal/correlation.{type Correlation}
 
 pub const format = "fabric.run"
 
-pub const version = 9
+pub const version = 10
 
 /// The writer window is narrower than the reader's accepted versions.
 pub type WriteVersion {
@@ -131,6 +137,7 @@ pub type WriteVersion {
   V7
   V8
   V9
+  V10
 }
 
 pub fn writer(version: Int) -> Result(WriteVersion, Nil) {
@@ -143,6 +150,7 @@ pub fn writer(version: Int) -> Result(WriteVersion, Nil) {
     7 -> Ok(V7)
     8 -> Ok(V8)
     9 -> Ok(V9)
+    10 -> Ok(V10)
     _ -> Error(Nil)
   }
 }
@@ -161,16 +169,31 @@ pub fn encode_as(
     validate_initial(state)
     |> result.map_error(Unrepresentable(writer_number(target), _)),
   )
-  use Nil <- result.try(case target != V9 && has_derived_child_ids(state) {
+  use Nil <- result.try(case target != V10 && has_handover(state) {
     True ->
       Error(Unrepresentable(
         writer_number(target),
-        "derived child run ids require version 9",
+        "a handover requires version 10",
       ))
     False -> Ok(Nil)
   })
   use Nil <- result.try(
-    case target != V9 && target != V8 && state.initial_message_count > 1 {
+    case target != V10 && target != V9 && has_derived_child_ids(state) {
+      True ->
+        Error(Unrepresentable(
+          writer_number(target),
+          "derived child run ids require version 9",
+        ))
+      False -> Ok(Nil)
+    },
+  )
+  use Nil <- result.try(
+    case
+      target != V10
+      && target != V9
+      && target != V8
+      && state.initial_message_count > 1
+    {
       True ->
         Error(Unrepresentable(
           writer_number(target),
@@ -192,7 +215,7 @@ pub fn encode_as(
     |> result.map_error(Unrepresentable(writer_number(target), _)),
   )
   use Nil <- result.try(case target, state.family_budget {
-    V9, _ | V8, _ | V7, _ | _, None -> Ok(Nil)
+    V10, _ | V9, _ | V8, _ | V7, _ | _, None -> Ok(Nil)
     _, Some(_) ->
       Error(Unrepresentable(
         writer_number(target),
@@ -201,7 +224,11 @@ pub fn encode_as(
   })
   use Nil <- result.try(
     case
-      target == V9 || target == V8 || target == V7 || !has_family_refusal(state)
+      target == V10
+      || target == V9
+      || target == V8
+      || target == V7
+      || !has_family_refusal(state)
     {
       True -> Ok(Nil)
       False ->
@@ -212,7 +239,7 @@ pub fn encode_as(
     },
   )
   use Nil <- result.try(case target, state.parent {
-    V5, _ | V6, _ | V7, _ | V8, _ | V9, _ -> Ok(Nil)
+    V5, _ | V6, _ | V7, _ | V8, _ | V9, _ | V10, _ -> Ok(Nil)
     _, Some(run.GraphParent(..)) ->
       Error(Unrepresentable(
         writer_number(target),
@@ -221,7 +248,7 @@ pub fn encode_as(
     _, _ -> Ok(Nil)
   })
   use Nil <- result.try(case target {
-    V6 | V7 | V8 | V9 -> Ok(Nil)
+    V6 | V7 | V8 | V9 | V10 -> Ok(Nil)
     _ -> {
       let settled =
         list.any(state_actions(state), fn(action) {
@@ -255,7 +282,8 @@ pub fn encode_as(
     _, _ -> Ok(Nil)
   })
   case target, state.phase, state.transcript {
-    V9, _, _ -> Ok(encode(state))
+    V10, _, _ -> Ok(encode(state))
+    V9, _, _ -> Ok(encode_version(state, 9, state.phase))
     V8, _, _ -> Ok(encode_version(state, 8, state.phase))
     V7, _, _ -> Ok(encode_version(state, 7, state.phase))
     V6, _, _ -> Ok(encode_version(state, 6, state.phase))
@@ -285,6 +313,7 @@ fn writer_number(target: WriteVersion) -> Int {
     V7 -> 7
     V8 -> 8
     V9 -> 9
+    V10 -> 10
   }
 }
 
@@ -571,6 +600,8 @@ fn action_state(state: ActionState) -> Json {
     run.Delegated -> tag("delegated", [])
     run.LimitReached(limit) ->
       tag("limit_reached", [#("budget", delegation_limit(limit))])
+    run.Handover(reason) ->
+      tag("handed_over", [#("reason", json.string(reason))])
   }
 }
 
@@ -603,6 +634,11 @@ fn phase_json(phase: Phase) -> Json {
             tag("family_budget", [
               #("denial", budget_config.encode_denial(reason)),
             ])
+          controller.HandedOver(action:, tool:, arguments_json:, reason:) ->
+            tag(
+              "handed_over",
+              handover_fields(action, tool, arguments_json, reason),
+            )
         }),
       ])
     controller.Ended(outcome) ->
@@ -638,7 +674,36 @@ fn outcome_json(outcome: Outcome(String)) -> Json {
       tag("budget_unverifiable", [#("turn", json.int(turn))])
     run.Cancelled -> tag("cancelled", [])
     run.Failed(failure) -> tag("failed", [#("failure", host_failure(failure))])
+    run.HandedOver(action:, tool:, arguments_json:, reason:) ->
+      tag("handed_over", handover_fields(action, tool, arguments_json, reason))
   }
+}
+
+/// A handover as an outcome and as a stop reason store it.
+fn handover_fields(
+  action: run.ActionRef,
+  tool: String,
+  arguments_json: String,
+  reason: String,
+) -> List(#(String, Json)) {
+  [
+    #("run", run_id(action.run)),
+    #("action", action_id(action.id)),
+    #("tool", json.string(tool)),
+    #("arguments", json.string(arguments_json)),
+    #("reason", json.string(reason)),
+  ]
+}
+
+fn handover_decoder(
+  build: fn(run.ActionRef, String, String, String) -> a,
+) -> Decoder(a) {
+  use run <- decode.field("run", run_id_decoder())
+  use id <- decode.field("action", action_id_decoder())
+  use tool <- decode.field("tool", decode.string)
+  use arguments <- decode.field("arguments", decode.string)
+  use reason <- decode.field("reason", decode.string)
+  decode.success(build(run.ActionRef(run, id), tool, arguments, reason))
 }
 
 fn host_failure(failure: HostFailure) -> Json {
@@ -877,6 +942,28 @@ fn state_actions(state: State) -> List(ActionRecord) {
 
 /// Whether a delegation of `state`, or `state` itself as a child, uses a
 /// derived child run id, which only version 9 represents.
+fn has_handover(state: State) -> Bool {
+  let outcome = fn(outcome) {
+    case outcome {
+      run.HandedOver(..) -> True
+      _ -> False
+    }
+  }
+  let in_phase = case state.phase {
+    controller.Ended(ended) -> outcome(ended)
+    controller.Stopping(reason: controller.HandedOver(..), ..) -> True
+    _ -> False
+  }
+  in_phase
+  || list.any(state_actions(state), fn(action) {
+    case action.state {
+      run.Handover(_) -> True
+      run.ChildSettled(settled) -> outcome(settled)
+      _ -> False
+    }
+  })
+}
+
 fn has_derived_child_ids(state: State) -> Bool {
   let own = case state.parent {
     Some(run.AgentParent(parent, action)) ->
@@ -1253,7 +1340,7 @@ fn action_state_decoder(version: Int) -> Decoder(ActionState) {
     "reconciled" -> Ok(string_field("content", run.Reconciled))
     "child_settled" if version >= 6 ->
       Ok({
-        use outcome <- decode.field("outcome", outcome_decoder())
+        use outcome <- decode.field("outcome", outcome_decoder(version))
         decode.success(run.ChildSettled(outcome))
       })
     "not_started" -> Ok(decode.success(run.NotStarted))
@@ -1265,6 +1352,7 @@ fn action_state_decoder(version: Int) -> Decoder(ActionState) {
           decode.success(run.LimitReached(limit))
         }),
       )
+    "handed_over" if version >= 10 -> Ok(string_field("reason", run.Handover))
     _ -> Error(Nil)
   }
 }
@@ -1349,6 +1437,17 @@ fn phase_decoder(version: Int) -> Decoder(Phase) {
                   decode.success(controller.HostFault(failure))
                 }),
               )
+            "handed_over" if version >= 10 ->
+              Ok(
+                handover_decoder(fn(action, tool, arguments_json, reason) {
+                  controller.HandedOver(
+                    action:,
+                    tool:,
+                    arguments_json:,
+                    reason:,
+                  )
+                }),
+              )
             _ -> Error(Nil)
           }
         })
@@ -1363,7 +1462,7 @@ fn phase_decoder(version: Int) -> Decoder(Phase) {
       })
     "ended" ->
       Ok(
-        decode.field("outcome", outcome_decoder(), fn(outcome) {
+        decode.field("outcome", outcome_decoder(version), fn(outcome) {
           decode.success(controller.Ended(outcome))
         }),
       )
@@ -1372,7 +1471,7 @@ fn phase_decoder(version: Int) -> Decoder(Phase) {
   }
 }
 
-fn outcome_decoder() -> Decoder(Outcome(String)) {
+fn outcome_decoder(version: Int) -> Decoder(Outcome(String)) {
   use found <- tagged(run.Cancelled)
   case found {
     "completed" ->
@@ -1425,6 +1524,12 @@ fn outcome_decoder() -> Decoder(Outcome(String)) {
       Ok(
         decode.field("failure", host_failure_decoder(), fn(failure) {
           decode.success(run.Failed(failure))
+        }),
+      )
+    "handed_over" if version >= 10 ->
+      Ok(
+        handover_decoder(fn(action, tool, arguments_json, reason) {
+          run.HandedOver(action:, tool:, arguments_json:, reason:)
         }),
       )
     _ -> Error(Nil)

@@ -37,6 +37,7 @@ fn env() -> controller.Env(Nil) {
     check_answer: fn(_) { Ok(Nil) },
     answer_attempts: 1,
     child_ids: controller.DerivedChildIds,
+    handovers: True,
   )
 }
 

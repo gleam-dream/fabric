@@ -10,8 +10,8 @@
 
 import fabric/run.{
   type Outcome, type Snapshot, type Status, AnswerInvalid, BudgetExhausted,
-  BudgetUnverifiable, Cancelled, Completed, Failed, Finished, OutputLimited,
-  Refused, Snapshot, Suspended, Unattended, Working,
+  BudgetUnverifiable, Cancelled, Completed, Failed, Finished, HandedOver,
+  OutputLimited, Refused, Snapshot, Suspended, Unattended, Working,
 }
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -86,6 +86,8 @@ pub fn outcome(
     BudgetUnverifiable(turn) -> BudgetUnverifiable(turn)
     Cancelled -> Cancelled
     Failed(failure) -> Failed(failure)
+    HandedOver(action:, tool:, arguments_json:, reason:) ->
+      HandedOver(action:, tool:, arguments_json:, reason:)
   }
 }
 

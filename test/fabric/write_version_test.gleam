@@ -22,9 +22,9 @@ import gleeunit/should
 
 pub fn unsupported_write_versions_are_refused_before_startup_test() {
   let runs = store.in_memory(process.new_name("version-window"))
-  list.each([-1, 0, 1, 10], fn(version) {
+  list.each([-1, 0, 1, 11], fn(version) {
     store.with_record_version(runs, version)
-    |> should.equal(Error(store.UnwritableVersion(version, 2, 9)))
+    |> should.equal(Error(store.UnwritableVersion(version, 2, 10)))
   })
 }
 

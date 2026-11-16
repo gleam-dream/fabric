@@ -9,6 +9,7 @@ import sinal/correlation
 import usage/correlation as usage_correlation
 import usage/failures
 import usage/family_budget
+import usage/handover
 import usage/limits
 import usage/reconcile
 import usage/recovery
@@ -88,4 +89,15 @@ pub fn a_sweeper_needs_a_leased_store_test() {
 pub fn the_summarizer_returns_the_models_answer_test() {
   summarize.summarize(support.answering("A short summary."), "A long text.")
   |> should.equal(Ok(run.Finished(run.Completed("A short summary."))))
+}
+
+pub fn a_handed_over_call_ends_the_run_and_a_follow_on_run_continues_test() {
+  let shown = handover.shown()
+  shown.tool |> should.equal("refund_fee")
+  shown.arguments_json |> should.equal("{\"amount\":80.0}")
+  let assert True = string.ends_with(shown.key, "/1.c1")
+  let assert run.Finished(run.HandedOver(tool: "refund_fee", ..)) =
+    shown.first_run
+  shown.follow_on
+  |> should.equal(run.Finished(run.Completed("Ana, \"refunded 60.00\"")))
 }

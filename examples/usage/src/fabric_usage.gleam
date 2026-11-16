@@ -8,6 +8,7 @@ import sinal/correlation
 import usage/correlation as usage_correlation
 import usage/failures
 import usage/family_budget
+import usage/handover
 import usage/limits
 import usage/reconcile
 import usage/recovery
@@ -43,4 +44,15 @@ pub fn main() -> Nil {
     <> string.inspect(reconcile.counts()),
   )
   io.println("recovery: " <> string.inspect(recovery.supervised_sweeper()))
+  let shown = handover.shown()
+  io.println(
+    "handover: "
+    <> shown.tool
+    <> " "
+    <> shown.arguments_json
+    <> " handed over as "
+    <> shown.key
+    <> "; the follow-on run -> "
+    <> string.inspect(shown.follow_on),
+  )
 }

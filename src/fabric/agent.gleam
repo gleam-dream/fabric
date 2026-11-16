@@ -364,6 +364,10 @@ pub fn with_max_result_bytes(
 /// them alike. Default 7 days;
 /// `run.Infinity` never expires. Requests stored without a deadline never
 /// expire.
+///
+/// An action that another system decides, so that the run must not go on
+/// whatever happens to an approval, is handed over instead
+/// (`policy.HandOver`): the run ends at once and has no request to expire.
 pub fn with_approval_expiry(
   spec: Spec(context, answer),
   expiry: Timeout,
