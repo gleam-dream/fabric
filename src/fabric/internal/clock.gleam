@@ -4,8 +4,9 @@
 
 import gleam/time/timestamp.{type Timestamp}
 
-@external(erlang, "fabric_ffi", "system_time_ms")
-pub fn now() -> Int
+pub fn now() -> Int {
+  to_milliseconds(timestamp.system_time())
+}
 
 pub fn to_timestamp(milliseconds: Int) -> Timestamp {
   timestamp.from_unix_seconds_and_nanoseconds(

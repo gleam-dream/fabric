@@ -3,6 +3,7 @@
 
 import fabric/internal/budget/config
 import fabric/internal/budget/model as budget
+import fabric/internal/ids
 import fabric/run
 import gleam/dynamic/decode
 import gleam/json
@@ -18,11 +19,13 @@ pub type Error {
   Corrupt(String)
 }
 
-@external(erlang, "fabric_ffi", "family_budget_id")
-pub fn id(root: String) -> String
+pub fn id(root: String) -> String {
+  ids.family_budget(root)
+}
 
-@external(erlang, "fabric_ffi", "random_id")
-fn write_token() -> String
+fn write_token() -> String {
+  ids.random()
+}
 
 pub fn encode(record: Record) -> String {
   let limits = budget.limits(record.state)

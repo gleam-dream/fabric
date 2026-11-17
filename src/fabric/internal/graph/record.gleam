@@ -11,6 +11,7 @@ import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as g
 import fabric/internal/graph/fork as scope
 import fabric/internal/graph/fork_record
+import fabric/internal/ids
 import fabric/internal/record as agent_record
 import fabric/internal/run_id
 import fabric/run
@@ -98,8 +99,9 @@ pub fn encode(state: g.State) -> Result(String, EncodeError) {
   )
 }
 
-@external(erlang, "fabric_ffi", "random_id")
-fn write_token() -> String
+fn write_token() -> String {
+  ids.random()
+}
 
 /// The run's correlation and root, each only when it is not the default a
 /// reader derives from the run id: a root run with its derived

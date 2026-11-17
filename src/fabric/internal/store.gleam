@@ -3,10 +3,12 @@
 //// The runtime reads, writes and watches runs through these functions.
 
 import fabric/internal/bounded
+import fabric/internal/clock
 import fabric/internal/controller
 import fabric/internal/drain
 import fabric/internal/executor
 import fabric/internal/graph/live as graph_live
+import fabric/internal/ids
 import fabric/internal/live
 import fabric/internal/observe
 import fabric/internal/record
@@ -18,6 +20,7 @@ import fabric/store/backend.{
 import fabric/telemetry as o
 import gleam/dict.{type Dict}
 import gleam/dynamic
+import gleam/erlang/atom
 import gleam/erlang/process.{type Name, type Pid, type Subject}
 import gleam/int
 import gleam/list
@@ -385,8 +388,13 @@ fn exit_shutdown() -> Nil
 
 /// Stops the supervisor `pid`, which this process started, as its parent
 /// does, and waits until it has stopped.
-@external(erlang, "fabric_ffi", "shut_down")
-fn shut_down(pid: Pid) -> Nil
+fn shut_down(pid: Pid) -> Nil {
+  let down = process.monitor(pid)
+  process.send_abnormal_exit(pid, atom.create("shutdown"))
+  process.new_selector()
+  |> process.select_specific_monitor(down, fn(_) { Nil })
+  |> process.selector_receive_forever
+}
 
 @external(erlang, "erlang", "exit")
 fn exit_with(reason: dynamic.Dynamic) -> Nil
@@ -474,7 +482,7 @@ fn sentinel(
       // exiting with its starter: its exit ends the wait, so a restart does
       // not find the factory's name held for the whole bound.
       case process.named(factory), process.named(name) {
-        Ok(pid), Ok(store_process) -> announce_drain(name, store_process, pid)
+        Ok(pid), Ok(store_process) -> announce_drain(store_process, pid)
         _, _ -> Nil
       }
       case exit.reason {
@@ -488,19 +496,15 @@ fn sentinel(
 }
 
 /// The sentinel's last step: tells `store_process`, found under the store's
-/// name `name`, that the runners of the factory `factory` are about to
-/// drain, and waits up to 1000 ms for its answer or its exit. The process
-/// may have exited since it was found, with its starter or a killed
-/// supervisor: the message goes to it, not to the name, so it is dropped
-/// and the wait ends with the process's exit. Public for tests.
-pub fn announce_drain(
-  name: Name(Message),
-  store_process: Pid,
-  factory: Pid,
-) -> Nil {
+/// name, that the runners of the factory `factory` are about to drain, and
+/// waits up to 1000 ms for its answer or its exit. The process may have
+/// exited since it was found, with its starter or a killed supervisor: the
+/// message goes to it, not to the name, so it is dropped and the wait ends
+/// with the process's exit. Public for tests.
+pub fn announce_drain(store_process: Pid, factory: Pid) -> Nil {
   let down = process.monitor(store_process)
   let reply = process.new_subject()
-  send_as_named(store_process, name, BeginDrain(factory, reply))
+  send_direct(store_process, BeginDrain(factory, reply))
   let _ =
     process.new_selector()
     |> process.select(reply)
@@ -705,20 +709,46 @@ fn target(store: Store) -> Subject(Message) {
 
 /// Sends `message` to the store's process `pid`, which `pid(store)` found.
 /// A pinned store is reached through its subject. Otherwise the message
-/// goes to `pid` in the form a send to the store's name delivers, so a
-/// process that has exited since the lookup drops it and the sender does
-/// not crash.
+/// goes straight to `pid`, so a process that has exited since the lookup
+/// drops it and the sender does not crash.
 fn send_to(store: Store, pid: Pid, message: Message) -> Nil {
   case store.pinned {
     Some(subject) -> process.send(subject, message)
-    None -> send_as_named(pid, store.name, message)
+    None -> send_direct(pid, message)
   }
 }
 
-/// Sends `message` to `pid` as a send to the named subject `name` delivers
-/// it, without asserting that `name` is still registered.
-@external(erlang, "fabric_ffi", "send_as_named")
-fn send_as_named(pid: Pid, name: Name(message), message: message) -> Nil
+/// Sends `message` straight to the store's process `pid`, without a name
+/// and without a subject: the tuple `#(direct_tag(), message)`, a form this
+/// module defines and the store's process selects with
+/// `process.select_record`. A send to a process that has exited is dropped.
+fn send_direct(pid: Pid, message: Message) -> Nil {
+  let _ = erlang_send(pid, #(direct_tag(), message))
+  Nil
+}
+
+/// The tag of a message sent with `send_direct`.
+fn direct_tag() -> atom.Atom {
+  atom.create("fabric$store_direct")
+}
+
+/// The message of a tuple sent with `send_direct`. `process.select_record`
+/// hands over the whole tuple as `Dynamic`, which
+/// `dependency_contract_test` asserts. Reading it as a `Message` is not
+/// checked: only `send_direct` sends this tag, and its type admits nothing
+/// else. A named subject trusts its senders in the same way.
+fn direct_message(sent: dynamic.Dynamic) -> Message {
+  tuple_element(2, sent)
+}
+
+@external(erlang, "erlang", "send")
+fn erlang_send(
+  pid: Pid,
+  message: #(atom.Atom, Message),
+) -> #(atom.Atom, Message)
+
+@external(erlang, "erlang", "element")
+fn tuple_element(index: Int, tuple: dynamic.Dynamic) -> Message
 
 pub fn get(store: Store, run: String) -> Result(Entry, StoreError) {
   call(store, Get(run, _)) |> result.flatten
@@ -789,7 +819,7 @@ type Backend {
 /// writes ignore the lease, and nothing is renewed or claimed.
 fn unleased(backend: Backend) -> LeasedBackend {
   LeasedBackend(
-    now: fn() { Ok(system_time_ms()) },
+    now: fn() { Ok(clock.now()) },
     get: fn(run) {
       backend.get(run)
       |> result.map(fn(stored) { Current(stored.revision, stored.record, Free) })
@@ -900,6 +930,7 @@ fn run(
       process.new_selector()
       |> process.select(named)
       |> process.select(subject)
+      |> process.select_record(direct_tag(), 1, direct_message)
       |> process.select_monitors(fn(down) {
         case down {
           process.ProcessDown(pid:, reason:, ..) -> Down(pid, reason)
@@ -909,7 +940,7 @@ fn run(
     let lessee =
       option.map(store.leasing, fn(leasing) {
         Lessee(
-          leasing.node <> "/" <> name_text(store.name) <> "/" <> random_id(),
+          leasing.node <> "/" <> name_text(store.name) <> "/" <> ids.random(),
           leasing.ttl,
         )
       })
@@ -1074,7 +1105,7 @@ fn serve(state: Loop, message: Message) -> Loop {
       process.spawn(fn() {
         let checked =
           bounded_backend(state.timeout, fn() {
-            case state.backend.get("fabric-readiness-" <> random_id()) {
+            case state.backend.get("fabric-readiness-" <> ids.random()) {
               Ok(_) | Error(NotFound) -> Ok(Nil)
               Error(error) -> Error(error)
             }
@@ -1454,7 +1485,7 @@ fn own(state: Loop, run: String, ownership: Ownership, sent: Int) -> Loop {
   let state = Loop(..state, wakeups: dict.delete(state.wakeups, run))
   case ownership {
     Park(dependencies, callback) -> {
-      let token = random_id()
+      let token = ids.random()
       // Read after registration, even if the dependency changed before the
       // parent parked. This message is handled after the confirmed write.
       process.send(state.subject, Wake(run, token))
@@ -1851,12 +1882,6 @@ fn memory_loop(
 
 @external(erlang, "fabric_ffi", "now_ms")
 fn now_ms() -> Int
-
-@external(erlang, "fabric_ffi", "system_time_ms")
-fn system_time_ms() -> Int
-
-@external(erlang, "fabric_ffi", "random_id")
-fn random_id() -> String
 
 @external(erlang, "erlang", "atom_to_binary")
 fn name_text(name: Name(Message)) -> String
