@@ -55,6 +55,7 @@ import fabric/budget as quota
 import fabric/input
 import fabric/internal/budget/model as budget
 import fabric/internal/clock
+import fabric/internal/ids
 import fabric/internal/invocation
 import fabric/internal/registry.{type Registry}
 import fabric/internal/run_id
@@ -124,11 +125,8 @@ pub type ChildIds {
 /// The child run id that `parent`'s delegation `action` starts under
 /// `DerivedChildIds`.
 pub fn derived_child_id(parent: String, action: ActionId) -> String {
-  agent_child_id(parent, action.turn, action.call_id)
+  ids.agent_child(parent, action.turn, action.call_id)
 }
-
-@external(erlang, "fabric_ffi", "agent_child_id")
-fn agent_child_id(parent: String, turn: Int, call_id: String) -> String
 
 /// Whether the stored run `child` is the child run of `parent`'s
 /// delegation `action`: its record names exactly that action as its

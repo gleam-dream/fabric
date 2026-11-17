@@ -7,6 +7,7 @@ import fabric/graph/operation
 import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
+import fabric/internal/ids
 import fabric/internal/leased_memory
 import fabric/internal/run_id
 import fabric/run
@@ -951,5 +952,6 @@ pub fn leased_memory() -> LeasedMemory {
   LeasedMemory(backend: memory.backend, advance: memory.advance)
 }
 
-@external(erlang, "fabric_ffi", "random_id")
-fn random_id() -> String
+fn random_id() -> String {
+  ids.random()
+}

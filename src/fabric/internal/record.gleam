@@ -110,6 +110,7 @@ import fabric/internal/budget/config as budget_config
 import fabric/internal/clock
 import fabric/internal/controller.{type Phase, type State, State}
 import fabric/internal/graph/attachment
+import fabric/internal/ids
 import fabric/internal/registry.{type Registry}
 import fabric/internal/reviewer as stored_reviewer
 import fabric/internal/run_id
@@ -436,8 +437,9 @@ fn encode_version(state: State, version: Int, phase: Phase) -> String {
   |> json.to_string
 }
 
-@external(erlang, "fabric_ffi", "random_id")
-fn write_token() -> String
+fn write_token() -> String {
+  ids.random()
+}
 
 fn tag(name: String, fields: List(#(String, Json))) -> Json {
   json.object([#("tag", json.string(name)), ..fields])

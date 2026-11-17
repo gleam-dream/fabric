@@ -1,6 +1,6 @@
 # Eight foreign functions need no Erlang
 
-Status: in-progress
+Status: done
 Category: enhancement
 
 ## What
@@ -34,3 +34,23 @@ AI-assisted contribution. Filed from the same exploration as issue 01. A
 parity test in a copy of the repository compared Gleam versions with the
 Erlang ones on 5 strings (empty, non-ASCII and NUL among them) and 6 integers
 (0 and a negative among them): the hashes were identical.
+
+AI-assisted contribution. Done.
+
+- `src/fabric/internal/ids.gleam` holds `random`, `sha256_hex`,
+  `family_budget`, `graph_child`, `agent_child` and `graph_branch`. The six
+  modules that each declared an external for `random_id` call `ids.random`.
+- `clock.now` reads `timestamp.system_time`; the store and the leased memory
+  backend call it where they called `system_time_ms`.
+- `shut_down` in `store.gleam` is a monitor, `process.send_abnormal_exit`
+  with reason `shutdown`, and a wait for the monitor.
+- `src/fabric_ffi.erl` exports 18 functions, down from 24 before this
+  feature. `random_id` stays there unexported: `publish` names its temporary
+  file with it.
+
+`test/fabric/ids_test.gleam` fixes the four ids and `sha256_hex` to values
+printed by the Erlang functions before they were removed, for inputs that
+include an empty string, a negative number, a NUL and non-ASCII text.
+
+The core suite passed three times with the change: 886 tests, no crash
+report.

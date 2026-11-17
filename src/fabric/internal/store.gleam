@@ -3,10 +3,12 @@
 //// The runtime reads, writes and watches runs through these functions.
 
 import fabric/internal/bounded
+import fabric/internal/clock
 import fabric/internal/controller
 import fabric/internal/drain
 import fabric/internal/executor
 import fabric/internal/graph/live as graph_live
+import fabric/internal/ids
 import fabric/internal/live
 import fabric/internal/observe
 import fabric/internal/record
@@ -386,8 +388,13 @@ fn exit_shutdown() -> Nil
 
 /// Stops the supervisor `pid`, which this process started, as its parent
 /// does, and waits until it has stopped.
-@external(erlang, "fabric_ffi", "shut_down")
-fn shut_down(pid: Pid) -> Nil
+fn shut_down(pid: Pid) -> Nil {
+  let down = process.monitor(pid)
+  process.send_abnormal_exit(pid, atom.create("shutdown"))
+  process.new_selector()
+  |> process.select_specific_monitor(down, fn(_) { Nil })
+  |> process.selector_receive_forever
+}
 
 @external(erlang, "erlang", "exit")
 fn exit_with(reason: dynamic.Dynamic) -> Nil
@@ -812,7 +819,7 @@ type Backend {
 /// writes ignore the lease, and nothing is renewed or claimed.
 fn unleased(backend: Backend) -> LeasedBackend {
   LeasedBackend(
-    now: fn() { Ok(system_time_ms()) },
+    now: fn() { Ok(clock.now()) },
     get: fn(run) {
       backend.get(run)
       |> result.map(fn(stored) { Current(stored.revision, stored.record, Free) })
@@ -933,7 +940,7 @@ fn run(
     let lessee =
       option.map(store.leasing, fn(leasing) {
         Lessee(
-          leasing.node <> "/" <> name_text(store.name) <> "/" <> random_id(),
+          leasing.node <> "/" <> name_text(store.name) <> "/" <> ids.random(),
           leasing.ttl,
         )
       })
@@ -1098,7 +1105,7 @@ fn serve(state: Loop, message: Message) -> Loop {
       process.spawn(fn() {
         let checked =
           bounded_backend(state.timeout, fn() {
-            case state.backend.get("fabric-readiness-" <> random_id()) {
+            case state.backend.get("fabric-readiness-" <> ids.random()) {
               Ok(_) | Error(NotFound) -> Ok(Nil)
               Error(error) -> Error(error)
             }
@@ -1478,7 +1485,7 @@ fn own(state: Loop, run: String, ownership: Ownership, sent: Int) -> Loop {
   let state = Loop(..state, wakeups: dict.delete(state.wakeups, run))
   case ownership {
     Park(dependencies, callback) -> {
-      let token = random_id()
+      let token = ids.random()
       // Read after registration, even if the dependency changed before the
       // parent parked. This message is handled after the confirmed write.
       process.send(state.subject, Wake(run, token))
@@ -1875,12 +1882,6 @@ fn memory_loop(
 
 @external(erlang, "fabric_ffi", "now_ms")
 fn now_ms() -> Int
-
-@external(erlang, "fabric_ffi", "system_time_ms")
-fn system_time_ms() -> Int
-
-@external(erlang, "fabric_ffi", "random_id")
-fn random_id() -> String
 
 @external(erlang, "erlang", "atom_to_binary")
 fn name_text(name: Name(Message)) -> String

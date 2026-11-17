@@ -1,11 +1,9 @@
 -module(fabric_ffi).
--export([rescue/1, describe_exit/1, random_id/0, now_ms/0, ensure_directory/1, directory_get/2,
+-export([rescue/1, describe_exit/1, now_ms/0, ensure_directory/1, directory_get/2,
          directory_insert/3, directory_compare_and_set/4, claim_new/0,
-         claim_take/2, exit_shutdown/0, shut_down/1, factory_name/1,
+         claim_take/2, exit_shutdown/0, factory_name/1,
          await_or_shutdown/3, answer_new/0, answer_send/2, answer_receive/1,
-         requeue_shutdown/1, take_shutdown/1, graph_child_id/2, agent_child_id/3,
-         family_budget_id/1, system_time_ms/0, graph_branch_id/3,
-         sha256_hex/1, memoized/2]).
+         requeue_shutdown/1, take_shutdown/1, memoized/2]).
 
 %% The value stored under Key in persistent_term, made by Make on the
 %% first call in this VM; concurrent first calls agree on one value.
@@ -25,27 +23,6 @@ memoized(Key, Make) ->
         Value ->
             Value
     end.
-
-family_budget_id(Root) ->
-    Hash = crypto:hash(sha256, [<<"fabric.family.budget:">>, Root]),
-    <<"budget-", (binary:encode_hex(Hash))/binary>>.
-
-graph_child_id(Parent, Activation) ->
-    Hash = crypto:hash(sha256, [<<"fabric.graph.child:">>, Parent, 0, integer_to_binary(Activation)]),
-    <<"graph-", (binary:encode_hex(Hash))/binary>>.
-
-%% A delegation's child run id: a domain-separated hash of the parent run
-%% and the delegating action, so that it never has the shape of an id a
-%% caller writes by hand (a parent id and a suffix).
-agent_child_id(Parent, Turn, CallId) ->
-    Hash = crypto:hash(sha256, [<<"fabric.agent.child:">>, Parent, 0,
-                              integer_to_binary(Turn), 0, CallId]),
-    <<"agent-", (binary:encode_hex(Hash))/binary>>.
-
-graph_branch_id(Parent, Activation, Member) ->
-    Hash = crypto:hash(sha256, [<<"fabric.graph.branch:">>, Parent, 0,
-                              integer_to_binary(Activation), 0, integer_to_binary(Member)]),
-    <<"branch-", (binary:encode_hex(Hash))/binary>>.
 
 %% Runs Body, turning any raised exception into {error, Description}.
 %%
@@ -134,11 +111,6 @@ describe_exit(Reason) ->
 exit_shutdown() ->
     exit(shutdown).
 
-shut_down(Pid) ->
-    Ref = erlang:monitor(process, Pid),
-    exit(Pid, shutdown),
-    receive {'DOWN', Ref, process, Pid, _} -> nil end.
-
 %% An answer channel: a fresh reference and the process that receives on
 %% it. A value sent on it arrives as {fabric_answer, Ref, Value}.
 answer_new() ->
@@ -179,17 +151,13 @@ take_shutdown(Factory) ->
 factory_name(Name) ->
     binary_to_atom(<<(atom_to_binary(Name))/binary, "$runners">>).
 
-%% 128 random bits as lowercase hex; unique across VM restarts.
+%% 128 random bits as lowercase hex, for the name of a temporary file.
 random_id() ->
     binary:encode_hex(crypto:strong_rand_bytes(16), lowercase).
 
 %% Monotonic milliseconds, for process-local timeout durations only.
 now_ms() ->
     erlang:monotonic_time(millisecond).
-
-%% Stable UTC epoch for deadlines retained by an unleased local store.
-system_time_ms() ->
-    erlang:system_time(millisecond).
 
 %% --- claims -----------------------------------------------------------------
 %%
@@ -371,7 +339,3 @@ unavailable(Reason) ->
 
 describe(Reason) ->
     unicode:characters_to_binary(io_lib:format("~p", [Reason])).
-
-%% The SHA-256 of Text, in lowercase hexadecimal.
-sha256_hex(Text) ->
-    string:lowercase(binary:encode_hex(crypto:hash(sha256, Text))).

@@ -29,6 +29,9 @@ Fabric already depends on can do.
 
 ## Issues
 
-- `issues/01-the-store-is-sent-to-in-gleam-erlangs-named-form.md`
-- `issues/02-await-or-shutdown-takes-a-subject-apart.md`
-- `issues/03-eight-foreign-functions-need-no-erlang.md`
+- `issues/01-the-store-is-sent-to-in-gleam-erlangs-named-form.md`: the
+  sentinel and `call` send in a form `store.gleam` defines. Done.
+- `issues/02-await-or-shutdown-takes-a-subject-apart.md`: the runner host
+  has its own answer channel, and a test reaches the shutdown branch. Done.
+- `issues/03-eight-foreign-functions-need-no-erlang.md`: ids, hashes, the
+  system clock and a supervised stop are Gleam. Done.

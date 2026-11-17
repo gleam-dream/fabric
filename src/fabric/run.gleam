@@ -2,6 +2,7 @@
 //// run is exactly its stored `Snapshot`, with no process behind it.
 
 import fabric/budget
+import fabric/internal/ids
 import fabric/internal/run_id
 import fabric/model.{type Message, type ModelError, type ToolCall}
 import fabric/reviewer.{type Reviewer}
@@ -32,11 +33,8 @@ pub type Timeout {
 /// A fresh run id: `run-` and 32 random lowercase hexadecimal characters
 /// (128 random bits), so fresh ids do not collide.
 pub fn new_id() -> RunId {
-  run_id.from_string("run-" <> random_id())
+  run_id.from_string("run-" <> ids.random())
 }
-
-@external(erlang, "fabric_ffi", "random_id")
-fn random_id() -> String
 
 /// A run id in the shape Fabric issues: 1 to 128 letters, digits, `-` and
 /// `_`. Anything else names no run. A well-formed id may still name no
@@ -109,15 +107,12 @@ pub fn id_from_parts(prefix: String, parts: List(String)) -> RunId {
         Ok(id) -> id
         Error(Nil) ->
           run_id.from_string(
-            prefix <> "_" <> sha256_hex(string.join(parts, "\u{0}")),
+            prefix <> "_" <> ids.sha256_hex(string.join(parts, "\u{0}")),
           )
       }
     }
   }
 }
-
-@external(erlang, "fabric_ffi", "sha256_hex")
-fn sha256_hex(text: String) -> String
 
 pub fn id_to_string(id: RunId) -> String {
   run_id.to_string(id)

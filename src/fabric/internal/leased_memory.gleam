@@ -2,6 +2,7 @@
 //// `fabric/store/conformance.leased_memory`, with the clock it runs on as
 //// a parameter, so that tests can also run it on a clock that stands still.
 
+import fabric/internal/clock
 import fabric/run
 import fabric/store/backend.{
   type Current, type Lease, type LeasedBackend, type StoreError, AlreadyExists,
@@ -28,14 +29,14 @@ pub type Memory {
 
 /// The backend on UTC system time, moved forward by `advance`.
 pub fn system() -> Memory {
-  new(system_time_ms)
+  new(clock.now)
 }
 
 /// The backend on a clock that stands still unless `advance` moves it: no
 /// lease expires by the passing of time, so a test that must not depend on
 /// how fast the machine runs moves the clock itself.
 pub fn frozen() -> Memory {
-  let start = system_time_ms()
+  let start = clock.now()
   new(fn() { start })
 }
 
@@ -311,9 +312,6 @@ fn deadline_due(due: Option(Int), now: Int) -> Bool {
     Some(at) -> now >= at
   }
 }
-
-@external(erlang, "fabric_ffi", "system_time_ms")
-fn system_time_ms() -> Int
 
 fn wait_for(id: String, encoded: String) -> Option(discovery.Wait) {
   case discovery.inspect(encoded) {
