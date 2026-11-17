@@ -1,6 +1,6 @@
 # The sentinel sends to the store's name after the store's process is gone
 
-Status: needs-triage
+Status: done
 Category: bug
 
 ## What
@@ -121,3 +121,62 @@ AI-assisted contribution. Found in gate logs while building the handover
 and the crash report. The probe was run in a copy of the repository and is not
 committed; it shows that the crash happens, not which step of the window it
 hits.
+
+AI-assisted contribution. Fixed. The sentinel no longer sends to the store's
+name: `announce_drain` sends `BeginDrain` to the process it looked up and
+monitors, in the form a send to the name would deliver
+(`fabric_ffi:send_as_named`). A send to a process that has exited is dropped,
+so there is no second lookup left to fail; the monitor then ends the wait at
+once and the sentinel exits with its supervisor's reason. `call` had the same
+two-step shape (`pid(store)`, then a send to the name) and now sends the same
+way, so a caller whose store stops in that window gets `Unavailable("the store
+stopped")` instead of crashing.
+
+Tests, in `test/fabric/lifecycle_test.gleam`:
+
+- `the_sentinel_survives_a_store_process_gone_since_its_lookup_test` is
+  deterministic: it calls `announce_drain` with a process that has exited and
+  a name that is not registered. Before the fix it exits with "Sending to
+  unregistered name"; after it, `Normal`.
+- `a_store_whose_starter_dies_stops_its_sentinel_cleanly_test` has the probe's
+  shape and is probabilistic: eight loops start 4,000 stores, kill or crash
+  each starter and collect each sentinel's exit reason. It takes about 0.3 s
+  alone. Before the fix it failed 20 of 20 runs alone, with 31 to 52 crashed
+  sentinels each; after it, 30 of 30 runs passed. The test confirms that each
+  sentinel has taken its monitor before it ends the starter. Without that,
+  the supervisor's shutdown can reach the sentinel before the test's monitor
+  does, and the monitor then reports `noproc`.
+
+The probe above, rerun on the fix: 0 crash reports in 8,000 stores (206
+before, on the same machine).
+
+Audit of the other places in `store.gleam` that look up, send to or call the
+store's name or the factory's name:
+
+- `await_earlier_factory`: looks both names up and monitors the factory. A
+  monitor of a process that has exited reports at once. Safe.
+- `pid`: a lookup only. Its callers compare or monitor the pid. Safe.
+- `call`: looked up with `pid`, then sent to the name. Same defect; fixed.
+  `stop` already guarded its `call` with `bounded.call`; its comment is
+  updated.
+- `target`: builds the named subject. The sends through it with an unpinned
+  store (`draining`, `handoff_failed`, `release_job_observation`, `unwatch`,
+  `with_backend_timeout`, `renew_now`, `tick_now`) do not look the name up
+  first, so they do not have this two-step shape. They do crash the sender
+  when the store is not running at all. `unwatch` is called from the
+  application's await in `fabric.gleam` and `fabric/graph.gleam`, which use
+  the unpinned store and already handle a store that stops. Not fixed here;
+  filed as issue 02.
+- `Runners` (the store's process): looks up the factory's name and replies
+  with it. The runner host reaches the factory through `start_runner`, which
+  rescues a factory that has gone. Safe.
+- `report_readiness`: a lookup for a Boolean. Safe.
+- `sentinel`: the factory's lookup gives a pid used only as an identity in
+  `BeginDrain`. Safe.
+
+Supervised stores, shown by a throwaway probe of 2,000 stores per case under
+a static supervisor: when the supervisor stops the subtree in order, the
+window was not reached before or after the fix. When the store's subtree
+supervisor is killed outright, the store's process and the sentinel get the
+exit at once: before the fix 2 sentinels crashed with "Sending to
+unregistered name", after it none did.

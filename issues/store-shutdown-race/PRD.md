@@ -17,4 +17,7 @@ the change under test.
 ## Issues
 
 - `issues/01-the-sentinel-sends-to-a-name-that-is-gone.md`: the race, its
-  evidence and what a fix must show.
+  evidence and what a fix must show. Done.
+- `issues/02-sends-to-the-stores-name-crash-the-sender-when-no-store-runs.md`:
+  seven sends that crash their sender when no store runs at all, found by the
+  audit of issue 01. Read from the code, not reproduced.

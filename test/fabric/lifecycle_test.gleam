@@ -15,6 +15,7 @@ import fabric/support/probe
 import fabric/support/restart
 import fabric/support/scripted
 import fabric/sweeper
+import gleam/erlang/atom
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None}
@@ -149,6 +150,94 @@ pub fn a_store_restarts_under_its_name_once_its_dead_callers_links_are_gone_test
   store.start(runs) |> should.equal(Ok(Nil))
   store.stop(runs) |> should.equal(Ok(Nil))
 }
+
+/// The sentinel tells the store's process it found under the store's name
+/// that the runners are about to drain. A process that has exited since
+/// that lookup, its name gone with it, ends the sentinel's wait at once and
+/// does not crash the sentinel.
+pub fn the_sentinel_survives_a_store_process_gone_since_its_lookup_test() {
+  let name = process.new_name("lifecycle-gone")
+  let gone = process.spawn_unlinked(fn() { Nil })
+  let _ = exit_of(gone)
+  let factory = process.self()
+  process.spawn_unlinked(fn() { store_core.announce_drain(name, gone, factory) })
+  |> exit_of
+  |> should.equal(process.Normal)
+}
+
+/// A store whose starter dies stops with its sentinel ending as its
+/// supervisor told it to, even when the store's process, which follows the
+/// starter on its own, exits while the sentinel tells it that its runners
+/// are about to drain. That window is hit by chance: eight loops at once
+/// start 4,000 stores and kill or crash each one's starter.
+pub fn a_store_whose_starter_dies_stops_its_sentinel_cleanly_test() {
+  let finished = process.new_subject()
+  list.each(list.repeat(Nil, 8), fn(_) {
+    process.spawn(fn() { process.send(finished, starter_dies(500, [])) })
+  })
+  let exits =
+    list.flat_map(list.repeat(Nil, 8), fn(_) {
+      let assert Ok(exits) = process.receive(finished, 60_000)
+      exits
+    })
+  let shutdown = process.Abnormal(atom.to_dynamic(atom.create("shutdown")))
+  let other = list.filter(exits, fn(exit) { exit != shutdown })
+  #(list.length(exits), list.length(other), list.first(other))
+  |> should.equal(#(4000, 0, Error(Nil)))
+}
+
+/// The sentinels' exit reasons of `rounds` stores, each started by a
+/// process that is then killed (even rounds) or exits abnormally.
+fn starter_dies(
+  rounds: Int,
+  exits: List(process.ExitReason),
+) -> List(process.ExitReason) {
+  case rounds {
+    0 -> exits
+    _ -> {
+      let runs = store.in_memory(process.new_name("lifecycle-sentinel"))
+      let started = process.new_subject()
+      let starter =
+        process.spawn_unlinked(fn() {
+          process.send(started, store.start(runs))
+          process.sleep_forever()
+        })
+      let assert Ok(Ok(Nil)) = process.receive(started, 5000)
+      let assert Ok(store_process) = store_core.pid(runs)
+      let sentinel = store_sentinel(store_process)
+      let monitor = process.monitor(sentinel)
+      // A monitor is a signal, ordered only against this process's other
+      // signals: the supervisor's `shutdown` can reach the sentinel first,
+      // and a sentinel that exits before it takes the monitor reports
+      // `noproc`. The sentinel takes it before the starter ends.
+      monitored_by_self(sentinel) |> should.be_true
+      case rounds % 2 {
+        0 -> process.kill(starter)
+        _ -> process.send_abnormal_exit(starter, "starter")
+      }
+      let assert Ok(exit) =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(down) { down.reason })
+        |> process.selector_receive(5000)
+      starter_dies(rounds - 1, [exit, ..exits])
+    }
+  }
+}
+
+fn exit_of(pid: process.Pid) -> process.ExitReason {
+  let monitor = process.monitor(pid)
+  let assert Ok(exit) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down.reason })
+    |> process.selector_receive(5000)
+  exit
+}
+
+@external(erlang, "fabric_test_ffi", "store_sentinel")
+fn store_sentinel(store_process: process.Pid) -> process.Pid
+
+@external(erlang, "fabric_test_ffi", "monitored_by_self")
+fn monitored_by_self(pid: process.Pid) -> Bool
 
 pub fn a_supervised_store_is_stopped_by_its_supervisor_test() {
   let runs = store.in_memory(process.new_name("lifecycle-supervised"))
