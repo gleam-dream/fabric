@@ -2,7 +2,8 @@
 -export([rescue/1, describe_exit/1, random_id/0, now_ms/0, ensure_directory/1, directory_get/2,
          directory_insert/3, directory_compare_and_set/4, claim_new/0,
          claim_take/2, exit_shutdown/0, shut_down/1, factory_name/1,
-         await_or_shutdown/3, requeue_shutdown/1, take_shutdown/1, graph_child_id/2, agent_child_id/3,
+         await_or_shutdown/3, answer_new/0, answer_send/2, answer_receive/1,
+         requeue_shutdown/1, take_shutdown/1, graph_child_id/2, agent_child_id/3,
          family_budget_id/1, system_time_ms/0, graph_branch_id/3,
          sha256_hex/1, memoized/2]).
 
@@ -138,12 +139,24 @@ shut_down(Pid) ->
     exit(Pid, shutdown),
     receive {'DOWN', Ref, process, Pid, _} -> nil end.
 
-%% Waits for a message on the subject, or for the caller's own trapped exit
-%% signal `shutdown` from Factory, whichever comes first within Timeout ms;
-%% any other message stays queued.
-await_or_shutdown({subject, _Owner, Tag}, Factory, Timeout) ->
+%% An answer channel: a fresh reference and the process that receives on
+%% it. A value sent on it arrives as {fabric_answer, Ref, Value}.
+answer_new() ->
+    {fabric_answer, make_ref(), self()}.
+
+answer_send({fabric_answer, Ref, Owner}, Value) ->
+    Owner ! {fabric_answer, Ref, Value},
+    nil.
+
+answer_receive({fabric_answer, Ref, _Owner}) ->
+    receive {fabric_answer, Ref, Value} -> Value end.
+
+%% Waits for a value on the answer channel, or for the caller's own trapped
+%% exit signal `shutdown` from Factory, whichever comes first within Timeout
+%% ms; any other message stays queued.
+await_or_shutdown({fabric_answer, Ref, _Owner}, Factory, Timeout) ->
     receive
-        {Tag, Message} -> {answered, Message};
+        {fabric_answer, Ref, Message} -> {answered, Message};
         {'EXIT', Factory, shutdown} -> shut_down
     after Timeout -> still_waiting
     end.

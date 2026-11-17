@@ -20,7 +20,7 @@ pub fn prepare(
   use #(pinned, factory, factory_pid) <- result.try(store.runners(runs))
   use store_pid <- result.try(store.pid(pinned))
   let caller = process.self()
-  let answer = process.new_subject()
+  let answer = new_answer()
   let wanted = claim.new()
   process.spawn_unlinked(fn() {
     let ready = process.new_subject()
@@ -47,7 +47,7 @@ pub fn prepare(
       }
     }
     case claim.accept(wanted), started {
-      True, _ -> process.send(answer, started)
+      True, _ -> send_answer(answer, started)
       False, Ok(#(_, _, go)) -> process.send(go, abandon)
       False, Error(Nil) -> Nil
     }
@@ -63,7 +63,7 @@ pub fn prepare(
 /// factory, which may wait for the caller: a tool body of one of its
 /// runners, say.
 fn await_start(
-  answer: Subject(Result(a, Nil)),
+  answer: Answer(Result(a, Nil)),
   wanted: claim.Claim,
   pinned: Store,
   factory_pid: Pid,
@@ -75,7 +75,7 @@ fn await_start(
         Error(Nil)
       }
       // The helper answered first: its answer is on the way.
-      False -> process.receive_forever(answer)
+      False -> receive_answer(answer)
     }
   }
   case await_or_shutdown(answer, factory_pid, 100) {
@@ -92,6 +92,21 @@ fn await_start(
   }
 }
 
+/// The channel for the helper's one answer to the process that made it.
+/// Its messages are Fabric's own (`fabric_ffi`), so the receive in
+/// `await_or_shutdown` knows nothing of how gleam_erlang builds a subject.
+type Answer(a)
+
+@external(erlang, "fabric_ffi", "answer_new")
+fn new_answer() -> Answer(a)
+
+@external(erlang, "fabric_ffi", "answer_send")
+fn send_answer(answer: Answer(a), value: a) -> Nil
+
+/// Waits for the answer, however long it takes.
+@external(erlang, "fabric_ffi", "answer_receive")
+fn receive_answer(answer: Answer(a)) -> a
+
 type Awaited(a) {
   Answered(a)
   ShutDown
@@ -103,7 +118,7 @@ type Awaited(a) {
 /// any other message stays queued.
 @external(erlang, "fabric_ffi", "await_or_shutdown")
 fn await_or_shutdown(
-  answer: Subject(a),
+  answer: Answer(a),
   factory: Pid,
   timeout: Int,
 ) -> Awaited(a)

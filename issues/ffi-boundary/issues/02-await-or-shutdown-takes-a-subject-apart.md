@@ -1,6 +1,6 @@
 # `await_or_shutdown` takes a gleam_erlang subject apart
 
-Status: in-progress
+Status: done
 Category: enhancement
 
 ## What
@@ -43,3 +43,27 @@ times. No test reaches the shutdown branch.
 AI-assisted contribution. Filed from the same exploration as issue 01. The
 three options passed the core suite in a copy of the repository, which says
 nothing about the shutdown branch, for the reason under Evidence.
+
+AI-assisted contribution. Done, in two steps.
+
+The test first: `a_start_waiting_at_the_factorys_shutdown_is_given_up_test`
+in `test/fabric/runner_host_test.gleam` calls `runner_host.prepare` with a
+process that reports ready only when the test lets it, and delivers the
+factory's exit signal 20 ms into the wait. It asserts that `prepare` returns
+`Error`, that the shutdown is still queued for the caller, and that the
+prepared process is told to abandon. It passed on the code before the change.
+With the shutdown clause removed from `await_or_shutdown`, it times out in
+`await_start`, so it does reach that branch.
+
+Then the change: `runner_host` makes an `Answer`, a reference and its owner
+built by `fabric_ffi:answer_new`. The helper sends on it with `answer_send`,
+and `await_or_shutdown` and `answer_receive` receive
+`{fabric_answer, Ref, Value}`. No function matches on a `Subject` any more.
+The Erlang file gains three small functions for this; the receive itself is
+as before.
+
+The core suite passed with the change: 880 tests, no crash report.
+
+Not covered: the exit signal in the test is the message a process that traps
+exits receives, sent by the test. No test shuts a real factory down while one
+of its runners starts another.
