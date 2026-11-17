@@ -157,10 +157,9 @@ pub fn a_store_restarts_under_its_name_once_its_dead_callers_links_are_gone_test
 /// does not crash the sentinel. The notice runs in the test's own process,
 /// so a crash in it fails the test.
 pub fn the_sentinel_survives_a_store_process_gone_since_its_lookup_test() {
-  let name = process.new_name("lifecycle-gone")
   let gone = process.spawn_unlinked(fn() { Nil })
   let _ = exit_of(gone)
-  store_core.announce_drain(name, gone, process.self())
+  store_core.announce_drain(gone, process.self())
   |> should.equal(Nil)
 }
 

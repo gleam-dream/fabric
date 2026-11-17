@@ -1,6 +1,6 @@
 # The store's process is sent to in gleam_erlang's named-subject form
 
-Status: in-progress
+Status: done
 Category: enhancement
 
 ## What
@@ -42,3 +42,21 @@ fails to compile.
 AI-assisted contribution. Filed from an exploration of the FFI on commit
 `f8583c7`. Each option above was built in a copy of the repository and passed
 the core suite three times (878 tests, no crash report).
+
+AI-assisted contribution. Done. `send_direct` in `store.gleam` sends the tuple
+`#(direct_tag(), message)` to the looked-up process with `erlang:send`, and
+the store's process selects it with `process.select_record`. The sentinel and
+`call` use it; `send_as_named` is removed. `announce_drain` no longer takes
+the store's name, which it needed only for the old form.
+
+What remains assumed, and where it is held:
+
+- `select_record` hands its mapping the whole tuple. Asserted by
+  `select_record_hands_its_mapping_the_whole_tuple_test` in
+  `test/fabric/dependency_contract_test.gleam`.
+- The store's process reads the second element as a `Message` without a
+  check. Only `send_direct` sends that tag, and its type admits only a
+  `Message`. A named subject trusts its senders in the same way.
+
+The core suite passed with the change: 880 tests (the 878 before, the
+contract test and the test of issue 02), no crash report.
