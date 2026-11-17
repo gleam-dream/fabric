@@ -1,7 +1,8 @@
 -module(fabric_test_ffi).
 -export([temp_dir/0, remove_dir/1, list_dir/1, write_file/2, read_file/1, age_file/2, waits_on/2, waits_in/2,
          suspend/1, resume/1, queued/1, leasing/0, set_leasing/1, linked/1,
-         raise_atom/1, raise_tagged/1]).
+         raise_atom/1, raise_tagged/1, store_sentinel/1,
+         monitored_by_self/1]).
 
 %% A fresh, empty directory under the system temporary directory.
 temp_dir() ->
@@ -99,3 +100,33 @@ raise_atom(Text) ->
 %% Raises a tuple tagged with an atom made from Text.
 raise_tagged(Text) ->
     erlang:error({binary_to_atom(Text), Text}).
+
+%% The sentinel of the store subtree whose store process is StorePid: the
+%% worker of the same supervisor that `fabric/internal/store` spawned in
+%% `sentinel`.
+store_sentinel(StorePid) ->
+    {dictionary, Dictionary} = erlang:process_info(StorePid, dictionary),
+    [Supervisor | _] = proplists:get_value('$ancestors', Dictionary),
+    [Sentinel] = [Pid || {_, Pid, worker, _} <- supervisor:which_children(Supervisor),
+                         is_pid(Pid), is_sentinel(Pid)],
+    Sentinel.
+
+is_sentinel(Pid) ->
+    case erlang:process_info(Pid, dictionary) of
+        {dictionary, Dictionary} ->
+            case proplists:get_value('$initial_call', Dictionary) of
+                {'fabric@internal@store', Function, _} ->
+                    lists:prefix("-sentinel/", atom_to_list(Function));
+                _ -> false
+            end;
+        undefined -> false
+    end.
+
+%% Whether Pid is alive and monitored by the caller. The query is a signal
+%% to Pid, answered after Pid has taken the caller's earlier signals, such
+%% as a monitor.
+monitored_by_self(Pid) ->
+    case erlang:process_info(Pid, monitored_by) of
+        {monitored_by, Monitors} -> lists:member(self(), Monitors);
+        undefined -> false
+    end.

@@ -306,8 +306,8 @@ pub fn stop(store: Store) -> Result(Nil, StoreError) {
         |> result.unwrap(Error(Unavailable("the store did not stop in time")))
       }
       // A store that is stopping already (its starter exited) may be gone
-      // before it answers; its name then names no process, which a send
-      // to it does not survive.
+      // before it answers, or not answer in time: either way, wait for its
+      // process to stop.
       let outcome = case bounded.call(5000, fn() { call(store, ReadStopper) }) {
         Ok(Ok(Some(stop))) -> {
           process.send(stop, Nil)
@@ -474,18 +474,7 @@ fn sentinel(
       // exiting with its starter: its exit ends the wait, so a restart does
       // not find the factory's name held for the whole bound.
       case process.named(factory), process.named(name) {
-        Ok(pid), Ok(store_process) -> {
-          let down = process.monitor(store_process)
-          let reply = process.new_subject()
-          process.send(process.named_subject(name), BeginDrain(pid, reply))
-          let _ =
-            process.new_selector()
-            |> process.select(reply)
-            |> process.select_specific_monitor(down, fn(_) { Nil })
-            |> process.selector_receive(1000)
-          process.demonitor_process(down)
-          Nil
-        }
+        Ok(pid), Ok(store_process) -> announce_drain(name, store_process, pid)
         _, _ -> Nil
       }
       case exit.reason {
@@ -496,6 +485,29 @@ fn sentinel(
     })
   process.receive_forever(ready)
   Ok(actor.Started(pid, Nil))
+}
+
+/// The sentinel's last step: tells `store_process`, found under the store's
+/// name `name`, that the runners of the factory `factory` are about to
+/// drain, and waits up to 1000 ms for its answer or its exit. The process
+/// may have exited since it was found, with its starter or a killed
+/// supervisor: the message goes to it, not to the name, so it is dropped
+/// and the wait ends with the process's exit. Public for tests.
+pub fn announce_drain(
+  name: Name(Message),
+  store_process: Pid,
+  factory: Pid,
+) -> Nil {
+  let down = process.monitor(store_process)
+  let reply = process.new_subject()
+  send_as_named(store_process, name, BeginDrain(factory, reply))
+  let _ =
+    process.new_selector()
+    |> process.select(reply)
+    |> process.select_specific_monitor(down, fn(_) { Nil })
+    |> process.selector_receive(1000)
+  process.demonitor_process(down)
+  Nil
 }
 
 /// This worker stops after the factory and before the store. Both accounting
@@ -690,6 +702,23 @@ fn target(store: Store) -> Subject(Message) {
     None -> process.named_subject(store.name)
   }
 }
+
+/// Sends `message` to the store's process `pid`, which `pid(store)` found.
+/// A pinned store is reached through its subject. Otherwise the message
+/// goes to `pid` in the form a send to the store's name delivers, so a
+/// process that has exited since the lookup drops it and the sender does
+/// not crash.
+fn send_to(store: Store, pid: Pid, message: Message) -> Nil {
+  case store.pinned {
+    Some(subject) -> process.send(subject, message)
+    None -> send_as_named(pid, store.name, message)
+  }
+}
+
+/// Sends `message` to `pid` as a send to the named subject `name` delivers
+/// it, without asserting that `name` is still registered.
+@external(erlang, "fabric_ffi", "send_as_named")
+fn send_as_named(pid: Pid, name: Name(message), message: message) -> Nil
 
 pub fn get(store: Store, run: String) -> Result(Entry, StoreError) {
   call(store, Get(run, _)) |> result.flatten
@@ -944,7 +973,7 @@ fn call(
     Ok(pid) -> {
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
-      process.send(target(store), request(reply))
+      send_to(store, pid, request(reply))
       let answer =
         process.new_selector()
         |> process.select_map(reply, Ok)
