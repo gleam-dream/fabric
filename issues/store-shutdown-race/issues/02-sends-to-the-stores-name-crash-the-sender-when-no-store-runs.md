@@ -1,6 +1,6 @@
 # Sends to the store's name crash the sender when no store runs
 
-Status: needs-triage
+Status: done
 Category: bug
 
 ## What
@@ -61,3 +61,48 @@ stop as an outcome.
 AI-assisted contribution. Found by the audit that issue 01 asked for. The fix
 of issue 01 added `send_as_named`, which sends to a process already looked up;
 these functions have no process in hand, so that fix does not cover them.
+
+AI-assisted contribution. Reproduced, then fixed. The tests came first and
+are in `test/fabric/store_not_running_test.gleam`.
+
+Through the public API, on the code before the fix:
+
+- `await_with_returns_when_the_store_stops_during_the_wait_test`: a process
+  waits for an agent run with `fabric.await_with`. Its interrupt message
+  arrives, then the store stops. The process crashed with "Sending to
+  unregistered name" in `wait`'s `done` (`src/fabric.gleam`, the `unwatch`
+  of each watched run), where it should return the interrupt.
+- `graph_await_returns_when_the_store_stops_during_the_wait_test`: a process
+  waits for a graph run with `graph.await` and the store stops. It crashed
+  the same way in `graph.await_with`, which calls `unwatch` after every
+  wait, where it should return `StoreUnavailable`.
+
+Both are deterministic. The stores these awaits hold are not pinned: they are
+the application's store from `fabric.start` and `graph.new`, and only
+`store.runners` pins one.
+
+Each of the seven functions, called with a store that was never started,
+crashed its sender before the fix. One test per function shows it.
+
+| Function                  | Reachable without a store, outside tests                                                                                             | After the fix                                                                              |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `unwatch`                 | Yes: both awaits above. Also `settle_late` in the runner, when a run's first effects use the caller's unpinned setup (read, not run) | Dropped: the watches end with the store's process                                          |
+| `release_job_observation` | Yes, if the store stops while an application's job observation runs (read, not run)                                                  | Dropped: the reservation lives in the store's process                                      |
+| `draining`                | No: its callers hold a pinned store                                                                                                  | Dropped                                                                                    |
+| `handoff_failed`          | No: its callers hold a pinned store                                                                                                  | Dropped                                                                                    |
+| `with_backend_timeout`    | No: tests only                                                                                                                       | No effect on a store that is not running; its documentation says to set it after the start |
+| `renew_now`               | No: tests only                                                                                                                       | Dropped                                                                                    |
+| `tick_now`                | No: tests only                                                                                                                       | Dropped                                                                                    |
+
+The fix is one private function in `store.gleam`. `cast` looks the store's
+process up and sends to that process, as `call` does, and drops the message
+when no process is found. The seven functions use it, and `target`, which
+built the named subject, is removed.
+
+Before the fix the core suite ran 886 passed, 9 failures, all nine of them
+the new tests, each with "Sending to unregistered name". With it: 895
+passed, no crash report, in five runs.
+
+Not run: plain `fabric.await` without an interrupt. Read from the code, it
+skips `unwatch` when it sees the store stop, so it crashed only if the store
+stopped between its last read and its way out.

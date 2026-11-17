@@ -691,19 +691,23 @@ pub fn start_runner(
 /// A runner of the factory `factory` received its shutdown: the store's
 /// process hands that factory out no more.
 pub fn draining(store: Store, factory: Pid) -> Nil {
-  process.send(target(store), Draining(factory))
+  cast(store, Draining(factory))
 }
 
 /// Also covers an encoding failure before a handoff reaches the write port.
 pub fn handoff_failed(store: Store, runner: Pid) -> Nil {
-  process.send(target(store), HandoffFailed(runner))
+  cast(store, HandoffFailed(runner))
 }
 
-/// Where requests to the store's process go.
-fn target(store: Store) -> Subject(Message) {
-  case store.pinned {
-    Some(subject) -> subject
-    None -> process.named_subject(store.name)
+/// Sends `message` to the store's process without waiting for an answer.
+/// When no store process runs (none holds the name, or the pinned one
+/// stopped) the message is dropped, as one sent to a process that exits
+/// before reading it is: nobody is left to tell, and the sender does not
+/// crash.
+fn cast(store: Store, message: Message) -> Nil {
+  case pid(store) {
+    Ok(pid) -> send_to(store, pid, message)
+    Error(Nil) -> Nil
   }
 }
 
@@ -787,7 +791,7 @@ pub fn reserve_job_observation(
 }
 
 pub fn release_job_observation(store: Store, run: String) -> Nil {
-  process.send(target(store), ReleaseJobObservation(run, process.self()))
+  cast(store, ReleaseJobObservation(run, process.self()))
 }
 
 /// Sends `Nil` to `watcher` after every commit of `run` through this store
@@ -802,7 +806,7 @@ pub fn watch(
 }
 
 pub fn unwatch(store: Store, run: String, watcher: Subject(Nil)) -> Nil {
-  process.send(target(store), Unwatch(run, watcher))
+  cast(store, Unwatch(run, watcher))
 }
 
 // --- the store process -----------------------------------------------------------
@@ -982,9 +986,11 @@ fn run(
   |> actor.start
 }
 
-/// Sets how long one backend call may take (default 5000 ms). For tests.
+/// Sets how long one backend call may take (default 5000 ms) in the store's
+/// process running now; a store that is not running keeps no setting, so
+/// set it after the store starts. For tests.
 pub fn with_backend_timeout(store: Store, milliseconds: Int) -> Store {
-  process.send(target(store), SetTimeout(milliseconds))
+  cast(store, SetTimeout(milliseconds))
   store
 }
 
@@ -1748,13 +1754,13 @@ pub fn poll_interval(store: Store) -> Option(Int) {
 
 /// Sends the store's process a renewal now, for tests.
 pub fn renew_now(store: Store) -> Nil {
-  process.send(target(store), Renew(False))
+  cast(store, Renew(False))
 }
 
 /// Sends the store's process its renewal timer's tick now, for tests that
 /// must not depend on when the timer fires.
 pub fn tick_now(store: Store) -> Nil {
-  process.send(target(store), Renew(True))
+  cast(store, Renew(True))
 }
 
 /// Whether the store has a renewal in flight, for tests that must wait

@@ -19,5 +19,5 @@ the change under test.
 - `issues/01-the-sentinel-sends-to-a-name-that-is-gone.md`: the race, its
   evidence and what a fix must show. Done.
 - `issues/02-sends-to-the-stores-name-crash-the-sender-when-no-store-runs.md`:
-  seven sends that crash their sender when no store runs at all, found by the
-  audit of issue 01. Read from the code, not reproduced.
+  seven sends that crashed their sender when no store ran at all, found by
+  the audit of issue 01. Reproduced through both public awaits. Done.
