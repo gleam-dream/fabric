@@ -180,3 +180,14 @@ window was not reached before or after the fix. When the store's subtree
 supervisor is killed outright, the store's process and the sentinel get the
 exit at once: before the fix 2 sentinels crashed with "Sending to
 unregistered name", after it none did.
+
+AI-assisted contribution. The deterministic test is revised. It ran
+`announce_drain` in a spawned process and monitored that process afterwards.
+The process could end before the monitor was taken, and the monitor then
+reported `noproc` where the test expected `Normal`. That happened once in
+about 30 runs of the core suite, on a tree that did not change this code;
+20,000 repetitions of the test's body alone did not show it. The test now
+calls `announce_drain` in its own process, so a crash fails the test itself
+and no monitor is involved. With the fix the core suite passed three times
+(878 tests, no crash report). On a copy with the send to the name put back,
+the test fails with "Sending to unregistered name".
