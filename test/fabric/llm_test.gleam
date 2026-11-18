@@ -117,7 +117,7 @@ pub fn two_tool_calls_round_trip_through_llm_wire_test() {
   )
 
   let assert Ok(snapshot) = fabric.snapshot(run)
-  snapshot.usage |> should.equal(run.TokenUsage(41, 16, 0))
+  snapshot.usage |> should.equal(run.TokenUsage(41, 16, 0, None))
   let assert [
     _,
     model.AssistantMessage(model.AssistantTurn("", [first, second], _)),
@@ -306,7 +306,7 @@ pub fn refusal_and_truncation_through_llm_wire_end_the_run_test() {
   fabric.await(refused, within: duration.milliseconds(10_000))
   |> should.equal(Ok(run.Finished(run.Refused("not allowed"))))
   let assert Ok(snapshot) = fabric.snapshot(refused)
-  snapshot.usage |> should.equal(run.TokenUsage(3, 1, 0))
+  snapshot.usage |> should.equal(run.TokenUsage(3, 1, 0, None))
   let assert Ok(limited) =
     fabric.start(
       support.store(),
@@ -380,7 +380,7 @@ pub fn provider_content_filters_end_the_run_as_refused_test() {
     case provider {
       None -> {
         let assert Ok(snapshot) = fabric.snapshot(handle)
-        snapshot.usage |> should.equal(run.TokenUsage(3, 1, 0))
+        snapshot.usage |> should.equal(run.TokenUsage(3, 1, 0, None))
       }
       Some(_) -> Nil
     }
@@ -608,4 +608,33 @@ fn drain(
     Ok(found) -> drain(seen, [found, ..acc])
     Error(Nil) -> acc
   }
+}
+
+/// The adapter carries the provider's thought count into the run's usage:
+/// `output_tokens` is the provider's output figure, thoughts included, and
+/// `thought_tokens` says how much of it was thinking.
+pub fn a_reported_thought_count_reaches_the_run_usage_test() {
+  let fake =
+    fake_provider.start([
+      testing.text("Sunny in Paris.")
+      |> testing.with_usage(message.Usage(11, 7, 18, Some(4)))
+      |> testing.events_for(message.OpenAI, _),
+    ])
+  let agent =
+    agent.new("agent", openai_model(fake), [], policy.always_allow())
+    |> support.agent
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "weather",
+      correlation: None,
+    )
+  fabric.await(run, within: duration.milliseconds(10_000))
+  |> should.equal(Ok(run.Finished(run.Completed("Sunny in Paris."))))
+  let assert Ok(snapshot) = fabric.snapshot(run)
+  snapshot.usage |> should.equal(run.TokenUsage(11, 7, 0, Some(4)))
+  fake_provider.stop(fake)
 }

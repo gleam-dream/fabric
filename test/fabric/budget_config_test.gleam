@@ -30,7 +30,7 @@ fn agent_root() {
     0,
     agent.Limits(3, None, 2, 2),
     1,
-    run.TokenUsage(0, 0, 0),
+    run.TokenUsage(0, 0, 0, None),
     [model.UserMessage("go")],
     1,
     [],

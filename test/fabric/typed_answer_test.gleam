@@ -46,7 +46,7 @@ fn answering(
 ) -> model.Model {
   model.new(fn(request: model.Request) {
     process.send(seen, request.answer)
-    Ok(model.FinalAnswer(text, Some(model.Usage(3, 4))))
+    Ok(model.FinalAnswer(text, Some(model.Usage(3, 4, None))))
   })
 }
 
@@ -326,7 +326,7 @@ pub fn an_answer_outside_the_schema_keeps_its_text_test() {
   let assert run.Finished(run.AnswerInvalid(raw: "{\"city\":\"Paris\"}", ..)) =
     status
   let assert Ok(snapshot) = fabric.snapshot(handle)
-  snapshot.usage |> should.equal(run.TokenUsage(10, 12, 0))
+  snapshot.usage |> should.equal(run.TokenUsage(10, 12, 0, None))
   snapshot.turns_used |> should.equal(2)
   let assert [_, second] = fake_provider.bodies(fake)
   string.contains(second, "Your final answer could not be read")

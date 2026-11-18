@@ -314,7 +314,7 @@ pub fn unreported_usage_is_observed_as_unknown_not_zero_test() {
         1, _ -> Error(model.error(model.Overloaded, "overloaded"))
         _, [] ->
           Ok(model.ToolRequest(model.AssistantTurn("", [weather], None), None))
-        _, _ -> Ok(model.FinalAnswer("done", Some(model.Usage(20, 5))))
+        _, _ -> Ok(model.FinalAnswer("done", Some(model.Usage(20, 5, None))))
       }
     })
   let agent =
@@ -827,4 +827,63 @@ pub fn a_command_to_a_runner_held_by_a_handler_is_refused_test() {
   |> should.equal(
     Ok(run.Finished(run.Completed("final: {\"summary\":\"sunny\"}"))),
   )
+}
+
+/// The model-turn event measures the thought count of an attempt whose
+/// reply reported one, and the run-stop event carries the run's thought
+/// total; both are absent, not zero, where no count was reported.
+pub fn thought_tokens_are_measured_where_reported_test() {
+  let events = process.new_subject()
+  let attachments = [
+    attach_line(
+      events,
+      o.model_turn(),
+      fn(t: option.Option(model.Usage), m: o.ModelTurn) {
+        "model_turn "
+        <> int.to_string(m.turn)
+        <> " thoughts="
+        <> string.inspect(option.then(t, fn(usage) { usage.thought_tokens }))
+      },
+    ),
+    attach_line(events, o.run_finished(), fn(t: o.RunTotals, _: o.RunFinished) {
+      "run_finished output="
+      <> int.to_string(t.output_tokens)
+      <> " thoughts="
+      <> string.inspect(t.thought_tokens)
+    }),
+  ]
+  let weather = scripted.call("w", "lookup_weather", "{\"city\":\"Paris\"}")
+  let thinking =
+    model.new(fn(request: model.Request) {
+      case scripted.results(request.messages) {
+        [] ->
+          Ok(model.ToolRequest(
+            model.AssistantTurn("", [weather], None),
+            Some(model.Usage(10, 5, None)),
+          ))
+        _ -> Ok(model.FinalAnswer("done", Some(model.Usage(20, 9, Some(6)))))
+      }
+    })
+  let agent =
+    agent.new("agent", thinking, [apps.weather_tool()], policy.always_allow())
+    |> support.agent
+  let assert Ok(run) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "weather",
+      correlation: None,
+    )
+  fabric.await(run, within: duration.milliseconds(5000))
+  |> should.equal(Ok(run.Finished(run.Completed("done"))))
+  let lines = until(events, "run_finished")
+  release(attachments)
+  lines
+  |> should.equal([
+    "model_turn 1 thoughts=None",
+    "model_turn 2 thoughts=Some(6)",
+    "run_finished output=14 thoughts=Some(6)",
+  ])
 }

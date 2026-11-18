@@ -24,7 +24,10 @@ pub fn results(messages: List(Message)) -> List(String) {
 /// A model that answers `text` at once.
 pub fn answering(text: String) -> Model {
   model.new(fn(_request) {
-    Ok(FinalAnswer(text, Some(Usage(input_tokens: 10, output_tokens: 5))))
+    Ok(FinalAnswer(
+      text,
+      Some(Usage(input_tokens: 10, output_tokens: 5, thought_tokens: None)),
+    ))
   })
 }
 
@@ -37,7 +40,8 @@ pub fn call_once_then(
   finish: fn(List(String)) -> String,
 ) -> fn(model.Request) -> Result(model.Reply, model.ModelError) {
   fn(request: model.Request) {
-    let usage = Some(Usage(input_tokens: 10, output_tokens: 5))
+    let usage =
+      Some(Usage(input_tokens: 10, output_tokens: 5, thought_tokens: None))
     case results(request.messages) {
       [] ->
         Ok(ToolRequest(

@@ -560,9 +560,16 @@ pub type ActionRecord {
 }
 
 /// Token totals over every reply. `unreported_replies` counts replies that
-/// arrived without usage; they are not counted as zero.
+/// arrived without usage; they are not counted as zero. `output_tokens`
+/// includes thoughts. `thought_tokens` sums the thought counts the replies
+/// reported and is `None` while no reply has reported one.
 pub type TokenUsage {
-  TokenUsage(input_tokens: Int, output_tokens: Int, unreported_replies: Int)
+  TokenUsage(
+    input_tokens: Int,
+    output_tokens: Int,
+    unreported_replies: Int,
+    thought_tokens: Option(Int),
+  )
 }
 
 /// A run as stored. Read it by label: Fabric may add fields.

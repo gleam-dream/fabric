@@ -36,9 +36,15 @@ pub fn plan(calls: List(ToolCall)) -> Model {
   model(fn(messages) {
     case results(messages) {
       [] ->
-        ToolRequest(model.AssistantTurn("", calls, None), Some(Usage(10, 5)))
+        ToolRequest(
+          model.AssistantTurn("", calls, None),
+          Some(Usage(10, 5, None)),
+        )
       seen ->
-        FinalAnswer("final: " <> string.join(seen, " | "), Some(Usage(20, 5)))
+        FinalAnswer(
+          "final: " <> string.join(seen, " | "),
+          Some(Usage(20, 5, None)),
+        )
     }
   })
 }

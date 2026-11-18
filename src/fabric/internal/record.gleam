@@ -87,6 +87,11 @@
 //// which no run did, and a sub-agent limit now only refuses a delegation
 //// (`limit_reached`).
 ////
+//// The run's thought total is stored as `"thought_tokens"` inside `"usage"`,
+//// in any version, once a reply has reported a thought count; a record
+//// without the key is a run whose thoughts were never reported. A reader
+//// that ignores the key loses only that total.
+////
 //// An approval request with a deadline (`agent.with_approval_expiry`)
 //// stores it as `"expires_at"`, in Unix milliseconds, in any version; one
 //// without the key never expires. An answer stores its reviewer's subject
@@ -391,6 +396,10 @@ fn encode_version(state: State, version: Int, phase: Phase) -> String {
         #("input_tokens", json.int(state.usage.input_tokens)),
         #("output_tokens", json.int(state.usage.output_tokens)),
         #("unreported_replies", json.int(state.usage.unreported_replies)),
+        ..case state.usage.thought_tokens {
+          Some(thought) -> [#("thought_tokens", json.int(thought))]
+          None -> []
+        }
       ]),
     ),
     #(
@@ -1078,7 +1087,12 @@ fn state_decoder(found: Int) -> Decoder(State) {
     use input <- decode.field("input_tokens", decode.int)
     use output <- decode.field("output_tokens", decode.int)
     use unreported <- decode.field("unreported_replies", decode.int)
-    decode.success(run.TokenUsage(input, output, unreported))
+    use thought <- decode.optional_field(
+      "thought_tokens",
+      None,
+      decode.map(decode.int, Some),
+    )
+    decode.success(run.TokenUsage(input, output, unreported, thought))
   })
   use transcript <- decode.field(
     "transcript",

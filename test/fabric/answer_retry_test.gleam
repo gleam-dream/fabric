@@ -47,7 +47,7 @@ fn answering(
       [], Ok(last) -> last
       [], Error(Nil) -> ""
     }
-    Ok(model.FinalAnswer(text, Some(model.Usage(3, 4))))
+    Ok(model.FinalAnswer(text, Some(model.Usage(3, 4, None))))
   })
 }
 
