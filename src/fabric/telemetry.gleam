@@ -432,12 +432,16 @@ pub type RunFinished {
 /// Totals over the whole run. The token counts sum the replies that
 /// reported usage; `unreported_replies` counts the replies that arrived
 /// without it, which are not counted as zero (see `run.TokenUsage`).
+/// `thought_tokens` is the run's thought total, part of `output_tokens`, and
+/// `None` when no reply reported a thought count; the measurement map then
+/// omits it.
 pub type RunTotals {
   RunTotals(
     turns: Int,
     input_tokens: Int,
     output_tokens: Int,
     unreported_replies: Int,
+    thought_tokens: Option(Int),
   )
 }
 
@@ -607,7 +611,10 @@ pub fn renewal_failed() -> Event(Nil, RenewalFailed) {
 /// `None` when the attempt got no reply (`Retry`, `ModelFailure`, a budget
 /// stop before a reply) or the reply did not report usage. A missing report
 /// is never zero; the measurement map then omits `input_tokens` and
-/// `output_tokens`.
+/// `output_tokens`. `thought_tokens`, which `output_tokens` already
+/// includes, is the change in the run's thought total: present when the
+/// reply's count moved the total, and omitted when the reply reported none
+/// or reported zero after an earlier report.
 pub fn model_turn() -> Event(Option(Usage), ModelTurn) {
   event(["model", "stop"], tokens(), {
     use run <- fields.include(fields.string("run"), get: fn(turn) { turn.run })
@@ -831,11 +838,16 @@ pub fn run_finished() -> Event(RunTotals, RunFinished) {
         fields.int("unreported_replies"),
         get: fn(totals) { totals.unreported_replies },
       )
+      use thought_tokens <- fields.include(
+        fields.optional(fields.int("thought_tokens")),
+        get: fn(totals) { totals.thought_tokens },
+      )
       fields.success(RunTotals(
         turns:,
         input_tokens:,
         output_tokens:,
         unreported_replies:,
+        thought_tokens:,
       ))
     },
     {
@@ -895,6 +907,7 @@ fn action_fields() -> Fields(Action) {
 
 /// Both keys present, or both absent for an unreported attempt. A map with
 /// only one of them is a partial report and decodes as `None` too.
+/// `thought_tokens` is optional beside them (see `model_turn`).
 fn tokens() -> Fields(Option(Usage)) {
   use input <- fields.include(
     fields.optional(fields.int("input_tokens")),
@@ -904,8 +917,12 @@ fn tokens() -> Fields(Option(Usage)) {
     fields.optional(fields.int("output_tokens")),
     get: fn(tokens) { option.map(tokens, fn(usage) { usage.output_tokens }) },
   )
+  use thought <- fields.include(
+    fields.optional(fields.int("thought_tokens")),
+    get: fn(tokens) { option.then(tokens, fn(usage) { usage.thought_tokens }) },
+  )
   fields.success(case input, output {
-    Some(input), Some(output) -> Some(Usage(input, output))
+    Some(input), Some(output) -> Some(Usage(input, output, thought))
     _, _ -> None
   })
 }

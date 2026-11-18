@@ -99,7 +99,7 @@ fn base() -> State {
       max_depth: 2,
     ),
     turns_used: 2,
-    usage: run.TokenUsage(120, 40, 1),
+    usage: run.TokenUsage(120, 40, 1, None),
     initial_message_count: 1,
     transcript: [
       model.UserMessage("pay bob\nplease"),
@@ -302,7 +302,7 @@ pub fn a_version_1_record_is_read_as_a_root_run_without_sub_agents_test() {
         max_depth: 0,
       ),
       turns_used: 1,
-      usage: run.TokenUsage(0, 0, 0),
+      usage: run.TokenUsage(0, 0, 0, None),
       initial_message_count: 1,
       transcript: [model.UserMessage("pay")],
       history: [],
@@ -612,4 +612,31 @@ pub fn derived_child_ids_require_version_9_test() {
     record.decode(record.encode(
       controller.State(..state, phase: controller.Acting(1, [misnamed])),
     ))
+}
+
+/// The thought total is stored as an optional key of `usage`: written when
+/// the run has one, absent otherwise, so a record written before the key
+/// existed reads as a run whose thoughts were never reported.
+pub fn the_thought_total_is_an_optional_key_of_usage_test() {
+  let without = base()
+  let encoded = record.encode(without)
+  string.contains(encoded, "thought_tokens") |> should.be_false
+  record.decode(encoded) |> should.equal(Ok(without))
+
+  let thinking =
+    controller.State(..without, usage: run.TokenUsage(120, 40, 1, Some(25)))
+  let encoded = record.encode(thinking)
+  string.contains(encoded, "\"thought_tokens\":25") |> should.be_true
+  record.decode(encoded) |> should.equal(Ok(thinking))
+
+  list.each([record.V2, record.V9], fn(writer) {
+    let assert Ok(older) = record.encode_as(thinking, writer)
+    string.contains(older, "\"thought_tokens\":25") |> should.be_true
+    record.decode(older) |> should.equal(Ok(thinking))
+  })
+
+  // A reader from before the key existed ignores it and keeps the rest.
+  let assert Ok(for_old_reader) = record.encode_as(thinking, record.V2)
+  let assert Ok(old) = old_record.decode(for_old_reader)
+  old.usage |> should.equal(old_run.TokenUsage(120, 40, 1))
 }

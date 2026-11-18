@@ -24,7 +24,7 @@ fn agent_state(id, parent, actions) {
     0,
     agent.Limits(4, None, 3, 3),
     1,
-    run.TokenUsage(0, 0, 0),
+    run.TokenUsage(0, 0, 0, None),
     [model.UserMessage("a\u{0}b")],
     1,
     actions,

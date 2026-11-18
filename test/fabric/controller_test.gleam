@@ -107,7 +107,7 @@ fn transfer(id: String, to: String, amount: String) -> model.ToolCall {
 }
 
 fn usage(total: Int) -> option.Option(model.Usage) {
-  Some(Usage(input_tokens: total - 1, output_tokens: 1))
+  Some(Usage(input_tokens: total - 1, output_tokens: 1, thought_tokens: None))
 }
 
 fn step(
@@ -460,7 +460,12 @@ pub fn missing_usage_under_a_token_budget_is_reported_test() {
   controller.status(state)
   |> should.equal(run.Finished(run.BudgetUnverifiable(1)))
   controller.snapshot(state).usage
-  |> should.equal(run.TokenUsage(0, 0, unreported_replies: 1))
+  |> should.equal(run.TokenUsage(
+    0,
+    0,
+    unreported_replies: 1,
+    thought_tokens: None,
+  ))
 }
 
 pub fn missing_usage_without_a_budget_is_counted_test() {
@@ -469,7 +474,12 @@ pub fn missing_usage_without_a_budget_is_counted_test() {
   let #(state, _) =
     step(env, state, controller.ModelReplied(1, FinalAnswer("ok", None)))
   controller.snapshot(state).usage
-  |> should.equal(run.TokenUsage(0, 0, unreported_replies: 1))
+  |> should.equal(run.TokenUsage(
+    0,
+    0,
+    unreported_replies: 1,
+    thought_tokens: None,
+  ))
 }
 
 pub fn malformed_tool_batches_are_protocol_violations_test() {
@@ -614,4 +624,108 @@ pub fn a_handoff_before_the_model_call_gives_the_turn_back_test() {
   let assert [CallModel(2, _)] = effects
   recovered.phase |> should.equal(controller.AwaitingModel(2))
   recovered.turns_used |> should.equal(2)
+}
+
+/// Thought tokens are summed over the replies that report a count, are part
+/// of `output_tokens` already, and so do not spend the budget a second time.
+pub fn thought_tokens_are_totalled_without_spending_the_budget_twice_test() {
+  let env = env()
+  let state =
+    begin(
+      env,
+      controller.Limits(
+        max_turns: 5,
+        token_budget: Some(40),
+        max_children: 0,
+        max_depth: 0,
+      ),
+    )
+  let #(state, _) =
+    step(
+      env,
+      state,
+      controller.ModelReplied(
+        1,
+        ToolRequest(
+          model.AssistantTurn("", [weather("w", "Paris")], None),
+          Some(Usage(
+            input_tokens: 10,
+            output_tokens: 8,
+            thought_tokens: Some(5),
+          )),
+        ),
+      ),
+    )
+  controller.snapshot(state).usage
+  |> should.equal(run.TokenUsage(10, 8, 0, Some(5)))
+  let #(state, _) =
+    run_tool(env, state, ActionId(1, "w"), invocation.Returned("{}"))
+  let #(state, _) =
+    step(
+      env,
+      state,
+      controller.ModelReplied(
+        2,
+        FinalAnswer(
+          "ok",
+          Some(Usage(input_tokens: 9, output_tokens: 7, thought_tokens: Some(3))),
+        ),
+      ),
+    )
+  controller.status(state) |> should.equal(run.Finished(run.Completed("ok")))
+  controller.snapshot(state).usage
+  |> should.equal(run.TokenUsage(19, 15, 0, Some(8)))
+}
+
+/// A reply that reports no thought count adds none: the total stays `None`
+/// until a reply reports one, and keeps what was reported after that.
+pub fn an_unreported_thought_count_is_not_zero_test() {
+  let env = env()
+  let state = begin(env, limits())
+  let #(state, _) =
+    step(
+      env,
+      state,
+      controller.ModelReplied(
+        1,
+        ToolRequest(
+          model.AssistantTurn("", [weather("w", "Paris")], None),
+          Some(Usage(input_tokens: 4, output_tokens: 2, thought_tokens: None)),
+        ),
+      ),
+    )
+  controller.snapshot(state).usage
+  |> should.equal(run.TokenUsage(4, 2, 0, None))
+  let #(state, _) =
+    run_tool(env, state, ActionId(1, "w"), invocation.Returned("{}"))
+  let #(state, _) =
+    step(
+      env,
+      state,
+      controller.ModelReplied(
+        2,
+        ToolRequest(
+          model.AssistantTurn("", [weather("x", "Rome")], None),
+          Some(Usage(input_tokens: 4, output_tokens: 2, thought_tokens: Some(0))),
+        ),
+      ),
+    )
+  controller.snapshot(state).usage
+  |> should.equal(run.TokenUsage(8, 4, 0, Some(0)))
+  let #(state, _) =
+    run_tool(env, state, ActionId(2, "x"), invocation.Returned("{}"))
+  let #(state, _) =
+    step(
+      env,
+      state,
+      controller.ModelReplied(
+        3,
+        FinalAnswer(
+          "ok",
+          Some(Usage(input_tokens: 1, output_tokens: 1, thought_tokens: None)),
+        ),
+      ),
+    )
+  controller.snapshot(state).usage
+  |> should.equal(run.TokenUsage(9, 5, 0, Some(0)))
 }

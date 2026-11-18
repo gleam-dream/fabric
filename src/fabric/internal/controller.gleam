@@ -387,7 +387,7 @@ pub fn start_with_input(
       depth:,
       limits:,
       turns_used: 0,
-      usage: run.TokenUsage(0, 0, 0),
+      usage: run.TokenUsage(0, 0, 0, None),
       transcript: messages,
       initial_message_count: list.length(messages),
       history: [],
@@ -1923,11 +1923,16 @@ fn update(
 
 fn add_usage(total: TokenUsage, usage: Option(model.Usage)) -> TokenUsage {
   case usage {
-    Some(model.Usage(input, output)) ->
+    Some(model.Usage(input, output, thought)) ->
       run.TokenUsage(
         ..total,
         input_tokens: total.input_tokens + input,
         output_tokens: total.output_tokens + output,
+        thought_tokens: case total.thought_tokens, thought {
+          Some(sum), Some(count) -> Some(sum + count)
+          sum, None -> sum
+          None, count -> count
+        },
       )
     None ->
       run.TokenUsage(..total, unreported_replies: total.unreported_replies + 1)
@@ -2237,7 +2242,7 @@ pub fn never_started(
     depth: parent.depth + 1,
     limits: parent.limits,
     turns_used: 0,
-    usage: run.TokenUsage(0, 0, 0),
+    usage: run.TokenUsage(0, 0, 0, None),
     transcript: [],
     initial_message_count: 0,
     history: [],

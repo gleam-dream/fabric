@@ -239,13 +239,13 @@ pub fn a_stop_waits_for_the_model_reply_in_flight_test() {
           probe.gate(probe, "model")
           Ok(model.ToolRequest(
             model.AssistantTurn("", [scripted.slow("a", "a")], None),
-            Some(model.Usage(10, 5)),
+            Some(model.Usage(10, 5, None)),
           ))
         }
         seen ->
           Ok(model.FinalAnswer(
             "final: " <> string.join(seen, " | "),
-            Some(model.Usage(20, 5)),
+            Some(model.Usage(20, 5, None)),
           ))
       }
     })

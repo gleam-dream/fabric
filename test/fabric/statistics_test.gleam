@@ -29,7 +29,7 @@ fn state(phase: agent.Phase) -> agent.State {
     0,
     agent.Limits(4, None, 3, 3),
     1,
-    run.TokenUsage(0, 0, 0),
+    run.TokenUsage(0, 0, 0, None),
     [model.UserMessage("private prompt")],
     1,
     [],

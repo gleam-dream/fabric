@@ -266,7 +266,8 @@ fn prompt(messages: List(Message)) -> String {
 /// A deterministic librarian: the reply is a pure function of the
 /// transcript.
 pub fn scripted_librarian(messages: List(Message)) -> Reply {
-  let usage = Some(Usage(input_tokens: 10, output_tokens: 5))
+  let usage =
+    Some(Usage(input_tokens: 10, output_tokens: 5, thought_tokens: None))
   case prompt(messages), results(messages) {
     "scan the inventory", [] ->
       ToolRequest(
@@ -433,7 +434,8 @@ pub fn purchaser() -> Agent(Member, Order) {
     agent.new(
       "purchaser",
       model.new(fn(request: model.Request) {
-        let usage = Some(Usage(input_tokens: 4, output_tokens: 2))
+        let usage =
+          Some(Usage(input_tokens: 4, output_tokens: 2, thought_tokens: None))
         Ok(case prompt(request.messages), results(request.messages) {
           "buy " <> title, [] ->
             ToolRequest(
@@ -538,7 +540,8 @@ pub fn front_desk(staff: Approvers(Badge)) -> Agent(Member, String) {
     agent.new(
       "front-desk",
       model.new(fn(request: model.Request) {
-        let usage = Some(Usage(input_tokens: 10, output_tokens: 5))
+        let usage =
+          Some(Usage(input_tokens: 10, output_tokens: 5, thought_tokens: None))
         Ok(case prompt(request.messages), results(request.messages) {
           "acquire " <> title, [] ->
             ToolRequest(

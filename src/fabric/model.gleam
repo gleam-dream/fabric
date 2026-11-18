@@ -102,9 +102,11 @@ pub type Request {
   )
 }
 
-/// Tokens a provider reported for one reply.
+/// Tokens a provider reported for one reply. `output_tokens` counts every
+/// generated token, thoughts included. `thought_tokens` is the provider's
+/// thought count where it reports one, and `None` where it does not.
 pub type Usage {
-  Usage(input_tokens: Int, output_tokens: Int)
+  Usage(input_tokens: Int, output_tokens: Int, thought_tokens: Option(Int))
 }
 
 /// `usage` is `None` when the provider did not report it; Fabric never treats

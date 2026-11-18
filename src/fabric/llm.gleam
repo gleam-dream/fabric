@@ -268,6 +268,7 @@ fn usage_of(usage: Option(message.Usage)) -> Option(model.Usage) {
     model.Usage(
       input_tokens: usage.input_tokens,
       output_tokens: usage.output_tokens,
+      thought_tokens: usage.thought_tokens,
     )
   })
 }

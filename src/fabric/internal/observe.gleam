@@ -155,6 +155,9 @@ fn model_turn(before: Option(State), after: State) -> Nil {
 
 /// The tokens the reply to this attempt reported; `None` when no reply
 /// arrived or it did not report usage, never a zero that was not reported.
+/// The counts are the change in the run's totals, so the thought count is
+/// `None` when the total did not move: a reply that reported no thought
+/// count and one that reported zero after an earlier report read the same.
 fn turn_usage(
   before: State,
   after: State,
@@ -177,10 +180,18 @@ fn turn_usage(
     after.usage.unreported_replies == before.usage.unreported_replies
   case replied && reported {
     True ->
-      Some(model.Usage(
-        after.usage.input_tokens - before.usage.input_tokens,
-        after.usage.output_tokens - before.usage.output_tokens,
-      ))
+      Some(
+        model.Usage(
+          after.usage.input_tokens - before.usage.input_tokens,
+          after.usage.output_tokens - before.usage.output_tokens,
+          case after.usage.thought_tokens, before.usage.thought_tokens {
+            Some(total), Some(earlier) if total == earlier -> None
+            Some(total), Some(earlier) -> Some(total - earlier)
+            reported, None -> reported
+            None, Some(_) -> None
+          },
+        ),
+      )
     False -> None
   }
 }
@@ -421,6 +432,7 @@ fn finished(before: Option(State), after: State) -> Nil {
           after.usage.input_tokens,
           after.usage.output_tokens,
           after.usage.unreported_replies,
+          after.usage.thought_tokens,
         ),
         o.RunFinished(
           after.run,

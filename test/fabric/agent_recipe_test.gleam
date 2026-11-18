@@ -95,13 +95,13 @@ pub fn model_turns_preserve_typed_tool_results_provider_data_and_usage_test() {
       list.map(request.tools, fn(tool) { tool.name })
       |> should.equal(["lookup_weather"])
       case scripted.results(request.messages) {
-        [] -> Ok(model.ToolRequest(assistant, Some(model.Usage(10, 5))))
+        [] -> Ok(model.ToolRequest(assistant, Some(model.Usage(10, 5, None))))
         results -> {
           let assert [_, model.AssistantMessage(restored), ..] =
             request.messages
           restored |> should.equal(assistant)
           list.length(results) |> should.equal(3)
-          Ok(model.FinalAnswer("done", Some(model.Usage(20, 5))))
+          Ok(model.FinalAnswer("done", Some(model.Usage(20, 5, None))))
         }
       }
     })
@@ -129,10 +129,10 @@ pub fn final_outcomes_and_turn_token_limits_match_on_supported_paths_test() {
         [scripted.call("a", "lookup_weather", "{\"city\":\"Paris\"}")],
         None,
       ),
-      Some(model.Usage(4, 2)),
+      Some(model.Usage(4, 2, None)),
     )
   [
-    #(model.Refusal("cannot answer", Some(model.Usage(2, 1))), 4, None),
+    #(model.Refusal("cannot answer", Some(model.Usage(2, 1, None))), 4, None),
     #(model.Truncated("partial", None), 4, None),
     #(request, 1, None),
     #(request, 4, Some(6)),

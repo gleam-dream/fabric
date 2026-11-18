@@ -269,7 +269,7 @@ fn cancel(
             agent.max_depth,
           ),
           turns_used: 0,
-          usage: run.TokenUsage(0, 0, 0),
+          usage: run.TokenUsage(0, 0, 0, None),
           transcript: [],
           initial_message_count: 0,
           history: [],

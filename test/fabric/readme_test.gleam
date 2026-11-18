@@ -49,14 +49,14 @@ fn desk(
         [] ->
           model.ToolRequest(
             model.AssistantTurn("", [transfer], None),
-            Some(model.Usage(10, 5)),
+            Some(model.Usage(10, 5, None)),
           )
         seen ->
           json.object([
             #("summary", json.string("final: " <> string.join(seen, " | "))),
           ])
           |> json.to_string
-          |> model.FinalAnswer(Some(model.Usage(20, 5)))
+          |> model.FinalAnswer(Some(model.Usage(20, 5, None)))
       }
     })
   let assert Ok(desk) = readme_example.desk(model, pay, treasurers)

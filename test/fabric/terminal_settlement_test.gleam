@@ -33,7 +33,7 @@ fn state(id, parent, actions) {
     0,
     controller.Limits(5, None, 3, 3),
     1,
-    run.TokenUsage(10, 2, 0),
+    run.TokenUsage(10, 2, 0, None),
     [model.UserMessage("do it")],
     1,
     actions,

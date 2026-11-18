@@ -75,7 +75,7 @@ pub fn run_completes_with_two_typed_tools_test() {
     AssistantMessage(model.AssistantTurn(answer, [], None)),
   ])
   snapshot.turns_used |> should.equal(2)
-  snapshot.usage |> should.equal(run.TokenUsage(30, 10, 0))
+  snapshot.usage |> should.equal(run.TokenUsage(30, 10, 0, None))
   restart.runner(held, fabric.id(run)) |> should.equal(Error(Nil))
 }
 
