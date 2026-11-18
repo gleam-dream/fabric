@@ -17,6 +17,6 @@ sinal = ">= 0.1.0 and < 0.2.0"
 [dev-dependencies]
 simplifile = ">= 2.0.0 and < 3.0.0"
 http_gun = ">= 0.1.0 and < 0.2.0"
-llm_wire = ">= 0.1.0 and < 0.2.0"
+llm_wire = ">= 0.2.0 and < 0.3.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleeunit = ">= 1.0.0 and < 2.0.0"

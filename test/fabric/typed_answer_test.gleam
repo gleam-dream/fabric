@@ -301,7 +301,7 @@ pub fn the_adapter_asks_the_provider_for_the_answer_schema_test() {
   let fake =
     fake_provider.start([
       testing.text("{\"city\":\"Paris\",\"sunny\":true}")
-      |> testing.with_usage(message.Usage(5, 6, 11))
+      |> testing.with_usage(message.Usage(5, 6, 11, None))
       |> testing.events_for(message.OpenAI, _),
     ])
   let #(_, status) = finish(openai_forecaster(fake), "weather in Paris?")
@@ -319,7 +319,7 @@ pub fn the_adapter_asks_the_provider_for_the_answer_schema_test() {
 pub fn an_answer_outside_the_schema_keeps_its_text_test() {
   let reply =
     testing.text("{\"city\":\"Paris\"}")
-    |> testing.with_usage(message.Usage(5, 6, 11))
+    |> testing.with_usage(message.Usage(5, 6, 11, None))
     |> testing.events_for(message.OpenAI, _)
   let fake = fake_provider.start([reply, reply])
   let #(handle, status) = finish(openai_forecaster(fake), "weather in Paris?")
@@ -390,7 +390,7 @@ pub fn the_adapter_wraps_an_answer_without_an_object_root_test() {
   let fake =
     fake_provider.start([
       testing.text("{\"answer\":[\"Paris\",\"Rome\"]}")
-      |> testing.with_usage(message.Usage(5, 6, 11))
+      |> testing.with_usage(message.Usage(5, 6, 11, None))
       |> testing.events_for(message.OpenAI, _),
     ])
   let cities = codec.list(codec.string())

@@ -86,10 +86,10 @@ pub fn two_tool_calls_round_trip_through_llm_wire_test() {
           "{\"to\":\"bob\",\"amount\":10}",
         ),
       ])
-        |> testing.with_usage(message.Usage(11, 7, 18))
+        |> testing.with_usage(message.Usage(11, 7, 18, None))
         |> testing.events_for(message.OpenAI, _),
       testing.text("Sunny in Paris; bob is paid.")
-        |> testing.with_usage(message.Usage(30, 9, 39))
+        |> testing.with_usage(message.Usage(30, 9, 39, None))
         |> testing.events_for(message.OpenAI, _),
     ])
   let agent =
@@ -288,7 +288,7 @@ pub fn refusal_and_truncation_through_llm_wire_end_the_run_test() {
   let fake =
     fake_provider.start([
       testing.refusal("not allowed")
-        |> testing.with_usage(message.Usage(3, 1, 4)),
+        |> testing.with_usage(message.Usage(3, 1, 4, None)),
       testing.output_limited("partial ans"),
     ])
   let agent =
@@ -349,7 +349,7 @@ pub fn provider_content_filters_end_the_run_as_refused_test() {
   ]
   |> list.each(fn(example) {
     let #(provider, reply, reason) = example
-    let reply = testing.with_usage(reply, message.Usage(3, 1, 4))
+    let reply = testing.with_usage(reply, message.Usage(3, 1, 4, None))
     let #(reply, config) = case provider {
       None -> #(reply, fake_provider.scripted)
       Some(provider) -> #(testing.events_for(provider, reply), fn(fake) {

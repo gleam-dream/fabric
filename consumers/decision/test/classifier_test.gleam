@@ -53,7 +53,7 @@ pub fn non_generative_decisions_use_the_same_business_routes_test() {
     receipt.answer.1.0.label |> should.equal(example.0)
     receipt.answer.0.yes |> should.equal(0.9)
     receipt.answer.1.1.position |> should.equal(1.8)
-    receipt.usage |> should.equal(Some(message.Usage(12, 8, 20)))
+    receipt.usage |> should.equal(Some(message.Usage(12, 8, 20, None)))
   })
   stop_server(server)
 }
