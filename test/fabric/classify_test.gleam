@@ -124,7 +124,7 @@ pub fn an_http_classifier_batch_retains_native_answers_models_usage_and_rubric_t
   let assert graph.Completed(receipt) = done.status
   receipt.requested_model |> should.equal("jev-latest")
   receipt.resolved_model |> should.equal("protocol-fixture-only")
-  receipt.usage |> should.equal(Some(message.Usage(12, 8, 20)))
+  receipt.usage |> should.equal(Some(message.Usage(12, 8, 20, None)))
   let #(noul, #(choice, score)) = receipt.answer
   noul.yes |> should.equal(0.9)
   choice.selected |> should.equal(Approve)

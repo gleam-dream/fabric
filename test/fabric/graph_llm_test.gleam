@@ -105,7 +105,7 @@ fn runtime_with(
 
 pub fn a_structured_decision_retains_native_answer_raw_output_and_usage_test() {
   let raw = "{\"approve\": true}"
-  let usage = message.Usage(7, 3, 10)
+  let usage = message.Usage(7, 3, 10, None)
   let fake =
     fake_provider.start([testing.text(raw) |> testing.with_usage(usage)])
   let runtime = runtime(support.store(), fake)
@@ -207,7 +207,7 @@ pub fn policy_approval_precedes_the_provider_request_test() {
 }
 
 pub fn refusal_and_output_limit_are_distinct_from_a_valid_answer_test() {
-  let usage = message.Usage(5, 2, 7)
+  let usage = message.Usage(5, 2, 7, None)
   [
     #(
       testing.refusal("cannot review") |> testing.with_usage(usage),
@@ -246,7 +246,7 @@ pub fn refusal_and_output_limit_are_distinct_from_a_valid_answer_test() {
 /// provider's reason, whether it blocks the prompt or stops the output: the
 /// decision completes and is not blocked as an uncertain effect.
 pub fn provider_content_filters_are_refusal_receipts_test() {
-  let usage = message.Usage(4, 0, 4)
+  let usage = message.Usage(4, 0, 4, None)
   [
     #(
       testing.prompt_blocked(),
@@ -391,7 +391,7 @@ pub fn receipt_codec_rejects_changed_contracts_corruption_and_mismatched_native_
     llm.Receipt(
       "review-model",
       llm.Answer(True, "{\"approve\":true}"),
-      Some(message.Usage(2, 1, 3)),
+      Some(message.Usage(2, 1, 3, None)),
     )
   let assert Ok(saved) = codec.encode_json(codec, good)
   saved
@@ -409,7 +409,7 @@ pub fn receipt_codec_rejects_changed_contracts_corruption_and_mismatched_native_
   codec.encode_json(codec, llm.Receipt(..good, model: "")) |> should.be_error
   codec.encode_json(
     codec,
-    llm.Receipt(..good, usage: Some(message.Usage(-1, 1, 0))),
+    llm.Receipt(..good, usage: Some(message.Usage(-1, 1, 0, None))),
   )
   |> should.be_error
   codec.decode_json(
@@ -446,7 +446,7 @@ pub fn receipt_codec_reads_v1_receipts_test() {
     Ok(llm.Receipt(
       "review-model",
       llm.Answer(True, "{\"approve\":true}"),
-      Some(message.Usage(2, 1, 3)),
+      Some(message.Usage(2, 1, 3, None)),
     )),
   )
   codec.decode_json(
@@ -478,7 +478,7 @@ pub fn receipt_codec_reads_v1_receipts_test() {
     Ok(llm.Receipt(
       "review-model",
       llm.Answer(False, "{\"approve\":false}"),
-      Some(message.Usage(2, 1, 3)),
+      Some(message.Usage(2, 1, 3, None)),
     )),
   )
   codec.decode_json(
@@ -492,7 +492,7 @@ pub fn openai_projection_uses_the_output_schema_and_preserves_actual_sse_usage_t
   let fake =
     fake_provider.start([
       testing.text("{\"approve\":true}")
-      |> testing.with_usage(message.Usage(10, 4, 14))
+      |> testing.with_usage(message.Usage(10, 4, 14, None))
       |> testing.events_for(message.OpenAI, _),
     ])
   let runtime =
@@ -514,7 +514,7 @@ pub fn openai_projection_uses_the_output_schema_and_preserves_actual_sse_usage_t
     graph.Completed(llm.Receipt(
       "review-model",
       llm.Answer(True, "{\"approve\":true}"),
-      Some(message.Usage(10, 4, 14)),
+      Some(message.Usage(10, 4, 14, None)),
     )),
   )
   let assert [sent] = fake_provider.bodies(fake)

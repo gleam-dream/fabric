@@ -281,6 +281,8 @@ fn encode_answer(
   }
 }
 
+/// The three counts a `fabric.graph.llm.v2` receipt holds. A provider's thought
+/// count is not stored, so a decoded usage has no `thought_tokens`.
 fn usage_codec() -> codec.Codec(message.Usage) {
   use input_tokens <- codec.field("input_tokens", codec.int(), get: fn(usage) {
     usage.input_tokens
@@ -291,7 +293,7 @@ fn usage_codec() -> codec.Codec(message.Usage) {
   use total_tokens <- codec.field("total_tokens", codec.int(), get: fn(usage) {
     usage.total_tokens
   })
-  codec.success(message.Usage(input_tokens, output_tokens, total_tokens))
+  codec.success(message.Usage(input_tokens, output_tokens, total_tokens, None))
 }
 
 /// The `fabric.graph.llm.v1` receipt, read only:
@@ -327,7 +329,7 @@ fn legacy_receipt_fields(
       let usage =
         option.map(usage, fn(counts) {
           let #(input, #(generated, total)) = counts
-          message.Usage(input, generated, total)
+          message.Usage(input, generated, total, None)
         })
       checked_receipt(Receipt(model, outcome, usage))
     },
@@ -343,7 +345,7 @@ fn check_receipt(receipt: Receipt(output)) -> Result(Nil, String) {
     _ -> Error("noncanonical requested model")
   })
   case receipt.usage {
-    Some(message.Usage(input, output, total))
+    Some(message.Usage(input, output, total, _))
       if input < 0 || output < 0 || total < 0
     -> Error("negative provider usage")
     Some(_) | None -> Ok(Nil)

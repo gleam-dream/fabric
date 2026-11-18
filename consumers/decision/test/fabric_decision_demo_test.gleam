@@ -28,7 +28,7 @@ pub fn replacing_decision_production_preserves_typed_graph_routes_test() {
   [#("approve", "approved", "publish"), #("revise", "needs revision", "revise")]
   |> list.each(fn(example) {
     let raw = "{\"decision\":\"" <> example.0 <> "\"}"
-    let usage = message.Usage(11, 6, 17)
+    let usage = message.Usage(11, 6, 17, None)
     let model = "scripted-review"
     let request = demo.review_request(model, "2 + 2 = 4")
     // The scripted wire carries no token bound; a provider wire shows it.
