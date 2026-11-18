@@ -1,41 +1,54 @@
 {
-  "http_gun": 2,
+  "http_gun": 3,
   "exchanges": [
     {
       "request": {
         "method": "POST",
-        "url": "https://api.openai.com:443/v1/responses",
+        "scheme": "https",
+        "host": "api.openai.com",
+        "port": 443,
+        "path": "/v1/responses",
+        "query": null,
         "headers": [
           ["accept", "text/event-stream"],
           ["accept-encoding", "identity"],
           ["content-type", "application/json"]
         ],
-        "body": {
-          "text": "{\"model\":\"cassette-model\",\"input\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"stream\":true}"
-        }
+        "body": {"text": "{\"model\":\"cassette-model\",\"input\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"stream\":true}"}
       },
       "reply": {
         "kind": "response",
         "status": 200,
-        "headers": [["content-type", "text/event-stream"]],
-        "chunks": [
-          {
-            "text": "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"text\",\"type\":\"message\"}}\n\n"
-          },
-          {
-            "text": "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"text\",\"delta\":\"from disk cassette\"}\n\n"
-          },
-          {
-            "text": "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"text\",\"type\":\"message\"}}\n\n"
-          },
-          {
-            "text": "event: response.completed\ndata: {\"response\":{\"id\":\"final\",\"status\":\"completed\"}}\n\n"
-          }
+        "headers": [
+          ["content-type", "text/event-stream"]
         ],
-        "ending": {
-          "kind": "finished",
-          "trailers": []
-        }
+        "chunks": [
+          {"lines": [
+            "event: response.output_item.added",
+            "data: {\"output_index\":0,\"item\":{\"id\":\"text\",\"type\":\"message\"}}",
+            "",
+            ""
+          ]},
+          {"lines": [
+            "event: response.output_text.delta",
+            "data: {\"output_index\":0,\"item_id\":\"text\",\"delta\":\"from disk cassette\"}",
+            "",
+            ""
+          ]},
+          {"lines": [
+            "event: response.output_item.done",
+            "data: {\"output_index\":0,\"item\":{\"id\":\"text\",\"type\":\"message\"}}",
+            "",
+            ""
+          ]},
+          {"lines": [
+            "event: response.completed",
+            "data: {\"response\":{\"id\":\"final\",\"status\":\"completed\"}}",
+            "",
+            ""
+          ]}
+        ],
+        "ending": {"kind": "finished", "trailers": []}
       }
     }
   ]
