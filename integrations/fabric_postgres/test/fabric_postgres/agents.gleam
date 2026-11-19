@@ -97,9 +97,10 @@ pub fn agent(gate: Gate, amount: Int) -> Agent(Nil, String) {
               ],
               None,
             ),
-            Some(Usage(10, 5)),
+            Some(Usage(10, 5, None)),
           ))
-        [result, ..] -> Ok(FinalAnswer("done: " <> result, Some(Usage(20, 5))))
+        [result, ..] ->
+          Ok(FinalAnswer("done: " <> result, Some(Usage(20, 5, None))))
       }
     })
   let policy = fn(_context: Nil, action: policy.Action) {

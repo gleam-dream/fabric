@@ -13,7 +13,7 @@ Add Fabric and Pog from Hex and the PostgreSQL adapter from its Git subdirectory
 
 ```toml
 [dependencies]
-fabric = ">= 0.3.0 and < 0.4.0"
+fabric = ">= 0.4.0 and < 0.5.0"
 pog = ">= 4.1.0 and < 4.2.0"
 fabric_postgres = { git = "https://github.com/gleam-dream/fabric.git", ref = "main", path = "integrations/fabric_postgres" }
 ```
