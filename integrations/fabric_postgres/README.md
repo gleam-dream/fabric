@@ -15,7 +15,7 @@ Add Fabric and Pog from Hex and the PostgreSQL adapter from its Git subdirectory
 [dependencies]
 fabric = ">= 0.4.0 and < 0.5.0"
 pog = ">= 4.1.0 and < 4.2.0"
-fabric_postgres = { git = "https://github.com/gleam-dream/fabric.git", ref = "main", path = "integrations/fabric_postgres" }
+fabric_postgres = { git = "https://github.com/gleam-dream/fabric.git", ref = "fabric_postgres-v0.3.0", path = "integrations/fabric_postgres" }
 ```
 
 Commit `gleam.toml` and `manifest.toml` to retain the resolved versions and Git commit.
