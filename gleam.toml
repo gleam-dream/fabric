@@ -1,5 +1,5 @@
 name = "fabric"
-version = "0.3.1"
+version = "0.4.0"
 target = "erlang"
 gleam = ">= 1.18.0"
 licenses = ["Apache-2.0"]
@@ -15,9 +15,9 @@ gleam_otp = ">= 1.0.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_crypto = ">= 1.0.0 and < 2.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
-http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "3719b72" }
+http_gun = ">= 0.2.0 and < 0.3.0"
 json_blueprint = ">= 2.0.0 and < 3.0.0"
-llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "6d8b911bdcbb2d01ee19d5c66ee8ab9880cb7f55" }
+llm_wire = ">= 0.2.0 and < 0.3.0"
 sinal = ">= 0.1.0 and < 0.2.0"
 
 [dev-dependencies]
