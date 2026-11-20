@@ -1,10 +1,16 @@
 //// Starting a runner while its factory shuts down.
 
+import fabric/agent
+import fabric/internal/runner
 import fabric/internal/runner_host
 import fabric/internal/store
+import fabric/policy
+import fabric/support/scripted
 import gleam/erlang/atom
 import gleam/erlang/process
+import gleam/option.{None}
 import gleeunit/should
+import sinal/correlation
 
 /// A start that is waiting when the factory's shutdown reaches the caller
 /// is given up: `prepare` returns `Error`, the shutdown stays queued for the
@@ -47,3 +53,30 @@ fn erlang_send(
   pid: process.Pid,
   message: #(atom.Atom, process.Pid, atom.Atom),
 ) -> #(atom.Atom, process.Pid, atom.Atom)
+
+/// A runner that receives its factory's shutdown before it is asked to
+/// build its agent, and only then is asked to build it and given its first
+/// state, starts draining: it starts nothing of that state.
+pub fn a_shutdown_before_the_build_drains_the_runner_test() {
+  let runs = store.in_memory(process.new_name("runner-host-build-shutdown"))
+  let assert Ok(Nil) = store.start(runs)
+  let assert Ok(#(_, _, factory)) = store.runners(runs)
+  let assert Ok(agent) =
+    agent.build_with(fn() {
+      agent.new("agent", scripted.plan([]), [], policy.always_allow())
+    })
+  let setup = runner.agent_setup(runs, agent, Nil)
+  let #(state, effects) =
+    runner.root_state(setup, "run-0", "go", correlation.from_key("k"))
+  let go = process.new_subject()
+  let built = process.new_subject()
+  let self = process.self()
+  erlang_send(self, #(atom.create("EXIT"), factory, atom.create("shutdown")))
+  process.send(go, runner.Build(runner.carried(setup), setup.identity, built))
+  process.send(go, runner.Go(1, state, effects, None, None))
+  let assert Ok(#(_, _, _, _, _, draining)) =
+    runner.first_state(go, runs, factory, None, False)
+  process.receive(built, 0) |> should.equal(Ok(Ok(Nil)))
+  draining |> should.be_true
+  store.stop(runs) |> should.equal(Ok(Nil))
+}

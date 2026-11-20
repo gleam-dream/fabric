@@ -577,7 +577,9 @@ fn graph_crossing(output: codec.Codec(a), answer: String) -> Int {
     crossing(fn() {
       let assert Ok(handle) =
         graph.start(runtime, run.new_id(), "review this", correlation: None)
-      graph.await(handle, within: duration.milliseconds(5000))
+      // A run still working at the deadline would be a partial measure.
+      let assert Ok(graph.Completed(_)) =
+        graph.await(handle, within: duration.milliseconds(5000))
     })
   fake_provider.stop(fake)
   into_runners

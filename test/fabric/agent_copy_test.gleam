@@ -379,6 +379,39 @@ pub fn a_builder_that_builds_another_agent_is_refused_before_storing_test() {
   |> should.equal(Error(fabric.RunNotFound))
 }
 
+/// The watcher of `cancel_when_down` builds the agent again; when that
+/// build fails (here the builder builds another version from its fourth
+/// build: the check, the caller, the runner, the watcher), the owner's exit
+/// still cancels the run.
+pub fn an_owner_exit_cancels_even_when_the_watcher_cannot_build_test() {
+  let builds = counter()
+  let assert Ok(agent) =
+    agent.build_with(fn() {
+      let version = case count(builds) <= 3 {
+        True -> 1
+        False -> 2
+      }
+      let assert Ok(picker) = agent.build_with(picker(0))
+      orders(picker, [["submit_1"]], 0)()
+      |> agent.with_version(version)
+    })
+  let assert Ok(handle) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  let assert Ok(run.Suspended(_, _)) =
+    fabric.await(handle, within: duration.seconds(5))
+  let owner = process.spawn_unlinked(fn() { process.sleep(60_000) })
+  fabric.cancel_when_down(handle, owner:)
+  process.kill(owner)
+  cancelled(handle, 100) |> should.be_true
+}
+
 /// `open` and `recover` build the agent in the caller: a builder that
 /// builds another agent there is an error, not a crash.
 pub fn opening_with_a_drifting_builder_is_an_error_test() {

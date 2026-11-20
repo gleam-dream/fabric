@@ -91,6 +91,7 @@ import fabric/internal/budget/model as reservations
 import fabric/internal/checked_agent
 import fabric/internal/clock
 import fabric/internal/controller.{type State}
+import fabric/internal/executor
 import fabric/internal/family
 import fabric/internal/invocation
 import fabric/internal/run_id
@@ -1225,21 +1226,44 @@ pub fn cancel(run: Run(context, answer)) -> Result(Status(answer), Error) {
 ///
 /// The watcher holds the run's id and what makes its agent there: for an
 /// agent made with `agent.build_with`, its builder; never a copy of the
-/// built agent the handle holds.
+/// built agent the handle holds. A watcher that cannot build the agent
+/// still cancels the run when `owner` exits, through the store
+/// (`cancel_stored`), unless the run has finished.
 pub fn cancel_when_down(run: Run(context, answer), owner owner: Pid) -> Nil {
   let id = run.id
   let setup = runner.carried(run.setup)
+  let runs = run.setup.store
   let _ =
     process.spawn_unlinked(fn() {
       let monitor = process.monitor(owner)
       let down =
         process.new_selector()
         |> process.select_specific_monitor(monitor, fn(_) { Nil })
-      // The watcher reads only whether the run finished: its answer is
-      // read as stored text, with no codec.
-      guard(Run(id:, setup: setup(), answer: answers.text()), down)
+      case executor.rescue(setup) {
+        // The watcher reads only whether the run finished: its answer is
+        // read as stored text, with no codec.
+        Ok(setup) -> guard(Run(id:, setup:, answer: answers.text()), down)
+        Error(_) -> guard_stored(runs, id, down)
+      }
     })
   Nil
+}
+
+/// `guard` for a watcher that cannot build the run's agent: when `down`
+/// fires, the run is cancelled through the store; once the stored run has
+/// finished, the watcher stops.
+fn guard_stored(runs: Store, id: String, down: process.Selector(Nil)) -> Nil {
+  case process.selector_receive(down, 5000) {
+    Ok(Nil) -> {
+      let _ = cancel_stored(runs, run_id.from_string(id))
+      Nil
+    }
+    Error(Nil) ->
+      case runner.load(runs, id) {
+        Ok(#(_, controller.State(phase: controller.Ended(_), ..))) -> Nil
+        _ -> guard_stored(runs, id, down)
+      }
+  }
 }
 
 fn guard(run: Run(context, answer), down: process.Selector(Nil)) -> Nil {

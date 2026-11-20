@@ -1015,6 +1015,46 @@ pub fn a_start_the_backend_stored_despite_reporting_it_taken_runs_test() {
   |> should.equal(Ok(run.Finished(run.Completed("final: \"a\""))))
 }
 
+@external(erlang, "fabric_copy_ffi", "counter")
+fn counter() -> Counter
+
+@external(erlang, "fabric_copy_ffi", "count")
+fn count(counter: Counter) -> Int
+
+type Counter
+
+/// A backend stored the first record and still reported the run taken, and
+/// the runner that would adopt it cannot build the agent (its builder
+/// builds another version from its fourth build: the check, the caller,
+/// the first runner and then the adopting one). The record exists, so the
+/// start reports the run taken, never `AgentUnbuildable`, which says
+/// nothing was stored.
+pub fn an_adoption_that_cannot_build_still_reports_the_stored_run_test() {
+  let memory = support.store()
+  let runs = taken_backend(memory, True)
+  let builds = counter()
+  let assert Ok(drifting) =
+    agent.build_with(fn() {
+      let version = case count(builds) <= 3 {
+        True -> 1
+        False -> 2
+      }
+      agent.new("agent", scripted.plan([]), [], policy.always_allow())
+      |> agent.with_version(version)
+    })
+  let id = run.new_id()
+  let assert Error(fabric.AlreadyStarted(_, True)) =
+    fabric.start(
+      runs,
+      drifting,
+      id:,
+      context: Nil,
+      prompt: "go",
+      correlation: None,
+    )
+  store_core.get(memory, run.id_to_string(id)) |> should.be_ok
+}
+
 /// A first write reported taken by a record this Fabric cannot read is not
 /// `AlreadyStarted(same_input: False)`, which would claim the stored run
 /// was compared: the start stored nothing and returns the read's error.

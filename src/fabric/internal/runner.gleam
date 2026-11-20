@@ -438,10 +438,13 @@ pub fn child_setup(
 ) -> Result(Setup(context), Nil) {
   use admitted <- result.map(dict.get(setup.children, name))
   let child = self_setup(setup, admitted, run, action)
+  // Made again from the parent as it is now (`carried`): its context (an
+  // approval's, say) and its store, not those it was first built with.
   let remake =
-    option.map(setup.remake, fn(remake) {
+    option.map(setup.remake, fn(_) {
+      let parent = carried(setup)
       fn() {
-        let assert Ok(child) = child_setup(remake(), name, run, action)
+        let assert Ok(child) = child_setup(parent(), name, run, action)
         child
       }
     })
@@ -579,7 +582,7 @@ type Runner(context) {
 /// it is the agent `identity` names. Then, once its first state's commit
 /// is known, `Go` with that state, the setup (`None`: the one it built),
 /// and the context the first `effects` run with (`None`: the run's own).
-type Go(context) {
+pub type Go(context) {
   Build(
     setup: fn() -> Setup(context),
     identity: run.DefinitionId,
@@ -671,6 +674,15 @@ pub fn launch_new(
             effects,
             False,
           )
+          // The record is stored: a runner that cannot build leaves it
+          // stored without one, which is not `Unbuildable`'s "nothing was
+          // written".
+          |> result.map_error(fn(error) {
+            case error {
+              Unbuildable(_) -> WriteFailed(backend.AlreadyExists)
+              WriteFailed(_) -> error
+            }
+          })
         }
         _ -> Error(WriteFailed(backend.AlreadyExists))
       }
@@ -912,7 +924,7 @@ fn begin(
   process.send(ready, #(self, go))
   let _ = process.monitor(store_pid)
   let caller_monitor = process.monitor(caller)
-  case first_state(go, pinned, factory, None) {
+  case first_state(go, pinned, factory, None, False) {
     Error(Nil) -> Nil
     Ok(#(revision, state, effects, setup, context, draining)) -> {
       process.demonitor_process(caller_monitor)
@@ -946,25 +958,28 @@ fn begin(
 }
 
 /// Waits for the first state, building the setup first when asked to
-/// (`Build`); `built` is the setup built so far. `Error` when the caller,
+/// (`Build`); `built` is the setup built so far, `draining` whether the
+/// factory's shutdown has arrived. `Error` when the caller,
 /// the store or the factory goes first, the start is abandoned, or the
-/// setup cannot be built.
-fn first_state(
+/// setup cannot be built. Public for its tests.
+pub fn first_state(
   go: Subject(Go(context)),
   pinned: Store,
   factory: Pid,
   built: Option(Setup(context)),
+  draining: Bool,
 ) -> Result(
   #(Int, State, List(Effect), Setup(context), Option(context), Bool),
   Nil,
 ) {
-  case runner_host.first_state(go, pinned, factory, False) {
+  case runner_host.first_state(go, pinned, factory, draining) {
     Error(Nil) | Ok(#(Abandon, _)) -> Error(Nil)
-    Ok(#(Build(setup, identity, reply), _)) ->
+    // A shutdown that arrived before the build is kept for the first state.
+    Ok(#(Build(setup, identity, reply), draining)) ->
       case build_setup(setup, identity) {
         Ok(setup) -> {
           process.send(reply, Ok(Nil))
-          first_state(go, pinned, factory, Some(setup))
+          first_state(go, pinned, factory, Some(setup), draining)
         }
         Error(reason) -> {
           process.send(reply, Error(reason))
