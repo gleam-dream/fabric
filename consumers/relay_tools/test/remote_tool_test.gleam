@@ -133,13 +133,14 @@ fn runs() -> store.Store {
 /// the run's status.
 fn run_once(tools, inventory: client.Client, tool: String, arguments: String) {
   let assert Ok(assistant) =
-    agent.new(
-      "assistant",
-      calling(tool, arguments),
-      tools,
-      policy.always_allow(),
-    )
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "assistant",
+        calling(tool, arguments),
+        tools,
+        policy.always_allow(),
+      )
+    })
   let id = run.new_id()
   let assert Ok(handle) =
     fabric.start(
@@ -190,13 +191,14 @@ pub fn the_definition_names_and_describes_the_fabric_tool_test() {
       Ok(model.FinalAnswer("ok", None))
     })
   let assert Ok(assistant) =
-    agent.new(
-      "assistant",
-      model,
-      [relay_tools.tool(lookup(), peer:)],
-      policy.always_allow(),
-    )
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "assistant",
+        model,
+        [relay_tools.tool(lookup(), peer:)],
+        policy.always_allow(),
+      )
+    })
   let assert Ok(handle) =
     fabric.start(
       runs(),

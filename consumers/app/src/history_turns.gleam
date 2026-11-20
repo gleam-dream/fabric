@@ -76,17 +76,18 @@ pub fn revision_agent(provider: model.Model) -> agent.Agent(Editor, Revision) {
       fn(_) { tool.Explain("recording failed") },
     )
   let assert Ok(agent) =
-    agent.new("document-revision", provider, [note], fn(editor: Editor, _) {
-      Ok(case editor.may_record {
-        True -> policy.Allow
-        False -> policy.Deny("editor cannot record notes")
+    agent.build_with(fn() {
+      agent.new("document-revision", provider, [note], fn(editor: Editor, _) {
+        Ok(case editor.may_record {
+          True -> policy.Allow
+          False -> policy.Deny("editor cannot record notes")
+        })
       })
+      |> agent.with_answer(revision_codec())
+      |> agent.with_answer_attempts(2)
+      |> agent.with_max_turns(5)
+      |> agent.with_max_concurrency(1)
     })
-    |> agent.with_answer(revision_codec())
-    |> agent.with_answer_attempts(2)
-    |> agent.with_max_turns(5)
-    |> agent.with_max_concurrency(1)
-    |> agent.build
   agent
 }
 
@@ -94,9 +95,10 @@ pub fn revision_agent(provider: model.Model) -> agent.Agent(Editor, Revision) {
 /// with a different native answer and no tool authority.
 pub fn label_agent(provider: model.Model) -> agent.Agent(Nil, Label) {
   let assert Ok(agent) =
-    agent.new("text-label", provider, [], fn(_, _) { Ok(policy.Allow) })
-    |> agent.with_answer(label_codec())
-    |> agent.with_max_turns(3)
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("text-label", provider, [], fn(_, _) { Ok(policy.Allow) })
+      |> agent.with_answer(label_codec())
+      |> agent.with_max_turns(3)
+    })
   agent
 }

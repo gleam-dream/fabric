@@ -49,8 +49,9 @@ pub fn seen_by_the_run(chosen: Option(Correlation)) -> Seen {
       reply(request)
     })
   let assert Ok(noting) =
-    agent.new("noting", reporting, [note], policy.always_allow())
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("noting", reporting, [note], policy.always_allow())
+    })
   let runs = store.in_memory(process.new_name("usage-correlation"))
   let assert Ok(Nil) = store.start(runs)
   let assert Ok(handle) =

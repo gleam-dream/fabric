@@ -112,9 +112,10 @@ fn waiting(
     })
   let gate = fn(_context, _action) { Ok(policy.RequireApproval(refund)) }
   let assert Ok(desk) =
-    agent.new("desk", scripted, [refund_tool], gate)
-    |> agent.with_approvers(approvers)
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("desk", scripted, [refund_tool], gate)
+      |> agent.with_approvers(approvers)
+    })
   let runs = store.in_memory(process.new_name("approvers-hellhound"))
   let assert Ok(Nil) = store.start(runs)
   let assert Ok(handle) =

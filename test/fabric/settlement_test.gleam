@@ -234,7 +234,7 @@ pub fn a_settlement_bound_must_be_positive_test() {
     [settling_tool(process.new_subject(), Wait, 0)],
     policy.always_allow(),
   )
-  |> agent.build
+  |> support.build
   |> should.equal(
     Error([
       agent.InvalidToolLimit(
@@ -417,7 +417,7 @@ pub fn a_settlement_bound_must_fit_a_timer_test() {
     [settling_tool(process.new_subject(), Wait, 5_000_000_000)],
     policy.always_allow(),
   )
-  |> agent.build
+  |> support.build
   |> should.equal(
     Error([
       agent.InvalidToolLimit(

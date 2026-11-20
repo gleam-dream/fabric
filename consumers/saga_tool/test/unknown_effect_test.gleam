@@ -76,8 +76,9 @@ fn start(
       rollback_within: duration.milliseconds(5000),
     )
   let assert Ok(agent) =
-    agent.new("agent", model_once(), [tool], policy.always_allow())
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("agent", model_once(), [tool], policy.always_allow())
+    })
   let assert Ok(run) =
     fabric.start(
       watched.memory(),

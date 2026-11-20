@@ -1,5 +1,5 @@
 //// The range check behind every `InvalidLimit` a build step reports
-//// (`agent.build`, `graph.build`, `definition.build`): a bound is stored by
+//// (`agent.build_with`, `graph.build`, `definition.build`): a bound is stored by
 //// its setter and checked once, with every problem reported at once.
 
 import fabric/internal/budget/limits as family

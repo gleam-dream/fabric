@@ -150,7 +150,7 @@ pub fn a_codec_without_a_schema_is_refused_by_build_test() {
     policy.always_allow(),
   )
   |> agent.with_answer(unschematic)
-  |> agent.build
+  |> support.build
   |> should.equal(Error([agent.AnswerSchemaUnavailable]))
   agent.describe_config_error(agent.AnswerSchemaUnavailable)
   |> string.contains("agent.with_answer")

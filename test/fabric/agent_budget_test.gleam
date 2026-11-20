@@ -242,7 +242,7 @@ pub fn invalid_limits_and_incapable_writers_are_refused_before_start_test() {
     )
   let runs = support.store()
   let assert Error([agent.InvalidLimit(agent.FamilyWork, -1, 0, _), ..]) =
-    worker |> agent.with_family_budget(budget.limits(work: -1)) |> agent.build
+    worker |> agent.with_family_budget(budget.limits(work: -1)) |> support.build
   let assert Ok(old) = store.with_record_version(runs, 6)
   let assert Error(fabric.FamilyBudgetUnsupported) =
     fabric.start(

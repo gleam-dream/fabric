@@ -35,13 +35,14 @@ fn transfer() -> tool.Tool(Nil) {
 /// waits for it, after it was cancelled, and after the evidence was stored.
 pub fn counts() -> #(Int, Int, Int) {
   let assert Ok(desk) =
-    agent.new(
-      "desk",
-      support.calling_once("transfer", "{\"to\":\"ada\"}", fn(_) { "done" }),
-      [transfer()],
-      policy.always_allow(),
-    )
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "desk",
+        support.calling_once("transfer", "{\"to\":\"ada\"}", fn(_) { "done" }),
+        [transfer()],
+        policy.always_allow(),
+      )
+    })
   let runs = store.in_memory(process.new_name("usage-reconcile"))
   let assert Ok(Nil) = store.start(runs)
   let assert Ok(handle) =

@@ -215,7 +215,7 @@ pub fn build_bounds_the_attempts_test() {
       [flaky_read(probe, 0) |> tool.with_replay(attempts)],
       policy.always_allow(),
     )
-    |> agent.build
+    |> support.build
   }
   let assert Error([
     agent.InvalidToolLimit("read", agent.ReplayAttempts, 0, 1, 100),

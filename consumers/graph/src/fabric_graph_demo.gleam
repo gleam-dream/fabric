@@ -137,9 +137,10 @@ pub fn execute_agent(limit: Int) -> graph.Snapshot(Int, Int) {
     codec.success(approve)
   }
   let assert Ok(agent) =
-    agent.new("reviewer", model, [], policy.always_allow())
-    |> agent.with_answer(verdict)
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("reviewer", model, [], policy.always_allow())
+      |> agent.with_answer(verdict)
+    })
   let assert Ok(reviewer) =
     agent_node.new(
       run.DefinitionId("agent-reviewer", 1),

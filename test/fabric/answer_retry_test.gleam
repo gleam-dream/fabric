@@ -191,11 +191,11 @@ pub fn build_checks_the_answer_attempts_test() {
   let spec = forecaster(answering([valid], seen))
   spec
   |> agent.with_answer_attempts(0)
-  |> agent.build
+  |> support.build
   |> should.equal(Error([agent.InvalidLimit(agent.AnswerAttempts, 0, 1, 100)]))
   spec
   |> agent.with_answer_attempts(101)
-  |> agent.build
+  |> support.build
   |> should.equal(
     Error([agent.InvalidLimit(agent.AnswerAttempts, 101, 1, 100)]),
   )

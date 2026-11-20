@@ -94,7 +94,10 @@ pub fn resolution_codec() -> codec.Codec(Resolution) {
   codec.success(Resolution(summary:))
 }
 
-/// An agent is described, then built once: `build` reports every problem.
+/// An agent is described by a function, which `build_with` checks once,
+/// reporting every problem. The agent keeps that function, and each process
+/// that runs it builds it there, so the function captures only small values
+/// (the model, `pay`, `treasurers`) and makes the tools and codecs itself.
 /// A provider's model comes from `fabric/llm.model(client, settings, model_id)`,
 /// given the application's started HTTP Gun client. Without `with_answer`
 /// the answer is the model's text (`Agent(Context, String)`).
@@ -110,12 +113,13 @@ pub fn desk(
   pay: fn(Transfer) -> Result(Receipt, TransferError),
   treasurers: Approvers(credential),
 ) -> Result(Agent(Context, Resolution), List(agent.ConfigError)) {
-  agent.new("desk", model, [transfer_tool(pay)], desk_policy)
-  |> agent.with_approvers(treasurers)
-  |> agent.with_answer(resolution_codec())
-  |> agent.with_max_turns(6)
-  |> agent.with_token_budget(20_000)
-  |> agent.build
+  agent.build_with(fn() {
+    agent.new("desk", model, [transfer_tool(pay)], desk_policy)
+    |> agent.with_approvers(treasurers)
+    |> agent.with_answer(resolution_codec())
+    |> agent.with_max_turns(6)
+    |> agent.with_token_budget(20_000)
+  })
 }
 
 /// A store is a named value. Its subtree, the store's process and the
@@ -288,7 +292,7 @@ pub fn front_desk(
   researcher: Agent(Context, Summary),
   treasurers: Approvers(credential),
 ) -> Result(Agent(Context, String), List(agent.ConfigError)) {
-  let research =
+  let research = fn() {
     tool.define(
       "research",
       "Research a topic.",
@@ -298,12 +302,14 @@ pub fn front_desk(
       },
       summary_codec(),
     )
-  agent.new("front-desk", model, [], desk_policy)
-  |> agent.with_sub_agent(research, to: researcher, prompt: fn(topic) {
-    topic.name
+  }
+  agent.build_with(fn() {
+    agent.new("front-desk", model, [], desk_policy)
+    |> agent.with_sub_agent(research(), to: researcher, prompt: fn(topic) {
+      topic.name
+    })
+    |> agent.with_approvers(treasurers)
   })
-  |> agent.with_approvers(treasurers)
-  |> agent.build
 }
 
 /// A tool whose effect outlives its task settles its result late: its

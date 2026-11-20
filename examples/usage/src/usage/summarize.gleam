@@ -22,11 +22,14 @@ pub fn summarize(
   text: String,
 ) -> Result(run.Status(String), Error) {
   use summarizer <- result.try(
-    agent.new("summarizer", model, [], policy.always_allow())
-    |> agent.with_system_prompt("Summarize the supplied text in one paragraph.")
-    |> agent.with_max_turns(2)
-    |> agent.with_model_timeout(run.After(duration.seconds(20)))
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("summarizer", model, [], policy.always_allow())
+      |> agent.with_system_prompt(
+        "Summarize the supplied text in one paragraph.",
+      )
+      |> agent.with_max_turns(2)
+      |> agent.with_model_timeout(run.After(duration.seconds(20)))
+    })
     |> result.map_error(InvalidAgent),
   )
   let runs = store.in_memory(process.new_name("summaries"))

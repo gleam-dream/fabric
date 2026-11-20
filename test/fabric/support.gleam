@@ -156,8 +156,17 @@ pub fn is_child(id: String) -> Bool {
 /// trusting approvers (`testing.trusting_approvers`).
 pub fn agent(spec: Spec(context, answer)) -> Agent(context, answer) {
   let assert Ok(agent) =
-    spec |> agent.with_approvers(testing.trusting_approvers()) |> agent.build
+    spec |> agent.with_approvers(testing.trusting_approvers()) |> build
   agent
+}
+
+/// `agent.build_with` of `spec` as it is now: whatever the spec made while
+/// it was described (a probe, a subject) is made once, as `agent.build`
+/// did, and every process builds the agent from that same spec.
+pub fn build(
+  spec: Spec(context, answer),
+) -> Result(Agent(context, answer), List(agent.ConfigError)) {
+  agent.build_with(fn() { spec })
 }
 
 /// A started in-memory store, linked to the caller. Within `leased`, a

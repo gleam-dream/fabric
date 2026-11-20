@@ -806,13 +806,13 @@ pub fn a_delegation_is_validated_with_its_child_test() {
   // be delegated to.
   quick_researcher_spec(probe)
   |> agent.with_max_turns(0)
-  |> agent.build
+  |> support.build
   |> should.equal(
     Error([agent.InvalidLimit(agent.MaxTurns, 0, 1, 9_007_199_254_740_991)]),
   )
   delegating_spec(probe, [], quick_researcher(probe), policy.always_allow())
   |> agent.with_max_children(-1)
-  |> agent.build
+  |> support.build
   |> should.equal(Error([agent.InvalidLimit(agent.MaxChildren, -1, 0, 999)]))
   agent.new(
     "agent",
@@ -830,7 +830,7 @@ pub fn a_delegation_is_validated_with_its_child_test() {
     to: quick_researcher(probe),
     prompt: fn(city) { city },
   )
-  |> agent.build
+  |> support.build
   |> should.equal(Error([agent.DuplicateToolName("lookup_weather")]))
 }
 
@@ -843,7 +843,7 @@ pub fn delegation_limits_keep_child_ids_valid_test() {
     delegating_spec(probe, [], quick_researcher(probe), policy.always_allow())
     |> agent.with_max_children(max_children)
     |> agent.with_max_depth(max_depth)
-    |> agent.build
+    |> support.build
   }
   limited(1000, 17)
   |> should.equal(

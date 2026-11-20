@@ -28,9 +28,10 @@
 //// ```gleam
 //// let desk_approvers = hellhound_approvers(validator)  // the recipe below
 //// let assert Ok(desk) =
-////   agent.new("desk", model, tools, policy)
-////   |> agent.with_approvers(desk_approvers)
-////   |> agent.build
+////   agent.build_with(fn() {
+////     agent.new("desk", model, tools(), policy)
+////     |> agent.with_approvers(desk_approvers)
+////   })
 //// // In the request handler that answers `pending`:
 //// case approvers.check(desk_approvers, bearer, pending.reference.requirement) {
 ////   Ok(proof) -> fabric.approve(handle, pending.reference, proof:, context:)

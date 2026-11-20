@@ -2,20 +2,54 @@
 ////
 //// A `Spec` describes an agent: its name, model, tools, policy, its final
 //// answer, and the bounds of its runs, set with the `with_*` functions.
-//// `build` checks it once and reports every problem at once; only `build`
-//// makes the `Agent` that `fabric.start`, `fabric.open` and
-//// `fabric.recover` take, so a run never starts under an invalid agent.
+//// `build_with` takes a function that makes the spec, checks it once and
+//// reports every problem at once; only it makes the `Agent` that
+//// `fabric.start`, `fabric.open` and `fabric.recover` take (as does the
+//// deprecated `build`), so a run never starts under an invalid agent.
 //// Building starts nothing.
 ////
 //// ```gleam
 //// let assert Ok(desk) =
-////   agent.new("desk", model, [refund_tool], policy)
-////   |> agent.with_answer(resolution_codec)
-////   |> agent.with_max_turns(6)
-////   |> agent.with_approval_expiry(run.After(duration.hours(24)))
-////   |> agent.with_approvers(desk_approvers)  // who may answer approvals
-////   |> agent.build
+////   agent.build_with(fn() {
+////     agent.new("desk", model(), [refund_tool()], policy)
+////     |> agent.with_answer(resolution_codec())
+////     |> agent.with_max_turns(6)
+////     |> agent.with_approval_expiry(run.After(duration.hours(24)))
+////     |> agent.with_approvers(desk_approvers)  // who may answer approvals
+////   })
 //// ```
+////
+//// ## Codecs, processes and the builder
+////
+//// Every run executes in its own runner process, its tool bodies and model
+//// calls in tasks of that runner, and a value sent to another process on
+//// the BEAM is copied whole. An agent holds every tool's input and output
+//// codec, its answer codec, its policy and its sub-agents, so Fabric never
+//// sends it: the `Agent` that `build_with` returns keeps only the function
+//// that makes the spec, and each process that needs the agent (the caller
+//// of `fabric.start`, the run's runner, a sub-agent's runner) builds it
+//// there. A tool's task receives that one tool, never the agent. What a
+//// run copies is then the builder, the run's context and its record.
+////
+//// So the builder is cheap to copy and builds the same agent every time
+//// (a different name or version is refused): it captures small data (an
+//// HTTP client, ids, settings), never a codec or a tool already built,
+//// and it reads nothing that can change between builds. Building costs
+//// a fraction of a millisecond for an agent of a dozen tools; every
+//// process that runs the agent pays it once.
+////
+//// Tool and answer codecs follow the json_blueprint codec practice
+//// (<https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md>,
+//// which needs json_blueprint 2.1.1 or later). Fabric's part of it:
+////
+//// - Make each tool's input codec inside its fields (`codec.field(.., of:
+////   ..)` or a top-level function per child codec), never a child codec
+////   `let`-bound once and captured by later fields.
+//// - A run-time enum (the accounts or stages a run may name) comes from
+////   the run's own ids: capture those small values and build the
+////   `codec.string_enum` inside the field, in the builder.
+//// - Do not hand a built agent, tool or codec to other processes yourself
+////   (in an actor's state sent per request, say): hand the builder.
 ////
 //// Every wait is bounded by default:
 ////
@@ -69,7 +103,7 @@ import gleam/string
 import gleam/time/duration.{type Duration}
 import json/blueprint/codec.{type Codec}
 
-/// An agent's description, checked by `build`. `answer` is the type of its
+/// An agent's description, checked by `build_with`. `answer` is the type of its
 /// final answer: `String` until `with_answer`.
 pub opaque type Spec(context, answer) {
   Spec(
@@ -99,12 +133,12 @@ pub opaque type Spec(context, answer) {
   )
 }
 
-/// A checked agent whose runs end with an `answer`. Only `build` makes
-/// one.
+/// A checked agent whose runs end with an `answer`. Only `build_with` (and
+/// the deprecated `build`) makes one.
 pub type Agent(context, answer) =
   checked_agent.Agent(context, answer)
 
-/// Why `build` refused a spec. This union may grow: match the variants you
+/// Why `build_with` refused a spec. This union may grow: match the variants you
 /// handle and keep a catch-all, or use `describe_config_error`.
 pub type ConfigError {
   DuplicateToolName(String)
@@ -131,7 +165,7 @@ pub type ConfigError {
   )
 }
 
-/// A bound `build` checks, named after its setter. This union may grow.
+/// A bound `build_with` checks, named after its setter. This union may grow.
 pub type Limit {
   MaxTurns
   MaxConcurrency
@@ -421,7 +455,7 @@ pub fn with_family_budget(
 /// stores the answer's own JSON. llm_wire's structured output does not
 /// take a `codec.union` yet, so through `fabric/llm` such an answer fails
 /// the turn as `model.InvalidRequest`; a model built with `model.new`
-/// answers it directly. `build` refuses a codec without a schema
+/// answers it directly. `build_with` refuses a codec without a schema
 /// (`AnswerSchemaUnavailable`).
 pub fn with_answer(
   spec: Spec(context, String),
@@ -465,7 +499,7 @@ pub fn with_answer(
 /// attempts or the budget run out.
 ///
 /// Default 2 (one corrective turn); 1 ends the run on the first refused
-/// answer. `build` refuses fewer than 1 or more than 100
+/// answer. `build_with` refuses fewer than 1 or more than 100
 /// (`InvalidLimit(AnswerAttempts, ..)`). A plain agent's answer is its text
 /// and is never refused.
 pub fn with_answer_attempts(
@@ -513,8 +547,48 @@ pub fn with_sub_agent(
   )
 }
 
+/// Checks the spec `spec` makes and reports every problem at once, as
+/// `build` does, and returns an agent that keeps `spec` rather than what
+/// it built: every process that needs the agent (the caller of
+/// `fabric.start`, the run's runner, a sub-agent's runner) calls `spec`
+/// and builds it there, so a built agent and its codecs are never copied
+/// between processes (see the module documentation).
+///
+/// `spec` must build the same agent every time, from small data it
+/// captures: an agent built with another name or version is refused with a
+/// crash of the process building it. A sub-agent (`with_sub_agent`) is
+/// built with its parent, inside `spec`.
+pub fn build_with(
+  spec: fn() -> Spec(context, answer),
+) -> Result(Agent(context, answer), List(ConfigError)) {
+  let first = spec()
+  use admitted <- result.map(admit(first))
+  checked_agent.deferred(admitted.identity, fn() { rebuild(spec) })
+}
+
+/// The agent `spec` makes, built again in the process that needs it. It
+/// was valid when `build_with` checked it; one that is not now breaks the
+/// builder's contract.
+fn rebuild(
+  spec: fn() -> Spec(context, answer),
+) -> #(Admitted(context), Answer(answer)) {
+  let spec = spec()
+  case admit(spec) {
+    Ok(admitted) -> #(admitted, spec.answer)
+    Error(errors) ->
+      panic as {
+        "the agent's builder (agent.build_with) built an invalid agent: "
+        <> describe_config_errors(errors)
+      }
+  }
+}
+
 /// Checks `spec` and reports every problem at once. A sub-agent was checked
-/// by its own `build`.
+/// by its own `build_with`.
+///
+/// The agent it returns is copied whole into every process that runs it;
+/// `build_with` builds it in each instead, copying only its builder.
+@deprecated("Use agent.build_with, which builds the agent in each process that runs it instead of copying it there")
 pub fn build(
   spec: Spec(context, answer),
 ) -> Result(Agent(context, answer), List(ConfigError)) {
@@ -552,11 +626,11 @@ pub fn describe_config_error(error: ConfigError) -> String {
   }
 }
 
-/// One line for every problem `build` reported, in its order, joined with
-/// `"; "`:
+/// One line for every problem `build_with` reported, in its order, joined
+/// with `"; "`:
 ///
 /// ```gleam
-/// case agent.build(spec) {
+/// case agent.build_with(spec) {
 ///   Ok(desk) -> desk
 ///   Error(errors) -> panic as agent.describe_config_errors(errors)
 /// }

@@ -161,9 +161,24 @@ pub fn invoke(
   arguments: String,
   late: tool.Late(fabric_tool.SettleError),
 ) -> Outcome {
+  handler(registry, name)(context, call, arguments, late)
+}
+
+/// `invoke` for the tool `name` alone: the function holds that one tool
+/// and none of the others, so it is cheap to copy into the process that
+/// runs it.
+pub fn handler(
+  registry: Registry(context),
+  name: String,
+) -> fn(context, fabric_tool.Call, String, tool.Late(fabric_tool.SettleError)) ->
+  Outcome {
   case dict.get(registry.tools, name) {
-    Error(Nil) -> invocation.ArgumentsRejected("tool is not registered")
-    Ok(tool) -> tool.invoke(tool, context, call, arguments, late)
+    Error(Nil) -> fn(_, _, _, _) {
+      invocation.ArgumentsRejected("tool is not registered")
+    }
+    Ok(tool) -> fn(context, call, arguments, late) {
+      tool.invoke(tool, context, call, arguments, late)
+    }
   }
 }
 

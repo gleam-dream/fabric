@@ -276,8 +276,19 @@ pub fn driven(entry: store.Entry, state: g.State) -> Bool {
   owner(entry, state) != None || held_elsewhere(entry)
 }
 
+/// A prepared runner's first state, with its work and the effects it
+/// starts with: received here once rather than through the closures that
+/// start it, which are copied through the helper, the factory and the
+/// runner's spawn.
 type Go {
-  Go(revision: Int, state: g.State)
+  Go(
+    revision: Int,
+    state: g.State,
+    work: live.Work,
+    options: Options,
+    effects: List(g.Effect),
+    body: Option(live.Body),
+  )
   Abandon
 }
 
@@ -329,14 +340,7 @@ pub fn launch(
       })
     }
     True -> {
-      let prepared =
-        host.prepare(
-          runs,
-          fn(pinned, owners, ready) {
-            begin(pinned, work, options, effects, body, owners, ready)
-          },
-          Abandon,
-        )
+      let prepared = host.prepare(runs, begin, Abandon)
       case prepared {
         Error(Nil) ->
           write_initialized(
@@ -365,7 +369,10 @@ pub fn launch(
           case write_initialized(runs, state, expected, encoded, ownership) {
             Ok(#(revision, state)) -> {
               observe.committed(before, state)
-              process.send(go, Go(revision, state))
+              process.send(
+                go,
+                Go(revision, state, work, options, effects, body),
+              )
               Ok(revision)
             }
             Error(error) -> {
@@ -426,10 +433,6 @@ fn write(
 
 fn begin(
   runs: store.Store,
-  work: live.Work,
-  options: Options,
-  effects: List(g.Effect),
-  body: Option(live.Body),
   owners: #(Pid, Pid, Pid),
   ready: Subject(#(Subject(live.Message), Subject(Go))),
 ) -> Nil {
@@ -442,7 +445,7 @@ fn begin(
   process.send(ready, #(self, go))
   case host.first_state(go, runs, factory, False) {
     Error(Nil) | Ok(#(Abandon, _)) -> Nil
-    Ok(#(Go(revision, state), draining)) -> {
+    Ok(#(Go(revision, state, work, options, effects, body), draining)) -> {
       process.demonitor_process(caller_monitor)
       let runner =
         Runner(

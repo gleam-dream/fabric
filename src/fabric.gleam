@@ -5,9 +5,10 @@
 //// let runs = store.in_memory(process.new_name("runs"))  // or store.directory
 //// let assert Ok(Nil) = store.start(runs)   // or store.supervised(runs)
 //// let assert Ok(agent) =
-////   agent.new("desk", model, [weather_tool, transfer_tool], my_policy)
-////   |> agent.with_approvers(desk_approvers)
-////   |> agent.build
+////   agent.build_with(fn() {
+////     agent.new("desk", model, [weather_tool(), transfer_tool()], my_policy)
+////     |> agent.with_approvers(desk_approvers)
+////   })
 //// let assert Ok(handle) =
 ////   fabric.start(runs, agent, id: run.new_id(), context:, prompt: "Pay Bob",
 ////     correlation: None)
@@ -368,6 +369,7 @@ pub fn start_with_input(
       _, _ -> Error(HistoryUnsupported)
     },
   )
+  let agent = checked_agent.built(agent)
   let admitted = checked_agent.admitted(agent)
   use declaration <- result.try(case admitted.family_budget {
     None -> Ok(None)
@@ -377,7 +379,7 @@ pub fn start_with_input(
         False -> Error(FamilyBudgetUnsupported)
       }
   })
-  let setup = runner.setup(store, admitted, context, None)
+  let setup = runner.agent_setup(store, agent, context)
   let text = id_to_string(id)
   let correlation =
     option.lazy_unwrap(correlation, fn() { correlation.from_key(text) })
@@ -559,7 +561,8 @@ pub fn recover(
   id: RunId,
 ) -> Result(Run(context, answer), Error) {
   let id = id_to_string(id)
-  let setup = runner.setup(store, checked_agent.admitted(agent), context, None)
+  let agent = checked_agent.built(agent)
+  let setup = runner.agent_setup(store, agent, context)
   case family.take_over(setup, id, retries) {
     Ok(Nil) -> Ok(Run(id:, setup:, answer: checked_agent.answer(agent)))
     Error(family.TakeOverContended) -> Error(Contended)
@@ -589,7 +592,8 @@ pub fn open(
   id: RunId,
 ) -> Result(Run(context, answer), Error) {
   let id = id_to_string(id)
-  let setup = runner.setup(store, checked_agent.admitted(agent), context, None)
+  let agent = checked_agent.built(agent)
+  let setup = runner.agent_setup(store, agent, context)
   runner.load_checked(setup, id)
   |> result.replace(Run(id:, setup:, answer: checked_agent.answer(agent)))
   |> result.map_error(record_error)

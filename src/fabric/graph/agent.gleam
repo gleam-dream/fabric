@@ -3,9 +3,10 @@
 ////
 //// ```gleam
 //// let assert Ok(agent) =
-////   agent.new("researcher", model, tools, policy)
-////   |> agent.with_answer(summary_codec)
-////   |> agent.build
+////   agent.build_with(fn() {
+////     agent.new("researcher", model, tools(), policy)
+////     |> agent.with_answer(summary_codec())
+////   })
 //// let assert Ok(researcher) =
 ////   graph_agent.new(
 ////     run.DefinitionId("research", 1),
@@ -311,11 +312,10 @@ fn start(
 ) -> Result(Nil, String) {
   let definition = runtime.definition
   let setup =
-    runner.setup(
+    runner.agent_setup(
       runtime.store,
-      checked_agent.admitted(definition.agent),
+      definition.agent,
       runtime.context(run_id.from_string(id)),
-      None,
     )
   use input <- result.try(
     codec.decode_json(definition.input, encoded)

@@ -215,13 +215,14 @@ fn start_in(
   rollback_within: Int,
 ) -> fabric.Run(Nil, String) {
   let assert Ok(agent) =
-    agent.new(
-      "traveller",
-      traveller(city),
-      [trip_tool(reports, rollback_within)],
-      policy.always_allow(),
-    )
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "traveller",
+        traveller(city),
+        [trip_tool(reports, rollback_within)],
+        policy.always_allow(),
+      )
+    })
   let assert Ok(run) =
     fabric.start(
       store,
@@ -444,13 +445,14 @@ pub fn an_invalid_config_fails_the_call_before_any_step_runs_test() {
       rollback_within: duration.milliseconds(5000),
     )
   let assert Ok(agent) =
-    agent.new(
-      "traveller",
-      traveller("Porto"),
-      [misconfigured],
-      policy.always_allow(),
-    )
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "traveller",
+        traveller("Porto"),
+        [misconfigured],
+        policy.always_allow(),
+      )
+    })
   let assert Ok(run) =
     fabric.start(
       watched.memory(),
@@ -491,8 +493,9 @@ pub fn the_workflow_gets_the_call_and_the_runs_correlation_test() {
       rollback_within: duration.seconds(5),
     )
   let assert Ok(agent) =
-    agent.new("traveller", traveller("Porto"), [trip], policy.always_allow())
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("traveller", traveller("Porto"), [trip], policy.always_allow())
+    })
   let ticket = correlation.from_key("trip-ticket")
   let assert Ok(handle) =
     fabric.start(
@@ -529,8 +532,9 @@ pub fn a_step_reads_the_runs_correlation_test() {
       rollback_within: duration.seconds(5),
     )
   let assert Ok(agent) =
-    agent.new("traveller", traveller("Porto"), [trip], policy.always_allow())
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("traveller", traveller("Porto"), [trip], policy.always_allow())
+    })
   let ticket = correlation.from_key("trip-ticket")
   let assert Ok(handle) =
     fabric.start(
