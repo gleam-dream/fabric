@@ -24,10 +24,13 @@ copied 3.08 MB into its runners. Its largest single copy was 626 kB.
   and a rebuild of another name or version is refused. `agent.build` is
   deprecated.
 - A runner receives its setup or graph work once, in its first message; a
-  tool's task receives only that tool; a command to a live runner makes its
-  step there from the builder.
-- The same run copies 54.5 kB into its runners with a builder, and 1.06 MB
-  with the deprecated `build`. Its largest single copy is 17.6 kB with a
+  tool's task receives only that tool; a command to a live runner applies
+  its step to the runner's own setup; a leased parent's child reader and
+  the `cancel_when_down` watcher hold ids.
+- A builder that fails or drifts is refused before anything is stored, as
+  `fabric.AgentUnbuildable`.
+- The same run copies 57.3 kB into its runners with a builder, and 1.06 MB
+  with the deprecated `build`. Its largest single copy is 17.3 kB with a
   builder.
 - README, `fabric/agent` and `fabric/tool` document what Fabric copies and
   link the json_blueprint codec practice. A compiled example shows codecs

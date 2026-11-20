@@ -116,7 +116,8 @@ import sinal/correlation.{type Correlation}
 /// A handle on one run, for the agent and context it was started, opened
 /// or recovered with; `answer` is the agent's answer type
 /// (`agent.with_answer`). It holds no process: it can be dropped and
-/// rebuilt with `open`.
+/// rebuilt with `open`. It holds the agent built, codecs and all: to reach
+/// the run from another process, send its id and `open` it there.
 pub opaque type Run(context, answer) {
   Run(id: String, setup: runner.Setup(context), answer: answers.Answer(answer))
 }

@@ -106,13 +106,15 @@ The in-memory records disappear when the store stops. Services needing recovery 
 
 ## Codecs in tools and answers
 
-Every run executes in its own runner process, with its tool bodies and model calls in tasks of that runner, and the BEAM copies a value whole into each process it reaches. Fabric therefore never sends an agent: `agent.build_with` keeps the function that makes the agent's spec, and each process that runs the agent (the caller of `fabric.start`, the runner, a sub-agent's runner) builds it there. A tool's task receives only that tool. What a run copies is its builder, its context and its record. The deprecated `agent.build` returns a built agent, which is copied whole into every runner.
+Every run executes in its own runner process, with its tool bodies and model calls in tasks of that runner, and the BEAM copies a value whole into each process it reaches. Fabric therefore never sends an agent: `agent.build_with` keeps the function that makes the agent's spec, and a process that needs the agent builds it there. The caller builds it once per `fabric.start`, `open` or `recover`, and each runner once before it writes anything. A tool's task receives only that tool, with its codecs. What a run copies is its builder, its context and its record. The deprecated `agent.build` returns a built agent, which is copied whole into every runner.
 
-Write tool and answer codecs by the [json_blueprint codec practice](https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md) (json_blueprint 2.1.1 or later). Fabric adds three rules:
+Write tool and answer codecs by the [json_blueprint codec practice](https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md) (json_blueprint 2.1.1 or later). Fabric adds these rules:
 
-- Give `agent.build_with` a builder that captures small data (ids, settings, an HTTP client) and builds the same agent every time. A builder that captures a built tool or codec brings the copy back.
+- Give `agent.build_with` a builder that builds the same agent every time from small values that are the same for every run: an HTTP client, settings, ids loaded once. A builder that captures a built tool or codec brings the copy back. Another name or version is refused before anything is stored (`fabric.AgentUnbuildable`), but `open`, `recover` and the sweeper check only those, not what the builder captured.
+- Make subjects, names and tables outside the builder and capture them; one made inside is made again in every process.
 - Make each tool input codec's children inside their fields, never `let`-bound once and captured by later fields.
-- Make a run-time enum, such as the accounts a run may pay, from the run's own ids, inside the field.
+- Make a run-time enum inside its field from values the builder captures, and check it with `codec.check` where those labels arrive. A per-run enum makes a per-run agent: re-derive its values when you `open` or `recover`, and recover those runs yourself, since `sweeper.agent` registers one agent per name and version.
+- A `fabric.Run` handle holds the built agent: send the run's id to another process and `open` it there.
 
 <!-- prettier-ignore-start -->
 
@@ -123,6 +125,7 @@ import fabric/model.{type Model}
 import fabric/policy
 import fabric/tool
 import gleam/list
+import gleam/result
 import json/blueprint/codec.{type Codec}
 
 pub type Line {
@@ -134,7 +137,7 @@ pub type Transfer {
 }
 
 /// Each child codec is made inside its field, by its own function. The
-/// payee is a run-time enum: the run's own account ids, made into a codec
+/// payee is a run-time enum: the desk's account ids, made into a codec
 /// inside the field.
 fn transfer_codec(accounts: List(String)) -> Codec(Transfer) {
   use to <- codec.field(
@@ -163,7 +166,7 @@ fn line_codec() -> Codec(Line) {
 fn transfer_tool(accounts: List(String)) -> tool.Tool(Nil) {
   tool.define(
     "transfer",
-    "Pay one of the run's accounts.",
+    "Pay one of the desk's accounts.",
     transfer_codec(accounts),
     codec.string(),
   )
@@ -175,15 +178,24 @@ fn transfer_tool(accounts: List(String)) -> tool.Tool(Nil) {
   )
 }
 
-/// The agent for a run that may pay `accounts`. The builder captures the
-/// ids and the model; `transfer_tool` runs in every process that builds it.
+/// The desk's agent, which may pay `accounts`: ids the application loads
+/// once and gives every run, so that the agent `open`, `recover` and the
+/// sweeper build is the one each run started with. The builder captures
+/// the ids and the model; `transfer_tool` runs in every process that builds
+/// it. Run-time labels can repeat, so the codec is checked where they
+/// arrive.
 pub fn payer(
   model: Model,
   accounts: List(String),
-) -> Result(Agent(Nil, String), List(agent.ConfigError)) {
+) -> Result(Agent(Nil, String), String) {
+  use _ <- result.try(
+    codec.check(transfer_codec(accounts))
+    |> result.map_error(codec.describe_definition_error),
+  )
   agent.build_with(fn() {
     agent.new("payer", model, [transfer_tool(accounts)], policy.always_allow())
   })
+  |> result.map_error(agent.describe_config_errors)
 }
 ```
 

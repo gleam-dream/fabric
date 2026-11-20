@@ -14,20 +14,22 @@
 ////
 //// ## Codecs and processes
 ////
-//// A tool's handler runs in a task of its own, and the task receives that
-//// one tool, with its codecs: never the whole agent. The agent itself is
-//// built in each process that runs it from the builder `agent.build_with`
-//// keeps, so make tools inside that builder (a function per tool, called
-//// there) rather than once outside it. A tool bound with `bind_settling`
-//// also carries the run's setup into its task, which a late settlement
-//// needs; with a builder that is the builder too.
+//// A tool's handler runs in a task of its own. Each call copies that one
+//// tool, with its codecs, into the executor and again into the task:
+//// never the whole agent, but the tool's codecs twice, so keep a tool's
+//// codecs small (made inside their fields). The agent itself is built in
+//// each process that runs it from the builder `agent.build_with` keeps,
+//// so make tools inside that builder (a function per tool, called there)
+//// rather than once outside it. A tool bound with `bind_settling` also
+//// carries what makes the run's setup into its task, which a late
+//// settlement needs: the builder, or for an agent built once, the setup.
 ////
 //// Write the input and output codecs by the json_blueprint codec practice
 //// (<https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md>):
 //// make each child codec inside its field, never `let`-bound once and
-//// captured by later fields, and build a run-time enum (the accounts a run
-//// may name, say) inside its field from the run's own ids, which the
-//// agent's builder captures.
+//// captured by later fields, and build a run-time enum (the accounts a
+//// desk may name, say) inside its field from small values the agent's
+//// builder captures, checked with `codec.check` where they arrive.
 ////
 //// A tool bound with `bind_settling` also receives a `Settlement`: a
 //// handle with which its result can be settled after the invocation's task

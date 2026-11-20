@@ -26,17 +26,33 @@
 //// the BEAM is copied whole. An agent holds every tool's input and output
 //// codec, its answer codec, its policy and its sub-agents, so Fabric never
 //// sends it: the `Agent` that `build_with` returns keeps only the function
-//// that makes the spec, and each process that needs the agent (the caller
-//// of `fabric.start`, the run's runner, a sub-agent's runner) builds it
-//// there. A tool's task receives that one tool, never the agent. What a
-//// run copies is then the builder, the run's context and its record.
+//// that makes the spec, and a process that needs the agent builds it
+//// there. The caller builds it once per `fabric.start`, `open` or
+//// `recover`; each runner once, before it writes anything, and its live
+//// commands reuse that build; a process that settles a late result or
+//// cancels a child once more. A tool's task receives that one tool with
+//// its codecs, never the agent. A build costs a fraction of a millisecond
+//// for an agent of a dozen tools.
 ////
-//// So the builder is cheap to copy and builds the same agent every time
-//// (a different name or version is refused): it captures small data (an
-//// HTTP client, ids, settings), never a codec or a tool already built,
-//// and it reads nothing that can change between builds. Building costs
-//// a fraction of a millisecond for an agent of a dozen tools; every
-//// process that runs the agent pays it once.
+//// The builder must build the same agent every time. Another name or
+//// version is refused (`fabric.AgentUnbuildable`) before anything is
+//// stored, but `open`, `recover` and the sweeper check only the name and
+//// version, so they cannot tell a builder that captured other values:
+////
+//// - Capture small values that are the same for every run of the agent
+////   (an HTTP client, settings, ids the application loads once), never a
+////   codec or a tool already built. A sub-agent made with `build_with`
+////   is small: build it once outside and capture it.
+//// - Make subjects, names and tables outside the builder and capture
+////   them: one made inside is made again in every process that builds the
+////   agent, and messages to it go nowhere useful.
+//// - A capture that differs per run (a run-time enum of the run's own
+////   accounts, say) makes a different agent per run. Re-derive it for
+////   `open` and `recover` from what the run stored, and recover such runs
+////   yourself: `sweeper.agent` registers one agent per name and version.
+////
+//// A `fabric.Run` handle holds the agent built: send its id to another
+//// process and `open` the run there, rather than the handle.
 ////
 //// Tool and answer codecs follow the json_blueprint codec practice
 //// (<https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md>,
@@ -45,9 +61,9 @@
 //// - Make each tool's input codec inside its fields (`codec.field(.., of:
 ////   ..)` or a top-level function per child codec), never a child codec
 ////   `let`-bound once and captured by later fields.
-//// - A run-time enum (the accounts or stages a run may name) comes from
-////   the run's own ids: capture those small values and build the
-////   `codec.string_enum` inside the field, in the builder.
+//// - Build a run-time enum's `codec.string_enum` inside its field from
+////   the small values the builder captures, and check the codec
+////   (`codec.check`) where those labels arrive: they can repeat.
 //// - Do not hand a built agent, tool or codec to other processes yourself
 ////   (in an actor's state sent per request, say): hand the builder.
 ////
@@ -557,9 +573,11 @@ pub fn with_sub_agent(
 /// between processes (see the module documentation).
 ///
 /// `spec` must build the same agent every time, from small data it
-/// captures: an agent built with another name or version is refused with a
-/// crash of the process building it. A sub-agent (`with_sub_agent`) is
-/// built with its parent, inside `spec`.
+/// captures (see the module documentation): one that fails or builds
+/// another name or version is refused, as `fabric.AgentUnbuildable`,
+/// before anything is stored. A sub-agent (`with_sub_agent`) is built with
+/// its parent, inside `spec`; one made with `build_with` is small, so make
+/// it once outside `spec` and capture it.
 pub fn build_with(
   spec: fn() -> Spec(context, answer),
 ) -> Result(Agent(context, answer), List(ConfigError)) {
