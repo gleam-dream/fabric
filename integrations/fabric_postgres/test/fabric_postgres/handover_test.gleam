@@ -82,64 +82,65 @@ fn refund_fee(signals: Subject(Signal)) -> tool.Tool(context) {
 /// turn waits for the test first.
 fn support_agent(signals: Subject(Signal), hold: Bool) -> Agent(Nil, String) {
   let assert Ok(desk) =
-    agent.new(
-      "support",
-      model.new(fn(request: model.Request) {
-        process.send(signals, Model)
-        Ok(case results(request.messages) {
-          0 ->
-            ask([
-              model.tool_call(
-                id: "c1",
-                name: "fee_history",
-                arguments_json: "{\"customer\":\"ana\"}",
-              ),
-            ])
-          1 -> {
-            case hold {
-              True -> {
-                let release = process.new_subject()
-                process.send(signals, Held(release))
-                let _ = process.receive(release, 60_000)
-                Nil
+    agent.build_with(fn() {
+      agent.new(
+        "support",
+        model.new(fn(request: model.Request) {
+          process.send(signals, Model)
+          Ok(case results(request.messages) {
+            0 ->
+              ask([
+                model.tool_call(
+                  id: "c1",
+                  name: "fee_history",
+                  arguments_json: "{\"customer\":\"ana\"}",
+                ),
+              ])
+            1 -> {
+              case hold {
+                True -> {
+                  let release = process.new_subject()
+                  process.send(signals, Held(release))
+                  let _ = process.receive(release, 60_000)
+                  Nil
+                }
+                False -> Nil
               }
-              False -> Nil
+              ask([
+                model.tool_call(
+                  id: "c2",
+                  name: "refund_fee",
+                  arguments_json: refund_arguments,
+                ),
+              ])
             }
-            ask([
-              model.tool_call(
-                id: "c2",
-                name: "refund_fee",
-                arguments_json: refund_arguments,
-              ),
-            ])
+            _ -> model.FinalAnswer("Pronto, Ana: estornei os 80.00.", None)
+          })
+        }),
+        [
+          tool.define(
+            "fee_history",
+            "The fees charged to a customer.",
+            one_field("customer", codec.string()),
+            codec.string(),
+          )
+            |> tool.bind(
+              fn(_, _, customer: String) -> Result(String, Nil) {
+                Ok("late fee 80.00 charged to " <> customer)
+              },
+              fn(_) { tool.Explain("unreadable") },
+            ),
+          refund_fee(signals),
+        ],
+        fn(_, action: policy.Action) {
+          case action.name {
+            "refund_fee" -> Ok(policy.HandOver(reason))
+            _ -> Ok(policy.Allow)
           }
-          _ -> model.FinalAnswer("Pronto, Ana: estornei os 80.00.", None)
-        })
-      }),
-      [
-        tool.define(
-          "fee_history",
-          "The fees charged to a customer.",
-          one_field("customer", codec.string()),
-          codec.string(),
-        )
-          |> tool.bind(
-            fn(_, _, customer: String) -> Result(String, Nil) {
-              Ok("late fee 80.00 charged to " <> customer)
-            },
-            fn(_) { tool.Explain("unreadable") },
-          ),
-        refund_fee(signals),
-      ],
-      fn(_, action: policy.Action) {
-        case action.name {
-          "refund_fee" -> Ok(policy.HandOver(reason))
-          _ -> Ok(policy.Allow)
-        }
-      },
-    )
-    |> agent.with_approvers(testing.trusting_approvers())
-    |> agent.build
+        },
+      )
+      |> agent.with_approvers(testing.trusting_approvers())
+    })
   desk
 }
 
@@ -149,57 +150,58 @@ fn support_agent(signals: Subject(Signal), hold: Bool) -> Agent(Nil, String) {
 /// hands the refund over instead.
 fn deciding_agent(signals: Subject(Signal)) -> Agent(String, String) {
   let assert Ok(desk) =
-    agent.new(
-      "deciding",
-      model.new(fn(request: model.Request) {
-        process.send(signals, Model)
-        Ok(case results(request.messages) {
-          0 ->
-            ask([
-              model.tool_call(
-                id: "s",
-                name: "slow",
-                arguments_json: "{\"x\":\"s\"}",
-              ),
-              model.tool_call(
-                id: "r",
-                name: "refund_fee",
-                arguments_json: refund_arguments,
-              ),
-            ])
-          _ -> model.FinalAnswer("done", None)
-        })
-      }),
-      [
-        tool.define(
-          "slow",
-          "Waits for the test.",
-          one_field("x", codec.string()),
-          codec.string(),
-        )
-          |> tool.bind_settling(
-            fn(_, _, x: String, _settlement) -> Result(String, Nil) {
-              let release = process.new_subject()
-              process.send(signals, SlowStarted(release))
-              let _ = process.receive(release, 60_000)
-              Ok(x)
-            },
-            fn(_) { tool.Explain("failed") },
-            settle_within: duration.seconds(60),
-          ),
-        refund_fee(signals),
-      ],
-      fn(context: String, action: policy.Action) {
-        case action.name, context {
-          "refund_fee", "hand over" -> Ok(policy.HandOver(reason))
-          "refund_fee", _ ->
-            Ok(policy.RequireApproval(Requirement("finance", 1)))
-          _, _ -> Ok(policy.Allow)
-        }
-      },
-    )
-    |> agent.with_approvers(testing.trusting_approvers())
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "deciding",
+        model.new(fn(request: model.Request) {
+          process.send(signals, Model)
+          Ok(case results(request.messages) {
+            0 ->
+              ask([
+                model.tool_call(
+                  id: "s",
+                  name: "slow",
+                  arguments_json: "{\"x\":\"s\"}",
+                ),
+                model.tool_call(
+                  id: "r",
+                  name: "refund_fee",
+                  arguments_json: refund_arguments,
+                ),
+              ])
+            _ -> model.FinalAnswer("done", None)
+          })
+        }),
+        [
+          tool.define(
+            "slow",
+            "Waits for the test.",
+            one_field("x", codec.string()),
+            codec.string(),
+          )
+            |> tool.bind_settling(
+              fn(_, _, x: String, _settlement) -> Result(String, Nil) {
+                let release = process.new_subject()
+                process.send(signals, SlowStarted(release))
+                let _ = process.receive(release, 60_000)
+                Ok(x)
+              },
+              fn(_) { tool.Explain("failed") },
+              settle_within: duration.seconds(60),
+            ),
+          refund_fee(signals),
+        ],
+        fn(context: String, action: policy.Action) {
+          case action.name, context {
+            "refund_fee", "hand over" -> Ok(policy.HandOver(reason))
+            "refund_fee", _ ->
+              Ok(policy.RequireApproval(Requirement("finance", 1)))
+            _, _ -> Ok(policy.Allow)
+          }
+        },
+      )
+      |> agent.with_approvers(testing.trusting_approvers())
+    })
   desk
 }
 

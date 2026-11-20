@@ -66,11 +66,14 @@ fn historical() {
 
 fn editor(provider) {
   let assert Ok(agent) =
-    agent.new("history-editor", provider, [], fn(_: Nil, _) { Ok(policy.Allow) })
-    |> agent.with_answer(revision_codec())
-    |> agent.with_answer_attempts(2)
-    |> agent.with_max_turns(5)
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("history-editor", provider, [], fn(_: Nil, _) {
+        Ok(policy.Allow)
+      })
+      |> agent.with_answer(revision_codec())
+      |> agent.with_answer_attempts(2)
+      |> agent.with_max_turns(5)
+    })
   agent
 }
 
