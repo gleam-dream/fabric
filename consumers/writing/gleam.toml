@@ -10,7 +10,7 @@ gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
 fabric = { path = "../.." }
 http_gun = ">= 0.2.0 and < 0.3.0"
-json_blueprint = ">= 2.0.0 and < 3.0.0"
+json_blueprint = ">= 2.1.1 and < 3.0.0"
 llm_wire = ">= 0.2.0 and < 0.3.0"
 
 [dev-dependencies]
