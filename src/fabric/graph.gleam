@@ -52,7 +52,7 @@
 ////
 //// A bound may come from configuration, so a setter only stores it; `build`
 //// checks every bound and reports every problem at once
-//// (`InvalidLimit(limit:, value:, minimum:, maximum:)`, as `agent.build`
+//// (`InvalidLimit(limit:, value:, minimum:, maximum:)`, as `agent.build_with`
 //// does). Only `build` makes the `Runtime` that `start`, `open` and the
 //// composition functions take.
 

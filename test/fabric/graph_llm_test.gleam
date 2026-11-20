@@ -1,3 +1,4 @@
+import fabric/agent_copy_test as shapes
 import fabric/graph
 import fabric/graph/definition
 import fabric/graph/llm
@@ -522,4 +523,86 @@ pub fn openai_projection_uses_the_output_schema_and_preserves_actual_sse_usage_t
   string.contains(sent, "\"approve\"") |> should.be_true
   string.contains(sent, "fabric.graph.llm") |> should.be_false
   fake_provider.stop(fake)
+}
+
+@external(erlang, "fabric_copy_ffi", "flat_bytes")
+fn flat_bytes(term: a) -> Int
+
+@external(erlang, "fabric_copy_ffi", "crossing")
+fn crossing(body: fn() -> a) -> #(a, Int, Int)
+
+/// What crosses into the graph runner of a one-decision graph whose output
+/// is `output`, answered with `answer`: bytes into runners.
+fn graph_crossing(output: codec.Codec(a), answer: String) -> Int {
+  let fake = fake_provider.start([testing.text(answer)])
+  let settings = fake_provider.scripted(fake)
+  let id = definition.node_id("review")
+  let node =
+    definition.node(
+      id,
+      llm.decision(
+        run.DefinitionId("structured-review", 1),
+        input: codec.string(),
+        output: output,
+        name: "review",
+        call: fn(_, text) {
+          llm.call(
+            client: fake.client,
+            config: settings,
+            request: llm_wire.request("review-model", [llm_wire.user(text)]),
+          )
+        },
+      ),
+      fn(text) { Ok(text) },
+      fn(state, receipt) { Ok(definition.Finish(state, receipt)) },
+      [],
+    )
+  let assert Ok(spec) =
+    definition.build(
+      definition.new(
+        run.DefinitionId("decision-graph", 1),
+        entry: id,
+        nodes: [node],
+        state: codec.string(),
+        answer: llm.receipt_codec(output),
+      )
+      |> definition.with_max_activations(1),
+    )
+  let assert Ok(runtime) =
+    graph.new(spec, support.store(), fn(_) { Nil }, fn(_, _) {
+      Ok(policy.Allow)
+    })
+    |> graph.build
+  let #(_, into_runners, _) =
+    crossing(fn() {
+      let assert Ok(handle) =
+        graph.start(runtime, run.new_id(), "review this", correlation: None)
+      // A run still working at the deadline would be a partial measure.
+      let assert Ok(graph.Completed(_)) =
+        graph.await(handle, within: duration.milliseconds(5000))
+    })
+  fake_provider.stop(fake)
+  into_runners
+}
+
+/// A receipt's fields are made inside the receipt codec's callbacks, per
+/// encode or decode, so the continuations that hold the output codec never
+/// cross: the receipt codec holds it once in each callback of a custom
+/// codec (encode, decode, native decode). A graph runner receives the
+/// graph's work once, and what crosses grows with the output codec by a
+/// fixed factor, whatever its nesting: the copies each compiled node's
+/// callbacks and the work hold (`issues/agent-copy-cost/issues/02`). A
+/// receipt that held its fields would hold the output codec in more of
+/// them and break both bounds.
+pub fn an_llm_decision_crosses_with_its_output_codec_a_fixed_number_of_times_test() {
+  let small = decision_codec()
+  let nested = shapes.batch_codec()
+  let grown = flat_bytes(nested) - flat_bytes(small)
+
+  { flat_bytes(llm.receipt_codec(nested)) <= 3 * flat_bytes(nested) + 1024 }
+  |> should.be_true
+
+  let base = graph_crossing(small, "{\"approve\": true}")
+  let crossed = graph_crossing(nested, "{\"orders\": []}")
+  { crossed - base <= 36 * grown } |> should.be_true
 }

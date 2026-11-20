@@ -12,14 +12,16 @@ import gleam/option.{type Option}
 import sinal/correlation.{type Correlation}
 
 /// The work a committed transition starts, bound to the context it runs
-/// with: how a dispatched tool's body is invoked (run id, its family's root
-/// run id, the run's correlation, action, call),
+/// with: the body a dispatched tool's task runs (prepared in the runner from
+/// run id, its family's root run id, the run's correlation, action, call;
+/// it holds that one tool, never the agent, since it is copied into the
+/// executor and the task),
 /// and how a delegation's child run (`parent` state, action, child run id,
 /// call) is started, returning the event that reports the start.
 pub type Work {
   Work(
     invoke: fn(String, String, Correlation, ActionId, ToolCall) ->
-      invocation.Outcome,
+      fn() -> invocation.Outcome,
     start_child: fn(State, ActionId, String, ToolCall) ->
       Result(controller.Event, String),
   )
@@ -28,12 +30,13 @@ pub type Work {
 pub type Message {
   /// A command from outside. A runner that takes it (`claim.accept`)
   /// answers `Accepted`, applies `step` to its current state, commits the
-  /// result, answers, and then performs its effects with `work` (`None`:
-  /// the run's own). A runner that cannot take it drops it: the caller has
-  /// withdrawn it.
+  /// result, answers, and then performs its effects with the work the step
+  /// returned (`None`: the run's own). The step makes that work in the
+  /// runner, so the command copies only what makes them (an agent's
+  /// builder, `runner.carried`). A runner that cannot take it drops it: the
+  /// caller has withdrawn it.
   Command(
-    step: fn(State) -> Result(#(State, List(Effect)), Rejection),
-    work: Option(Work),
+    step: fn(State) -> Result(#(State, List(Effect), Option(Work)), Rejection),
     claim: Claim,
     reply: Subject(CommandReply),
   )

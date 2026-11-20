@@ -54,7 +54,7 @@ fn spec() -> agent.Spec(Nil, String) {
 }
 
 fn built(spec: agent.Spec(Nil, String)) -> Agent(Nil, String) {
-  let assert Ok(agent) = agent.build(spec)
+  let assert Ok(agent) = support.build(spec)
   agent
 }
 

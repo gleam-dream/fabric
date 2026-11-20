@@ -20,13 +20,14 @@ type Started {
 fn start_blocked(name: String) -> Started {
   let gate = support.new_gate()
   let assert Ok(desk) =
-    agent.new(
-      "desk",
-      support.calling_once("wait", "{\"text\":\"x\"}", fn(_) { "done" }),
-      [support.waiting_tool(gate)],
-      policy.always_allow(),
-    )
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "desk",
+        support.calling_once("wait", "{\"text\":\"x\"}", fn(_) { "done" }),
+        [support.waiting_tool(gate)],
+        policy.always_allow(),
+      )
+    })
   let runs = store.in_memory(process.new_name(name))
   let assert Ok(Nil) = store.start(runs)
   let assert Ok(handle) =

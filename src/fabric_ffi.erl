@@ -3,7 +3,8 @@
          directory_insert/3, directory_compare_and_set/4, claim_new/0,
          claim_take/2, exit_shutdown/0, factory_name/1,
          await_or_shutdown/3, answer_new/0, answer_send/2, answer_receive/1,
-         requeue_shutdown/1, take_shutdown/1, memoized/2]).
+         requeue_shutdown/1, take_shutdown/1, memoized/2,
+         keep_setup/1, kept_setup/0]).
 
 %% The value stored under Key in persistent_term, made by Make on the
 %% first call in this VM; concurrent first calls agree on one value.
@@ -339,3 +340,15 @@ unavailable(Reason) ->
 
 describe(Reason) ->
     unicode:characters_to_binary(io_lib:format("~p", [Reason])).
+
+%% The setup of the run whose runner is this process, kept for the steps
+%% of live commands, which the runner applies in this process.
+keep_setup(Setup) ->
+    put(fabric_runner_setup, Setup),
+    nil.
+
+kept_setup() ->
+    case get(fabric_runner_setup) of
+        undefined -> {error, nil};
+        Setup -> {ok, Setup}
+    end.

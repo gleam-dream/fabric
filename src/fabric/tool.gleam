@@ -12,6 +12,25 @@
 //// `call.correlation` (for example `http_gun.with_correlation`), so its
 //// work joins the run's events.
 ////
+//// ## Codecs and processes
+////
+//// A tool's handler runs in a task of its own. Each call copies that one
+//// tool, with its codecs, into the executor and again into the task:
+//// never the whole agent, but the tool's codecs twice, so keep a tool's
+//// codecs small (made inside their fields). The agent itself is built in
+//// each process that runs it from the builder `agent.build_with` keeps,
+//// so make tools inside that builder (a function per tool, called there)
+//// rather than once outside it. A tool bound with `bind_settling` also
+//// carries what makes the run's setup into its task, which a late
+//// settlement needs: the builder, or for an agent built once, the setup.
+////
+//// Write the input and output codecs by the json_blueprint codec practice
+//// (<https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md>):
+//// make each child codec inside its field, never `let`-bound once and
+//// captured by later fields, and build a run-time enum (the accounts a
+//// desk may name, say) inside its field from small values the agent's
+//// builder captures, checked with `codec.check` where they arrive.
+////
 //// A tool bound with `bind_settling` also receives a `Settlement`: a
 //// handle with which its result can be settled after the invocation's task
 //// was stopped (a cancellation, a host fault in another action, or a task
@@ -219,7 +238,7 @@ pub fn bind(
 /// the module documentation), and whose stopped run waits up to `settle_within`
 /// for that settlement before recording an uncertain effect. `settle_within` must
 /// be at least 1 ms and at most 2^32 - 1 ms, the longest timer the runtime
-/// sets (`agent.build` checks it). The handler's own result is used when it
+/// sets (`agent.build_with` checks it). The handler's own result is used when it
 /// returns; the settlement matters only once its task was stopped, also by
 /// its body timeout. `classify` is as for `bind`.
 pub fn bind_settling(
@@ -333,7 +352,7 @@ pub fn unconfirmed_reconciliation(note: String) -> String {
 /// handler returns (`Explain`, `Uncertain`) is never replayed, nor is a
 /// tool stopped by a cancellation. An approved action that is replayed
 /// after a lost runner asks for its approval again, as any approved action
-/// does at recovery. `agent.build` refuses fewer than 1 or more than 100
+/// does at recovery. `agent.build_with` refuses fewer than 1 or more than 100
 /// attempts (`InvalidToolLimit`); `run.ActionRecord.replays` counts the
 /// replays.
 pub fn with_replay(tool: Tool(context), max_attempts: Int) -> Tool(context) {
@@ -398,7 +417,7 @@ pub fn input(
 /// a body that may run as long as it needs. A body still running at its
 /// timeout is stopped and its action becomes an uncertain effect (it may
 /// have acted), unless the tool is replayable (`with_replay`).
-/// `agent.build` refuses a timeout under 1 ms or over 2^32 - 1 ms
+/// `agent.build_with` refuses a timeout under 1 ms or over 2^32 - 1 ms
 /// (`InvalidToolLimit`). A sub-agent delegation has no body: its child
 /// run's own limits bound it.
 pub fn with_timeout(tool: Tool(context), timeout: Timeout) -> Tool(context) {

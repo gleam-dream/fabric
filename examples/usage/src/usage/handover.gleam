@@ -69,8 +69,9 @@ fn refund_tool() -> tool.Tool(Stage) {
 
 pub fn shown() -> Shown {
   let assert Ok(desk) =
-    agent.new("desk", desk_model(), [refund_tool()], refund_policy)
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("desk", desk_model(), [refund_tool()], refund_policy)
+    })
   let runs = store.in_memory(process.new_name("usage-handover"))
   let assert Ok(Nil) = store.start(runs)
   let first = run.new_id()

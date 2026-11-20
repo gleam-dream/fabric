@@ -10,7 +10,6 @@ import fabric/internal/runner
 import fabric/support/restart
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{None}
 import gleeunit/should
 
 pub fn the_first_side_to_take_a_claim_wins_test() {
@@ -71,7 +70,7 @@ fn took_after_the_window(windows: List(Int)) -> Nil {
   process.spawn(fn() {
     let mailbox: Subject(live.Message) = process.new_subject()
     process.send(mailboxes, mailbox)
-    let assert Ok(live.Command(_, _, taken, reply)) =
+    let assert Ok(live.Command(_, taken, reply)) =
       process.receive(mailbox, 30_000)
     let assert Ok(caller) = process.subject_owner(reply)
     restart.suspend(caller)
@@ -87,12 +86,7 @@ fn took_after_the_window(windows: List(Int)) -> Nil {
   })
   let assert Ok(mailbox) = process.receive(mailboxes, 30_000)
   case
-    runner.send_live(
-      mailbox,
-      fn(_) { Error(controller.StaleEvent) },
-      None,
-      within,
-    )
+    runner.send_live(mailbox, fn(_) { Error(controller.StaleEvent) }, within)
   {
     Error(runner.LiveBusy) if longer != [] -> took_after_the_window(longer)
     result ->
@@ -110,12 +104,12 @@ pub fn a_withdrawn_command_is_never_applied_test() {
     let release = process.new_subject()
     process.send(started, #(mailbox, release))
     let assert Ok(Nil) = process.receive(release, 30_000)
-    let assert Ok(live.Command(_, _, command, _)) =
+    let assert Ok(live.Command(_, command, _)) =
       process.receive(mailbox, 30_000)
     process.send(accepted, claim.accept(command))
   })
   let assert Ok(#(mailbox, release)) = process.receive(started, 30_000)
-  runner.send_live(mailbox, fn(_) { Error(controller.StaleEvent) }, None, 10)
+  runner.send_live(mailbox, fn(_) { Error(controller.StaleEvent) }, 10)
   |> should.equal(Error(runner.LiveBusy))
   process.send(release, Nil)
   process.receive(accepted, 30_000) |> should.equal(Ok(False))

@@ -93,6 +93,10 @@ pub type Setup(context) {
     /// Who may answer the run's approval requests: the agent's approvers,
     /// or for a sub-agent without its own, its parent's.
     approvers: Option(Answerer),
+    /// How another process makes this setup again from the agent's
+    /// builder, instead of receiving a copy of it (`carried`); `None` for
+    /// an agent built once by the application.
+    remake: Option(fn() -> Setup(context)),
   )
 }
 
@@ -141,6 +145,66 @@ pub fn setup(
     max_result_bytes: admitted.max_result_bytes,
     parent:,
     approvers: admitted.approvers,
+    remake: None,
+  )
+}
+
+/// The runtime setup of `agent` with `context`, built here. An agent kept
+/// as its builder (`agent.build_with`) is made again from it by any other
+/// process that needs this setup (`carried`).
+pub fn agent_setup(
+  store: Store,
+  agent: checked_agent.Agent(context, answer),
+  context: context,
+) -> Setup(context) {
+  let made = setup(store, checked_agent.admitted(agent), context, None)
+  case checked_agent.builder(agent) {
+    None -> made
+    Some(build) ->
+      Setup(..made, remake: Some(fn() { remade(store, build, context) }))
+  }
+}
+
+fn remade(
+  store: Store,
+  build: fn() -> checked_agent.Admitted(context),
+  context: context,
+) -> Setup(context) {
+  Setup(
+    ..setup(store, build(), context, None),
+    remake: Some(fn() { remade(store, build, context) }),
+  )
+}
+
+/// How a process other than this one gets `setup`: made again there from
+/// the agent's builder when the agent has one (`remake`), so that only the
+/// builder, the store and the context are copied; otherwise `setup`
+/// itself, copied whole. The store and the context stay `setup`'s (a
+/// runner's pinned store, a command's context).
+pub fn carried(setup: Setup(context)) -> fn() -> Setup(context) {
+  case setup.remake {
+    None -> fn() { setup }
+    Some(remake) -> {
+      let store = setup.store
+      let context = setup.env.context
+      fn() {
+        let made = pinned(remake(), store)
+        Setup(..made, env: controller.Env(..made.env, context:))
+      }
+    }
+  }
+}
+
+/// `setup` and its parent links reaching the run through `store`, as a
+/// setup made in the parent's runner reaches it through that runner's
+/// pinned store.
+fn pinned(setup: Setup(context), store: Store) -> Setup(context) {
+  Setup(
+    ..setup,
+    store:,
+    parent: option.map(setup.parent, fn(link) {
+      Parent(..link, setup: pinned(link.setup, store))
+    }),
   )
 }
 
@@ -173,6 +237,11 @@ pub fn clocked(
 /// The work of `setup`'s run performed with `context`: tool bodies are
 /// invoked with it, and a child run is started with it (while the child's
 /// link back to the run keeps `setup`).
+///
+/// A tool's body is copied into the executor and into its task, so it
+/// holds that one tool and its bound, never the whole setup; only a tool
+/// that accepts late settlements (`tool.bind_settling`) carries the setup
+/// (`carried`), which committing one needs.
 pub fn work(setup: Setup(context), context: context) -> Work {
   live.Work(
     invoke: fn(
@@ -182,29 +251,45 @@ pub fn work(setup: Setup(context), context: context) -> Work {
       id: ActionId,
       call: model.ToolCall,
     ) {
-      // Invoked in the action's task.
-      let task = process.self()
-      registry.invoke(
-        setup.env.registry,
-        context,
-        tool.Call(run: run_id.from_string(run_id), action: id, correlation:),
-        call.name,
-        call.arguments_json,
-        fn(outcome, summary) {
-          settle_late(
-            setup,
-            run_id,
-            root,
-            correlation,
-            id,
-            call.name,
-            task,
-            bounded_outcome(setup, outcome),
-            summary,
-          )
-        },
-      )
-      |> bounded_outcome(setup, _)
+      let handler = registry.handler(setup.env.registry, call.name)
+      let limit = setup.max_result_bytes
+      let settles = case
+        registry.settles_within(setup.env.registry, call.name)
+      {
+        Some(within) -> Some(#(carried(setup), within))
+        None -> None
+      }
+      let name = call.name
+      let arguments = call.arguments_json
+      // Runs in the action's task.
+      fn() {
+        let task = process.self()
+        handler(
+          context,
+          tool.Call(run: run_id.from_string(run_id), action: id, correlation:),
+          arguments,
+          fn(outcome, summary) {
+            case settles {
+              // Only a settling tool offers a late settlement.
+              None -> Error(tool.NotAwaited)
+              Some(#(setup, within)) ->
+                settle_late(
+                  setup(),
+                  within,
+                  run_id,
+                  root,
+                  correlation,
+                  id,
+                  name,
+                  task,
+                  bounded_outcome(limit, outcome),
+                  summary,
+                )
+            }
+          },
+        )
+        |> bounded_outcome(limit, _)
+      }
     },
     start_child: fn(parent, id, child, call) {
       start_child(setup, context, parent, id, child, call)
@@ -222,6 +307,7 @@ pub fn work(setup: Setup(context), context: context) -> Work {
 /// `summary`.
 fn settle_late(
   setup: Setup(context),
+  within: Int,
   run: String,
   root: String,
   correlation: Correlation,
@@ -231,8 +317,6 @@ fn settle_late(
   outcome: invocation.Outcome,
   summary: String,
 ) -> Result(Nil, tool.SettleError) {
-  let within =
-    registry.settles_within(setup.env.registry, name) |> option.unwrap(0)
   let offer =
     Offer(
       setup,
@@ -265,7 +349,7 @@ fn settle_late(
 /// A result over the agent's `max_result_bytes` is not kept: it becomes a
 /// host failure that names the limit, and the run stops.
 fn bounded_outcome(
-  setup: Setup(context),
+  limit: Int,
   outcome: invocation.Outcome,
 ) -> invocation.Outcome {
   let content = case outcome {
@@ -276,12 +360,12 @@ fn bounded_outcome(
   case content {
     Some(content) ->
       case string.byte_size(content) {
-        size if size > setup.max_result_bytes ->
+        size if size > limit ->
           invocation.OutputUnencodable(
             "the tool's result is "
             <> int.to_string(size)
             <> " bytes, more than the run keeps ("
-            <> int.to_string(setup.max_result_bytes)
+            <> int.to_string(limit)
             <> " bytes, agent.with_max_result_bytes)",
           )
         _ -> outcome
@@ -338,6 +422,9 @@ fn offer_settlement(
       ))
     Error(Unreadable(problem)) ->
       Error(tool.SettleUnconfirmed(describe_read(problem)))
+    // Nothing was applied; offering it again may succeed.
+    Error(AgentUnbuilt(reason)) ->
+      Error(tool.SettleUnconfirmed("the agent could not be built: " <> reason))
   }
 }
 
@@ -350,7 +437,18 @@ pub fn child_setup(
   action: ActionId,
 ) -> Result(Setup(context), Nil) {
   use admitted <- result.map(dict.get(setup.children, name))
-  self_setup(setup, admitted, run, action)
+  let child = self_setup(setup, admitted, run, action)
+  // Made again from the parent as it is now (`carried`): its context (an
+  // approval's, say) and its store, not those it was first built with.
+  let remake =
+    option.map(setup.remake, fn(_) {
+      let parent = carried(setup)
+      fn() {
+        let assert Ok(child) = child_setup(parent(), name, run, action)
+        child
+      }
+    })
+  Setup(..child, remake:)
 }
 
 fn self_setup(
@@ -478,11 +576,37 @@ type Runner(context) {
   )
 }
 
-/// What a prepared runner is told once its first state's commit is known.
-type Go {
-  Go(revision: Int, state: State, effects: List(Effect), work: Work)
+/// What a prepared runner is told, received once rather than through the
+/// closures that start it (`carried`). For an agent kept as its builder,
+/// before anything is written: `Build` the setup here and answer whether
+/// it is the agent `identity` names. Then, once its first state's commit
+/// is known, `Go` with that state, the setup (`None`: the one it built),
+/// and the context the first `effects` run with (`None`: the run's own).
+pub type Go(context) {
+  Build(
+    setup: fn() -> Setup(context),
+    identity: run.DefinitionId,
+    reply: Subject(Result(Nil, String)),
+  )
+  Go(
+    revision: Int,
+    state: State,
+    effects: List(Effect),
+    setup: Option(fn() -> Setup(context)),
+    context: Option(context),
+  )
   /// The commit failed: exit without doing anything.
   Abandon
+}
+
+/// Why a launch failed.
+pub type LaunchError {
+  /// The store's error for the write; `Unavailable` leaves its outcome
+  /// unknown.
+  WriteFailed(backend.StoreError)
+  /// The runner that was to take the work could not build the agent from
+  /// its builder, or built another agent: nothing was written.
+  Unbuildable(reason: String)
 }
 
 /// Commits `state` over `expected` (`None`: inserts the run) and, when the
@@ -498,31 +622,28 @@ pub fn launch(
   before: Option(#(Int, State)),
   state: State,
   effects: List(Effect),
-) -> Result(Int, backend.StoreError) {
-  launch_with(
-    setup,
-    work(setup, setup.env.context),
-    before,
-    state,
-    effects,
-    False,
-  )
+) -> Result(Int, LaunchError) {
+  launch_with(setup, None, before, state, effects, False)
 }
 
-/// `launch`, with `effects` performed with `work`; the runner keeps
-/// `setup`'s context for everything after them. A leased store claims the
+/// `launch`, with `effects` performed with `context` (`None`: the run's
+/// own); the runner keeps `setup`'s context for everything after them. A leased store claims the
 /// run's lease, or with `seize` (a cancellation) takes it whoever holds
 /// it.
 fn launch_with(
   setup: Setup(context),
-  work: Work,
+  context: Option(context),
   before: Option(#(Int, State)),
   state: State,
   effects: List(Effect),
   seize: Bool,
-) -> Result(Int, backend.StoreError) {
-  use encoded <- result.try(store.encode(setup.store, state))
-  launch_encoded(setup, work, before, state, encoded, effects, seize)
+) -> Result(Int, LaunchError) {
+  use encoded <- result.try(encode(setup.store, state))
+  launch_encoded(setup, context, before, state, encoded, effects, seize)
+}
+
+fn encode(runs: Store, state: State) -> Result(String, LaunchError) {
+  store.encode(runs, state) |> result.map_error(WriteFailed)
 }
 
 /// Stores and starts the new root run `state`. A backend that reports the
@@ -534,19 +655,18 @@ pub fn launch_new(
   setup: Setup(context),
   state: State,
   effects: List(Effect),
-) -> Result(Int, backend.StoreError) {
-  let work = work(setup, setup.env.context)
-  use encoded <- result.try(store.encode(setup.store, state))
-  case launch_encoded(setup, work, None, state, encoded, effects, False) {
-    Error(backend.AlreadyExists) ->
+) -> Result(Int, LaunchError) {
+  use encoded <- result.try(encode(setup.store, state))
+  case launch_encoded(setup, None, None, state, encoded, effects, False) {
+    Error(WriteFailed(backend.AlreadyExists)) ->
       case store.get(setup.store, state.run) {
         Ok(store.Entry(revision: 1, record: stored, live: None, ..))
           if stored == encoded
         -> {
-          use encoded <- result.try(store.encode(setup.store, state))
+          use encoded <- result.try(encode(setup.store, state))
           launch_over(
             setup,
-            work,
+            None,
             Some(1),
             None,
             state,
@@ -554,8 +674,17 @@ pub fn launch_new(
             effects,
             False,
           )
+          // The record is stored: a runner that cannot build leaves it
+          // stored without one, which is not `Unbuildable`'s "nothing was
+          // written".
+          |> result.map_error(fn(error) {
+            case error {
+              Unbuildable(_) -> WriteFailed(backend.AlreadyExists)
+              WriteFailed(_) -> error
+            }
+          })
         }
-        _ -> Error(backend.AlreadyExists)
+        _ -> Error(WriteFailed(backend.AlreadyExists))
       }
     other -> other
   }
@@ -565,16 +694,25 @@ pub fn launch_new(
 /// so that every attempt of one write carries one write token.
 fn launch_encoded(
   setup: Setup(context),
-  work: Work,
+  context: Option(context),
   before: Option(#(Int, State)),
   state: State,
   encoded: String,
   effects: List(Effect),
   seize: Bool,
-) -> Result(Int, backend.StoreError) {
+) -> Result(Int, LaunchError) {
   let expected = option.map(before, fn(before) { before.0 })
   let observed = option.map(before, fn(before) { before.1 })
-  launch_over(setup, work, expected, observed, state, encoded, effects, seize)
+  launch_over(
+    setup,
+    context,
+    expected,
+    observed,
+    state,
+    encoded,
+    effects,
+    seize,
+  )
 }
 
 /// Writes `state` as `encoded` over the revision `expected` (`None`: a new
@@ -582,44 +720,51 @@ fn launch_encoded(
 /// observations of the transition start from.
 fn launch_over(
   setup: Setup(context),
-  work: Work,
+  context: Option(context),
   expected: Option(Int),
   observed: Option(State),
   state: State,
   encoded: String,
   effects: List(Effect),
   seize: Bool,
-) -> Result(Int, backend.StoreError) {
+) -> Result(Int, LaunchError) {
   case controller.needs_runner(state) {
     False -> {
-      use #(revision, state) <- result.map(write_initialized(
-        setup.store,
-        state,
-        expected,
-        encoded,
-        store.Detached(in_flight: False, seize:),
-      ))
+      use #(revision, state) <- result.map(
+        write_initialized(
+          setup.store,
+          state,
+          expected,
+          encoded,
+          store.Detached(in_flight: False, seize:),
+        )
+        |> result.map_error(WriteFailed),
+      )
       observe.committed(observed, state)
       deliver(setup, state)
       revision
     }
     True ->
-      case prepare(setup) {
+      case prepare(setup.store) {
         // No runner can start (the store's runners are shutting down): the
         // work is committed and started by nobody, as if its runner had been
         // lost at once. It is `Unattended` until recovered.
         Error(Nil) -> {
-          use #(revision, state) <- result.map(write_initialized(
-            setup.store,
-            state,
-            expected,
-            encoded,
-            store.Detached(in_flight: True, seize:),
-          ))
+          use #(revision, state) <- result.map(
+            write_initialized(
+              setup.store,
+              state,
+              expected,
+              encoded,
+              store.Detached(in_flight: True, seize:),
+            )
+            |> result.map_error(WriteFailed),
+          )
           observe.committed(observed, state)
           revision
         }
         Ok(#(pid, mailbox, go)) -> {
+          use carried <- result.try(build_first(setup, state, pid, go))
           let claim =
             store.Launch(
               pid,
@@ -635,17 +780,53 @@ fn launch_over(
             Ok(#(revision, state)) -> {
               // The runner starts before this commit's events are emitted: a
               // handler running here does not hold up the work.
-              process.send(go, Go(revision, state, effects, work))
+              process.send(go, Go(revision, state, effects, carried, context))
               observe.committed(observed, state)
               Ok(revision)
             }
             Error(error) -> {
               process.send(go, Abandon)
-              Error(error)
+              Error(WriteFailed(error))
             }
           }
         }
       }
+  }
+}
+
+/// For an agent kept as its builder, has the prepared runner `pid` build
+/// the setup before anything is written, and checks it builds the agent
+/// `state` names; the runner is abandoned otherwise. The setup the runner
+/// then takes with its first state: `None`, the one it built, or for an
+/// agent built once, `setup` itself.
+fn build_first(
+  setup: Setup(context),
+  state: State,
+  pid: Pid,
+  go: Subject(Go(context)),
+) -> Result(Option(fn() -> Setup(context)), LaunchError) {
+  case setup.remake {
+    None -> Ok(Some(carried(setup)))
+    Some(_) -> {
+      let reply = process.new_subject()
+      let monitor = process.monitor(pid)
+      process.send(go, Build(carried(setup), state.agent, reply))
+      let built =
+        process.new_selector()
+        |> process.select(reply)
+        |> process.select_specific_monitor(monitor, fn(_) {
+          Error("the runner exited while it built the agent")
+        })
+        |> process.selector_receive_forever
+      process.demonitor_process(monitor)
+      case built {
+        Ok(Nil) -> Ok(None)
+        Error(reason) -> {
+          process.send(go, Abandon)
+          Error(Unbuildable(reason))
+        }
+      }
+    }
   }
 }
 
@@ -716,14 +897,14 @@ fn write(
 /// up (`Error`) and is put back for the caller's own receive loop, which
 /// takes it before any other message and drains. Exactly one side decides (`claim`): a runner the helper
 /// started after the caller gave up is abandoned before its first state.
+///
+/// The closures that start the runner are copied through the helper, the
+/// factory and the runner's spawn, so they hold no setup: the runner
+/// receives that once, in its first state (`Go`).
 fn prepare(
-  setup: Setup(context),
-) -> Result(#(Pid, Subject(Message), Subject(Go)), Nil) {
-  runner_host.prepare(
-    setup.store,
-    fn(pinned, owners, ready) { begin(setup, pinned, owners, ready) },
-    Abandon,
-  )
+  runs: Store,
+) -> Result(#(Pid, Subject(Message), Subject(Go(context))), Nil) {
+  runner_host.prepare(runs, begin, Abandon)
 }
 
 /// The runner's life, in the process its factory linked to it. `owners`
@@ -732,10 +913,9 @@ fn prepare(
 /// shutdown arriving before its first state drains it rather than killing
 /// it after its claim was committed.
 fn begin(
-  setup: Setup(context),
   pinned: Store,
   owners: #(Pid, Pid, Pid),
-  ready: Subject(#(Subject(Message), Subject(Go))),
+  ready: Subject(#(Subject(Message), Subject(Go(context)))),
 ) -> Nil {
   let #(store_pid, factory, caller) = owners
   process.trap_exits(True)
@@ -744,12 +924,17 @@ fn begin(
   process.send(ready, #(self, go))
   let _ = process.monitor(store_pid)
   let caller_monitor = process.monitor(caller)
-  case runner_host.first_state(go, pinned, factory, False) {
-    Error(Nil) | Ok(#(Abandon, _)) -> Nil
-    Ok(#(Go(revision, state, effects, first), draining)) -> {
+  case first_state(go, pinned, factory, None, False) {
+    Error(Nil) -> Nil
+    Ok(#(revision, state, effects, setup, context, draining)) -> {
       process.demonitor_process(caller_monitor)
       let setup = Setup(..setup, store: pinned)
+      keep_setup(setup)
       let own = work(setup, setup.env.context)
+      let first = case context {
+        None -> own
+        Some(context) -> work(setup, context)
+      }
       Runner(
         setup:,
         work: own,
@@ -771,6 +956,79 @@ fn begin(
     }
   }
 }
+
+/// Waits for the first state, building the setup first when asked to
+/// (`Build`); `built` is the setup built so far, `draining` whether the
+/// factory's shutdown has arrived. `Error` when the caller,
+/// the store or the factory goes first, the start is abandoned, or the
+/// setup cannot be built. Public for its tests.
+pub fn first_state(
+  go: Subject(Go(context)),
+  pinned: Store,
+  factory: Pid,
+  built: Option(Setup(context)),
+  draining: Bool,
+) -> Result(
+  #(Int, State, List(Effect), Setup(context), Option(context), Bool),
+  Nil,
+) {
+  case runner_host.first_state(go, pinned, factory, draining) {
+    Error(Nil) | Ok(#(Abandon, _)) -> Error(Nil)
+    // A shutdown that arrived before the build is kept for the first state.
+    Ok(#(Build(setup, identity, reply), draining)) ->
+      case build_setup(setup, identity) {
+        Ok(setup) -> {
+          process.send(reply, Ok(Nil))
+          first_state(go, pinned, factory, Some(setup), draining)
+        }
+        Error(reason) -> {
+          process.send(reply, Error(reason))
+          Error(Nil)
+        }
+      }
+    Ok(#(Go(revision, state, effects, setup, context), draining)) ->
+      case setup, built {
+        Some(setup), _ -> Ok(setup())
+        None, Some(setup) -> Ok(setup)
+        None, None -> Error(Nil)
+      }
+      |> result.map(fn(setup) {
+        #(revision, state, effects, setup, context, draining)
+      })
+  }
+}
+
+/// `setup()`, which must build the agent `identity` names; a builder that
+/// crashes or builds another agent is the reason it cannot.
+fn build_setup(
+  setup: fn() -> Setup(context),
+  identity: run.DefinitionId,
+) -> Result(Setup(context), String) {
+  case executor.rescue(setup) {
+    Error(crash) -> Error("the agent's builder failed in the runner: " <> crash)
+    Ok(setup) if setup.identity == identity -> Ok(setup)
+    Ok(setup) ->
+      Error(
+        "the agent's builder built "
+        <> setup.identity.name
+        <> " version "
+        <> int.to_string(setup.identity.version)
+        <> " in the runner, where the run names "
+        <> identity.name
+        <> " version "
+        <> int.to_string(identity.version),
+      )
+  }
+}
+
+/// Keeps `setup` as this runner's own, for the steps of live commands.
+@external(erlang, "fabric_ffi", "keep_setup")
+fn keep_setup(setup: Setup(context)) -> Nil
+
+/// This runner's own setup (`keep_setup`). The run's commands share its
+/// context type, which only the run's runner process receives them for.
+@external(erlang, "fabric_ffi", "kept_setup")
+fn kept_setup() -> Result(Setup(context), Nil)
 
 fn serve(runner: Runner(context)) -> Nil {
   case controller.needs_runner(runner.state), runner.draining {
@@ -893,14 +1151,20 @@ fn receive_next(runner: Runner(context)) -> Nil {
           })
       }
     }
-    live.Command(step, work, command_claim, reply) ->
+    live.Command(step, command_claim, reply) ->
       case claim.accept(command_claim) {
         // The caller has withdrawn it: the command changes nothing.
         False -> Ok(runner)
         True -> {
           process.send(reply, live.Accepted)
-          let work = option.unwrap(work, runner.work)
-          commit_answering(runner, step(runner.state), work, fn(answer) {
+          let #(transition, work) = case step(runner.state) {
+            Ok(#(state, effects, work)) -> #(
+              Ok(#(state, effects)),
+              option.unwrap(work, runner.work),
+            )
+            Error(rejection) -> #(Error(rejection), runner.work)
+          }
+          commit_answering(runner, transition, work, fn(answer) {
             process.send(reply, answer)
           })
         }
@@ -1331,9 +1595,7 @@ fn perform(
           let state = runner.state
           executor.Job(
             id,
-            fn() {
-              work.invoke(state.run, state.root, state.correlation, id, call)
-            },
+            work.invoke(state.run, state.root, state.correlation, id, call),
             registry.timeout(
               runner.setup.env.registry,
               call.name,
@@ -1372,14 +1634,14 @@ fn perform(
       runner
     }
     controller.CancelChildren(children) -> {
-      let setup = runner.setup
+      let setup = carried(runner.setup)
       let state = runner.state
       // Each child is cancelled from its own process: the child's runner
       // may be delivering to this runner at the same moment.
       list.each(children, fn(entry) {
         let #(action, child) = entry
         process.spawn_unlinked(fn() {
-          cancel_child(setup, state, action, child)
+          cancel_child(setup(), state, action, child)
         })
       })
       runner
@@ -1461,15 +1723,20 @@ fn store_started_child(
           let #(state, effects) =
             child_state(child_setup, child, prompt, parent, id)
           let stored = {
-            use encoded <- result.try(store.encode(child_setup.store, state))
+            use encoded <- result.try(encode(child_setup.store, state))
             // Keep these exact bytes for adopting a confirmed late insert.
             Ok(#(encoded, store_child(child_setup, state, encoded, effects, 0)))
           }
           case stored {
             Ok(#(_, Ok(Nil))) -> controller.ChildStarted(id)
-            Ok(#(encoded, Error(backend.AlreadyExists))) ->
+            Ok(#(encoded, Error(WriteFailed(backend.AlreadyExists)))) ->
               adopt_child(child_setup, id, #(state, encoded, effects), 3)
-            Error(error) | Ok(#(_, Error(error))) ->
+            Error(Unbuildable(reason)) | Ok(#(_, Error(Unbuildable(reason)))) ->
+              controller.ChildEnded(
+                id,
+                controller.ChildLost("it could not be built: " <> reason),
+              )
+            Error(WriteFailed(error)) | Ok(#(_, Error(WriteFailed(error)))) ->
               controller.ChildEnded(
                 id,
                 controller.ChildLost(
@@ -1492,11 +1759,12 @@ fn store_child(
   encoded: String,
   effects: List(Effect),
   attempt: Int,
-) -> Result(Nil, backend.StoreError) {
-  let work = work(setup, setup.env.context)
-  case launch_encoded(setup, work, None, state, encoded, effects, False) {
+) -> Result(Nil, LaunchError) {
+  case launch_encoded(setup, None, None, state, encoded, effects, False) {
     Ok(_) -> Ok(Nil)
-    Error(backend.Unavailable(_)) if attempt < unavailable_retries -> {
+    Error(WriteFailed(backend.Unavailable(_)))
+      if attempt < unavailable_retries
+    -> {
       process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
       store_child(setup, state, encoded, effects, attempt + 1)
     }
@@ -1541,11 +1809,13 @@ fn adopt_child(
           }
           case launch(setup, Some(#(entry.revision, stored)), next, effects) {
             // Started, or another node's runner drives it.
-            Ok(_) | Error(backend.LeaseRefused(_)) ->
+            Ok(_) | Error(WriteFailed(backend.LeaseRefused(_))) ->
               controller.ChildStarted(id)
-            Error(backend.Conflict(_)) if tries > 1 ->
+            Error(WriteFailed(backend.Conflict(_))) if tries > 1 ->
               adopt_child(setup, id, start, tries - 1)
-            Error(error) ->
+            Error(Unbuildable(reason)) ->
+              lost("it could not be built: " <> reason)
+            Error(WriteFailed(error)) ->
               lost("it could not be started: " <> string.inspect(error))
           }
         }
@@ -1646,6 +1916,8 @@ fn cancel_until_stopping(
     Error(Contended) -> again("every commit lost a race")
     Error(OwnerUnknown) -> again("no runner drives it")
     Error(Busy) -> again("its runner is busy")
+    Error(AgentUnbuilt(reason)) ->
+      again("the agent could not be built: " <> reason)
   }
 }
 
@@ -1754,8 +2026,12 @@ pub fn cancel_unattended(
     }
   }
   case live_runner(entry, state) {
-    Some(mailbox) ->
-      case send_live(mailbox, controller.cancel, None, within) {
+    Some(mailbox) -> {
+      let step = fn(state) {
+        controller.cancel(state)
+        |> result.map(fn(next) { #(next.0, next.1, None) })
+      }
+      case send_live(mailbox, step, within) {
         Ok(state) -> Ok(state)
         Error(LiveRefused(rejection)) -> Error(CommandRefused(rejection))
         // A held runner does not delay the cancellation: its next commit
@@ -1763,6 +2039,7 @@ pub fn cancel_unattended(
         Error(LiveBusy) -> end_stored()
         Error(LiveGone) -> retry()
       }
+    }
     None -> end_stored()
   }
 }
@@ -1917,6 +2194,9 @@ pub type Failure {
   /// command was sent from the runner's own process); nothing changed.
   Busy
   Unreadable(ReadError)
+  /// The runner that was to take the command's work could not build the
+  /// agent from its builder; nothing changed.
+  AgentUnbuilt(String)
 }
 
 /// The stored record of `child`, the child run of `parent`'s delegation
@@ -2012,7 +2292,6 @@ pub fn command(
       False -> Error(Contended)
     }
   }
-  let work = work(setup, env.context)
   // Applies the event to the stored record. A run that needs a runner
   // (`orphaned`: its runner was lost, or is held) accepts only a
   // cancellation, which abandons that runner's work: `held`, the runner
@@ -2038,7 +2317,7 @@ pub fn command(
     case
       launch_with(
         setup,
-        work,
+        Some(env.context),
         Some(#(entry.revision, state)),
         next,
         effects,
@@ -2049,22 +2328,16 @@ pub fn command(
         option.map(held, process.kill)
         Ok(next)
       }
-      Error(backend.Conflict(_)) -> retry()
+      Error(WriteFailed(backend.Conflict(_))) -> retry()
       // The work needs a lease that another node's runner holds.
-      Error(backend.LeaseRefused(_)) -> Error(OwnerUnknown)
-      Error(error) -> Error(Unreadable(StoreFailed(error)))
+      Error(WriteFailed(backend.LeaseRefused(_))) -> Error(OwnerUnknown)
+      Error(WriteFailed(error)) -> Error(Unreadable(StoreFailed(error)))
+      Error(Unbuildable(reason)) -> Error(AgentUnbuilt(reason))
     }
   }
   case live_runner(entry, state) {
     Some(mailbox) ->
-      case
-        send_live(
-          mailbox,
-          fn(state) { controller.step(env, state, event) },
-          Some(work),
-          setup.command_timeout,
-        )
-      {
+      case send_live(mailbox, live_step(env, event), setup.command_timeout) {
         Ok(state) -> Ok(state)
         Error(LiveRefused(rejection)) -> Error(CommandRefused(rejection))
         // A held runner does not delay a cancellation: it is committed to
@@ -2083,6 +2356,26 @@ pub fn command(
         Error(LiveGone) -> retry()
       }
     None -> apply_stored(controller.needs_runner(state), None)
+  }
+}
+
+/// The step a live runner applies for `event`, in the runner: the
+/// runner's own setup (`keep_setup`), with the command's context and clock
+/// (`env`'s), and the work of its effects with that context. It holds the
+/// event, the context and the clock, never a setup: nothing of the agent
+/// is copied or built again per command.
+fn live_step(
+  env: controller.Env(context),
+  event: Event,
+) -> fn(State) ->
+  Result(#(State, List(Effect), Option(Work)), controller.Rejection) {
+  let context = env.context
+  let clock = env.clock
+  fn(state) {
+    let assert Ok(setup) = kept_setup()
+    let env = controller.Env(..setup.env, context:, clock:)
+    use #(next, effects) <- result.map(controller.step(env, state, event))
+    #(next, effects, Some(work(setup, context)))
   }
 }
 
@@ -2108,8 +2401,10 @@ pub type LiveError {
 pub fn send_live(
   mailbox: Subject(live.Message),
   step: fn(State) ->
-    Result(#(State, List(controller.Effect)), controller.Rejection),
-  work: Option(Work),
+    Result(
+      #(State, List(controller.Effect), Option(Work)),
+      controller.Rejection,
+    ),
   within: Int,
 ) -> Result(State, LiveError) {
   let caller = process.self()
@@ -2120,7 +2415,7 @@ pub fn send_live(
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
       let command_claim = claim.new()
-      process.send(mailbox, live.Command(step, work, command_claim, reply))
+      process.send(mailbox, live.Command(step, command_claim, reply))
       let receive = fn(timeout) {
         let selector =
           process.new_selector()
@@ -2346,29 +2641,29 @@ fn read_children(runner: Runner(context)) -> Runner(context) {
     True, _, _ | _, Some(_), _ -> runner
     False, None, [] -> schedule_children(runner)
     False, None, children -> {
+      // Bound here: a closure that reads a field of `runner` holds all of
+      // it, the setup with its built agent included, and this one is copied
+      // into a new process at every poll.
+      let runs = runner.setup.store
+      let parent = run_id.from_string(runner.state.run)
+      let self = runner.self
       let reader =
         process.spawn(fn() {
           let results =
             list.filter_map(children, fn(child) {
               let #(action, _, id) = child
               use #(_, state) <- result.try(
-                load(runner.setup.store, id)
+                load(runs, id)
                 |> result.map_error(fn(_) { Nil }),
               )
-              case
-                state.parent
-                == Some(run.AgentParent(
-                  run_id.from_string(runner.state.run),
-                  action,
-                ))
-              {
+              case state.parent == Some(run.AgentParent(parent, action)) {
                 False -> Error(Nil)
                 True ->
                   controller.child_result(state)
                   |> result.map(fn(outcome) { #(action, outcome) })
               }
             })
-          process.send(runner.self, live.ChildrenRead(results))
+          process.send(self, live.ChildrenRead(results))
         })
       Runner(..runner, child_reader: Some(reader))
     }

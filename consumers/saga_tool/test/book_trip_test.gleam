@@ -215,13 +215,14 @@ fn start_in(
   rollback_within: Int,
 ) -> fabric.Run(Nil, String) {
   let assert Ok(agent) =
-    agent.new(
-      "traveller",
-      traveller(city),
-      [trip_tool(reports, rollback_within)],
-      policy.always_allow(),
-    )
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "traveller",
+        traveller(city),
+        [trip_tool(reports, rollback_within)],
+        policy.always_allow(),
+      )
+    })
   let assert Ok(run) =
     fabric.start(
       store,
@@ -434,7 +435,7 @@ pub fn an_outcome_after_the_run_ended_is_refused_test() {
 /// and no step runs.
 pub fn an_invalid_config_fails_the_call_before_any_step_runs_test() {
   let reports = process.new_subject()
-  let misconfigured =
+  let misconfigured = fn() {
     saga_tool.tool(
       trip_definition(),
       book_trip(reports),
@@ -443,14 +444,16 @@ pub fn an_invalid_config_fails_the_call_before_any_step_runs_test() {
       explain: fn(_) { "" },
       rollback_within: duration.milliseconds(5000),
     )
+  }
   let assert Ok(agent) =
-    agent.new(
-      "traveller",
-      traveller("Porto"),
-      [misconfigured],
-      policy.always_allow(),
-    )
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "traveller",
+        traveller("Porto"),
+        [misconfigured()],
+        policy.always_allow(),
+      )
+    })
   let assert Ok(run) =
     fabric.start(
       watched.memory(),
@@ -479,7 +482,7 @@ pub fn the_workflow_gets_the_call_and_the_runs_correlation_test() {
     sinal.observe(saga_telemetry.run_started(), fn(_, metadata) {
       process.send(seen, metadata.correlation)
     })
-  let trip =
+  let trip = fn() {
     saga_tool.tool(
       trip_definition(),
       book_trip(reports),
@@ -490,9 +493,16 @@ pub fn the_workflow_gets_the_call_and_the_runs_correlation_test() {
       explain: fn(_) { "failed" },
       rollback_within: duration.seconds(5),
     )
+  }
   let assert Ok(agent) =
-    agent.new("traveller", traveller("Porto"), [trip], policy.always_allow())
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "traveller",
+        traveller("Porto"),
+        [trip()],
+        policy.always_allow(),
+      )
+    })
   let ticket = correlation.from_key("trip-ticket")
   let assert Ok(handle) =
     fabric.start(
@@ -519,7 +529,7 @@ pub fn a_step_reads_the_runs_correlation_test() {
       process.send(seen, saga.correlation_of(key))
       Ok(Itinerary("FL-" <> trip.city, "HT-" <> trip.city, "CH-1"))
     })
-  let trip =
+  let trip = fn() {
     saga_tool.tool(
       trip_definition(),
       saga.define("book", saga.perform(_, book)),
@@ -528,9 +538,16 @@ pub fn a_step_reads_the_runs_correlation_test() {
       explain: fn(_) { "failed" },
       rollback_within: duration.seconds(5),
     )
+  }
   let assert Ok(agent) =
-    agent.new("traveller", traveller("Porto"), [trip], policy.always_allow())
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "traveller",
+        traveller("Porto"),
+        [trip()],
+        policy.always_allow(),
+      )
+    })
   let ticket = correlation.from_key("trip-ticket")
   let assert Ok(handle) =
     fabric.start(

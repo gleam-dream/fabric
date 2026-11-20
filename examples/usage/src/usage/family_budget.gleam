@@ -17,14 +17,15 @@ import usage/support
 /// second model attempt: the run ends `BudgetExhausted(FamilyLimit(..))`.
 pub fn spent() -> run.Status(String) {
   let assert Ok(desk) =
-    agent.new(
-      "desk",
-      support.calling_once("echo", "{\"text\":\"hi\"}", fn(_) { "done" }),
-      [support.echo_tool()],
-      policy.always_allow(),
-    )
-    |> agent.with_family_budget(budget.limits(work: 2))
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "desk",
+        support.calling_once("echo", "{\"text\":\"hi\"}", fn(_) { "done" }),
+        [support.echo_tool()],
+        policy.always_allow(),
+      )
+      |> agent.with_family_budget(budget.limits(work: 2))
+    })
   let runs = store.in_memory(process.new_name("usage-family-budget"))
   let assert Ok(Nil) = store.start(runs)
   let assert Ok(handle) =

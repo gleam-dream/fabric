@@ -130,16 +130,11 @@ pub fn execute_agent(limit: Int) -> graph.Snapshot(Int, Int) {
         None,
       ))
     })
-  let verdict = {
-    use approve <- codec.field("approve", codec.bool(), get: fn(approve) {
-      approve
-    })
-    codec.success(approve)
-  }
   let assert Ok(agent) =
-    agent.new("reviewer", model, [], policy.always_allow())
-    |> agent.with_answer(verdict)
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("reviewer", model, [], policy.always_allow())
+      |> agent.with_answer(verdict_codec())
+    })
   let assert Ok(reviewer) =
     agent_node.new(
       run.DefinitionId("agent-reviewer", 1),
@@ -231,4 +226,12 @@ pub fn main() -> Nil {
   let snapshot = execute(6)
   io.println(string.inspect(snapshot.status))
   io.println(string.inspect(snapshot.receipts))
+}
+
+/// The reviewer's answer, made inside the agent's builder.
+fn verdict_codec() -> codec.Codec(Bool) {
+  use approve <- codec.field("approve", codec.bool(), get: fn(approve) {
+    approve
+  })
+  codec.success(approve)
 }

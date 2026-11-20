@@ -27,20 +27,6 @@ pub type Seen {
 pub fn seen_by_the_run(chosen: Option(Correlation)) -> Seen {
   let requests = process.new_subject()
   let calls = process.new_subject()
-  let note =
-    tool.define(
-      "note",
-      "Notes a call.",
-      support.one_field("text", codec.string()),
-      codec.string(),
-    )
-    |> tool.bind(
-      fn(_context, call: tool.Call, text: String) -> Result(String, Nil) {
-        process.send(calls, call.correlation)
-        Ok(text)
-      },
-      fn(_) { tool.Explain("failed") },
-    )
   let reply =
     support.call_once_then("note", "{\"text\":\"hi\"}", fn(_) { "noted" })
   let reporting =
@@ -49,8 +35,9 @@ pub fn seen_by_the_run(chosen: Option(Correlation)) -> Seen {
       reply(request)
     })
   let assert Ok(noting) =
-    agent.new("noting", reporting, [note], policy.always_allow())
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("noting", reporting, [note_tool(calls)], policy.always_allow())
+    })
   let runs = store.in_memory(process.new_name("usage-correlation"))
   let assert Ok(Nil) = store.start(runs)
   let assert Ok(handle) =
@@ -68,4 +55,22 @@ pub fn seen_by_the_run(chosen: Option(Correlation)) -> Seen {
   let assert Ok(in_tool_call) = process.receive(calls, 1000)
   let assert Ok(Nil) = store.stop(runs)
   Seen(in_request:, in_tool_call:)
+}
+
+/// Notes a call and reports its correlation to `calls`: made inside the
+/// agent's builder, which captures the subject, made once outside it.
+fn note_tool(calls: process.Subject(Correlation)) -> tool.Tool(Nil) {
+  tool.define(
+    "note",
+    "Notes a call.",
+    support.one_field("text", codec.string()),
+    codec.string(),
+  )
+  |> tool.bind(
+    fn(_context, call: tool.Call, text: String) -> Result(String, Nil) {
+      process.send(calls, call.correlation)
+      Ok(text)
+    },
+    fn(_) { tool.Explain("failed") },
+  )
 }

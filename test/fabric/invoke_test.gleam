@@ -28,7 +28,7 @@ fn desk(delay: Int) {
       Ok(model.FinalAnswer(prompt, None))
     })
   agent.new("invoke-desk", model, [], fn(_, _) { Ok(policy.Allow) })
-  |> agent.build
+  |> support.build
   |> should.be_ok
 }
 
@@ -448,7 +448,7 @@ pub fn cancelled_agent_reopen_preserves_unresolved_effects_test() {
       [scripted.crashing_tool(probe.new())],
       fn(_, _) { Ok(policy.Allow) },
     )
-    |> agent.build
+    |> support.build
     |> should.be_ok
   let service = invoke.agent("uncertain", runs, worker)
   let id = invoke.keyed_id(service, "ada", "order")
@@ -480,7 +480,7 @@ pub fn agent_completion_between_disconnect_and_cancellation_retains_the_answer_t
       [],
       fn(_, _) { Ok(policy.Allow) },
     )
-    |> agent.build
+    |> support.build
     |> should.be_ok
   let runs = support.store()
   let cancelled =
@@ -557,7 +557,7 @@ pub fn completed_agent_keeps_its_answer_after_historical_reconciliation_test() {
       [scripted.crashing_tool(probe.new())],
       fn(_, _) { Ok(policy.Allow) },
     )
-    |> agent.build
+    |> support.build
     |> should.be_ok
   let service = invoke.agent("reconciled", runs, worker)
   let id = invoke.keyed_id(service, "ada", "order")

@@ -104,15 +104,17 @@ fn charge() -> fabric_tool.Tool(Nil) {
 
 fn desk(model: model.Model) -> agent.Agent(Nil, Answer) {
   let assert Ok(desk) =
-    agent.new("desk", model, [charge()], fn(_, action: policy.Action) {
-      case action.name {
-        "charge" -> Ok(policy.RequireApproval(run.Requirement("treasurer", 1)))
-        _ -> Ok(policy.Allow)
-      }
+    agent.build_with(fn() {
+      agent.new("desk", model, [charge()], fn(_, action: policy.Action) {
+        case action.name {
+          "charge" ->
+            Ok(policy.RequireApproval(run.Requirement("treasurer", 1)))
+          _ -> Ok(policy.Allow)
+        }
+      })
+      |> agent.with_answer(answer_codec())
+      |> agent.with_approvers(fabric_testing.trusting_approvers())
     })
-    |> agent.with_answer(answer_codec())
-    |> agent.with_approvers(fabric_testing.trusting_approvers())
-    |> agent.build
   desk
 }
 

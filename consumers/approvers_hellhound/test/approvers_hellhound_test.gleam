@@ -88,15 +88,6 @@ fn minted(desk: Desk, spec: fn(testing.TokenSpec) -> testing.TokenSpec) {
 fn waiting(
   approvers: approvers.Approvers(credential),
 ) -> #(fabric.Run(Nil, String), run.PendingApproval) {
-  let order = {
-    use id <- codec.field("order", codec.string(), get: fn(id) { id })
-    codec.success(id)
-  }
-  let refund_tool =
-    tool.define("refund", "Refund an order.", order, codec.string())
-    |> tool.bind(fn(_context, _call, id) { Ok("refunded " <> id) }, fn(_) {
-      tool.Explain("refund failed")
-    })
   let call =
     model.tool_call(
       id: "c1",
@@ -112,9 +103,10 @@ fn waiting(
     })
   let gate = fn(_context, _action) { Ok(policy.RequireApproval(refund)) }
   let assert Ok(desk) =
-    agent.new("desk", scripted, [refund_tool], gate)
-    |> agent.with_approvers(approvers)
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("desk", scripted, [refund_tool()], gate)
+      |> agent.with_approvers(approvers)
+    })
   let runs = store.in_memory(process.new_name("approvers-hellhound"))
   let assert Ok(Nil) = store.start(runs)
   let assert Ok(handle) =
@@ -278,4 +270,20 @@ fn result_to_denial(
 
 fn should_be(actual: a, expected: a) -> Nil {
   assert actual == expected
+}
+
+/// Made inside the agent's builder.
+fn refund_tool() -> tool.Tool(Nil) {
+  tool.define(
+    "refund",
+    "Refund an order.",
+    {
+      use id <- codec.field("order", codec.string(), get: fn(id) { id })
+      codec.success(id)
+    },
+    codec.string(),
+  )
+  |> tool.bind(fn(_context, _call, id) { Ok("refunded " <> id) }, fn(_) {
+    tool.Explain("refund failed")
+  })
 }

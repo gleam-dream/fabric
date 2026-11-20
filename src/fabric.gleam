@@ -5,9 +5,10 @@
 //// let runs = store.in_memory(process.new_name("runs"))  // or store.directory
 //// let assert Ok(Nil) = store.start(runs)   // or store.supervised(runs)
 //// let assert Ok(agent) =
-////   agent.new("desk", model, [weather_tool, transfer_tool], my_policy)
-////   |> agent.with_approvers(desk_approvers)
-////   |> agent.build
+////   agent.build_with(fn() {
+////     agent.new("desk", model, [weather_tool(), transfer_tool()], my_policy)
+////     |> agent.with_approvers(desk_approvers)
+////   })
 //// let assert Ok(handle) =
 ////   fabric.start(runs, agent, id: run.new_id(), context:, prompt: "Pay Bob",
 ////     correlation: None)
@@ -90,6 +91,7 @@ import fabric/internal/budget/model as reservations
 import fabric/internal/checked_agent
 import fabric/internal/clock
 import fabric/internal/controller.{type State}
+import fabric/internal/executor
 import fabric/internal/family
 import fabric/internal/invocation
 import fabric/internal/run_id
@@ -115,7 +117,8 @@ import sinal/correlation.{type Correlation}
 /// A handle on one run, for the agent and context it was started, opened
 /// or recovered with; `answer` is the agent's answer type
 /// (`agent.with_answer`). It holds no process: it can be dropped and
-/// rebuilt with `open`.
+/// rebuilt with `open`. It holds the agent built, codecs and all: to reach
+/// the run from another process, send its id and `open` it there.
 pub opaque type Run(context, answer) {
   Run(id: String, setup: runner.Setup(context), answer: answers.Answer(answer))
 }
@@ -207,6 +210,11 @@ pub type Error {
   RunnerBusy
   /// The command lost every retry against concurrent commits.
   Contended
+  /// The agent's builder (`agent.build_with`) failed, or built another
+  /// name or version than it built first, here or in the runner that was
+  /// to take the run's work. Nothing was stored or changed. A builder must
+  /// build the same agent every time.
+  AgentUnbuildable(detail: String)
 }
 
 /// A stable classification of `Error`, for callers that decide by kind.
@@ -228,7 +236,7 @@ pub type ErrorKind {
   Unavailable
   /// The record and this Fabric, agent or store do not fit:
   /// `UnsupportedVersion`, `CorruptRecord`, `IncompatibleAgent`,
-  /// `FamilyBudgetUnsupported`, `HistoryUnsupported`.
+  /// `FamilyBudgetUnsupported`, `HistoryUnsupported`, `AgentUnbuildable`.
   Incompatible
 }
 
@@ -250,7 +258,8 @@ pub fn error_kind(error: Error) -> ErrorKind {
     | CorruptRecord(_)
     | IncompatibleAgent(_)
     | FamilyBudgetUnsupported
-    | HistoryUnsupported -> Incompatible
+    | HistoryUnsupported
+    | AgentUnbuildable(_) -> Incompatible
   }
 }
 
@@ -296,6 +305,7 @@ pub fn describe_error(error: Error) -> String {
       "the answer's proof is refused: " <> approvers.describe_proof_error(error)
     NotReconcilable -> "the action is not an uncertain effect to reconcile"
     RunUnattended -> "work is in flight and no runner drives the run"
+    AgentUnbuildable(detail) -> "the agent could not be built: " <> detail
     RunnerBusy -> "the run's runner did not take the command in time"
     Contended -> "the command lost every retry against concurrent commits"
   }
@@ -368,6 +378,7 @@ pub fn start_with_input(
       _, _ -> Error(HistoryUnsupported)
     },
   )
+  use agent <- result.try(built(agent))
   let admitted = checked_agent.admitted(agent)
   use declaration <- result.try(case admitted.family_budget {
     None -> Ok(None)
@@ -377,7 +388,7 @@ pub fn start_with_input(
         False -> Error(FamilyBudgetUnsupported)
       }
   })
-  let setup = runner.setup(store, admitted, context, None)
+  let setup = runner.agent_setup(store, agent, context)
   let text = id_to_string(id)
   let correlation =
     option.lazy_unwrap(correlation, fn() { correlation.from_key(text) })
@@ -386,12 +397,23 @@ pub fn start_with_input(
   let state = controller.State(..state, family_budget: declaration)
   case runner.launch_new(setup, state, effects) {
     Ok(_) -> Ok(Run(id: text, setup:, answer: checked_agent.answer(agent)))
-    Error(backend.AlreadyExists) ->
+    Error(runner.WriteFailed(backend.AlreadyExists)) ->
       same_input(store, state)
       |> result.map_error(record_error)
       |> result.try(fn(same) { Error(AlreadyStarted(id, same)) })
-    Error(error) -> Error(StartUnconfirmed(id, describe_store(error)))
+    Error(runner.WriteFailed(error)) ->
+      Error(StartUnconfirmed(id, describe_store(error)))
+    Error(runner.Unbuildable(reason)) -> Error(AgentUnbuildable(reason))
   }
+}
+
+/// `agent` built in this process: once, where several of its parts are
+/// read, and as `AgentUnbuildable` when its builder fails or builds another
+/// agent.
+fn built(
+  agent: Agent(context, answer),
+) -> Result(Agent(context, answer), Error) {
+  checked_agent.try_built(agent) |> result.map_error(AgentUnbuildable)
 }
 
 /// Whether the stored run `fresh.run` is a root started by the same agent
@@ -559,11 +581,13 @@ pub fn recover(
   id: RunId,
 ) -> Result(Run(context, answer), Error) {
   let id = id_to_string(id)
-  let setup = runner.setup(store, checked_agent.admitted(agent), context, None)
+  use agent <- result.try(built(agent))
+  let setup = runner.agent_setup(store, agent, context)
   case family.take_over(setup, id, retries) {
     Ok(Nil) -> Ok(Run(id:, setup:, answer: checked_agent.answer(agent)))
     Error(family.TakeOverContended) -> Error(Contended)
     Error(family.TakeOverUnreadable(problem)) -> Error(record_error(problem))
+    Error(family.TakeOverUnbuildable(reason)) -> Error(AgentUnbuildable(reason))
   }
 }
 
@@ -589,7 +613,8 @@ pub fn open(
   id: RunId,
 ) -> Result(Run(context, answer), Error) {
   let id = id_to_string(id)
-  let setup = runner.setup(store, checked_agent.admitted(agent), context, None)
+  use agent <- result.try(built(agent))
+  let setup = runner.agent_setup(store, agent, context)
   runner.load_checked(setup, id)
   |> result.replace(Run(id:, setup:, answer: checked_agent.answer(agent)))
   |> result.map_error(record_error)
@@ -1198,16 +1223,47 @@ pub fn cancel(run: Run(context, answer)) -> Result(Status(answer), Error) {
 /// The watcher is not linked to the caller and is not supervised: a VM that
 /// stops takes it with it, and the run is then recovered like any other.
 /// Call it once per owner; each call adds one watcher.
+///
+/// The watcher holds the run's id and what makes its agent there: for an
+/// agent made with `agent.build_with`, its builder; never a copy of the
+/// built agent the handle holds. A watcher that cannot build the agent
+/// still cancels the run when `owner` exits, through the store
+/// (`cancel_stored`), unless the run has finished.
 pub fn cancel_when_down(run: Run(context, answer), owner owner: Pid) -> Nil {
+  let id = run.id
+  let setup = runner.carried(run.setup)
+  let runs = run.setup.store
   let _ =
     process.spawn_unlinked(fn() {
       let monitor = process.monitor(owner)
       let down =
         process.new_selector()
         |> process.select_specific_monitor(monitor, fn(_) { Nil })
-      guard(run, down)
+      case executor.rescue(setup) {
+        // The watcher reads only whether the run finished: its answer is
+        // read as stored text, with no codec.
+        Ok(setup) -> guard(Run(id:, setup:, answer: answers.text()), down)
+        Error(_) -> guard_stored(runs, id, down)
+      }
     })
   Nil
+}
+
+/// `guard` for a watcher that cannot build the run's agent: when `down`
+/// fires, the run is cancelled through the store; once the stored run has
+/// finished, the watcher stops.
+fn guard_stored(runs: Store, id: String, down: process.Selector(Nil)) -> Nil {
+  case process.selector_receive(down, 5000) {
+    Ok(Nil) -> {
+      let _ = cancel_stored(runs, run_id.from_string(id))
+      Nil
+    }
+    Error(Nil) ->
+      case runner.load(runs, id) {
+        Ok(#(_, controller.State(phase: controller.Ended(_), ..))) -> Nil
+        _ -> guard_stored(runs, id, down)
+      }
+  }
 }
 
 fn guard(run: Run(context, answer), down: process.Selector(Nil)) -> Nil {
@@ -1377,6 +1433,7 @@ fn command_error(failure: runner.Failure) -> Error {
     | runner.Unreadable(runner.StoreFailed(backend.Conflict(_))) -> Contended
     runner.Busy -> RunnerBusy
     runner.Unreadable(problem) -> record_error(problem)
+    runner.AgentUnbuilt(reason) -> AgentUnbuildable(reason)
   }
 }
 

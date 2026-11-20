@@ -1,11 +1,15 @@
 import fabric
 import fabric/budget
 import fabric/run
+import fabric/store
+import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit
 import gleeunit/should
 import sinal/correlation
+import usage/codecs
 import usage/correlation as usage_correlation
 import usage/failures
 import usage/family_budget
@@ -102,4 +106,45 @@ pub fn a_handed_over_call_ends_the_run_and_a_follow_on_run_continues_test() {
     shown.first_run
   shown.follow_on
   |> should.equal(run.Finished(run.Completed("Ana, \"refunded 60.00\"")))
+}
+
+/// What the model saw after asking to pay `to` with a desk that may pay
+/// `accounts`: the tool's result, or the refusal of an unknown payee.
+fn paid(accounts: List(String), to: String) -> String {
+  let arguments =
+    "{\"to\":\"" <> to <> "\",\"lines\":[{\"memo\":\"rent\",\"cents\":100}]}"
+  let model =
+    support.calling_once("transfer", arguments, fn(seen) {
+      string.join(seen, " | ")
+    })
+  let assert Ok(payer) = codecs.payer(model, accounts)
+  let runs = store.in_memory(process.new_name("usage-codecs"))
+  let assert Ok(Nil) = store.start(runs)
+  let assert Ok(handle) =
+    fabric.start(
+      runs,
+      payer,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "pay",
+      correlation: None,
+    )
+  let assert Ok(run.Finished(run.Completed(seen))) =
+    fabric.await(handle, within: duration.seconds(5))
+  let assert Ok(Nil) = store.stop(runs)
+  seen
+}
+
+pub fn a_run_pays_one_of_its_own_accounts_test() {
+  paid(["ada", "bob"], "ada") |> should.equal("\"paid ada\"")
+}
+
+pub fn a_payee_outside_the_runs_accounts_is_refused_test() {
+  let seen = paid(["ada"], "eve")
+  let assert False = string.contains(seen, "paid")
+}
+
+pub fn a_desk_with_a_repeated_account_is_refused_test() {
+  let model = support.answering("done")
+  let assert Error(_) = codecs.payer(model, ["ada", "ada"])
 }

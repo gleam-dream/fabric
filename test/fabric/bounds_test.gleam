@@ -56,7 +56,7 @@ pub fn build_reports_every_bound_with_its_setter_test() {
     |> agent.with_family_budget(
       budget.limits(work: 10) |> budget.with_depth(64),
     )
-    |> agent.build
+    |> support.build
   list.map(errors, fn(error) {
     let assert agent.InvalidLimit(limit:, ..) = error
     limit
@@ -101,7 +101,7 @@ pub fn build_refuses_bounds_a_timer_cannot_hold_test() {
   |> agent.with_model_timeout(After(duration.milliseconds(0)))
   |> agent.with_tool_timeout(After(too_long))
   |> agent.with_max_result_bytes(0)
-  |> agent.build
+  |> support.build
   |> should_fail_with([
     agent.InvalidLimit(agent.ModelTimeout, 0, 1, 4_294_967_295),
     agent.InvalidLimit(agent.ToolTimeout, 4_294_967_296, 1, 4_294_967_295),
@@ -122,7 +122,7 @@ pub fn build_refuses_bounds_a_timer_cannot_hold_test() {
     [lookup],
     policy.always_allow(),
   )
-  |> agent.build
+  |> support.build
   |> should_fail_with([
     agent.InvalidToolLimit("lookup", agent.ToolTimeout, 0, 1, 4_294_967_295),
   ])
@@ -130,7 +130,7 @@ pub fn build_refuses_bounds_a_timer_cannot_hold_test() {
   spec
   |> agent.with_model_timeout(Infinity)
   |> agent.with_tool_timeout(Infinity)
-  |> agent.build
+  |> support.build
   |> should.be_ok
 }
 

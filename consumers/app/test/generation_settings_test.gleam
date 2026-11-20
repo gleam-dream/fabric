@@ -54,14 +54,15 @@ pub fn configured_model_applies_settings_and_preserves_native_answer_test() {
     |> generation.with_max_tokens(128)
     |> generation.with_temperature(0.2)
   let assert Ok(agent) =
-    agent.new(
-      "configured",
-      llm.configured_model(client, config, "fixture", settings),
-      [],
-      policy.always_allow(),
-    )
-    |> agent.with_answer(codec.int())
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "configured",
+        llm.configured_model(client, config, "fixture", settings),
+        [],
+        policy.always_allow(),
+      )
+      |> agent.with_answer(codec.int())
+    })
   // snips-end: generation-settings
   let runs = store.in_memory(process.new_name("generation-consumer"))
   let assert Ok(Nil) = store.start(runs)
@@ -153,15 +154,16 @@ pub fn settings_apply_on_both_tool_turns_without_replacing_tools_or_output_test(
     |> generation.with_top_p(0.8)
     |> generation.with_openai_prompt_cache_key("accounts-v1")
   let assert Ok(agent) =
-    agent.new(
-      "configured",
-      llm.configured_model(client, config, "fixture", settings),
-      [doubling_tool()],
-      policy.always_allow(),
-    )
-    |> agent.with_system_prompt("Keep application policy")
-    |> agent.with_answer(amount_codec())
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "configured",
+        llm.configured_model(client, config, "fixture", settings),
+        [doubling_tool()],
+        policy.always_allow(),
+      )
+      |> agent.with_system_prompt("Keep application policy")
+      |> agent.with_answer(amount_codec())
+    })
   let context = Tenant("accounts", process.new_subject())
   let runs = memory()
   let assert Ok(handle) =
@@ -245,15 +247,16 @@ pub fn reconstructed_model_keeps_google_cache_and_signed_tool_replay_test() {
   let staff = fabric_testing.trusting_approvers()
   let build = fn() {
     let assert Ok(agent) =
-      agent.new(
-        "configured",
-        llm.configured_model(client, config, "fixture", settings),
-        [doubling_tool()],
-        fn(_, _) { Ok(policy.RequireApproval(run.Requirement("review", 1))) },
-      )
-      |> agent.with_answer(codec.int())
-      |> agent.with_approvers(staff)
-      |> agent.build
+      agent.build_with(fn() {
+        agent.new(
+          "configured",
+          llm.configured_model(client, config, "fixture", settings),
+          [doubling_tool()],
+          fn(_, _) { Ok(policy.RequireApproval(run.Requirement("review", 1))) },
+        )
+        |> agent.with_answer(codec.int())
+        |> agent.with_approvers(staff)
+      })
     agent
   }
   let context = Tenant("accounts", process.new_subject())
@@ -351,13 +354,14 @@ pub fn invalid_generation_stops_before_http_and_default_constructor_still_works_
     ],
     fn(example) {
       let assert Ok(agent) =
-        agent.new(
-          "invalid",
-          llm.configured_model(client, example.0, "fixture", example.1),
-          [],
-          policy.always_allow(),
-        )
-        |> agent.build
+        agent.build_with(fn() {
+          agent.new(
+            "invalid",
+            llm.configured_model(client, example.0, "fixture", example.1),
+            [],
+            policy.always_allow(),
+          )
+        })
       let assert Ok(handle) =
         fabric.start(runs, agent, run.new_id(), Nil, "answer", None)
       let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =
@@ -367,13 +371,14 @@ pub fn invalid_generation_stops_before_http_and_default_constructor_still_works_
     },
   )
   let assert Ok(agent) =
-    agent.new(
-      "default",
-      llm.model(client, config, "fixture"),
-      [],
-      policy.always_allow(),
-    )
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "default",
+        llm.model(client, config, "fixture"),
+        [],
+        policy.always_allow(),
+      )
+    })
   let assert Ok(handle) =
     fabric.start(runs, agent, run.new_id(), Nil, "answer", None)
   assert fabric.await(handle, duration.seconds(5))

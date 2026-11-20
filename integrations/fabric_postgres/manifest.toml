@@ -23,7 +23,7 @@ packages = [
   { name = "gleeunit", version = "1.11.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleeunit", source = "hex", outer_checksum = "EC31ABA74256AEA531EDF8169931D775BBB384FED0A8A1BDC4DD9354E3E21826" },
   { name = "gun", version = "2.6.0", build_tools = ["make", "rebar3"], requirements = ["cowlib"], otp_app = "gun", source = "hex", outer_checksum = "69BB957F4BD6C475B5714460FD65C26FC7EB85760AA64B74754DE36CE5CCED7D" },
   { name = "http_gun", version = "0.2.0", build_tools = ["gleam"], requirements = ["cowlib", "file_streams", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "gun", "simplifile", "sinal", "youid"], otp_app = "http_gun", source = "hex", outer_checksum = "EC1765351EA2DD6A329B1BF88B8EF7B01819E9C94E5D065C1A0C62A2D05FFC39" },
-  { name = "json_blueprint", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_json", "gleam_stdlib"], otp_app = "json_blueprint", source = "hex", outer_checksum = "CFF98414EDD9A7F969F46FF6CAA17BAD1A5DAC4CB80D45938ED41239CEBC6E25" },
+  { name = "json_blueprint", version = "2.1.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_json", "gleam_stdlib"], otp_app = "json_blueprint", source = "hex", outer_checksum = "6726C43158582C2414DD41F49A1CA3CE52B20643339075DF7DE14C65A5E49729" },
   { name = "llm_wire", version = "0.2.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "http_gun", "json_blueprint", "sinal"], otp_app = "llm_wire", source = "hex", outer_checksum = "1B6CD7206BC93D6C66A20AF5968CBA167630707864651CCA20756060E26FB716" },
   { name = "opentelemetry_api", version = "1.5.0", build_tools = ["rebar3", "mix"], requirements = [], otp_app = "opentelemetry_api", source = "hex", outer_checksum = "F53EC8A1337AE4A487D43AC89DA4BD3A3C99DDF576655D071DEED8B56A2D5DDA" },
   { name = "pg_types", version = "0.6.0", build_tools = ["rebar3"], requirements = [], otp_app = "pg_types", source = "hex", outer_checksum = "9949A4849DD13408FA249AB7B745E0D2DFDB9532AEE2B9722326E33CD082A778" },
@@ -44,6 +44,6 @@ gleam_otp = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_stdlib = { version = ">= 0.70.0 and < 2.0.0" }
 gleam_time = { version = ">= 1.11.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
-json_blueprint = { version = ">= 2.0.0 and < 3.0.0" }
+json_blueprint = { version = ">= 2.1.1 and < 3.0.0" }
 pgo = { version = ">= 0.20.0 and < 0.21.0" }
 pog = { version = ">= 4.1.0 and < 4.2.0" }

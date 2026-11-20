@@ -378,7 +378,7 @@ pub fn invalid_configuration_is_rejected_before_starting_test() {
     agent.InvalidLimit(agent.MaxConcurrency, -1, 1, 9_007_199_254_740_991),
     agent.InvalidLimit(agent.TokenBudget, 0, 1, 9_007_199_254_740_991),
   ]
-  agent.build(spec) |> should.equal(Error(expected))
+  support.build(spec) |> should.equal(Error(expected))
 }
 
 pub fn handler_receives_the_run_context_test() {
@@ -500,7 +500,7 @@ pub fn a_policy_that_never_answers_fails_closed_at_its_deadline_test() {
 pub fn the_policy_timeout_must_be_positive_test() {
   agent.new("agent", scripted.plan([]), [], policy.always_allow())
   |> agent.with_policy_timeout(duration.milliseconds(0))
-  |> agent.build
+  |> support.build
   |> should.equal(
     Error([agent.InvalidLimit(agent.PolicyTimeout, 0, 1, 4_294_967_295)]),
   )
@@ -515,7 +515,7 @@ pub fn timer_fed_limits_must_fit_a_timer_test() {
   |> agent.with_policy_timeout(duration.milliseconds(longest + 1))
   |> agent.with_command_timeout(duration.milliseconds(longest + 1))
   |> agent.with_model_retry_delay(duration.milliseconds(longest / 64 + 1))
-  |> agent.build
+  |> support.build
   |> should.equal(
     Error([
       agent.InvalidLimit(agent.PolicyTimeout, longest + 1, 1, 4_294_967_295),
@@ -532,7 +532,7 @@ pub fn timer_fed_limits_must_fit_a_timer_test() {
   |> agent.with_policy_timeout(duration.milliseconds(longest))
   |> agent.with_command_timeout(duration.milliseconds(longest))
   |> agent.with_model_retry_delay(duration.milliseconds(longest / 64))
-  |> agent.build
+  |> support.build
   |> result.is_ok
   |> should.be_true
 }
@@ -575,7 +575,7 @@ pub fn model_retries_back_off_test() {
 pub fn the_model_retry_delay_must_not_be_negative_test() {
   agent.new("agent", scripted.plan([]), [], policy.always_allow())
   |> agent.with_model_retry_delay(duration.milliseconds(-1))
-  |> agent.build
+  |> support.build
   |> should.equal(
     Error([agent.InvalidLimit(agent.ModelRetryDelay, -1, 0, 4_294_967_295 / 64)]),
   )

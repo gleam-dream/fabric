@@ -141,7 +141,7 @@ fn assert_refused(response, code) {
 }
 
 fn desk(effects) {
-  let operation =
+  let operation = fn() {
     tool.bind(
       tool.define(
         "effect",
@@ -155,6 +155,7 @@ fn desk(effects) {
       },
       fn(_: Nil) { tool.Explain("infallible") },
     )
+  }
   let model =
     model.new(fn(request) {
       case list.last(request.messages) {
@@ -170,8 +171,9 @@ fn desk(effects) {
         _ -> Ok(model.FinalAnswer("done", None))
       }
     })
-  agent.new("admission", model, [operation], policy.always_allow())
-  |> agent.build
+  agent.build_with(fn() {
+    agent.new("admission", model, [operation()], policy.always_allow())
+  })
   |> should.be_ok
 }
 

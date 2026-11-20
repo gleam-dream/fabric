@@ -129,17 +129,18 @@ fn runs() -> store.Store {
   runs
 }
 
-/// Runs an agent with `tools` whose model calls `tool` once, and returns
-/// the run's status.
+/// Runs an agent with the tools `tools` makes, inside the agent's builder,
+/// whose model calls `tool` once, and returns the run's status.
 fn run_once(tools, inventory: client.Client, tool: String, arguments: String) {
   let assert Ok(assistant) =
-    agent.new(
-      "assistant",
-      calling(tool, arguments),
-      tools,
-      policy.always_allow(),
-    )
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "assistant",
+        calling(tool, arguments),
+        tools(),
+        policy.always_allow(),
+      )
+    })
   let id = run.new_id()
   let assert Ok(handle) =
     fabric.start(
@@ -161,7 +162,7 @@ pub fn a_typed_tool_answers_with_its_structured_output_test() {
   let inventory = testing.connect(inventory(seen, 0), Nil)
   let #(id, status) =
     run_once(
-      [relay_tools.tool(lookup(), peer:)],
+      fn() { [relay_tools.tool(lookup(), peer:)] },
       inventory,
       "lookup",
       "{\"sku\":\"AB-1\"}",
@@ -190,13 +191,14 @@ pub fn the_definition_names_and_describes_the_fabric_tool_test() {
       Ok(model.FinalAnswer("ok", None))
     })
   let assert Ok(assistant) =
-    agent.new(
-      "assistant",
-      model,
-      [relay_tools.tool(lookup(), peer:)],
-      policy.always_allow(),
-    )
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "assistant",
+        model,
+        [relay_tools.tool(lookup(), peer:)],
+        policy.always_allow(),
+      )
+    })
   let assert Ok(handle) =
     fabric.start(
       runs(),
@@ -219,7 +221,7 @@ pub fn an_is_error_result_is_explained_to_the_model_test() {
   let inventory = testing.connect(inventory(seen, 0), Nil)
   let #(_, status) =
     run_once(
-      [relay_tools.tool(reserve(), peer:)],
+      fn() { [relay_tools.tool(reserve(), peer:)] },
       inventory,
       "reserve",
       "{\"sku\":\"ZZ-9\"}",
@@ -240,7 +242,7 @@ pub fn a_lost_call_to_a_changing_tool_is_uncertain_test() {
     |> client.connect
   let #(_, status) =
     run_once(
-      [relay_tools.tool(reserve(), peer:)],
+      fn() { [relay_tools.tool(reserve(), peer:)] },
       inventory,
       "reserve",
       "{\"sku\":\"AB-1\"}",
@@ -261,7 +263,7 @@ pub fn a_lost_call_to_a_read_only_tool_is_explained_test() {
     |> client.connect
   let #(_, status) =
     run_once(
-      [relay_tools.tool(lookup(), peer:)],
+      fn() { [relay_tools.tool(lookup(), peer:)] },
       inventory,
       "lookup",
       "{\"sku\":\"AB-1\"}",
@@ -280,7 +282,7 @@ pub fn a_call_never_sent_is_explained_test() {
   let assert Ok(unreachable) = client.connect(config)
   let #(_, status) =
     run_once(
-      [relay_tools.tool(reserve(), peer:)],
+      fn() { [relay_tools.tool(reserve(), peer:)] },
       unreachable,
       "reserve",
       "{\"sku\":\"AB-1\"}",
@@ -295,9 +297,13 @@ pub fn listed_tools_are_mounted_and_validate_their_arguments_test() {
   let seen = process.new_subject()
   let inventory = testing.connect(inventory(seen, 0), Nil)
   let assert Ok(declarations) = client.list_tools(inventory)
-  let assert Ok(tools) =
-    list.try_map(declarations, relay_discovery.discovered(_, peer:))
-  list.length(tools) |> should.equal(3)
+  // The builder captures the listed declarations, data, and mounts them.
+  let tools = fn() {
+    let assert Ok(tools) =
+      list.try_map(declarations, relay_discovery.discovered(_, peer:))
+    tools
+  }
+  list.length(tools()) |> should.equal(3)
   // Structured content as the server sent it.
   let #(_, status) = run_once(tools, inventory, "lookup", "{\"sku\":\"AB-1\"}")
   status

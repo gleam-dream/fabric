@@ -353,15 +353,16 @@ pub fn librarian_spec(staff: Approvers(Badge)) -> agent.Spec(Member, String) {
 pub fn librarian(
   staff: Approvers(Badge),
 ) -> Result(Agent(Member, String), List(agent.ConfigError)) {
-  agent.build(librarian_spec(staff))
+  agent.build_with(fn() { librarian_spec(staff) })
 }
 
 pub fn misconfigured(
   staff: Approvers(Badge),
 ) -> Result(Agent(Member, String), List(agent.ConfigError)) {
-  librarian_spec(staff)
-  |> agent.with_max_turns(0)
-  |> agent.build
+  agent.build_with(fn() {
+    librarian_spec(staff)
+    |> agent.with_max_turns(0)
+  })
 }
 
 // --- acquisitions: a sub-agent ------------------------------------------------
@@ -419,47 +420,51 @@ pub fn order_definition() -> tool.Definition(Purchase, String) {
   )
 }
 
+/// Places a purchase order; made inside the purchaser's builder.
+fn order_tool() -> tool.Tool(Member) {
+  order_definition()
+  |> tool.bind(
+    fn(_member, _call, purchase: Purchase) -> Result(String, Nil) {
+      Ok("PO-" <> purchase.title)
+    },
+    fn(_) { tool.Explain("order failed") },
+  )
+}
+
 /// Places a purchase order for a title, and answers with a typed `Order`
 /// (`agent.with_answer`): the delegation's output is that answer.
 pub fn purchaser() -> Agent(Member, Order) {
-  let order =
-    order_definition()
-    |> tool.bind(
-      fn(_member, _call, purchase: Purchase) -> Result(String, Nil) {
-        Ok("PO-" <> purchase.title)
-      },
-      fn(_) { tool.Explain("order failed") },
-    )
   let assert Ok(purchaser) =
-    agent.new(
-      "purchaser",
-      model.new(fn(request: model.Request) {
-        let usage =
-          Some(Usage(input_tokens: 4, output_tokens: 2, thought_tokens: None))
-        Ok(case prompt(request.messages), results(request.messages) {
-          "buy " <> title, [] ->
-            ToolRequest(
-              model.AssistantTurn(
-                "",
-                [call("o1", "order_book", "{\"title\":\"" <> title <> "\"}")],
-                None,
-              ),
-              usage,
-            )
-          _, seen ->
-            codec.encode_json(
-              order_codec(),
-              Order("ordered " <> string.join(seen, ", ")),
-            )
-            |> result.unwrap("")
-            |> FinalAnswer(usage)
-        })
-      }),
-      [order],
-      purchasing_policy,
-    )
-    |> agent.with_answer(order_codec())
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "purchaser",
+        model.new(fn(request: model.Request) {
+          let usage =
+            Some(Usage(input_tokens: 4, output_tokens: 2, thought_tokens: None))
+          Ok(case prompt(request.messages), results(request.messages) {
+            "buy " <> title, [] ->
+              ToolRequest(
+                model.AssistantTurn(
+                  "",
+                  [call("o1", "order_book", "{\"title\":\"" <> title <> "\"}")],
+                  None,
+                ),
+                usage,
+              )
+            _, seen ->
+              codec.encode_json(
+                order_codec(),
+                Order("ordered " <> string.join(seen, ", ")),
+              )
+              |> result.unwrap("")
+              |> FinalAnswer(usage)
+          })
+        }),
+        [order_tool()],
+        purchasing_policy,
+      )
+      |> agent.with_answer(order_codec())
+    })
   purchaser
 }
 
@@ -537,48 +542,49 @@ pub fn loan_tool() -> tool.Tool(Member) {
 /// requests are answered with the desk's.
 pub fn front_desk(staff: Approvers(Badge)) -> Agent(Member, String) {
   let assert Ok(desk) =
-    agent.new(
-      "front-desk",
-      model.new(fn(request: model.Request) {
-        let usage =
-          Some(Usage(input_tokens: 10, output_tokens: 5, thought_tokens: None))
-        Ok(case prompt(request.messages), results(request.messages) {
-          "acquire " <> title, [] ->
-            ToolRequest(
-              model.AssistantTurn(
-                "",
-                [call("a1", "acquire", "{\"title\":\"" <> title <> "\"}")],
-                None,
-              ),
-              usage,
-            )
-          "borrow " <> title, [] ->
-            ToolRequest(
-              model.AssistantTurn(
-                "",
-                [
-                  call(
-                    "l1",
-                    "interlibrary_loan",
-                    "{\"title\":\"" <> title <> "\"}",
-                  ),
-                ],
-                None,
-              ),
-              usage,
-            )
-          _, seen -> FinalAnswer("done: " <> string.join(seen, " | "), usage)
-        })
-      }),
-      [loan_tool()],
-      front_desk_policy,
-    )
-    |> agent.with_sub_agent(
-      acquire_definition(),
-      to: purchaser(),
-      prompt: fn(purchase: Purchase) { "buy " <> purchase.title },
-    )
-    |> agent.with_approvers(staff)
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new(
+        "front-desk",
+        model.new(fn(request: model.Request) {
+          let usage =
+            Some(Usage(input_tokens: 10, output_tokens: 5, thought_tokens: None))
+          Ok(case prompt(request.messages), results(request.messages) {
+            "acquire " <> title, [] ->
+              ToolRequest(
+                model.AssistantTurn(
+                  "",
+                  [call("a1", "acquire", "{\"title\":\"" <> title <> "\"}")],
+                  None,
+                ),
+                usage,
+              )
+            "borrow " <> title, [] ->
+              ToolRequest(
+                model.AssistantTurn(
+                  "",
+                  [
+                    call(
+                      "l1",
+                      "interlibrary_loan",
+                      "{\"title\":\"" <> title <> "\"}",
+                    ),
+                  ],
+                  None,
+                ),
+                usage,
+              )
+            _, seen -> FinalAnswer("done: " <> string.join(seen, " | "), usage)
+          })
+        }),
+        [loan_tool()],
+        front_desk_policy,
+      )
+      |> agent.with_sub_agent(
+        acquire_definition(),
+        to: purchaser(),
+        prompt: fn(purchase: Purchase) { "buy " <> purchase.title },
+      )
+      |> agent.with_approvers(staff)
+    })
   desk
 }

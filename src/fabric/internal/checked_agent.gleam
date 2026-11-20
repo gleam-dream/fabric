@@ -11,27 +11,147 @@ import fabric/model.{type Model}
 import fabric/policy.{type Policy}
 import fabric/run.{type DefinitionId}
 import gleam/dict.{type Dict}
-import gleam/option.{type Option}
+import gleam/int
+import gleam/option.{type Option, None, Some}
 import json/blueprint/codec
 
-/// A checked agent. Only `fabric/agent.build` makes one.
+/// A checked agent. Only `fabric/agent.build` and `build_with` make one.
 pub opaque type Agent(context, answer) {
-  Agent(admitted: Admitted(context), answer: Answer(answer))
+  /// A built agent; `builder` builds it again in another process when it
+  /// was built from a builder (`built`).
+  Agent(
+    admitted: Admitted(context),
+    answer: Answer(answer),
+    builder: Option(fn() -> Admitted(context)),
+  )
+  /// An agent kept as its builder (`agent.build_with`), checked once when
+  /// it was made: it is built in each process that uses it, so that only
+  /// the builder is ever copied between processes. `facts` are what the
+  /// first build was.
+  Deferred(
+    facts: Facts,
+    build: fn() -> Result(#(Admitted(context), Answer(answer)), String),
+  )
+}
+
+/// The few settings a caller reads without running the agent, kept by an
+/// agent made from its builder so that reading them builds nothing.
+pub type Facts {
+  Facts(
+    identity: DefinitionId,
+    command_timeout: Int,
+    max_turns: Int,
+    token_budget: Option(Int),
+    max_children: Int,
+    max_depth: Int,
+  )
+}
+
+/// The settings of `admitted` a caller reads without running it.
+pub fn facts_of(admitted: Admitted(context)) -> Facts {
+  Facts(
+    identity: admitted.identity,
+    command_timeout: admitted.command_timeout,
+    max_turns: admitted.max_turns,
+    token_budget: admitted.token_budget,
+    max_children: admitted.max_children,
+    max_depth: admitted.max_depth,
+  )
+}
+
+/// `agent`'s settings, read without building it.
+pub fn facts(agent: Agent(context, answer)) -> Facts {
+  case agent {
+    Agent(admitted:, ..) -> facts_of(admitted)
+    Deferred(facts:, ..) -> facts
+  }
 }
 
 pub fn new(
   admitted: Admitted(context),
   answer: Answer(answer),
 ) -> Agent(context, answer) {
-  Agent(admitted, answer)
+  Agent(admitted, answer, None)
+}
+
+/// An agent that `build` makes wherever it is used; the first build had
+/// `facts`.
+pub fn deferred(
+  facts: Facts,
+  build: fn() -> Result(#(Admitted(context), Answer(answer)), String),
+) -> Agent(context, answer) {
+  Deferred(facts, build)
+}
+
+/// The agent built: itself, or what its builder builds now, which must be
+/// the agent it built first (a builder is deterministic); otherwise why it
+/// is not. Build once with this where several parts of an agent are read;
+/// it keeps the builder.
+pub fn try_built(
+  agent: Agent(context, answer),
+) -> Result(Agent(context, answer), String) {
+  case agent {
+    Agent(..) -> Ok(agent)
+    Deferred(facts: Facts(identity:, ..), build:) ->
+      case rescue(build) {
+        Error(crash) ->
+          Error("the agent's builder (agent.build_with) crashed: " <> crash)
+        Ok(Error(reason)) -> Error(reason)
+        Ok(Ok(#(made, answer))) if made.identity == identity ->
+          Ok(Agent(made, answer, Some(fn() { admitted(agent) })))
+        Ok(Ok(#(made, _))) ->
+          Error(
+            "the agent's builder (agent.build_with) built "
+            <> describe_identity(made.identity)
+            <> " after building "
+            <> describe_identity(identity)
+            <> ": a builder must build the same agent every time",
+          )
+      }
+  }
+}
+
+/// `try_built`, crashing the process when the agent cannot be built: for a
+/// process that is already running the agent's work (a runner's command,
+/// a tool's task), where its first build in that process succeeded.
+pub fn built(agent: Agent(context, answer)) -> Agent(context, answer) {
+  case try_built(agent) {
+    Ok(agent) -> agent
+    Error(reason) -> panic as reason
+  }
+}
+
+/// The name and version of `agent`, without building it.
+pub fn identity(agent: Agent(context, answer)) -> DefinitionId {
+  facts(agent).identity
+}
+
+@external(erlang, "fabric_ffi", "rescue")
+fn rescue(body: fn() -> a) -> Result(a, String)
+
+fn describe_identity(identity: DefinitionId) -> String {
+  identity.name <> " version " <> int.to_string(identity.version)
+}
+
+/// How another process builds this agent's admitted form, for an agent
+/// kept as its builder; `None` for one built once.
+pub fn builder(
+  agent: Agent(context, answer),
+) -> Option(fn() -> Admitted(context)) {
+  case agent {
+    Agent(builder:, ..) -> builder
+    Deferred(..) -> Some(fn() { admitted(agent) })
+  }
 }
 
 pub fn admitted(agent: Agent(context, answer)) -> Admitted(context) {
-  agent.admitted
+  let assert Agent(admitted:, ..) = built(agent)
+  admitted
 }
 
 pub fn answer(agent: Agent(context, answer)) -> Answer(answer) {
-  agent.answer
+  let assert Agent(answer:, ..) = built(agent)
+  answer
 }
 
 /// A validated agent, ready for the runtime.

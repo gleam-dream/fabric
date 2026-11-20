@@ -20,8 +20,9 @@ import usage/support
 
 fn desk() -> agent.Agent(Nil, String) {
   let assert Ok(desk) =
-    agent.new("desk", support.answering("done"), [], policy.always_allow())
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("desk", support.answering("done"), [], policy.always_allow())
+    })
   desk
 }
 

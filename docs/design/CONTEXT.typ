@@ -2,6 +2,7 @@
   (slug: "term-run", title: [Run], body: [A stored execution named by a caller-chosen RunId, or for a managed child by a RunId Fabric derives from its parent attachment. Its durable data belongs to either the agent controller or the graph controller.]),
   (slug: "term-original-input", title: [Original input], body: [The immutable ordered historical messages and current user prompt supplied to one agent run. _Avoid_: conversation resource, which implies an independently managed lifecycle; first message, which excludes later imported history and the current prompt.]),
   (slug: "term-agent", title: [Agent], body: [A validated definition of a model-turn loop, typed tools, policy and final-answer contract.]),
+  (slug: "term-agent-builder", title: [Agent Builder], body: [The application function an agent is made from. Each process that runs the agent builds it there, so only the builder and the small values it captures are copied between processes. _Avoid_: recipe, which names compiled consumer code.]),
   (slug: "term-graph", title: [Graph], body: [A validated immutable protocol over typed application state, operations and declared routes.]),
   (slug: "term-action", title: [Action], body: [One tool call or delegation identified by its run and ActionId(turn, call_id). A graph operation instead uses an activation and attempt.]),
   (slug: "term-activation", title: [Activation], body: [One visit to a graph node, identified by a run-local positive ordinal. Revisiting a node creates a new activation.]),
