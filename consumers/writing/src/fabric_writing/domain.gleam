@@ -81,25 +81,29 @@ fn draft_fields() -> codec.Codec(Draft) {
 }
 
 pub fn body_codec() -> codec.Codec(String) {
-  let body =
+  use body <- codec.field(
+    "body",
     codec.string()
-    |> codec.describe(
-      "The complete draft, using only facts in the supplied source.",
-    )
-  use body <- codec.field("body", body, get: fn(body) { body })
+      |> codec.describe(
+        "The complete draft, using only facts in the supplied source.",
+      ),
+    get: fn(body) { body },
+  )
   codec.success(body)
 }
 
+/// Each child codec is made inside its field, never `let`-bound before the
+/// fields: a later field's continuation would capture it.
 pub fn decision_codec() -> codec.Codec(Decision) {
-  let decision =
+  use decision <- codec.field(
+    "decision",
     codec.string_enum([
       #("approve", Approve),
       #("revise", Revise),
       #("reject", Reject),
-    ])
-  use decision <- codec.field("decision", decision, get: fn(decision) {
-    decision
-  })
+    ]),
+    get: fn(decision) { decision },
+  )
   codec.success(decision)
 }
 
@@ -126,18 +130,20 @@ pub fn state_codec() -> codec.Codec(State) {
   )
 }
 
+fn stage_codec() -> codec.Codec(Stage) {
+  codec.string_enum([
+    #("generate", Generating),
+    #("review", Reviewing),
+    #("publish", Publishing),
+  ])
+}
+
 fn state_fields() -> codec.Codec(State) {
-  let stages =
-    codec.string_enum([
-      #("generate", Generating),
-      #("review", Reviewing),
-      #("publish", Publishing),
-    ])
   codec.union({
     use loading <- codec.variant("loading", brief_codec(), Loading)
     use working <- codec.variant(
       "working",
-      codec.pair(stages, draft_codec()),
+      codec.pair(stage_codec(), draft_codec()),
       fn(pair) { Working(pair.0, pair.1) },
     )
     codec.match(fn(state) {
@@ -150,14 +156,16 @@ fn state_fields() -> codec.Codec(State) {
 }
 
 pub fn outcome_codec() -> codec.Codec(Outcome) {
-  let stopped =
-    codec.string_enum([
-      #("rejected", Rejected),
-      #("revision_limit", RevisionLimit),
-    ])
   codec.union({
     use published <- codec.variant("published", artifact_codec(), Published)
-    use stopped <- codec.variant("stopped", stopped, fn(outcome) { outcome })
+    use stopped <- codec.variant(
+      "stopped",
+      codec.string_enum([
+        #("rejected", Rejected),
+        #("revision_limit", RevisionLimit),
+      ]),
+      fn(outcome) { outcome },
+    )
     codec.match(fn(outcome) {
       case outcome {
         Published(artifact) -> published(artifact)

@@ -16,14 +16,14 @@ pub type Decision {
 }
 
 pub fn decision_codec() -> codec.Codec(Decision) {
-  let choices =
+  use decision <- codec.field(
+    "decision",
     codec.string_enum([#("approve", Approve), #("revise", Revise)])
-    |> codec.describe(
-      "Approve only a correct arithmetic statement; otherwise revise.",
-    )
-  use decision <- codec.field("decision", choices, get: fn(decision) {
-    decision
-  })
+      |> codec.describe(
+        "Approve only a correct arithmetic statement; otherwise revise.",
+      ),
+    get: fn(decision) { decision },
+  )
   codec.success(decision)
 }
 

@@ -72,11 +72,14 @@ pub fn summarize(
   text: String,
 ) -> Result(run.Status(String), Error) {
   use summarizer <- result.try(
-    agent.new("summarizer", model, [], policy.always_allow())
-    |> agent.with_system_prompt("Summarize the supplied text in one paragraph.")
-    |> agent.with_max_turns(2)
-    |> agent.with_model_timeout(run.After(duration.seconds(20)))
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("summarizer", model, [], policy.always_allow())
+      |> agent.with_system_prompt(
+        "Summarize the supplied text in one paragraph.",
+      )
+      |> agent.with_max_turns(2)
+      |> agent.with_model_timeout(run.After(duration.seconds(20)))
+    })
     |> result.map_error(InvalidAgent),
   )
   let runs = store.in_memory(process.new_name("summaries"))
@@ -100,6 +103,91 @@ pub fn summarize(
 <!-- prettier-ignore-end -->
 
 The in-memory records disappear when the store stops. Services needing recovery supervise a persistent store and keep each run id. A completed answer does not prove every action succeeded; inspect `fabric.snapshot` before treating it as business success.
+
+## Codecs in tools and answers
+
+Every run executes in its own runner process, with its tool bodies and model calls in tasks of that runner, and the BEAM copies a value whole into each process it reaches. Fabric therefore never sends an agent: `agent.build_with` keeps the function that makes the agent's spec, and each process that runs the agent (the caller of `fabric.start`, the runner, a sub-agent's runner) builds it there. A tool's task receives only that tool. What a run copies is its builder, its context and its record. The deprecated `agent.build` returns a built agent, which is copied whole into every runner.
+
+Write tool and answer codecs by the [json_blueprint codec practice](https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md) (json_blueprint 2.1.1 or later). Fabric adds three rules:
+
+- Give `agent.build_with` a builder that captures small data (ids, settings, an HTTP client) and builds the same agent every time. A builder that captures a built tool or codec brings the copy back.
+- Make each tool input codec's children inside their fields, never `let`-bound once and captured by later fields.
+- Make a run-time enum, such as the accounts a run may pay, from the run's own ids, inside the field.
+
+<!-- prettier-ignore-start -->
+
+<!-- snips: examples/usage/src/usage/codecs.gleam#codecs -->
+```gleam
+import fabric/agent.{type Agent}
+import fabric/model.{type Model}
+import fabric/policy
+import fabric/tool
+import gleam/list
+import json/blueprint/codec.{type Codec}
+
+pub type Line {
+  Line(memo: String, cents: Int)
+}
+
+pub type Transfer {
+  Transfer(to: String, lines: List(Line))
+}
+
+/// Each child codec is made inside its field, by its own function. The
+/// payee is a run-time enum: the run's own account ids, made into a codec
+/// inside the field.
+fn transfer_codec(accounts: List(String)) -> Codec(Transfer) {
+  use to <- codec.field(
+    "to",
+    codec.string_enum(list.map(accounts, fn(id) { #(id, id) })),
+    get: fn(transfer: Transfer) { transfer.to },
+  )
+  use lines <- codec.field(
+    "lines",
+    codec.list(of: line_codec()),
+    get: fn(transfer: Transfer) { transfer.lines },
+  )
+  codec.success(Transfer(to:, lines:))
+}
+
+fn line_codec() -> Codec(Line) {
+  use memo <- codec.field("memo", codec.string(), get: fn(line: Line) {
+    line.memo
+  })
+  use cents <- codec.field("cents", codec.int(), get: fn(line: Line) {
+    line.cents
+  })
+  codec.success(Line(memo:, cents:))
+}
+
+fn transfer_tool(accounts: List(String)) -> tool.Tool(Nil) {
+  tool.define(
+    "transfer",
+    "Pay one of the run's accounts.",
+    transfer_codec(accounts),
+    codec.string(),
+  )
+  |> tool.bind(
+    fn(_context, _call, transfer: Transfer) -> Result(String, Nil) {
+      Ok("paid " <> transfer.to)
+    },
+    fn(_) { tool.Explain("transfer failed") },
+  )
+}
+
+/// The agent for a run that may pay `accounts`. The builder captures the
+/// ids and the model; `transfer_tool` runs in every process that builds it.
+pub fn payer(
+  model: Model,
+  accounts: List(String),
+) -> Result(Agent(Nil, String), List(agent.ConfigError)) {
+  agent.build_with(fn() {
+    agent.new("payer", model, [transfer_tool(accounts)], policy.always_allow())
+  })
+}
+```
+
+<!-- prettier-ignore-end -->
 
 ## Core model
 
@@ -253,14 +341,15 @@ let settings =
   |> generation.with_max_tokens(128)
   |> generation.with_temperature(0.2)
 let assert Ok(agent) =
-  agent.new(
-    "configured",
-    llm.configured_model(client, config, "fixture", settings),
-    [],
-    policy.always_allow(),
-  )
-  |> agent.with_answer(codec.int())
-  |> agent.build
+  agent.build_with(fn() {
+    agent.new(
+      "configured",
+      llm.configured_model(client, config, "fixture", settings),
+      [],
+      policy.always_allow(),
+    )
+    |> agent.with_answer(codec.int())
+  })
 ```
 
 <!-- prettier-ignore-end -->
