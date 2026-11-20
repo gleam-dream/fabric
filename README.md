@@ -42,7 +42,9 @@ The examples below use `agent.build_with`, from Fabric 0.5.0. On 0.4.0,
 build the agent with `agent.build` and do not send it to other processes
 per operation.
 The optional [PostgreSQL adapter](integrations/fabric_postgres/README.md)
-installs from a Git subdirectory.
+installs from a Git subdirectory. Its current release requires fabric
+`>= 0.4.0 and < 0.5.0`, so a project that uses it stays on Fabric 0.4 until
+an adapter release for 0.5 follows.
 
 ## Start with an agent
 
