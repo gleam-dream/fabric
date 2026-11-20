@@ -63,7 +63,8 @@ fn one_field(name: String) -> codec.Codec(Int) {
 
 /// The agent whose model asks for `work` with `amount`.
 pub fn agent(gate: Gate, amount: Int) -> Agent(Nil, String) {
-  let work =
+  // Made inside the agent's builder, which captures only `gate`.
+  let work = fn() {
     tool.bind(
       definition(),
       fn(_context, _call, amount: Int) -> Result(Int, Nil) {
@@ -74,6 +75,7 @@ pub fn agent(gate: Gate, amount: Int) -> Agent(Nil, String) {
       },
       fn(_) { tool.Explain("failed") },
     )
+  }
   let model =
     model.new(fn(request: model.Request) {
       let results =
@@ -112,9 +114,10 @@ pub fn agent(gate: Gate, amount: Int) -> Agent(Nil, String) {
     }
   }
   let assert Ok(agent) =
-    agent.new("worker", model, [work], policy)
-    |> agent.with_approvers(testing.trusting_approvers())
-    |> agent.build
+    agent.build_with(fn() {
+      agent.new("worker", model, [work()], policy)
+      |> agent.with_approvers(testing.trusting_approvers())
+    })
   agent
 }
 
