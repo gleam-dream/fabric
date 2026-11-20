@@ -162,12 +162,38 @@ pub fn agent(spec: Spec(context, answer)) -> Agent(context, answer) {
 
 /// `agent.build_with` of `spec` as it is now: whatever the spec made while
 /// it was described (a probe, a subject) is made once, as `agent.build`
-/// did, and every process builds the agent from that same spec.
+/// did, and every process builds the agent from that same spec. Within
+/// `built_once`, the deprecated `agent.build` instead.
 pub fn build(
   spec: Spec(context, answer),
 ) -> Result(Agent(context, answer), List(agent.ConfigError)) {
-  agent.build_with(fn() { spec })
+  case building_once() {
+    True -> deprecated_build(spec)
+    False -> agent.build_with(fn() { spec })
+  }
 }
+
+/// Runs `body` with every agent `build` makes built once, by the
+/// deprecated `agent.build`, whose agent is copied whole into every
+/// process: that path is kept working until it is removed.
+pub fn built_once(body: fn() -> a) -> Nil {
+  set_building_once(True)
+  let _ = body()
+  set_building_once(False)
+}
+
+/// `agent.build`, called through its compiled name so that the strict
+/// build does not fail on its deprecation.
+@external(erlang, "fabric@agent", "build")
+fn deprecated_build(
+  spec: Spec(context, answer),
+) -> Result(Agent(context, answer), List(agent.ConfigError))
+
+@external(erlang, "fabric_test_ffi", "building_once")
+fn building_once() -> Bool
+
+@external(erlang, "fabric_test_ffi", "set_building_once")
+fn set_building_once(once: Bool) -> Nil
 
 /// A started in-memory store, linked to the caller. Within `leased`, a
 /// leased store over its own in-memory leased backend instead.

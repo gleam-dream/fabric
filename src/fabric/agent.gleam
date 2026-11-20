@@ -534,6 +534,8 @@ pub fn with_sub_agent(
   to child: Agent(context, output),
   prompt prompt: fn(input) -> String,
 ) -> Spec(context, answer) {
+  // Built once, here: a child kept as its builder builds on every read.
+  let child = checked_agent.built(child)
   let child_answer = checked_agent.answer(child)
   let child = checked_agent.admitted(child)
   let delegation =
@@ -563,7 +565,9 @@ pub fn build_with(
 ) -> Result(Agent(context, answer), List(ConfigError)) {
   let first = spec()
   use admitted <- result.map(admit(first))
-  checked_agent.deferred(admitted.identity, fn() { rebuild(spec) })
+  checked_agent.deferred(checked_agent.facts_of(admitted), fn() {
+    rebuild(spec)
+  })
 }
 
 /// The agent `spec` makes, built again in the process that needs it. It
@@ -571,15 +575,15 @@ pub fn build_with(
 /// builder's contract.
 fn rebuild(
   spec: fn() -> Spec(context, answer),
-) -> #(Admitted(context), Answer(answer)) {
+) -> Result(#(Admitted(context), Answer(answer)), String) {
   let spec = spec()
   case admit(spec) {
-    Ok(admitted) -> #(admitted, spec.answer)
+    Ok(admitted) -> Ok(#(admitted, spec.answer))
     Error(errors) ->
-      panic as {
+      Error(
         "the agent's builder (agent.build_with) built an invalid agent: "
-        <> describe_config_errors(errors)
-      }
+        <> describe_config_errors(errors),
+      )
   }
 }
 

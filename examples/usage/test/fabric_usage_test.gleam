@@ -108,7 +108,7 @@ pub fn a_handed_over_call_ends_the_run_and_a_follow_on_run_continues_test() {
   |> should.equal(run.Finished(run.Completed("Ana, \"refunded 60.00\"")))
 }
 
-/// What the model saw after asking to pay `to` in a run that may pay
+/// What the model saw after asking to pay `to` with a desk that may pay
 /// `accounts`: the tool's result, or the refusal of an unknown payee.
 fn paid(accounts: List(String), to: String) -> String {
   let arguments =
@@ -142,4 +142,9 @@ pub fn a_run_pays_one_of_its_own_accounts_test() {
 pub fn a_payee_outside_the_runs_accounts_is_refused_test() {
   let seen = paid(["ada"], "eve")
   let assert False = string.contains(seen, "paid")
+}
+
+pub fn a_desk_with_a_repeated_account_is_refused_test() {
+  let model = support.answering("done")
+  let assert Error(_) = codecs.payer(model, ["ada", "ada"])
 }

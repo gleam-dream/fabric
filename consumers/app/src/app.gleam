@@ -420,17 +420,20 @@ pub fn order_definition() -> tool.Definition(Purchase, String) {
   )
 }
 
+/// Places a purchase order; made inside the purchaser's builder.
+fn order_tool() -> tool.Tool(Member) {
+  order_definition()
+  |> tool.bind(
+    fn(_member, _call, purchase: Purchase) -> Result(String, Nil) {
+      Ok("PO-" <> purchase.title)
+    },
+    fn(_) { tool.Explain("order failed") },
+  )
+}
+
 /// Places a purchase order for a title, and answers with a typed `Order`
 /// (`agent.with_answer`): the delegation's output is that answer.
 pub fn purchaser() -> Agent(Member, Order) {
-  let order =
-    order_definition()
-    |> tool.bind(
-      fn(_member, _call, purchase: Purchase) -> Result(String, Nil) {
-        Ok("PO-" <> purchase.title)
-      },
-      fn(_) { tool.Explain("order failed") },
-    )
   let assert Ok(purchaser) =
     agent.build_with(fn() {
       agent.new(
@@ -457,7 +460,7 @@ pub fn purchaser() -> Agent(Member, Order) {
               |> FinalAnswer(usage)
           })
         }),
-        [order],
+        [order_tool()],
         purchasing_policy,
       )
       |> agent.with_answer(order_codec())

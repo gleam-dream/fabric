@@ -64,7 +64,7 @@ fn model_once() -> model.Model {
 fn start(
   workflow: saga.Workflow(String, String, Failure, Nil),
 ) -> fabric.Run(Nil, String) {
-  let tool =
+  let tool = fn() {
     saga_tool.tool(
       definition(),
       workflow,
@@ -75,9 +75,10 @@ fn start(
       explain: fn(failure) { "typed error: " <> string.inspect(failure) },
       rollback_within: duration.milliseconds(5000),
     )
+  }
   let assert Ok(agent) =
     agent.build_with(fn() {
-      agent.new("agent", model_once(), [tool], policy.always_allow())
+      agent.new("agent", model_once(), [tool()], policy.always_allow())
     })
   let assert Ok(run) =
     fabric.start(

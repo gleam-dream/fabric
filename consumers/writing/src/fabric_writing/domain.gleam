@@ -81,29 +81,25 @@ fn draft_fields() -> codec.Codec(Draft) {
 }
 
 pub fn body_codec() -> codec.Codec(String) {
-  use body <- codec.field(
-    "body",
+  let body =
     codec.string()
-      |> codec.describe(
-        "The complete draft, using only facts in the supplied source.",
-      ),
-    get: fn(body) { body },
-  )
+    |> codec.describe(
+      "The complete draft, using only facts in the supplied source.",
+    )
+  use body <- codec.field("body", body, get: fn(body) { body })
   codec.success(body)
 }
 
-/// Each child codec is made inside its field, never `let`-bound before the
-/// fields: a later field's continuation would capture it.
 pub fn decision_codec() -> codec.Codec(Decision) {
-  use decision <- codec.field(
-    "decision",
+  let decision =
     codec.string_enum([
       #("approve", Approve),
       #("revise", Revise),
       #("reject", Reject),
-    ]),
-    get: fn(decision) { decision },
-  )
+    ])
+  use decision <- codec.field("decision", decision, get: fn(decision) {
+    decision
+  })
   codec.success(decision)
 }
 

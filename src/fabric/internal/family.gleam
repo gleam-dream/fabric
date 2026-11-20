@@ -328,6 +328,9 @@ pub fn ancestors_open(
 pub type TakeOverError {
   TakeOverUnreadable(ReadError)
   TakeOverContended
+  /// The runner that was to take the run over could not build its agent;
+  /// nothing was written.
+  TakeOverUnbuildable(String)
 }
 
 /// Takes over the run `id` if work is in flight and no runner in this store
@@ -402,11 +405,14 @@ pub fn take_over(
           Ok(Nil)
         }
         // Another node claimed the lease meanwhile: the run is left to it.
-        Error(backend.LeaseRefused(_)) -> Ok(Nil)
-        Error(backend.Conflict(_)) if tries > 1 ->
+        Error(runner.WriteFailed(backend.LeaseRefused(_))) -> Ok(Nil)
+        Error(runner.WriteFailed(backend.Conflict(_))) if tries > 1 ->
           take_over(setup, id, tries - 1)
-        Error(backend.Conflict(_)) -> Error(TakeOverContended)
-        Error(error) -> Error(TakeOverUnreadable(runner.StoreFailed(error)))
+        Error(runner.WriteFailed(backend.Conflict(_))) ->
+          Error(TakeOverContended)
+        Error(runner.WriteFailed(error)) ->
+          Error(TakeOverUnreadable(runner.StoreFailed(error)))
+        Error(runner.Unbuildable(reason)) -> Error(TakeOverUnbuildable(reason))
       }
     }
   }
@@ -536,7 +542,10 @@ fn reattach_child(
             Ok(result) -> runner.notify_parent(child_setup, result)
             Error(Nil) ->
               case take_over(child_setup, child, 3) {
-                Ok(Nil) | Error(TakeOverContended) -> Nil
+                // Nothing was written: recovery tries it again.
+                Ok(Nil)
+                | Error(TakeOverContended)
+                | Error(TakeOverUnbuildable(_)) -> Nil
                 Error(TakeOverUnreadable(problem)) ->
                   runner.notify_parent(
                     child_setup,

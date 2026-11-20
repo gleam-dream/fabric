@@ -422,6 +422,9 @@ fn offer_settlement(
       ))
     Error(Unreadable(problem)) ->
       Error(tool.SettleUnconfirmed(describe_read(problem)))
+    // Nothing was applied; offering it again may succeed.
+    Error(AgentUnbuilt(reason)) ->
+      Error(tool.SettleUnconfirmed("the agent could not be built: " <> reason))
   }
 }
 
@@ -570,20 +573,37 @@ type Runner(context) {
   )
 }
 
-/// What a prepared runner is told once its first state's commit is known:
-/// its setup, received here once rather than through the closures that
-/// start it (`carried`), and the context the first `effects` run with
-/// (`None`: the run's own).
+/// What a prepared runner is told, received once rather than through the
+/// closures that start it (`carried`). For an agent kept as its builder,
+/// before anything is written: `Build` the setup here and answer whether
+/// it is the agent `identity` names. Then, once its first state's commit
+/// is known, `Go` with that state, the setup (`None`: the one it built),
+/// and the context the first `effects` run with (`None`: the run's own).
 type Go(context) {
+  Build(
+    setup: fn() -> Setup(context),
+    identity: run.DefinitionId,
+    reply: Subject(Result(Nil, String)),
+  )
   Go(
     revision: Int,
     state: State,
     effects: List(Effect),
-    setup: fn() -> Setup(context),
+    setup: Option(fn() -> Setup(context)),
     context: Option(context),
   )
   /// The commit failed: exit without doing anything.
   Abandon
+}
+
+/// Why a launch failed.
+pub type LaunchError {
+  /// The store's error for the write; `Unavailable` leaves its outcome
+  /// unknown.
+  WriteFailed(backend.StoreError)
+  /// The runner that was to take the work could not build the agent from
+  /// its builder, or built another agent: nothing was written.
+  Unbuildable(reason: String)
 }
 
 /// Commits `state` over `expected` (`None`: inserts the run) and, when the
@@ -599,7 +619,7 @@ pub fn launch(
   before: Option(#(Int, State)),
   state: State,
   effects: List(Effect),
-) -> Result(Int, backend.StoreError) {
+) -> Result(Int, LaunchError) {
   launch_with(setup, None, before, state, effects, False)
 }
 
@@ -614,9 +634,13 @@ fn launch_with(
   state: State,
   effects: List(Effect),
   seize: Bool,
-) -> Result(Int, backend.StoreError) {
-  use encoded <- result.try(store.encode(setup.store, state))
+) -> Result(Int, LaunchError) {
+  use encoded <- result.try(encode(setup.store, state))
   launch_encoded(setup, context, before, state, encoded, effects, seize)
+}
+
+fn encode(runs: Store, state: State) -> Result(String, LaunchError) {
+  store.encode(runs, state) |> result.map_error(WriteFailed)
 }
 
 /// Stores and starts the new root run `state`. A backend that reports the
@@ -628,15 +652,15 @@ pub fn launch_new(
   setup: Setup(context),
   state: State,
   effects: List(Effect),
-) -> Result(Int, backend.StoreError) {
-  use encoded <- result.try(store.encode(setup.store, state))
+) -> Result(Int, LaunchError) {
+  use encoded <- result.try(encode(setup.store, state))
   case launch_encoded(setup, None, None, state, encoded, effects, False) {
-    Error(backend.AlreadyExists) ->
+    Error(WriteFailed(backend.AlreadyExists)) ->
       case store.get(setup.store, state.run) {
         Ok(store.Entry(revision: 1, record: stored, live: None, ..))
           if stored == encoded
         -> {
-          use encoded <- result.try(store.encode(setup.store, state))
+          use encoded <- result.try(encode(setup.store, state))
           launch_over(
             setup,
             None,
@@ -648,7 +672,7 @@ pub fn launch_new(
             False,
           )
         }
-        _ -> Error(backend.AlreadyExists)
+        _ -> Error(WriteFailed(backend.AlreadyExists))
       }
     other -> other
   }
@@ -664,7 +688,7 @@ fn launch_encoded(
   encoded: String,
   effects: List(Effect),
   seize: Bool,
-) -> Result(Int, backend.StoreError) {
+) -> Result(Int, LaunchError) {
   let expected = option.map(before, fn(before) { before.0 })
   let observed = option.map(before, fn(before) { before.1 })
   launch_over(
@@ -691,16 +715,19 @@ fn launch_over(
   encoded: String,
   effects: List(Effect),
   seize: Bool,
-) -> Result(Int, backend.StoreError) {
+) -> Result(Int, LaunchError) {
   case controller.needs_runner(state) {
     False -> {
-      use #(revision, state) <- result.map(write_initialized(
-        setup.store,
-        state,
-        expected,
-        encoded,
-        store.Detached(in_flight: False, seize:),
-      ))
+      use #(revision, state) <- result.map(
+        write_initialized(
+          setup.store,
+          state,
+          expected,
+          encoded,
+          store.Detached(in_flight: False, seize:),
+        )
+        |> result.map_error(WriteFailed),
+      )
       observe.committed(observed, state)
       deliver(setup, state)
       revision
@@ -711,17 +738,21 @@ fn launch_over(
         // work is committed and started by nobody, as if its runner had been
         // lost at once. It is `Unattended` until recovered.
         Error(Nil) -> {
-          use #(revision, state) <- result.map(write_initialized(
-            setup.store,
-            state,
-            expected,
-            encoded,
-            store.Detached(in_flight: True, seize:),
-          ))
+          use #(revision, state) <- result.map(
+            write_initialized(
+              setup.store,
+              state,
+              expected,
+              encoded,
+              store.Detached(in_flight: True, seize:),
+            )
+            |> result.map_error(WriteFailed),
+          )
           observe.committed(observed, state)
           revision
         }
         Ok(#(pid, mailbox, go)) -> {
+          use carried <- result.try(build_first(setup, state, pid, go))
           let claim =
             store.Launch(
               pid,
@@ -737,20 +768,53 @@ fn launch_over(
             Ok(#(revision, state)) -> {
               // The runner starts before this commit's events are emitted: a
               // handler running here does not hold up the work.
-              process.send(
-                go,
-                Go(revision, state, effects, carried(setup), context),
-              )
+              process.send(go, Go(revision, state, effects, carried, context))
               observe.committed(observed, state)
               Ok(revision)
             }
             Error(error) -> {
               process.send(go, Abandon)
-              Error(error)
+              Error(WriteFailed(error))
             }
           }
         }
       }
+  }
+}
+
+/// For an agent kept as its builder, has the prepared runner `pid` build
+/// the setup before anything is written, and checks it builds the agent
+/// `state` names; the runner is abandoned otherwise. The setup the runner
+/// then takes with its first state: `None`, the one it built, or for an
+/// agent built once, `setup` itself.
+fn build_first(
+  setup: Setup(context),
+  state: State,
+  pid: Pid,
+  go: Subject(Go(context)),
+) -> Result(Option(fn() -> Setup(context)), LaunchError) {
+  case setup.remake {
+    None -> Ok(Some(carried(setup)))
+    Some(_) -> {
+      let reply = process.new_subject()
+      let monitor = process.monitor(pid)
+      process.send(go, Build(carried(setup), state.agent, reply))
+      let built =
+        process.new_selector()
+        |> process.select(reply)
+        |> process.select_specific_monitor(monitor, fn(_) {
+          Error("the runner exited while it built the agent")
+        })
+        |> process.selector_receive_forever
+      process.demonitor_process(monitor)
+      case built {
+        Ok(Nil) -> Ok(None)
+        Error(reason) -> {
+          process.send(go, Abandon)
+          Error(Unbuildable(reason))
+        }
+      }
+    }
   }
 }
 
@@ -848,11 +912,12 @@ fn begin(
   process.send(ready, #(self, go))
   let _ = process.monitor(store_pid)
   let caller_monitor = process.monitor(caller)
-  case runner_host.first_state(go, pinned, factory, False) {
-    Error(Nil) | Ok(#(Abandon, _)) -> Nil
-    Ok(#(Go(revision, state, effects, setup, context), draining)) -> {
+  case first_state(go, pinned, factory, None) {
+    Error(Nil) -> Nil
+    Ok(#(revision, state, effects, setup, context, draining)) -> {
       process.demonitor_process(caller_monitor)
-      let setup = Setup(..setup(), store: pinned)
+      let setup = Setup(..setup, store: pinned)
+      keep_setup(setup)
       let own = work(setup, setup.env.context)
       let first = case context {
         None -> own
@@ -879,6 +944,76 @@ fn begin(
     }
   }
 }
+
+/// Waits for the first state, building the setup first when asked to
+/// (`Build`); `built` is the setup built so far. `Error` when the caller,
+/// the store or the factory goes first, the start is abandoned, or the
+/// setup cannot be built.
+fn first_state(
+  go: Subject(Go(context)),
+  pinned: Store,
+  factory: Pid,
+  built: Option(Setup(context)),
+) -> Result(
+  #(Int, State, List(Effect), Setup(context), Option(context), Bool),
+  Nil,
+) {
+  case runner_host.first_state(go, pinned, factory, False) {
+    Error(Nil) | Ok(#(Abandon, _)) -> Error(Nil)
+    Ok(#(Build(setup, identity, reply), _)) ->
+      case build_setup(setup, identity) {
+        Ok(setup) -> {
+          process.send(reply, Ok(Nil))
+          first_state(go, pinned, factory, Some(setup))
+        }
+        Error(reason) -> {
+          process.send(reply, Error(reason))
+          Error(Nil)
+        }
+      }
+    Ok(#(Go(revision, state, effects, setup, context), draining)) ->
+      case setup, built {
+        Some(setup), _ -> Ok(setup())
+        None, Some(setup) -> Ok(setup)
+        None, None -> Error(Nil)
+      }
+      |> result.map(fn(setup) {
+        #(revision, state, effects, setup, context, draining)
+      })
+  }
+}
+
+/// `setup()`, which must build the agent `identity` names; a builder that
+/// crashes or builds another agent is the reason it cannot.
+fn build_setup(
+  setup: fn() -> Setup(context),
+  identity: run.DefinitionId,
+) -> Result(Setup(context), String) {
+  case executor.rescue(setup) {
+    Error(crash) -> Error("the agent's builder failed in the runner: " <> crash)
+    Ok(setup) if setup.identity == identity -> Ok(setup)
+    Ok(setup) ->
+      Error(
+        "the agent's builder built "
+        <> setup.identity.name
+        <> " version "
+        <> int.to_string(setup.identity.version)
+        <> " in the runner, where the run names "
+        <> identity.name
+        <> " version "
+        <> int.to_string(identity.version),
+      )
+  }
+}
+
+/// Keeps `setup` as this runner's own, for the steps of live commands.
+@external(erlang, "fabric_ffi", "keep_setup")
+fn keep_setup(setup: Setup(context)) -> Nil
+
+/// This runner's own setup (`keep_setup`). The run's commands share its
+/// context type, which only the run's runner process receives them for.
+@external(erlang, "fabric_ffi", "kept_setup")
+fn kept_setup() -> Result(Setup(context), Nil)
 
 fn serve(runner: Runner(context)) -> Nil {
   case controller.needs_runner(runner.state), runner.draining {
@@ -1573,15 +1708,20 @@ fn store_started_child(
           let #(state, effects) =
             child_state(child_setup, child, prompt, parent, id)
           let stored = {
-            use encoded <- result.try(store.encode(child_setup.store, state))
+            use encoded <- result.try(encode(child_setup.store, state))
             // Keep these exact bytes for adopting a confirmed late insert.
             Ok(#(encoded, store_child(child_setup, state, encoded, effects, 0)))
           }
           case stored {
             Ok(#(_, Ok(Nil))) -> controller.ChildStarted(id)
-            Ok(#(encoded, Error(backend.AlreadyExists))) ->
+            Ok(#(encoded, Error(WriteFailed(backend.AlreadyExists)))) ->
               adopt_child(child_setup, id, #(state, encoded, effects), 3)
-            Error(error) | Ok(#(_, Error(error))) ->
+            Error(Unbuildable(reason)) | Ok(#(_, Error(Unbuildable(reason)))) ->
+              controller.ChildEnded(
+                id,
+                controller.ChildLost("it could not be built: " <> reason),
+              )
+            Error(WriteFailed(error)) | Ok(#(_, Error(WriteFailed(error)))) ->
               controller.ChildEnded(
                 id,
                 controller.ChildLost(
@@ -1604,10 +1744,12 @@ fn store_child(
   encoded: String,
   effects: List(Effect),
   attempt: Int,
-) -> Result(Nil, backend.StoreError) {
+) -> Result(Nil, LaunchError) {
   case launch_encoded(setup, None, None, state, encoded, effects, False) {
     Ok(_) -> Ok(Nil)
-    Error(backend.Unavailable(_)) if attempt < unavailable_retries -> {
+    Error(WriteFailed(backend.Unavailable(_)))
+      if attempt < unavailable_retries
+    -> {
       process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
       store_child(setup, state, encoded, effects, attempt + 1)
     }
@@ -1652,11 +1794,13 @@ fn adopt_child(
           }
           case launch(setup, Some(#(entry.revision, stored)), next, effects) {
             // Started, or another node's runner drives it.
-            Ok(_) | Error(backend.LeaseRefused(_)) ->
+            Ok(_) | Error(WriteFailed(backend.LeaseRefused(_))) ->
               controller.ChildStarted(id)
-            Error(backend.Conflict(_)) if tries > 1 ->
+            Error(WriteFailed(backend.Conflict(_))) if tries > 1 ->
               adopt_child(setup, id, start, tries - 1)
-            Error(error) ->
+            Error(Unbuildable(reason)) ->
+              lost("it could not be built: " <> reason)
+            Error(WriteFailed(error)) ->
               lost("it could not be started: " <> string.inspect(error))
           }
         }
@@ -1757,6 +1901,8 @@ fn cancel_until_stopping(
     Error(Contended) -> again("every commit lost a race")
     Error(OwnerUnknown) -> again("no runner drives it")
     Error(Busy) -> again("its runner is busy")
+    Error(AgentUnbuilt(reason)) ->
+      again("the agent could not be built: " <> reason)
   }
 }
 
@@ -2033,6 +2179,9 @@ pub type Failure {
   /// command was sent from the runner's own process); nothing changed.
   Busy
   Unreadable(ReadError)
+  /// The runner that was to take the command's work could not build the
+  /// agent from its builder; nothing changed.
+  AgentUnbuilt(String)
 }
 
 /// The stored record of `child`, the child run of `parent`'s delegation
@@ -2164,17 +2313,16 @@ pub fn command(
         option.map(held, process.kill)
         Ok(next)
       }
-      Error(backend.Conflict(_)) -> retry()
+      Error(WriteFailed(backend.Conflict(_))) -> retry()
       // The work needs a lease that another node's runner holds.
-      Error(backend.LeaseRefused(_)) -> Error(OwnerUnknown)
-      Error(error) -> Error(Unreadable(StoreFailed(error)))
+      Error(WriteFailed(backend.LeaseRefused(_))) -> Error(OwnerUnknown)
+      Error(WriteFailed(error)) -> Error(Unreadable(StoreFailed(error)))
+      Error(Unbuildable(reason)) -> Error(AgentUnbuilt(reason))
     }
   }
   case live_runner(entry, state) {
     Some(mailbox) ->
-      case
-        send_live(mailbox, live_step(setup, env, event), setup.command_timeout)
-      {
+      case send_live(mailbox, live_step(env, event), setup.command_timeout) {
         Ok(state) -> Ok(state)
         Error(LiveRefused(rejection)) -> Error(CommandRefused(rejection))
         // A held runner does not delay a cancellation: it is committed to
@@ -2196,22 +2344,20 @@ pub fn command(
   }
 }
 
-/// The step a live runner applies for `event`: `env` (the setup's, with a
-/// command's context and clock) made in the runner from `carried(setup)`,
-/// and the work of its effects with that context. It copies the agent's
-/// builder, the context and the clock rather than the setup, for an agent
-/// that has a builder.
+/// The step a live runner applies for `event`, in the runner: the
+/// runner's own setup (`keep_setup`), with the command's context and clock
+/// (`env`'s), and the work of its effects with that context. It holds the
+/// event, the context and the clock, never a setup: nothing of the agent
+/// is copied or built again per command.
 fn live_step(
-  setup: Setup(context),
   env: controller.Env(context),
   event: Event,
 ) -> fn(State) ->
   Result(#(State, List(Effect), Option(Work)), controller.Rejection) {
-  let made = carried(setup)
   let context = env.context
   let clock = env.clock
   fn(state) {
-    let setup = made()
+    let assert Ok(setup) = kept_setup()
     let env = controller.Env(..setup.env, context:, clock:)
     use #(next, effects) <- result.map(controller.step(env, state, event))
     #(next, effects, Some(work(setup, context)))
@@ -2480,29 +2626,29 @@ fn read_children(runner: Runner(context)) -> Runner(context) {
     True, _, _ | _, Some(_), _ -> runner
     False, None, [] -> schedule_children(runner)
     False, None, children -> {
+      // Bound here: a closure that reads a field of `runner` holds all of
+      // it, the setup with its built agent included, and this one is copied
+      // into a new process at every poll.
+      let runs = runner.setup.store
+      let parent = run_id.from_string(runner.state.run)
+      let self = runner.self
       let reader =
         process.spawn(fn() {
           let results =
             list.filter_map(children, fn(child) {
               let #(action, _, id) = child
               use #(_, state) <- result.try(
-                load(runner.setup.store, id)
+                load(runs, id)
                 |> result.map_error(fn(_) { Nil }),
               )
-              case
-                state.parent
-                == Some(run.AgentParent(
-                  run_id.from_string(runner.state.run),
-                  action,
-                ))
-              {
+              case state.parent == Some(run.AgentParent(parent, action)) {
                 False -> Error(Nil)
                 True ->
                   controller.child_result(state)
                   |> result.map(fn(outcome) { #(action, outcome) })
               }
             })
-          process.send(runner.self, live.ChildrenRead(results))
+          process.send(self, live.ChildrenRead(results))
         })
       Runner(..runner, child_reader: Some(reader))
     }

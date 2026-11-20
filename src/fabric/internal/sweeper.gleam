@@ -26,11 +26,14 @@ pub opaque type Root {
 }
 
 pub fn agent_root(agent: Agent(c, a), context: fn(RunId) -> c) -> Root {
-  let identity = checked_agent.admitted(agent).identity
+  let identity = checked_agent.identity(agent)
   Root(record.Key(record.Agent, identity), fn(store, root) {
     use context <- result.try(
       bounded.call(5000, fn() { context(run_id.from_string(root)) })
       |> result.map_error(fn(_) { Nil }),
+    )
+    use agent <- result.try(
+      checked_agent.try_built(agent) |> result.replace_error(Nil),
     )
     family.take_over(runner.agent_setup(store, agent, context), root, 3)
     |> result.map_error(fn(_) { Nil })

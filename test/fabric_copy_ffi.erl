@@ -1,5 +1,5 @@
 -module(fabric_copy_ffi).
--export([crossing/1, flat_bytes/1]).
+-export([crossing/1, flat_bytes/1, counter/0, count/1]).
 
 %% The bytes Term occupies when copied to another process: its flat size
 %% in words times the word size. Off-heap binaries are shared, not copied,
@@ -58,3 +58,9 @@ is_factory(Pid) ->
                 {supervisor, 'gleam@otp@factory_supervisor', 1};
         undefined -> false
     end.
+
+%% A counter shared by every process that holds it.
+counter() -> atomics:new(1, []).
+
+%% Adds one to Counter and returns its new value.
+count(Counter) -> atomics:add_get(Counter, 1, 1).

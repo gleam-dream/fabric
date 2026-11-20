@@ -245,7 +245,7 @@ fn cancel(
           runner.cancel_unattended(
             runtime.store,
             id,
-            checked_agent.admitted(runtime.definition.agent).command_timeout,
+            checked_agent.facts(runtime.definition.agent).command_timeout,
             tries,
           )
           |> result.replace(Nil)
@@ -253,7 +253,7 @@ fn cancel(
       }
     }
     Error(runner.NotFound) -> {
-      let agent = checked_agent.admitted(runtime.definition.agent)
+      let agent = checked_agent.facts(runtime.definition.agent)
       let #(correlation, root, root_exact) =
         graph_runner.lineage(runtime.store, parent.run)
       let tombstone =
@@ -311,10 +311,11 @@ fn start(
   tries: Int,
 ) -> Result(Nil, String) {
   let definition = runtime.definition
+  use agent <- result.try(checked_agent.try_built(definition.agent))
   let setup =
     runner.agent_setup(
       runtime.store,
-      definition.agent,
+      agent,
       runtime.context(run_id.from_string(id)),
     )
   use input <- result.try(
@@ -356,9 +357,10 @@ fn start(
       )
       case runner.launch_new(setup, initial, effects) {
         Ok(_) -> Ok(Nil)
-        Error(backend.AlreadyExists) if tries > 1 ->
+        Error(runner.WriteFailed(backend.AlreadyExists)) if tries > 1 ->
           start(runtime, parent, id, encoded, tries - 1)
-        Error(error) -> Error(string.inspect(error))
+        Error(runner.Unbuildable(reason)) -> Error(reason)
+        Error(runner.WriteFailed(error)) -> Error(string.inspect(error))
       }
     }
     Error(error) -> Error(string.inspect(error))

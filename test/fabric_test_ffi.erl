@@ -1,6 +1,7 @@
 -module(fabric_test_ffi).
 -export([temp_dir/0, remove_dir/1, list_dir/1, write_file/2, read_file/1, age_file/2, waits_on/2, waits_in/2,
          suspend/1, resume/1, queued/1, leasing/0, set_leasing/1, linked/1,
+         building_once/0, set_building_once/1,
          raise_atom/1, raise_tagged/1, store_sentinel/1,
          monitored_by_self/1]).
 
@@ -84,6 +85,13 @@ leasing() ->
 
 set_leasing(Leasing) ->
     put(fabric_test_leasing, Leasing),
+    nil.
+
+building_once() ->
+    get(fabric_test_building_once) =:= true.
+
+set_building_once(Once) ->
+    put(fabric_test_building_once, Once),
     nil.
 
 %% The processes linked to Pid, other than the caller.

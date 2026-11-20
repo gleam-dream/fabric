@@ -1,5 +1,5 @@
 //// Codecs in tools, made where Fabric builds the agent. The agent's builder
-//// captures the run's account ids and the model, nothing built; each
+//// captures the desk's account ids and the model, nothing built; each
 //// process that runs the agent makes the tool and its codecs.
 
 // snips-start: codecs
@@ -8,6 +8,7 @@ import fabric/model.{type Model}
 import fabric/policy
 import fabric/tool
 import gleam/list
+import gleam/result
 import json/blueprint/codec.{type Codec}
 
 pub type Line {
@@ -19,7 +20,7 @@ pub type Transfer {
 }
 
 /// Each child codec is made inside its field, by its own function. The
-/// payee is a run-time enum: the run's own account ids, made into a codec
+/// payee is a run-time enum: the desk's account ids, made into a codec
 /// inside the field.
 fn transfer_codec(accounts: List(String)) -> Codec(Transfer) {
   use to <- codec.field(
@@ -48,7 +49,7 @@ fn line_codec() -> Codec(Line) {
 fn transfer_tool(accounts: List(String)) -> tool.Tool(Nil) {
   tool.define(
     "transfer",
-    "Pay one of the run's accounts.",
+    "Pay one of the desk's accounts.",
     transfer_codec(accounts),
     codec.string(),
   )
@@ -60,14 +61,23 @@ fn transfer_tool(accounts: List(String)) -> tool.Tool(Nil) {
   )
 }
 
-/// The agent for a run that may pay `accounts`. The builder captures the
-/// ids and the model; `transfer_tool` runs in every process that builds it.
+/// The desk's agent, which may pay `accounts`: ids the application loads
+/// once and gives every run, so that the agent `open`, `recover` and the
+/// sweeper build is the one each run started with. The builder captures
+/// the ids and the model; `transfer_tool` runs in every process that builds
+/// it. Run-time labels can repeat, so the codec is checked where they
+/// arrive.
 pub fn payer(
   model: Model,
   accounts: List(String),
-) -> Result(Agent(Nil, String), List(agent.ConfigError)) {
+) -> Result(Agent(Nil, String), String) {
+  use _ <- result.try(
+    codec.check(transfer_codec(accounts))
+    |> result.map_error(codec.describe_definition_error),
+  )
   agent.build_with(fn() {
     agent.new("payer", model, [transfer_tool(accounts)], policy.always_allow())
   })
+  |> result.map_error(agent.describe_config_errors)
 }
 // snips-end: codecs

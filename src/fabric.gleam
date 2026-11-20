@@ -208,6 +208,11 @@ pub type Error {
   RunnerBusy
   /// The command lost every retry against concurrent commits.
   Contended
+  /// The agent's builder (`agent.build_with`) failed, or built another
+  /// name or version than it built first, here or in the runner that was
+  /// to take the run's work. Nothing was stored or changed. A builder must
+  /// build the same agent every time.
+  AgentUnbuildable(detail: String)
 }
 
 /// A stable classification of `Error`, for callers that decide by kind.
@@ -229,7 +234,7 @@ pub type ErrorKind {
   Unavailable
   /// The record and this Fabric, agent or store do not fit:
   /// `UnsupportedVersion`, `CorruptRecord`, `IncompatibleAgent`,
-  /// `FamilyBudgetUnsupported`, `HistoryUnsupported`.
+  /// `FamilyBudgetUnsupported`, `HistoryUnsupported`, `AgentUnbuildable`.
   Incompatible
 }
 
@@ -251,7 +256,8 @@ pub fn error_kind(error: Error) -> ErrorKind {
     | CorruptRecord(_)
     | IncompatibleAgent(_)
     | FamilyBudgetUnsupported
-    | HistoryUnsupported -> Incompatible
+    | HistoryUnsupported
+    | AgentUnbuildable(_) -> Incompatible
   }
 }
 
@@ -297,6 +303,7 @@ pub fn describe_error(error: Error) -> String {
       "the answer's proof is refused: " <> approvers.describe_proof_error(error)
     NotReconcilable -> "the action is not an uncertain effect to reconcile"
     RunUnattended -> "work is in flight and no runner drives the run"
+    AgentUnbuildable(detail) -> "the agent could not be built: " <> detail
     RunnerBusy -> "the run's runner did not take the command in time"
     Contended -> "the command lost every retry against concurrent commits"
   }
@@ -369,7 +376,7 @@ pub fn start_with_input(
       _, _ -> Error(HistoryUnsupported)
     },
   )
-  let agent = checked_agent.built(agent)
+  use agent <- result.try(built(agent))
   let admitted = checked_agent.admitted(agent)
   use declaration <- result.try(case admitted.family_budget {
     None -> Ok(None)
@@ -388,12 +395,23 @@ pub fn start_with_input(
   let state = controller.State(..state, family_budget: declaration)
   case runner.launch_new(setup, state, effects) {
     Ok(_) -> Ok(Run(id: text, setup:, answer: checked_agent.answer(agent)))
-    Error(backend.AlreadyExists) ->
+    Error(runner.WriteFailed(backend.AlreadyExists)) ->
       same_input(store, state)
       |> result.map_error(record_error)
       |> result.try(fn(same) { Error(AlreadyStarted(id, same)) })
-    Error(error) -> Error(StartUnconfirmed(id, describe_store(error)))
+    Error(runner.WriteFailed(error)) ->
+      Error(StartUnconfirmed(id, describe_store(error)))
+    Error(runner.Unbuildable(reason)) -> Error(AgentUnbuildable(reason))
   }
+}
+
+/// `agent` built in this process: once, where several of its parts are
+/// read, and as `AgentUnbuildable` when its builder fails or builds another
+/// agent.
+fn built(
+  agent: Agent(context, answer),
+) -> Result(Agent(context, answer), Error) {
+  checked_agent.try_built(agent) |> result.map_error(AgentUnbuildable)
 }
 
 /// Whether the stored run `fresh.run` is a root started by the same agent
@@ -561,12 +579,13 @@ pub fn recover(
   id: RunId,
 ) -> Result(Run(context, answer), Error) {
   let id = id_to_string(id)
-  let agent = checked_agent.built(agent)
+  use agent <- result.try(built(agent))
   let setup = runner.agent_setup(store, agent, context)
   case family.take_over(setup, id, retries) {
     Ok(Nil) -> Ok(Run(id:, setup:, answer: checked_agent.answer(agent)))
     Error(family.TakeOverContended) -> Error(Contended)
     Error(family.TakeOverUnreadable(problem)) -> Error(record_error(problem))
+    Error(family.TakeOverUnbuildable(reason)) -> Error(AgentUnbuildable(reason))
   }
 }
 
@@ -592,7 +611,7 @@ pub fn open(
   id: RunId,
 ) -> Result(Run(context, answer), Error) {
   let id = id_to_string(id)
-  let agent = checked_agent.built(agent)
+  use agent <- result.try(built(agent))
   let setup = runner.agent_setup(store, agent, context)
   runner.load_checked(setup, id)
   |> result.replace(Run(id:, setup:, answer: checked_agent.answer(agent)))
@@ -1202,14 +1221,22 @@ pub fn cancel(run: Run(context, answer)) -> Result(Status(answer), Error) {
 /// The watcher is not linked to the caller and is not supervised: a VM that
 /// stops takes it with it, and the run is then recovered like any other.
 /// Call it once per owner; each call adds one watcher.
+///
+/// The watcher holds the run's id and what makes its agent there: for an
+/// agent made with `agent.build_with`, its builder; never a copy of the
+/// built agent the handle holds.
 pub fn cancel_when_down(run: Run(context, answer), owner owner: Pid) -> Nil {
+  let id = run.id
+  let setup = runner.carried(run.setup)
   let _ =
     process.spawn_unlinked(fn() {
       let monitor = process.monitor(owner)
       let down =
         process.new_selector()
         |> process.select_specific_monitor(monitor, fn(_) { Nil })
-      guard(run, down)
+      // The watcher reads only whether the run finished: its answer is
+      // read as stored text, with no codec.
+      guard(Run(id:, setup: setup(), answer: answers.text()), down)
     })
   Nil
 }
@@ -1381,6 +1408,7 @@ fn command_error(failure: runner.Failure) -> Error {
     | runner.Unreadable(runner.StoreFailed(backend.Conflict(_))) -> Contended
     runner.Busy -> RunnerBusy
     runner.Unreadable(problem) -> record_error(problem)
+    runner.AgentUnbuilt(reason) -> AgentUnbuildable(reason)
   }
 }
 
