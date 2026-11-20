@@ -38,9 +38,9 @@ gleam add fabric
 ```
 
 Commit `gleam.toml` and `manifest.toml` to retain the resolved versions.
-The examples below use `agent.build_with`, which is unreleased: it ships
-from Fabric 0.5.0. On 0.4.0, build the agent with `agent.build` and do not
-send it to other processes per operation.
+The examples below use `agent.build_with`, from Fabric 0.5.0. On 0.4.0,
+build the agent with `agent.build` and do not send it to other processes
+per operation.
 The optional [PostgreSQL adapter](integrations/fabric_postgres/README.md)
 installs from a Git subdirectory.
 
@@ -109,7 +109,7 @@ The in-memory records disappear when the store stops. Services needing recovery 
 
 ## Codecs in tools and answers
 
-_Unreleased: `agent.build_with` and `fabric.AgentUnbuildable` ship from Fabric 0.5.0._
+_`agent.build_with` and `fabric.AgentUnbuildable` are available from Fabric 0.5.0._
 
 Every run executes in its own runner process, with its tool bodies and model calls in tasks of that runner, and the BEAM copies a value whole into each process it reaches. Fabric therefore never sends an agent: `agent.build_with` keeps the function that makes the agent's spec, and a process that needs the agent builds it there. The caller builds it once per `fabric.start`, `open` or `recover`, and each runner once before it writes anything. A tool's task receives only that tool, with its codecs. What a run copies is its builder, its context and its record. The deprecated `agent.build` returns a built agent, which is copied whole into every runner.
 
