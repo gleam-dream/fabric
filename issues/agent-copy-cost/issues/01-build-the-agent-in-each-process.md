@@ -11,7 +11,7 @@ tool jobs, live commands, sub-agent runners and child cancellation.
 
 ## Acceptance
 
-- `test/fabric/agent_copy_test.gleam` measures `erts_debug:flat_size * 8`
+- `test/fabric/agent_copy_test.gleam` measures `erts_debug:flat_size` times the word size, in bytes,
   of everything copied into a run's runners, and of the largest single copy
   anywhere. The agent has nested combinator codecs and a sub-agent, and the
   run makes an approval and two tool calls. The runners together receive

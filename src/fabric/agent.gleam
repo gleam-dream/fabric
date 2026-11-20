@@ -58,12 +58,8 @@
 //// (<https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md>,
 //// which needs json_blueprint 2.1.1 or later). Fabric's part of it:
 ////
-//// - Make each tool's input codec inside its fields (`codec.field(.., of:
-////   ..)` or a top-level function per child codec), never a child codec
-////   `let`-bound once and captured by later fields.
-//// - Build a run-time enum's `codec.string_enum` inside its field from
-////   the small values the builder captures, and check the codec
-////   (`codec.check`) where those labels arrive: they can repeat.
+//// - Make tool and answer codecs inside the builder, by the guide's rules
+////   for child codecs and run-time enums.
 //// - Do not hand a built agent, tool or codec to other processes yourself
 ////   (in an actor's state sent per request, say): hand the builder.
 ////

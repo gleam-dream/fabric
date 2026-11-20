@@ -73,7 +73,7 @@ fn order_codec() -> Codec(Order) {
   codec.success(Order(customer:, lines:, priority:))
 }
 
-fn batch_codec() -> Codec(Batch) {
+pub fn batch_codec() -> Codec(Batch) {
   use orders <- codec.field(
     "orders",
     codec.list(of: order_codec()),
