@@ -1,0 +1,664 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# Review policy for fabric, derived by the coderabbit-config skill.
+# Each instruction names the skill it comes from; `policy` is the review policy
+# of coderabbit-config itself, and `repository` marks a rule beyond the catalog.
+#
+# Catalogs read:
+#   practice skills    879841a61c3f83cd809edca9229c4a6bb7f909f8
+#   gleam-agent-tools  6a9ea2f647e787a32d3c7fa88d9c58c5b81ae9d7
+#
+# Governing skills: coderabbit-config (policy), gleam, gleam-lib, gleam-ffi,
+# gleam-otp, fabric, llm-wire, http-gun, json-blueprint, sinal, saga,
+# hellhound, relay, gleam-sql, testing, python, elixir, prototype, design,
+# tracker, gate, git.
+#
+# Governing dependency versions: fabric 0.5.0 (this package, gleam.toml).
+# Locked in manifest.toml: llm_wire 0.2.0, http_gun 0.2.0, json_blueprint
+# 2.1.1, sinal 0.1.0, gleam_otp 1.3.0, gleam_erlang 1.3.0, gleam_stdlib 1.0.5,
+# gleam_json 3.1.0, gleeunit 1.11.0. Consumer manifests: saga 0.2.0
+# (consumers/app, consumers/saga_tool, experiments/workflow_composition),
+# hellhound 0.2.2 (consumers/approvers_hellhound), relay 0.2.1
+# (consumers/relay_tools). integrations/fabric_postgres/manifest.toml: pog
+# 4.1.0, fabric 0.5.0 (Hex). Oracle: BeamWeaver (docs/ORACLE.md).
+# json_blueprint 2.1.1 is below the 2.2.0 the fabric, llm-wire and
+# json-blueprint skills name, so their rules stated for 2.2.0 (a codec copies
+# at about its own size) are not taken; the codec API rules below hold on
+# 2.1.1. relay 0.2.1 is below the 0.2.2 the relay skill names, so its
+# process-copy rules are not taken; its API rules below hold on 0.2.1. The
+# llm-wire, saga and hellhound skills name 0.1.0; every API their rules cite
+# exists in the locked versions.
+language: en-US
+tone_instructions: >-
+  Literal and concise. Report only defects you can evidence from the diff, its
+  callers, the design, or a cited rule. One finding per cause. An empty review
+  is valid.
+early_access: false
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_instructions: |
+    Lead with the problem the change solves, then the response in one short
+    paragraph, then the public API, stored record or recovery effect, if any.
+    Do not narrate the diff file by file.
+  review_status: true
+  commit_status: true
+  fail_commit_status: true
+  collapse_walkthrough: true
+  changed_files_summary: false
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: false
+  suggested_labels: false
+  suggested_reviewers: false
+  auto_assign_reviewers: false
+  poem: false
+  in_progress_fortune: false
+  enable_prompt_for_ai_agents: true
+
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    base_branches:
+      - main
+
+  # Rendered and recaptured output. Oracle fixtures are recaptured by
+  # test/oracle/capture/capture.exs and never hand-edited (AGENTS.md); dated
+  # live-provider captures are retained evidence (ADR 0017). Review the capture
+  # script and the tests that read them instead.
+  path_filters:
+    - "!flake.lock"
+    - "!docs/design/design-layer.pdf"
+    - "!integrations/fabric_postgres/docs/design/design-layer.pdf"
+    - "!test/oracle/fixtures/**"
+    - "!docs/evidence/**"
+
+  path_instructions:
+    - path: "{src,consumers/*/src,examples/*/src,integrations/*/src}/**"
+      instructions: |
+        Review policy (policy).
+        - Design first. docs/COVERAGE.md maps each part to its owning section
+          of docs/design/design.typ and to docs/adr;
+          integrations/fabric_postgres has its own layer and COVERAGE.md. Flag
+          code that contradicts that unit's interface, invariants or side
+          effects, and a change to designed behavior with no change to its
+          design. A fix that restores designed behavior needs none. When code
+          and design disagree, the design changes first.
+        - Core abstractions. Flag a second representation of a concept the
+          design names (run, agent, agent builder, graph, action, activation,
+          attempt, incarnation, policy, handover, approval, proof, effect
+          fence, uncertain effect, reconciliation, settlement, receipt,
+          family, signal, job, lease, write token, sweeper, replay contract,
+          applied marker), a name that differs from the CONTEXT.typ
+          glossaries, and a public module, a consumer or the PostgreSQL
+          adapter reaching into `fabric/internal` past the interface that
+          owns it.
+        - Lean. Flag code no test, caller or unit needs: an unset option, an
+          unvaried parameter, a wrapper that adds no rule, an unreachable
+          branch. Say what to delete.
+        - Migration, never a legacy path. The readers of earlier stored record
+          formats (ADR 0010) are a designed contract, not a legacy path.
+          Outside them, flag a compatibility shim, a fallback to an old
+          format, a dual read or write, a deprecated alias, and a flag that
+          keeps old behavior. A change to a public module ships as a breaking
+          release with a migration note.
+        - Composable. In a public module, flag hidden call ordering, global
+          state, a mandatory framework where functions compose, a concept the
+          common caller must learn and does not need, and a module with two
+          responsibilities.
+        - Test first. Flag a behavior change with no test that exercises it,
+          and a test bound to internals.
+        - Typed before foreign. Flag Erlang where Gleam does the job, an
+          unchecked cast, an untyped stored record or model output that
+          reaches domain logic undecoded (the record store is a trust
+          boundary, ADR 0020), and a crash on a routine failure.
+        - Silence. Report nothing that `gleam format`, the compiler with
+          warnings as errors, `erlc -Werror`, the tests or scripts/test.sh
+          decide, and no layout or naming preference without a written rule.
+
+    - path: "{src,test,consumers,examples,experiments,integrations/*/src,integrations/*/test}/**/*.gleam"
+      instructions: |
+        Gleam (gleam).
+        - Flag a module function, private included, without annotated
+          arguments and return type, and an imported function or constant used
+          unqualified.
+        - Flag a name against the conventions: acronyms as words (`Json`,
+          `Llm`), conversions named `x_to_y` or `to_y` inside module `x`,
+          `try_` only for an error-propagating counterpart.
+        - Flag `Option` carrying a failure, and a change that merges omitted,
+          explicit false, empty and failed where they mean different things.
+        - Flag an error a caller must parse as a string to choose recovery.
+        - Flag independent optional fields or booleans standing for exclusive
+          states; they are variants.
+        - Flag a predicate check followed by `let assert` on the same shape,
+          and a catch-all branch that silently accepts a new variant.
+        - Flag `panic` or `let assert` handling a routine model, tool, store
+          or decoding failure in `src/` or an adapter's `src/`.
+        - Flag a refactor that changes observable errors, ordering or effects.
+        - Flag a compatibility branch with no comment saying why it exists.
+        - Flag `src/` importing a `test/` module, `gleeunit`, `simplifile` or
+          `gleam_http` (development dependencies).
+        - Flag a new process, module or generic machinery added only for
+          organization, and a local type replacing a compatible ecosystem type.
+
+    - path: "{src,integrations/*/src}/**/*.gleam"
+      instructions: |
+        Published library surface (gleam-lib). Exported constructors, fields,
+        variants, module paths and behavior of non-internal modules are the
+        compatibility surface; `internal_modules` in gleam.toml marks
+        instability, not access control.
+        - Flag a removed or changed export, variant, field or behavior in a
+          public module that the pull request does not call breaking.
+        - Flag a public signature that exposes an implementation-state type
+          parameter.
+        - Flag an argument that does not affect behavior, a bound operation
+          that makes callers repeat its name or codec at each use, a setter
+          per field where a record update works, and two public paths for one
+          common task.
+        - Flag configuration validated after a resource is allocated, and a
+          builder or extension protocol with no distinct use case.
+        - Flag a dynamic dispatcher over heterogeneous parameters where typed
+          operations can be bound.
+        - Flag a deliberate crash on a failure the caller could act on; return
+          a structured error instead.
+        - Flag the library taking over policy the application owns: business
+          authorization, effect identity, queue admission and scheduling, and
+          workflow compensation; Saga and Grind are not core dependencies
+          (AGENTS.md).
+
+    - path: "{consumers/*/src,examples/*/src}/**/*.gleam"
+      instructions: |
+        Public consumers (gleam-lib).
+        - Flag an import of `fabric/internal`; consumers and usage examples
+          use public imports only.
+        - Flag a usage topic under examples/usage that no longer shows the
+          common path, a customization and an expected failure for the API it
+          documents.
+
+    - path: "{src,test,consumers,examples,experiments,integrations/*/src,integrations/*/test}/**/*.{gleam,erl}"
+      instructions: |
+        Foreign boundaries (gleam-ffi). Apply to `*.erl` files and to a Gleam
+        module that declares `@external`.
+        - Flag foreign code where Gleam or gleam_erlang does the job, and
+          validation, branching or state transitions in foreign code; it
+          performs the native call and the representation conversion only.
+        - Flag foreign code that takes a Gleam value apart by its runtime
+          shape (a subject, a named subject, a record) instead of receiving
+          what it needs through a typed entry point.
+        - Flag an external that declares a native value to be a checked domain
+          value, `Dynamic` or a type variable that accepts every handle, and a
+          generic return that hides an unchecked cast.
+        - Flag an Erlang function whose actual return (an `{error, _}` tuple,
+          an atom, an exception) the declared Gleam type does not describe.
+        - Flag an expected native failure not mapped to the declared failure
+          value, and code that assumes Gleam catches a foreign exception.
+        - Flag a cancellation or timeout treated as proof an effect never
+          happened.
+        - Flag a foreign function with no remaining caller.
+
+    - path: "{src,consumers/*/src,examples/*/src,integrations/*/src}/**/*.gleam"
+      instructions: |
+        Processes (gleam-otp; gleam_otp 1.3.0, gleam_erlang 1.3.0). Apply to a
+        module that imports `gleam/otp` or `gleam/erlang/process`.
+        - Flag an actor whose messages are not one explicit message type, and
+          request/reply mechanics exposed instead of hidden behind public
+          functions.
+        - Flag a model call, tool body or store write run inside a runner or
+          store process that must stay responsive to cancellation and
+          shutdown.
+        - Flag accepted runs, active tool tasks or waiting messages with no
+          bound.
+        - Flag code that treats `process.call` as returning a timeout `Error`,
+          and a send to a name that may have no process; both panic.
+        - Flag a call timeout that triggers an unconditional retry of a tool
+          effect.
+        - Flag a message, spawn closure or start argument that captures a
+          built agent, tool list, codec or whole environment where an id or a
+          small value would do.
+        - Flag an atom or process name built from run input.
+        - Flag a supervisor whose strategy does not match the restart
+          dependency of its children, and a restarted process assumed to have
+          restored business state.
+        - Flag an actor introduced only to organize functions.
+
+    - path: "src/**/*.gleam"
+      instructions: |
+        Fabric contract (fabric).
+        - Flag a run, tool body or model call that receives a built agent,
+          tools or codecs from another process instead of building the agent
+          from its builder in its own process (ADR 0023), and a tool task
+          given more than its own tool.
+        - Flag `open`, `recover` or the sweeper relying on per-run captures.
+        - Flag a possibly completed effect reported as `tool.Explain`, and an
+          `Uncertain` effect that dependent work proceeds past before
+          reconciliation.
+        - Flag replay enabled by default, or for a tool not declared a read or
+          an idempotent write keyed by run and action identity.
+        - Flag effects in graph selection, acceptance, codecs or request
+          preparation.
+        - Flag an await timeout or a dropped handle documented or treated as
+          cancelling a run; cancellation is explicit.
+        - Flag an approval accepted after the action's arguments, the policy
+          or the verifier changed.
+        - Flag a result incorporated twice where an applied marker is
+          required.
+        - Flag per-call timeouts presented as a whole-agent deadline.
+
+    - path: "{consumers/*/src/**/*.gleam,examples/*/src/**/*.gleam,README.md}"
+      instructions: |
+        Fabric consumers (fabric). Apply to Gleam code in the consumers, the
+        usage examples and README.md excerpts.
+        - Flag a new call to `agent.build`; use `agent.build_with` with one
+          builder function and handle its errors.
+        - Flag a builder that captures built tools, codecs or per-run values
+          shared across runs, and subjects, names or tables made inside the
+          builder.
+        - Flag a per-run capture whose agent keeps the shared name or is
+          listed in `sweeper.agent`.
+        - Flag a `Run` handle sent to another process; send the `RunId` and
+          `open` it there.
+        - Flag a final answer treated as business success without reading
+          `fabric.snapshot` actions, and a `case` on run status that misses
+          denied or failed actions before `Finished(Completed(answer))`.
+        - Flag an uncertain mutation retried to discover whether it ran, and
+          every tool marked replayable.
+        - Flag a spec with no explicit policy, turn, concurrency, model-call
+          and tool-body bounds, and a run started without a retained `RunId`.
+        - Flag an in-memory store used where the consumer claims production
+          recovery, and a database backend without a supervised recovery
+          worker.
+        - Flag a queued run reference treated as the owner of Fabric recovery.
+
+    - path: "integrations/*/src/**/*.gleam"
+      instructions: |
+        Fabric store adapter (fabric; integrations/fabric_postgres AGENTS.md
+        and ADRs 0002, 0004).
+        - Flag pool startup or shutdown, or a universal durability
+          abstraction, added to the adapter; the application owns its pog
+          pool.
+        - Flag a conditional commit that does not compare the exact stored
+          revision, and lease evidence taken from the node clock instead of
+          the database.
+        - Flag a diagnostic snapshot treated as authoritative state.
+        - Flag a recovery worker the application cannot supervise.
+
+    - path: "{integrations/*/src/**/*.gleam,integrations/*/priv/migrations/*.sql}"
+      instructions: |
+        PostgreSQL access (gleam-sql; pog 4.1.0; Cigogne migrations under
+        priv/migrations).
+        - Flag a value interpolated into SQL text instead of bound as a
+          parameter, and an identifier not fixed by trusted configuration.
+        - Flag a query inside a transaction that uses the pool instead of the
+          callback's transaction connection, and a failure replaced by
+          success.
+        - Flag a decoding failure after a write treated as proof that the
+          write did not happen.
+        - Flag an invariant against concurrent writers enforced only by an
+          application check where a constraint or lock is needed.
+        - Flag an edit to an applied migration file; add a new timestamped
+          migration with up, down and end sections instead.
+        - Flag `disable_transaction` on a migration while the change claims
+          its migrations commit together.
+
+    - path: "{src,consumers/*/src}/**/*.gleam"
+      instructions: |
+        LLM Wire calls (llm-wire; llm_wire 0.2.0). Apply to a module that
+        imports `llm_wire`.
+        - Flag a request executed without `prepare` and handling of its
+          unsupported settings and schemas.
+        - Flag a `case` on a call outcome that does not name `Answer`,
+          `NeedsTools`, `OutputLimited` and `Refused`, and an `OutputLimited`
+          partial treated as a complete typed answer.
+        - Flag a `NeedsTools` follow-up that does not append
+          `message.Assistant(turn)` and one `tool_result` per call, and a turn
+          rebuilt from visible text instead of kept or decoded with the
+          message and turn codecs.
+        - Flag tool arguments acted on before they are decoded, and a model
+          request treated as authorization for a business action.
+        - Flag a `with_output` codec whose root is not a record.
+        - Flag a stream neither read until `Done` nor closed, two readers of
+          one stream, and `TimedOut` from `next_within` treated as the end of
+          the call.
+        - Flag every failure retried, `advise` treated as an effect guarantee,
+          `MaybeSent` treated as no paid work, and a wait on `ProviderDelay`
+          beyond the remaining deadline.
+        - Flag a short-lived HTTP Gun client not stopped on every exit path,
+          and credentials written in source.
+
+    - path: "{src,consumers/*/src}/**/*.gleam"
+      instructions: |
+        HTTP Gun (http-gun; http_gun 0.2.0). Apply to a module that imports
+        `http_gun`.
+        - Flag a decoded response body with no check of `status` first; an
+          `Ok` transport result can hold a 404 or 503.
+        - Flag a truncated collection decoded as a complete JSON document.
+        - Flag a body opened with `open` that is not closed on every path,
+          and a body read from a process other than the one that opened it.
+        - Flag `body.next_within` returning `None` treated as EOF.
+        - Flag a retry decision made without the failure's send evidence and
+          `error.is_retryable(failure, idempotent:)` under the request's real
+          semantics.
+        - Flag a destination view that widens authority, loopback enabled
+          outside local fixtures, and disabled TLS verification.
+        - Flag a shared client started by a short-lived request process.
+
+    - path: "{src,consumers/*/src,examples/*/src,experiments/*/src,integrations/*/src}/**/*.gleam"
+      instructions: |
+        JSON Blueprint codecs (json-blueprint; json_blueprint 2.1.1). Apply to
+        a module that imports `json/blueprint`.
+        - Flag a change to a union envelope or to a stored record's wire form
+          in a change that claims record compatibility.
+        - Flag a callback passed to `field`, `optional_field`, `success` or a
+          getter that has an effect or is not synchronous and pure, and a
+          placeholder value from schema discovery stored as data.
+        - Flag a change that merges omission, null and a value; over
+          `nullable`, `optional_field` yields `None`, `Some(None)` and
+          `Some(Some(value))`.
+        - Flag a definition derived at run time and used without
+          `codec.check`.
+        - Flag a union `match` that returns a value tagged by another union.
+        - Flag untrusted model or stored text parsed without
+          `value.default_limits()` or `value.with_max_bytes`, and `Float` or
+          `codec.int()` used for an exact number where the `number` API
+          applies.
+        - Flag a reader of `codec.view` that does not handle `OtherSchema`,
+          and a codec stored with `term_to_binary`.
+
+    - path: "{src,consumers/*/src,examples/*/src}/**/*.gleam"
+      instructions: |
+        Telemetry (sinal; sinal 0.1.0). Apply to a module that imports
+        `sinal`.
+        - Flag an event name, field key or route prefix built from run-time
+          input; they become atoms. Run ids and tool names go in metadata
+          values.
+        - Flag an event defined twice instead of one definition shared by
+          emitter and observer.
+        - Flag a getter or encoder that can raise.
+        - Flag an attachment never detached, and an unrouted handler that does
+          I/O or other slow work.
+        - Flag prompt text, model output or credentials put in an event.
+        - Flag telemetry used to decide whether a tool effect or a store
+          commit happened, and correlation treated as authorization.
+
+    - path: "{consumers/*/src,experiments/*/src}/**/*.gleam"
+      instructions: |
+        Saga workflows (saga; saga 0.2.0). Apply to a module that imports
+        `saga`.
+        - Flag a workflow defined per request instead of once with `define`,
+          and request-specific state captured in the builder.
+        - Flag step names used as an untyped result dictionary instead of
+          typed ports.
+        - Flag an external effect without `effect` and its `EffectKey` sent
+          as the idempotency key, and a possibly completed failure without
+          `unknown_when` and an explicit uncertainty policy.
+        - Flag `undo` and `compensate` used for each other's decision.
+        - Flag an unfinished `start` handle dropped without `cancel` and
+          `await`, and a terminal report replaced by `outcome.summary`.
+        - Flag a Saga effect key that changes when Fabric retries or recovers
+          the same action.
+
+    - path: "consumers/*/src/**/*.gleam"
+      instructions: |
+        Hellhound approvers (hellhound; hellhound 0.2.2). Apply to a module
+        that imports `hellhound`.
+        - Flag email or another mutable claim used as the approver's key; use
+          the verified `(issuer, subject)` pair.
+        - Flag a valid access token treated as permission to approve; the
+          application checks the approver's authority.
+        - Flag local JWT validation presented as proof of current provider
+          revocation state.
+        - Flag token or claim values put in logs or telemetry.
+
+    - path: "consumers/*/src/**/*.gleam"
+      instructions: |
+        Relay tools (relay; relay 0.2.1). Apply to a module that imports
+        `relay`.
+        - Flag a tool declared, decoded and called from separate definitions
+          instead of one `tool.Definition`.
+        - Flag transport success returned as business success despite
+          `ToolFailed`, and a client error handled without its kind and
+          `client.evidence`.
+        - Flag a lost mutation retried under a new idempotency key, and a key
+          not scoped to the authenticated principal.
+        - Flag request id, invocation id, correlation and effect identity
+          merged, and a discovered read-only hint treated as proof a retry is
+          safe.
+        - Flag a client, endpoint or listener not closed when later setup
+          fails.
+
+    - path: "{test,consumers/*/test,examples/*/test,experiments/*/test,integrations/*/test}/**"
+      instructions: |
+        Tests (testing).
+        - Flag a test that confirms success through internals, private state
+          or a side channel where the public API can show it.
+        - Flag a mock of an internal collaborator, and an assertion on call
+          counts or call order. Scripted models, the fake provider and local
+          services stand in for the true external.
+        - Flag a scenario outcome that no design rule states.
+        - Flag tests left in place for an interface the diff replaced.
+        - Flag a refusal or illegal input the change introduces with no test
+          through the public boundary.
+        - Flag a recovery, approval, lease or store change with no case for
+          duplicate delivery, reordering, timeout, retry, partial completion,
+          restart or contention where the design states one.
+        - Flag an edited stored-record fixture under test/fixtures/records;
+          earlier formats stay readable as recorded.
+        - Flag adapter behavior tested without the real PostgreSQL engine, and
+          a test that makes a live provider request.
+
+    - path: "{test,consumers,experiments}/**/*.py"
+      instructions: |
+        Python services and checks (python).
+        - Flag `Any`, and an external value (request body, JSON, process
+          output) used without parsing.
+        - Flag an abstract base class hierarchy; use `Protocol`.
+        - Flag mutable dataclasses inside the program, and exclusive states as
+          flags instead of tagged frozen dataclasses matched with
+          `assert_never`.
+        - Flag a parser model passed past the boundary.
+        - Flag a provider credential read outside the explicit live commands.
+
+    - path: "test/oracle/capture/**/*.exs"
+      instructions: |
+        Oracle capture (elixir).
+        - Flag behavior selected by a conditional in a body where matching in
+          a function head does the job.
+        - Flag a bare `nil` returned beside tagged results, and a rescue of an
+          error the capture cannot handle.
+        - Flag an atom created from external input.
+        - Flag a model or HTTP call in a capture that does not replay a
+          scripted response.
+
+    - path: "experiments/**"
+      instructions: |
+        Experiments (prototype).
+        - Flag a new experiment file without a `THROWAWAY` marker naming the
+          question it answers.
+        - Flag persistence, configuration or polish the experiment's question
+          does not need.
+        - Flag experiment code copied into `src/`, a consumer or the adapter
+          in bulk; rebuild the useful part.
+        - Flag an experiment that writes to the design layer.
+
+    - path: "{docs,integrations/*/docs}/{design,adr}/**"
+      instructions: |
+        Design layer (design; policy).
+        - Fresh reader. The reviewer never saw the change being made. Flag a
+          changed unit that does not tell a reader with no memory what the
+          code does not say, and a unit that copies the code.
+        - Flag content the code states: payloads, fields, limits, timeouts,
+          retries, function or file lists, queries. Name the rule it serves
+          instead; a file or symbol is allowed only where a reader needs it to
+          find where a rule is enforced.
+        - Flag session narration, progress notes, status or delivery history.
+        - Flag a unit missing one of overview, interface, invariants, side
+          effects and verification; an empty part says "none".
+        - Flag a concept defined in a second home (the adapter layer defers
+          controllers, effect fences, records, approvals and family budgets to
+          the parent), a glossary term with two meanings, and a retired term
+          reused.
+        - Flag an edit to an accepted ADR's text instead of a superseding ADR,
+          and a changed date on a pending entry.
+
+    - path: "issues/**/*.md"
+      instructions: |
+        Local tracker (tracker; AGENTS.md).
+        - Each issue file under `issues/<feature>/issues/` carries one
+          `Status:` and one `Category:` header with a value AGENTS.md lists.
+        - Flag an issue titled with a solution instead of the observable
+          problem, line numbers or solution code in an issue, and a horizontal
+          task such as "build the data layer".
+        - Flag an AI-written comment that does not start with
+          `AI-assisted contribution.`
+
+    - path: "{scripts/**,integrations/*/scripts/**,consumers/*/*.sh,flake.nix,lefthook.yml,.github/workflows/**}"
+      instructions: |
+        Gate (gate).
+        - Flag a check that passes or skips when its tool is missing
+          (PostgreSQL, Python); it fails or reports unmeasured.
+        - Flag a tool not supplied through the Nix flake, and a command that
+          differs between local runs and CI.
+        - Flag a new check that encodes a layout, naming or README
+          convention, and a check that scripts what a tool already performs.
+        - Flag a replaced check that drops security or data-integrity
+          coverage.
+        - Flag a gate that keeps a formatting check but loses the build with
+          warnings as errors, `erlc -Werror` or the behavior tests of a
+          package.
+        - Flag a gate step that keeps provider credentials in a child
+          environment, loads `.env.local` or makes live provider requests
+          (AGENTS.md).
+
+  pre_merge_checks:
+    title:
+      mode: "off"
+    description:
+      mode: warning
+    issue_assessment:
+      mode: "off"
+    docstrings:
+      mode: "off"
+    custom_checks:
+      - name: No weakened test or gate
+        mode: error
+        instructions: |
+          Source: policy, gate. Fail if the diff skips, deletes, disables or
+          loosens a test, a stored-record fixture, an oracle case or a step of
+          scripts/test.sh or CI (including removing a package,
+          `--warnings-as-errors`, `erlc -Werror` or a Python check from the
+          gate, or adding `continue-on-error`), and the pull request
+          description does not name the behavior that no longer exists or the
+          stronger check that replaces it. Pass otherwise.
+      - name: Behavior change carries its design
+        mode: warning
+        instructions: |
+          Source: policy, design. Warn if the diff changes public behavior,
+          an invariant, a stored record format or a recovery rule in src/ or
+          integrations/fabric_postgres/src with no change under docs/design,
+          docs/adr or the adapter's docs/design and docs/adr, and the pull
+          request description does not say the change restores designed
+          behavior or preserves behavior. Pass for tests, tooling and
+          documentation-only changes.
+      - name: Breaking change is declared
+        mode: warning
+        instructions: |
+          Source: policy, gleam-lib. Warn if the diff removes or changes an
+          exported function, type, constructor, field or module path in a
+          module outside `fabric/internal` or `fabric_postgres/internal`, or
+          a stored record format, and the pull request description does not
+          call the change breaking and give its migration. Pass otherwise.
+      - name: Public API change reaches the consumer
+        mode: warning
+        instructions: |
+          Source: gleam-lib, AGENTS.md. Warn if the diff adds, removes or
+          changes an exported function, type, constructor or field in a
+          module outside `fabric/internal` and changes nothing under
+          examples/usage or consumers, and the pull request description does
+          not say why no usage example covers it. Pass otherwise.
+      - name: Problem-first description
+        mode: warning
+        instructions: |
+          Source: git. Warn unless the pull request description gives the
+          problem, why it matters, one concrete example, the solution in one
+          paragraph, its trade-offs, and what was verified, with no file
+          tour, and its claims match the diff.
+      - name: No attribution text
+        mode: warning
+        instructions: |
+          Source: git. Warn if the pull request title or description contains
+          a co-author credit, `Co-Authored-By`, a "Generated with" or
+          "Generated by" line, or a line starting with the robot emoji.
+
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+
+  tools:
+    gitleaks:
+      enabled: true
+    trufflehog:
+      enabled: true
+    actionlint:
+      enabled: true
+    zizmor:
+      enabled: true
+    shellcheck:
+      enabled: true
+    # ruff reads ruff.toml, the repository's own configuration.
+    ruff:
+      enabled: true
+    # The repository runs no other Python, SQL, JavaScript, prose or YAML
+    # linter; their findings would be preferences without a written rule
+    # (policy, Silence).
+    flake8:
+      enabled: false
+    pylint:
+      enabled: false
+    sqlfluff:
+      enabled: false
+    squawk:
+      enabled: false
+    biome:
+      enabled: false
+    eslint:
+      enabled: false
+    oxc:
+      enabled: false
+    markdownlint:
+      enabled: false
+    languagetool:
+      enabled: false
+    vale:
+      enabled: false
+    yamllint:
+      enabled: false
+    github-checks:
+      enabled: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    # AGENTS.md and CLAUDE.md are read by default.
+    filePatterns:
+      - files: "docs/COVERAGE.md,docs/design/**/*.typ,docs/adr/*.md"
+        applyTo: "src/**,consumers/**,examples/**,experiments/**,test/**"
+      - files: "integrations/fabric_postgres/docs/COVERAGE.md,integrations/fabric_postgres/docs/design/**/*.typ,integrations/fabric_postgres/docs/adr/*.md"
+        applyTo: "integrations/fabric_postgres/**"
+      - files: "docs/ORACLE.md"
+        applyTo: "test/**"
+  learnings:
+    scope: local
+  pull_requests:
+    scope: local
