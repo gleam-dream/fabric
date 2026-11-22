@@ -21,7 +21,7 @@ packages = [
   { name = "gleeunit", version = "1.11.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleeunit", source = "hex", outer_checksum = "EC31ABA74256AEA531EDF8169931D775BBB384FED0A8A1BDC4DD9354E3E21826" },
   { name = "gun", version = "2.6.0", build_tools = ["make", "rebar3"], requirements = ["cowlib"], otp_app = "gun", source = "hex", outer_checksum = "69BB957F4BD6C475B5714460FD65C26FC7EB85760AA64B74754DE36CE5CCED7D" },
   { name = "http_gun", version = "0.2.0", build_tools = ["gleam"], requirements = ["cowlib", "file_streams", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "gun", "simplifile", "sinal", "youid"], otp_app = "http_gun", source = "hex", outer_checksum = "EC1765351EA2DD6A329B1BF88B8EF7B01819E9C94E5D065C1A0C62A2D05FFC39" },
-  { name = "json_blueprint", version = "2.1.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_json", "gleam_stdlib"], otp_app = "json_blueprint", source = "hex", outer_checksum = "6726C43158582C2414DD41F49A1CA3CE52B20643339075DF7DE14C65A5E49729" },
+  { name = "json_blueprint", version = "2.2.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_json", "gleam_stdlib"], otp_app = "json_blueprint", source = "hex", outer_checksum = "83D33F1E5413FDB17CA70B9202DCAD23396AEB5A3C2247F15A22D4D5249968E1" },
   { name = "llm_wire", version = "0.2.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "http_gun", "json_blueprint", "sinal"], otp_app = "llm_wire", source = "hex", outer_checksum = "1B6CD7206BC93D6C66A20AF5968CBA167630707864651CCA20756060E26FB716" },
   { name = "simplifile", version = "2.7.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "A2727627B063E87351934C7F7F008F2D1FDB16F6DE0B8C79F9E46459CFC9C164" },
   { name = "sinal", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib", "telemetry"], otp_app = "sinal", source = "hex", outer_checksum = "358D776FDFD6B0BE56E6FA63BBE3FA8D5A9A05C2DDD256270E54E133EB4A71FC" },
@@ -38,5 +38,5 @@ gleam_stdlib = { version = ">= 0.70.0 and < 2.0.0" }
 gleam_time = { version = ">= 1.11.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 http_gun = { version = ">= 0.2.0 and < 0.3.0" }
-json_blueprint = { version = ">= 2.1.1 and < 3.0.0" }
+json_blueprint = { version = ">= 2.2.0 and < 3.0.0" }
 llm_wire = { version = ">= 0.2.0 and < 0.3.0" }
