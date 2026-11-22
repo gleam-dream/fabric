@@ -109,6 +109,14 @@ fn tools(prefix: String, count: Int, pause: Int) -> List(tool.Tool(Nil)) {
 
 const empty_batch = "{\"orders\":[]}"
 
+/// A delegation from `family` takes an `Ask`; every other tool a batch.
+fn arguments(tool: String) -> String {
+  case tool {
+    "delegate_" <> _ -> "{\"topic\":\"pick\"}"
+    _ -> empty_batch
+  }
+}
+
 /// A model that calls the tools `turns` names, one list per turn, then
 /// answers.
 fn turns(names: List(List(String))) -> model.Model {
@@ -128,7 +136,7 @@ fn turns(names: List(List(String))) -> model.Model {
           model.AssistantTurn(
             "",
             list.map(calls, fn(name) {
-              scripted.call("c-" <> name, name, empty_batch)
+              scripted.call("c-" <> name, name, arguments(name))
             }),
             None,
           ),
@@ -226,37 +234,133 @@ fn run_to_end(agent: Agent(Nil, Batch)) -> run.Status(Batch) {
 
 // --- tests -------------------------------------------------------------------------
 
-/// The run starts three runners (the root, the picker, the root again for
-/// the approved call) and calls two tools. All that is copied into its
-/// runners together (each one's record and first model request with the
-/// tool declarations, and the builder) stays under a third of one copy of
-/// the built agent, and no single copy anywhere reaches a tenth of one.
-pub fn a_run_copies_its_builder_never_its_agent_test() {
-  let agent = approving_orders()
+/// A sub-agent's prompt: the only input a delegation declares to the model.
+pub type Ask {
+  Ask(topic: String)
+}
+
+fn ask_codec() -> Codec(Ask) {
+  use topic <- codec.field("topic", codec.string(), get: fn(ask: Ask) {
+    ask.topic
+  })
+  codec.success(Ask(topic:))
+}
+
+/// `orders` with `children` pickers beside it, each with its own six tools
+/// and a delegation `delegate_<n>` whose declared input is one string. The
+/// built agent holds every child built, so it grows by a whole picker per
+/// child, while the model sees one small declaration per child.
+fn family(
+  children: Int,
+  calls: List(List(String)),
+  pause: Int,
+) -> fn() -> agent.Spec(Nil, Batch) {
+  fn() {
+    int.range(from: 1, to: children + 1, with: [], run: list.prepend)
+    |> list.reverse
+    |> list.fold(
+      agent.new(
+        "orders",
+        turns(calls),
+        tools("submit_", 12, pause),
+        fn(_, action) {
+          case action.name {
+            "submit_1" ->
+              Ok(policy.RequireApproval(run.Requirement("submit", 1)))
+            _ -> Ok(policy.Allow)
+          }
+        },
+      )
+        |> agent.with_answer(batch_codec())
+        |> agent.with_approvers(testing.trusting_approvers()),
+      fn(spec, n) {
+        let name = int.to_string(n)
+        let assert Ok(picker) =
+          agent.build_with(fn() {
+            agent.new(
+              "picker_" <> name,
+              turns([["pick_1"]]),
+              tools("pick_", 6, pause),
+              fn(_, _) { Ok(policy.Allow) },
+            )
+            |> agent.with_answer(batch_codec())
+          })
+        agent.with_sub_agent(
+          spec,
+          tool.define(
+            "delegate_" <> name,
+            "Ask picker " <> name <> ".",
+            ask_codec(),
+            batch_codec(),
+          ),
+          to: picker,
+          prompt: fn(ask: Ask) { ask.topic },
+        )
+      },
+    )
+  }
+}
+
+/// One measurement: the built agent's size, and what the run copied into
+/// its runners and in its largest single copy, all in bytes.
+type Copied {
+  Copied(agent: Int, into_runners: Int, largest: Int)
+}
+
+/// Builds the family of `children` and runs `run` over it, measured.
+fn measure(
+  children: Int,
+  calls: List(List(String)),
+  pause: Int,
+  run: fn(Agent(Nil, Batch)) -> run.Status(Batch),
+) -> Copied {
+  let assert Ok(agent) = agent.build_with(family(children, calls, pause))
   let agent_bytes = flat_bytes(checked_agent.built(agent))
-  // The meter would see a copy of the agent: it is large.
-  { agent_bytes > 150_000 } |> should.be_true
-
-  let #(status, into_runners, largest) = crossing(fn() { run_to_end(agent) })
-
+  let #(status, into_runners, largest) = crossing(fn() { run(agent) })
   let assert run.Finished(run.Completed(Batch([], None))) = status
-  { into_runners < agent_bytes / 3 } |> should.be_true
-  { largest < agent_bytes / 10 } |> should.be_true
+  Copied(agent: agent_bytes, into_runners:, largest:)
+}
+
+/// The family sizes the scaling tests compare.
+const scale = [1, 10, 100]
+
+/// Checks what a run copies as its agent grows. Each step from one child
+/// to `n` adds whole built pickers to the agent, so a copy of the agent
+/// into even one runner would add at least that growth to `into_runners`.
+/// What legitimately grows is one small declaration per child in each
+/// runner's model request. The runners' growth stays under a quarter of
+/// the agent's, and the largest copy's under a tenth.
+fn grows_slower_than_its_agent(measured: List(Copied)) -> Nil {
+  let assert [first, ..rest] = measured
+  list.each(rest, fn(copied) {
+    let agent_growth = copied.agent - first.agent
+    // The meter would see a copy of the agent: it grows.
+    { agent_growth > first.agent } |> should.be_true
+    { copied.into_runners - first.into_runners < agent_growth / 4 }
+    |> should.be_true
+    { copied.largest - first.largest < agent_growth / 10 } |> should.be_true
+  })
+}
+
+/// The run starts three runners (the root, a picker, the root again for
+/// the approved call) and calls two tools, for an agent with 1, 10 and 100
+/// sub-agents. What its runners receive (each one's record and first model
+/// request with the tool declarations, and the builder) does not grow with
+/// the agent the way a copy of it would.
+pub fn a_run_copies_its_builder_never_its_agent_test() {
+  list.map(scale, measure(_, [["delegate_1"], ["submit_1"]], 0, run_to_end))
+  |> grows_slower_than_its_agent
 }
 
 /// On a leased store a runner whose sub-agent works reads its children
 /// every third of the lease, from a process of its own. The parent here
 /// stays live (its own tool runs as long as the child's) through several
-/// such reads; none copies the agent.
+/// such reads; none copies the agent, at any family size.
 pub fn a_leased_parent_reading_its_children_copies_no_agent_test() {
   support.leased(fn() {
-    let assert Ok(picker) = agent.build_with(picker(1600))
-    let assert Ok(agent) =
-      agent.build_with(orders(picker, [["delegate", "submit_2"]], 1600))
-    let agent_bytes = flat_bytes(checked_agent.built(agent))
-
-    let #(status, into_runners, largest) =
-      crossing(fn() {
+    list.map(
+      scale,
+      measure(_, [["delegate_1", "submit_2"]], 1600, fn(agent) {
         let assert Ok(handle) =
           fabric.start(
             support.store(),
@@ -266,12 +370,12 @@ pub fn a_leased_parent_reading_its_children_copies_no_agent_test() {
             prompt: "go",
             correlation: None,
           )
-        fabric.await(handle, within: duration.seconds(10))
-      })
-
-    let assert Ok(run.Finished(run.Completed(Batch([], None)))) = status
-    { into_runners < agent_bytes / 3 } |> should.be_true
-    { largest < agent_bytes / 10 } |> should.be_true
+        let assert Ok(status) =
+          fabric.await(handle, within: duration.seconds(10))
+        status
+      }),
+    )
+    |> grows_slower_than_its_agent
   })
 }
 

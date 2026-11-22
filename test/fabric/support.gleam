@@ -175,11 +175,10 @@ pub fn build(
 
 /// Runs `body` with every agent `build` makes built once, by the
 /// deprecated `agent.build`, whose agent is copied whole into every
-/// process: that path is kept working until it is removed.
+/// process: that path is kept working until it is removed. Building once
+/// ends however `body` ends, a failed assertion included.
 pub fn built_once(body: fn() -> a) -> Nil {
-  set_building_once(True)
-  let _ = body()
-  set_building_once(False)
+  while_building_once(body)
 }
 
 /// `agent.build`, called through its compiled name so that the strict
@@ -192,8 +191,8 @@ fn deprecated_build(
 @external(erlang, "fabric_test_ffi", "building_once")
 fn building_once() -> Bool
 
-@external(erlang, "fabric_test_ffi", "set_building_once")
-fn set_building_once(once: Bool) -> Nil
+@external(erlang, "fabric_test_ffi", "while_building_once")
+fn while_building_once(body: fn() -> a) -> Nil
 
 /// A started in-memory store, linked to the caller. Within `leased`, a
 /// leased store over its own in-memory leased backend instead.
@@ -217,17 +216,17 @@ fn leased_store() -> Store {
 
 /// Runs `body` with `store` making leased stores, in the calling process
 /// only: a test written for an in-memory store runs on a leased one.
+/// Leasing ends however `body` ends, a failed assertion included, so a
+/// failing test cannot leave later tests on leased stores.
 pub fn leased(body: fn() -> a) -> Nil {
-  set_leasing(True)
-  let _ = body()
-  set_leasing(False)
+  while_leasing(body)
 }
 
 @external(erlang, "fabric_test_ffi", "leasing")
 fn leasing() -> Bool
 
-@external(erlang, "fabric_test_ffi", "set_leasing")
-fn set_leasing(leasing: Bool) -> Nil
+@external(erlang, "fabric_test_ffi", "while_leasing")
+fn while_leasing(body: fn() -> a) -> Nil
 
 /// A started directory store over `path`, linked to the caller.
 pub fn directory(path: String) -> Store {
