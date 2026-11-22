@@ -551,35 +551,46 @@ reviews:
           loosens a test, a stored-record fixture, an oracle case or a step of
           scripts/test.sh or CI (including removing a package,
           `--warnings-as-errors`, `erlc -Werror` or a Python check from the
-          gate, or adding `continue-on-error`), and the pull request
-          description does not name the behavior that no longer exists or the
-          stronger check that replaces it. Pass otherwise.
+          gate, or setting `continue-on-error` to true or an expression),
+          and the pull request description does not name the behavior that
+          no longer exists or the stronger check that replaces it. Pass
+          otherwise.
       - name: Behavior change carries its design
         mode: warning
         instructions: |
           Source: policy, design. Warn if the diff changes public behavior,
-          an invariant, a stored record format or a recovery rule in src/ or
-          integrations/fabric_postgres/src with no change under docs/design,
-          docs/adr or the adapter's docs/design and docs/adr, and the pull
-          request description does not say the change restores designed
-          behavior or preserves behavior. Pass for tests, tooling and
-          documentation-only changes.
+          an invariant, a stored record format or a recovery rule in src/,
+          integrations/fabric_postgres/src or
+          integrations/fabric_postgres/priv/migrations, and does not change
+          the design unit that owns the changed part. docs/COVERAGE.md and
+          integrations/fabric_postgres/docs/COVERAGE.md name each part's
+          owner; an edit to another unit or to an unrelated ADR does not
+          count. Pass when the diff restores or preserves the behavior the
+          owning unit already states and the pull request description says
+          so. Pass for tests, tooling and documentation-only changes.
       - name: Breaking change is declared
         mode: warning
         instructions: |
           Source: policy, gleam-lib. Warn if the diff removes or changes an
-          exported function, type, constructor, field or module path in a
-          module outside `fabric/internal` or `fabric_postgres/internal`, or
-          a stored record format, and the pull request description does not
-          call the change breaking and give its migration. Pass otherwise.
+          exported function, type, constructor, field, constant or module
+          path in a module outside `fabric/internal` or
+          `fabric_postgres/internal`, changes a stored record format, or
+          changes what a caller of a public module observes (a result, an
+          error, an ordering, an effect or a default) in whichever module the
+          change is made, and the pull request description does not call the
+          change breaking and give its migration. Pass for an implementation
+          change no caller can observe, and for a fix that restores behavior
+          the design already states.
       - name: Public API change reaches the consumer
         mode: warning
         instructions: |
           Source: gleam-lib, AGENTS.md. Warn if the diff adds, removes or
           changes an exported function, type, constructor or field in a
-          module outside `fabric/internal` and changes nothing under
-          examples/usage or consumers, and the pull request description does
-          not say why no usage example covers it. Pass otherwise.
+          module outside `fabric/internal`, no change under examples/usage or
+          consumers adds, changes or removes a use of that declaration, and
+          the pull request description does not say why no usage example
+          covers it. An unrelated edit under those folders does not count.
+          Pass otherwise.
       - name: Problem-first description
         mode: warning
         instructions: |
@@ -653,7 +664,7 @@ knowledge_base:
     # AGENTS.md and CLAUDE.md are read by default.
     filePatterns:
       - files: "docs/COVERAGE.md,docs/design/**/*.typ,docs/adr/*.md"
-        applyTo: "src/**,consumers/**,examples/**,experiments/**,test/**"
+        applyTo: "src/**,consumers/**,examples/**,experiments/**,test/**,integrations/fabric_postgres/**"
       - files: "integrations/fabric_postgres/docs/COVERAGE.md,integrations/fabric_postgres/docs/design/**/*.typ,integrations/fabric_postgres/docs/adr/*.md"
         applyTo: "integrations/fabric_postgres/**"
       - files: "docs/ORACLE.md"
