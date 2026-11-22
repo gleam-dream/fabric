@@ -41,3 +41,14 @@ the handle, a drifting builder refused only after the start was stored, a
 sub-agent built three times per parent build, and no tests left on the
 deprecated `agent.build`. Each is fixed with a test that failed first; the
 acceptance list above includes them.
+
+AI-assisted contribution. On json_blueprint 2.2.0 the built test agent
+copies at 58.8 kB instead of 241.3 kB, while what the run copies into its
+runners is unchanged (57.5 kB), so the acceptance ratio above (a third of
+one agent copy) no longer separates a copied agent from a legitimate run.
+The unleased and leased tests now scale the agent instead: 1, 10 and 100
+sub-agents, each held built by the parent. Between family sizes, what the
+runners receive must grow by under a quarter of what the agent grows, and
+the largest single copy by under a tenth. A copy of the agent into one
+runner would add the agent's whole growth. The watcher test keeps its
+ratio check.
