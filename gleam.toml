@@ -1,5 +1,5 @@
 name = "fabric"
-version = "0.5.0"
+version = "0.5.1"
 target = "erlang"
 gleam = ">= 1.18.0"
 licenses = ["Apache-2.0"]
