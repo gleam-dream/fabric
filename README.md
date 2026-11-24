@@ -114,7 +114,7 @@ _`agent.build_with` and `fabric.AgentUnbuildable` are available from Fabric 0.5.
 
 Every run executes in its own runner process, with its tool bodies and model calls in tasks of that runner, and the BEAM copies a value whole into each process it reaches. Fabric therefore never sends an agent: `agent.build_with` keeps the function that makes the agent's spec, and a process that needs the agent builds it there. The caller builds it once per `fabric.start`, `open` or `recover`, and each runner once before it writes anything. A tool's task receives only that tool, with its codecs. What a run copies is its builder, its context and its record. The deprecated `agent.build` returns a built agent, which is copied whole into every runner.
 
-Write tool and answer codecs by the [json_blueprint codec practice](https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md) (json_blueprint 2.2.0 or later). Fabric's part of it:
+Write tool and answer codecs by the [json_blueprint codec practice](https://github.com/gleam-dream/json_blueprint/blob/main/docs/CODEC-PRACTICE.md) (json_blueprint 2.2.0 or later). Fabric's part of it:
 
 - Give `agent.build_with` a builder that builds the same agent every time from small values that are the same for every run: an HTTP client, settings, ids loaded once. A builder that captures a built tool or codec brings the copy back. Another name or version is refused before anything is stored (`fabric.AgentUnbuildable`), but `open`, `recover` and the sweeper check only those, not what the builder captured.
 - Make subjects, names and tables outside the builder and capture them; one made inside is made again in every process.

@@ -55,7 +55,7 @@
 //// process and `open` the run there, rather than the handle.
 ////
 //// Tool and answer codecs follow the json_blueprint codec practice
-//// (<https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md>,
+//// (<https://github.com/gleam-dream/json_blueprint/blob/main/docs/CODEC-PRACTICE.md>,
 //// which needs json_blueprint 2.2.0 or later). Fabric's part of it:
 ////
 //// - Make tool and answer codecs inside the builder, by the guide's rules

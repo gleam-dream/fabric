@@ -25,7 +25,7 @@
 //// settlement needs: the builder, or for an agent built once, the setup.
 ////
 //// Write the input and output codecs by the json_blueprint codec practice
-//// (<https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md>):
+//// (<https://github.com/gleam-dream/json_blueprint/blob/main/docs/CODEC-PRACTICE.md>):
 //// make each child codec inside its field, never `let`-bound once and
 //// captured by later fields, and build a run-time enum (the accounts a
 //// desk may name, say) inside its field from small values the agent's
