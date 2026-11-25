@@ -114,7 +114,7 @@ fn waiting(
     })
   let gate = fn(_context, _action) { Ok(policy.RequireApproval(refund)) }
   let assert Ok(desk) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new("desk", scripted, [refund_tool()], gate)
       |> agent.with_approvers(approvers)
     })

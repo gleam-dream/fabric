@@ -77,7 +77,7 @@ fn start(
     )
   }
   let assert Ok(agent) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new("agent", model_once(), [tool()], policy.always_allow())
     })
   let assert Ok(run) =

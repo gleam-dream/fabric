@@ -3,7 +3,7 @@
 ////
 //// ```gleam
 //// let assert Ok(agent) =
-////   agent.build_with(fn() {
+////   agent.build(fn() {
 ////     agent.new("researcher", model, tools(), policy)
 ////     |> agent.with_answer(summary_codec())
 ////   })

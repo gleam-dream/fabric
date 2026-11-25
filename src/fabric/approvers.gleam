@@ -30,7 +30,7 @@
 //// ```gleam
 //// let desk_approvers = hellhound_approvers(validator)  // the recipe below
 //// let assert Ok(desk) =
-////   agent.build_with(fn() {
+////   agent.build(fn() {
 ////     agent.new("desk", model, tools(), policy)
 ////     |> agent.with_approvers(desk_approvers)
 ////   })

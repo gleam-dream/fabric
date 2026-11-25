@@ -22,7 +22,7 @@ pub fn summarize(
   text: String,
 ) -> Result(run.Status(String), Error) {
   use summarizer <- result.try(
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new("summarizer", model, [], policy.always_allow())
       |> agent.with_system_prompt(
         "Summarize the supplied text in one paragraph.",

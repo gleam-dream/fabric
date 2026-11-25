@@ -1022,7 +1022,7 @@ pub fn an_adoption_that_cannot_build_still_reports_the_stored_run_test() {
   let runs = taken_backend(memory, True)
   let builds = counter()
   let assert Ok(drifting) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       let version = case count(builds) <= 3 {
         True -> 1
         False -> 2

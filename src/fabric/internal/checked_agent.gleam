@@ -12,19 +12,19 @@ import fabric/policy.{type Policy}
 import fabric/run.{type DefinitionId}
 import gleam/dict.{type Dict}
 import gleam/int
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option}
 import json/blueprint/codec
 
-/// A checked agent. Only `fabric/agent.build` and `build_with` make one.
+/// A checked agent. Only `fabric/agent.build` makes one.
 pub opaque type Agent(context, answer) {
-  /// A built agent; `builder` builds it again in another process when it
-  /// was built from a builder (`built`).
+  /// The agent built in this process; `builder` builds it again in
+  /// another process (`built`).
   Agent(
     admitted: Admitted(context),
     answer: Answer(answer),
-    builder: Option(fn() -> Admitted(context)),
+    builder: fn() -> Admitted(context),
   )
-  /// An agent kept as its builder (`agent.build_with`), checked once when
+  /// An agent kept as its builder (`agent.build`), checked once when
   /// it was made: it is built in each process that uses it, so that only
   /// the builder is ever copied between processes. `facts` are what the
   /// first build was.
@@ -67,13 +67,6 @@ pub fn facts(agent: Agent(context, answer)) -> Facts {
   }
 }
 
-pub fn new(
-  admitted: Admitted(context),
-  answer: Answer(answer),
-) -> Agent(context, answer) {
-  Agent(admitted, answer, None)
-}
-
 /// An agent that `build` makes wherever it is used; the first build had
 /// `facts`.
 pub fn deferred(
@@ -95,13 +88,13 @@ pub fn try_built(
     Deferred(facts: Facts(identity:, ..), build:) ->
       case rescue(build) {
         Error(crash) ->
-          Error("the agent's builder (agent.build_with) crashed: " <> crash)
+          Error("the agent's builder (agent.build) crashed: " <> crash)
         Ok(Error(reason)) -> Error(reason)
         Ok(Ok(#(made, answer))) if made.identity == identity ->
-          Ok(Agent(made, answer, Some(fn() { admitted(agent) })))
+          Ok(Agent(made, answer, fn() { admitted(agent) }))
         Ok(Ok(#(made, _))) ->
           Error(
-            "the agent's builder (agent.build_with) built "
+            "the agent's builder (agent.build) built "
             <> describe_identity(made.identity)
             <> " after building "
             <> describe_identity(identity)
@@ -133,14 +126,11 @@ fn describe_identity(identity: DefinitionId) -> String {
   identity.name <> " version " <> int.to_string(identity.version)
 }
 
-/// How another process builds this agent's admitted form, for an agent
-/// kept as its builder; `None` for one built once.
-pub fn builder(
-  agent: Agent(context, answer),
-) -> Option(fn() -> Admitted(context)) {
+/// How another process builds this agent's admitted form.
+pub fn builder(agent: Agent(context, answer)) -> fn() -> Admitted(context) {
   case agent {
     Agent(builder:, ..) -> builder
-    Deferred(..) -> Some(fn() { admitted(agent) })
+    Deferred(..) -> fn() { admitted(agent) }
   }
 }
 

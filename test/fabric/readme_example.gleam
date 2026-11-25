@@ -94,7 +94,7 @@ pub fn resolution_codec() -> codec.Codec(Resolution) {
   codec.success(Resolution(summary:))
 }
 
-/// An agent is described by a function, which `build_with` checks once,
+/// An agent is described by a function, which `build` checks once,
 /// reporting every problem. The agent keeps that function, and each process
 /// that runs it builds it there, so the function captures only small values
 /// (the model, `pay`, `treasurers`) and makes the tools and codecs itself.
@@ -113,7 +113,7 @@ pub fn desk(
   pay: fn(Transfer) -> Result(Receipt, TransferError),
   treasurers: Approvers(credential),
 ) -> Result(Agent(Context, Resolution), List(agent.ConfigError)) {
-  agent.build_with(fn() {
+  agent.build(fn() {
     agent.new("desk", model, [transfer_tool(pay)], desk_policy)
     |> agent.with_approvers(treasurers)
     |> agent.with_answer(resolution_codec())
@@ -303,7 +303,7 @@ pub fn front_desk(
       summary_codec(),
     )
   }
-  agent.build_with(fn() {
+  agent.build(fn() {
     agent.new("front-desk", model, [], desk_policy)
     |> agent.with_sub_agent(research(), to: researcher, prompt: fn(topic) {
       topic.name

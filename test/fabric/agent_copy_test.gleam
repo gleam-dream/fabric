@@ -1,5 +1,5 @@
 //// What a run copies between processes. An agent made with
-//// `agent.build_with` is built in each process that runs it: its runners
+//// `agent.build` is built in each process that runs it: its runners
 //// receive the builder, the context and the record, never the agent with
 //// its codecs; a tool's task receives that one tool. The meter sums
 //// `erts_debug:flat_size` (in bytes) of every message and start closure
@@ -191,9 +191,9 @@ fn orders(
 /// Delegates to the picker, then calls `submit_1`, which needs an approval,
 /// then answers.
 fn approving_orders() -> Agent(Nil, Batch) {
-  let assert Ok(picker) = agent.build_with(picker(0))
+  let assert Ok(picker) = agent.build(picker(0))
   let assert Ok(orders) =
-    agent.build_with(orders(picker, [["delegate"], ["submit_1"]], 0))
+    agent.build(orders(picker, [["delegate"], ["submit_1"]], 0))
   orders
 }
 
@@ -273,7 +273,7 @@ fn family(
       fn(spec, n) {
         let name = int.to_string(n)
         let assert Ok(picker) =
-          agent.build_with(fn() {
+          agent.build(fn() {
             agent.new(
               "picker_" <> name,
               turns([["pick_1"]]),
@@ -311,7 +311,7 @@ fn measure(
   pause: Int,
   run: fn(Agent(Nil, Batch)) -> run.Status(Batch),
 ) -> Copied {
-  let assert Ok(agent) = agent.build_with(family(children, calls, pause))
+  let assert Ok(agent) = agent.build(family(children, calls, pause))
   let agent_bytes = flat_bytes(checked_agent.built(agent))
   let #(status, into_runners, largest) = crossing(fn() { run(agent) })
   let assert run.Finished(run.Completed(Batch([], None))) = status
@@ -438,7 +438,7 @@ fn drifting(builds: Counter, stable: Int) -> fn() -> agent.Spec(Nil, String) {
 }
 
 fn stable() -> agent.Agent(Nil, String) {
-  let assert Ok(agent) = agent.build_with(drifting(counter(), 1_000_000))
+  let assert Ok(agent) = agent.build(drifting(counter(), 1_000_000))
   agent
 }
 
@@ -449,8 +449,8 @@ fn stable() -> agent.Agent(Nil, String) {
 pub fn a_builder_that_builds_another_agent_is_refused_before_storing_test() {
   let store = support.store()
 
-  // Built once by `build_with`, then again in the caller of `start`.
-  let assert Ok(in_caller) = agent.build_with(drifting(counter(), 1))
+  // Built once by `build`, then again in the caller of `start`.
+  let assert Ok(in_caller) = agent.build(drifting(counter(), 1))
   let id = run.new_id()
   let assert Error(fabric.AgentUnbuildable(_)) =
     fabric.start(
@@ -465,7 +465,7 @@ pub fn a_builder_that_builds_another_agent_is_refused_before_storing_test() {
   |> should.equal(Error(fabric.RunNotFound))
 
   // The caller's build matches; the runner's does not.
-  let assert Ok(in_runner) = agent.build_with(drifting(counter(), 2))
+  let assert Ok(in_runner) = agent.build(drifting(counter(), 2))
   let id = run.new_id()
   let assert Error(fabric.AgentUnbuildable(_)) =
     fabric.start(
@@ -487,12 +487,12 @@ pub fn a_builder_that_builds_another_agent_is_refused_before_storing_test() {
 pub fn an_owner_exit_cancels_even_when_the_watcher_cannot_build_test() {
   let builds = counter()
   let assert Ok(agent) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       let version = case count(builds) <= 3 {
         True -> 1
         False -> 2
       }
-      let assert Ok(picker) = agent.build_with(picker(0))
+      let assert Ok(picker) = agent.build(picker(0))
       orders(picker, [["submit_1"]], 0)()
       |> agent.with_version(version)
     })
@@ -527,7 +527,7 @@ pub fn opening_with_a_drifting_builder_is_an_error_test() {
       prompt: "go",
       correlation: None,
     )
-  let assert Ok(drifted) = agent.build_with(drifting(counter(), 1))
+  let assert Ok(drifted) = agent.build(drifting(counter(), 1))
   let assert Error(fabric.AgentUnbuildable(_)) =
     fabric.open(store, drifted, Nil, id)
   let assert Error(fabric.AgentUnbuildable(_)) =
@@ -535,16 +535,16 @@ pub fn opening_with_a_drifting_builder_is_an_error_test() {
 }
 
 /// A sub-agent kept as its builder is built once each time its parent is:
-/// `build_with`'s check of the parent builds the child once.
+/// `build`'s check of the parent builds the child once.
 pub fn a_sub_agent_is_built_once_per_parent_build_test() {
   let builds = counter()
   let assert Ok(child) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       let _ = count(builds)
       picker(0)()
     })
   let before = count(builds)
-  let assert Ok(_) = agent.build_with(orders(child, [], 0))
+  let assert Ok(_) = agent.build(orders(child, [], 0))
   // `count` itself adds one.
   count(builds) |> should.equal(before + 2)
 }

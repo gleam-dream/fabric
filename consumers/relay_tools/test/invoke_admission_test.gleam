@@ -171,7 +171,7 @@ fn desk(effects) {
         _ -> Ok(model.FinalAnswer("done", None))
       }
     })
-  agent.build_with(fn() {
+  agent.build(fn() {
     agent.new("admission", model, [operation()], policy.always_allow())
   })
   |> should.be_ok
