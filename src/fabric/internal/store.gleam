@@ -30,6 +30,7 @@ import gleam/otp/factory_supervisor
 import gleam/otp/static_supervisor
 import gleam/otp/supervision
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import sinal/correlation.{type Correlation}
 
@@ -120,6 +121,7 @@ pub opaque type Message {
   )
   Watch(run: String, watcher: Subject(Nil), reply: Subject(Nil))
   Unwatch(run: String, watcher: Subject(Nil))
+  ReadWatched(reply: Subject(Int))
   Wake(run: String, token: String)
   Awoke(run: String, token: String, disposition: WakeupDisposition)
   Down(pid: Pid, reason: process.ExitReason)
@@ -809,6 +811,13 @@ pub fn unwatch(store: Store, run: String, watcher: Subject(Nil)) -> Nil {
   cast(store, Unwatch(run, watcher))
 }
 
+/// How many entries the store's process keeps for watches: zero when no
+/// watch is in force. For tests that must show an ended watch leaves
+/// nothing behind.
+pub fn watched(store: Store) -> Result(Int, Nil) {
+  call(store, ReadWatched) |> result.replace_error(Nil)
+}
+
 // --- the store process -----------------------------------------------------------
 
 type Backend {
@@ -875,7 +884,13 @@ type Loop {
     draining: Option(Pid),
     drain: drain.Accounting,
     drain_reply: Option(Subject(Result(o.Drain, Nil))),
+    /// Per watched run: its watchers, each with the process that owns it.
+    /// A run with no watcher has no entry.
     watchers: Dict(String, List(#(Pid, Subject(Nil)))),
+    /// Per process that owns a watcher: the runs it watches, so that its
+    /// exit is handled by reading its own watches only. A process that
+    /// watches nothing has no entry.
+    watching: Dict(Pid, Set(String)),
     wakeups: Dict(String, Wakeup),
     job_observations: Dict(String, Pid),
     monitored: List(Pid),
@@ -965,6 +980,7 @@ fn run(
       drain: drain.new(),
       drain_reply: None,
       watchers: dict.new(),
+      watching: dict.new(),
       wakeups: dict.new(),
       job_observations: dict.new(),
       monitored: [],
@@ -1189,19 +1205,30 @@ fn serve(state: Loop, message: Message) -> Loop {
             watchers: dict.upsert(state.watchers, run, fn(existing) {
               [#(owner, watcher), ..option.unwrap(existing, [])]
             }),
+            watching: dict.upsert(state.watching, owner, fn(existing) {
+              set.insert(option.unwrap(existing, set.new()), run)
+            }),
           )
       }
       process.send(reply, Nil)
       state
     }
-    Unwatch(run, watcher) ->
-      Loop(
-        ..state,
-        watchers: dict.upsert(state.watchers, run, fn(existing) {
-          option.unwrap(existing, [])
-          |> list.filter(fn(entry) { entry.1 != watcher })
-        }),
-      )
+    Unwatch(run, watcher) -> {
+      let #(ended, kept) =
+        dict.get(state.watchers, run)
+        |> result.unwrap([])
+        |> list.partition(fn(entry) { entry.1 == watcher })
+      list.fold(ended, keep_watchers(state, run, kept), fn(state, entry) {
+        case list.any(kept, fn(other) { other.0 == entry.0 }) {
+          True -> state
+          False -> forget_watching(state, entry.0, run)
+        }
+      })
+    }
+    ReadWatched(reply) -> {
+      process.send(reply, dict.size(state.watchers) + dict.size(state.watching))
+      state
+    }
     Down(pid, reason) -> {
       let #(released, live) =
         dict.fold(state.live, #([], state.live), fn(acc, run, entry) {
@@ -1210,20 +1237,26 @@ fn serve(state: Loop, message: Message) -> Loop {
             False -> acc
           }
         })
-      let watchers =
-        dict.map_values(state.watchers, fn(_, entries) {
-          list.filter(entries, fn(entry) { entry.0 != pid })
+      let state =
+        dict.get(state.watching, pid)
+        |> result.map(set.to_list)
+        |> result.unwrap([])
+        |> list.fold(state, fn(state, run) {
+          dict.get(state.watchers, run)
+          |> result.unwrap([])
+          |> list.filter(fn(entry) { entry.0 != pid })
+          |> keep_watchers(state, run, _)
         })
       let state =
         Loop(
           ..state,
+          watching: dict.delete(state.watching, pid),
           drain: drain.exited(state.drain, pid, case reason {
             process.Killed -> drain.Killed
             process.Normal | process.Abnormal(_) -> drain.Exited
           }),
           live:,
           valid: dict.drop(state.valid, released),
-          watchers:,
           job_observations: dict.filter(state.job_observations, fn(_, owner) {
             owner != pid
           }),
@@ -1775,6 +1808,35 @@ fn monitor(state: Loop, pid: Pid) -> Loop {
     False -> {
       let _ = process.monitor(pid)
       Loop(..state, monitored: [pid, ..state.monitored])
+    }
+  }
+}
+
+/// Sets the watchers of `run`, keeping no entry for a run without one.
+fn keep_watchers(
+  state: Loop,
+  run: String,
+  entries: List(#(Pid, Subject(Nil))),
+) -> Loop {
+  let watchers = case entries {
+    [] -> dict.delete(state.watchers, run)
+    _ -> dict.insert(state.watchers, run, entries)
+  }
+  Loop(..state, watchers:)
+}
+
+/// Records that `owner` no longer watches `run`, keeping no entry for a
+/// process that watches nothing.
+fn forget_watching(state: Loop, owner: Pid, run: String) -> Loop {
+  case dict.get(state.watching, owner) {
+    Error(Nil) -> state
+    Ok(runs) -> {
+      let runs = set.delete(runs, run)
+      let watching = case set.is_empty(runs) {
+        True -> dict.delete(state.watching, owner)
+        False -> dict.insert(state.watching, owner, runs)
+      }
+      Loop(..state, watching:)
     }
   }
 }
