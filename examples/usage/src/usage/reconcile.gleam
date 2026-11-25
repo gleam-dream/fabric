@@ -35,7 +35,7 @@ fn transfer() -> tool.Tool(Nil) {
 /// waits for it, after it was cancelled, and after the evidence was stored.
 pub fn counts() -> #(Int, Int, Int) {
   let assert Ok(desk) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "desk",
         support.calling_once("transfer", "{\"to\":\"ada\"}", fn(_) { "done" }),

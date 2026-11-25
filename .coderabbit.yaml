@@ -244,8 +244,8 @@ reviews:
       instructions: |
         Fabric consumers (fabric). Apply to Gleam code in the consumers, the
         usage examples and README.md excerpts.
-        - Flag a new call to `agent.build`; use `agent.build_with` with one
-          builder function and handle its errors.
+        - Flag an agent built without one builder function passed to
+          `agent.build`, or whose errors are not handled.
         - Flag a builder that captures built tools, codecs or per-run values
           shared across runs, and subjects, names or tables made inside the
           builder.

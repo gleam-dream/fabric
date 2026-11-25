@@ -20,7 +20,7 @@ type Started {
 fn start_blocked(name: String) -> Started {
   let gate = support.new_gate()
   let assert Ok(desk) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "desk",
         support.calling_once("wait", "{\"text\":\"x\"}", fn(_) { "done" }),

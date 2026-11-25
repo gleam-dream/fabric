@@ -38,9 +38,10 @@ gleam add fabric
 ```
 
 Commit `gleam.toml` and `manifest.toml` to retain the resolved versions.
-The examples below use `agent.build_with`, from Fabric 0.5.0. On 0.4.0,
-build the agent with `agent.build` and do not send it to other processes
-per operation.
+The examples below use `agent.build` with a builder function, as released
+after Fabric 0.5.1. Fabric 0.5 names that function `agent.build_with`. On
+0.4.0, `agent.build` takes the spec itself; do not send its agent to other
+processes per operation.
 The optional [PostgreSQL adapter](integrations/fabric_postgres/README.md)
 installs from a Git subdirectory; its release `fabric_postgres-v0.4.0`
 requires fabric `>= 0.5.0 and < 0.6.0`.
@@ -76,7 +77,7 @@ pub fn summarize(
   text: String,
 ) -> Result(run.Status(String), Error) {
   use summarizer <- result.try(
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new("summarizer", model, [], policy.always_allow())
       |> agent.with_system_prompt(
         "Summarize the supplied text in one paragraph.",
@@ -110,13 +111,13 @@ The in-memory records disappear when the store stops. Services needing recovery 
 
 ## Codecs in tools and answers
 
-_`agent.build_with` and `fabric.AgentUnbuildable` are available from Fabric 0.5.0._
+_`fabric.AgentUnbuildable` is available from Fabric 0.5.0; Fabric 0.5 names `agent.build` `agent.build_with`._
 
-Every run executes in its own runner process, with its tool bodies and model calls in tasks of that runner, and the BEAM copies a value whole into each process it reaches. Fabric therefore never sends an agent: `agent.build_with` keeps the function that makes the agent's spec, and a process that needs the agent builds it there. The caller builds it once per `fabric.start`, `open` or `recover`, and each runner once before it writes anything. A tool's task receives only that tool, with its codecs. What a run copies is its builder, its context and its record. The deprecated `agent.build` returns a built agent, which is copied whole into every runner.
+Every run executes in its own runner process, with its tool bodies and model calls in tasks of that runner, and the BEAM copies a value whole into each process it reaches. Fabric therefore never sends an agent: `agent.build` keeps the function that makes the agent's spec, and a process that needs the agent builds it there. The caller builds it once per `fabric.start`, `open` or `recover`, and each runner once before it writes anything. A tool's task receives only that tool, with its codecs. What a run copies is its builder, its context and its record.
 
 Write tool and answer codecs by the [json_blueprint codec practice](https://github.com/gleam-dream/json_blueprint/blob/main/docs/CODEC-PRACTICE.md) (json_blueprint 2.2.0 or later). Fabric's part of it:
 
-- Give `agent.build_with` a builder that builds the same agent every time from small values that are the same for every run: an HTTP client, settings, ids loaded once. A builder that captures a built tool or codec brings the copy back. Another name or version is refused before anything is stored (`fabric.AgentUnbuildable`), but `open`, `recover` and the sweeper check only those, not what the builder captured.
+- Give `agent.build` a builder that builds the same agent every time from small values that are the same for every run: an HTTP client, settings, ids loaded once. A builder that captures a built tool or codec brings the copy back. Another name or version is refused before anything is stored (`fabric.AgentUnbuildable`), but `open`, `recover` and the sweeper check only those, not what the builder captured.
 - Make subjects, names and tables outside the builder and capture them; one made inside is made again in every process.
 - Make tool and answer codecs inside the builder, by the guide's rules for child codecs and run-time enums. A run-time enum from values that differ per run makes a per-run agent: re-derive its values when you `open` or `recover`, and recover those runs yourself, since `sweeper.agent` registers one agent per name and version.
 - A `fabric.Run` handle holds the built agent: send the run's id to another process and `open` it there.
@@ -197,7 +198,7 @@ pub fn payer(
     codec.check(transfer_codec(accounts))
     |> result.map_error(codec.describe_definition_error),
   )
-  agent.build_with(fn() {
+  agent.build(fn() {
     agent.new("payer", model, [transfer_tool(accounts)], policy.always_allow())
   })
   |> result.map_error(agent.describe_config_errors)
@@ -358,7 +359,7 @@ let settings =
   |> generation.with_max_tokens(128)
   |> generation.with_temperature(0.2)
 let assert Ok(agent) =
-  agent.build_with(fn() {
+  agent.build(fn() {
     agent.new(
       "configured",
       llm.configured_model(client, config, "fixture", settings),

@@ -75,7 +75,7 @@ pub fn payer(
     codec.check(transfer_codec(accounts))
     |> result.map_error(codec.describe_definition_error),
   )
-  agent.build_with(fn() {
+  agent.build(fn() {
     agent.new("payer", model, [transfer_tool(accounts)], policy.always_allow())
   })
   |> result.map_error(agent.describe_config_errors)

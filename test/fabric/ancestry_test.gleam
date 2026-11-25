@@ -3,7 +3,6 @@
 //// then use their ordinary runner and public handles.
 
 import fabric/budget as quota
-import fabric/internal/checked_agent
 import fabric/internal/graph/attachment
 
 import fabric
@@ -82,7 +81,7 @@ fn worker(model: model.Model) -> agent.Agent(Nil, String) {
 }
 
 fn child_state(runs, worker, id) {
-  let setup = runner.setup(runs, checked_agent.admitted(worker), Nil, None)
+  let setup = runner.agent_setup(runs, worker, Nil)
   let #(state, effects) =
     runner.root_state(setup, id, "go", correlation.from_key(id))
   #(

@@ -33,7 +33,7 @@ pub fn call(
 ///
 /// ```gleam
 /// let approvers = testing.trusting_approvers()
-/// // agent.build_with(fn() { agent.new(..) |> agent.with_approvers(approvers) })
+/// // agent.build(fn() { agent.new(..) |> agent.with_approvers(approvers) })
 /// let assert Ok(proof) =
 ///   approvers.check(approvers, alice, pending.reference.requirement)
 /// fabric.approve(handle, pending.reference, proof:, context:)

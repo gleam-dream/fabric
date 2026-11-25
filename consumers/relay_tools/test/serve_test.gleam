@@ -104,7 +104,7 @@ fn charge() -> fabric_tool.Tool(Nil) {
 
 fn desk(model: model.Model) -> agent.Agent(Nil, Answer) {
   let assert Ok(desk) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new("desk", model, [charge()], fn(_, action: policy.Action) {
         case action.name {
           "charge" ->

@@ -62,7 +62,7 @@ pub fn a_shutdown_before_the_build_drains_the_runner_test() {
   let assert Ok(Nil) = store.start(runs)
   let assert Ok(#(_, _, factory)) = store.runners(runs)
   let assert Ok(agent) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new("agent", scripted.plan([]), [], policy.always_allow())
     })
   let setup = runner.agent_setup(runs, agent, Nil)
@@ -73,7 +73,7 @@ pub fn a_shutdown_before_the_build_drains_the_runner_test() {
   let self = process.self()
   erlang_send(self, #(atom.create("EXIT"), factory, atom.create("shutdown")))
   process.send(go, runner.Build(runner.carried(setup), setup.identity, built))
-  process.send(go, runner.Go(1, state, effects, None, None))
+  process.send(go, runner.Go(1, state, effects, None))
   let assert Ok(#(_, _, _, _, _, draining)) =
     runner.first_state(go, runs, factory, None, False)
   process.receive(built, 0) |> should.equal(Ok(Ok(Nil)))

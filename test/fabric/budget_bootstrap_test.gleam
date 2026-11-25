@@ -2,7 +2,6 @@
 //// and observation use the ordinary public graph and agent APIs.
 
 import fabric/budget as quota
-import fabric/internal/checked_agent
 
 import fabric
 import fabric/agent
@@ -91,7 +90,7 @@ fn fixture(runs, kind, initialized, calls) {
           policy.always_allow(),
         )
         |> support.agent
-      let setup = runner.setup(runs, checked_agent.admitted(worker), Nil, None)
+      let setup = runner.agent_setup(runs, worker, Nil)
       let #(state, _) =
         runner.root_state(setup, "root", "go", correlation.from_key("root"))
       let state = controller.State(..state, family_budget: declaration)

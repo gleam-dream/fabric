@@ -17,7 +17,7 @@ import usage/support
 /// second model attempt: the run ends `BudgetExhausted(FamilyLimit(..))`.
 pub fn spent() -> run.Status(String) {
   let assert Ok(desk) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "desk",
         support.calling_once("echo", "{\"text\":\"hi\"}", fn(_) { "done" }),
