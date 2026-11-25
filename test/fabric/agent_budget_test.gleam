@@ -187,10 +187,7 @@ pub fn budget_refusal_stops_running_effects_without_claiming_they_did_not_happen
     fabric.approve(
       handle,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("reviewer")),
       context: Nil,
     )
   fabric.await(handle, within: duration.milliseconds(5000))

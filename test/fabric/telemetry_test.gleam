@@ -226,10 +226,7 @@ pub fn a_run_is_observed_after_each_commit_test() {
     fabric.approve(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("reviewer")),
       context: Nil,
     )
   let rest = until(events, "run_finished")

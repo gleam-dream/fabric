@@ -11,9 +11,7 @@ import fabric/internal/controller
 import fabric/internal/graph/runtime as graph_runtime
 import fabric/policy
 import fabric/reviewer.{type Reviewer}
-import fabric/run.{
-  type ActionId, type DefinitionId, type Requirement, type RunId,
-}
+import fabric/run.{type ActionId, type DefinitionId, type RunId}
 import fabric/store.{type Store}
 import fabric/store/conformance
 import fabric/testing
@@ -35,11 +33,19 @@ pub fn reviewer(subject: String) -> Reviewer {
   reviewer
 }
 
-/// A proof that `reviewer` answers a request waiting for `requirement`,
-/// from the trusting approvers (`testing.trusting_approvers`).
-pub fn proof(requirement: Requirement, reviewer: Reviewer) -> Proof {
+/// A proof that `reviewer` answers the agent request `reference`, from the
+/// trusting approvers (`testing.trusting_approvers`).
+pub fn proof(reference: run.ApprovalRef, reviewer: Reviewer) -> Proof {
   let assert Ok(proof) =
-    approvers.check(testing.trusting_approvers(), reviewer, requirement)
+    approvers.check(testing.trusting_approvers(), reviewer, reference)
+  proof
+}
+
+/// A proof that `reviewer` answers the graph request `reference`, from the
+/// trusting approvers (`testing.trusting_approvers`).
+pub fn graph_proof(reference: graph.ApprovalRef, reviewer: Reviewer) -> Proof {
+  let assert Ok(proof) =
+    graph.check_approval(testing.trusting_approvers(), reviewer, reference)
   proof
 }
 

@@ -272,10 +272,7 @@ pub fn every_agent_approval_is_visible_and_wakes_an_idle_graph_test() {
       fabric.approve(
         agent,
         approval.reference,
-        proof: support.proof(
-          approval.reference.requirement,
-          support.reviewer("reviewer"),
-        ),
+        proof: support.proof(approval.reference, support.reviewer("reviewer")),
         context: Nil,
       )
   })
@@ -319,10 +316,7 @@ pub fn agent_approval_and_attachment_survive_store_restart_test() {
       fabric.approve(
         agent,
         approval.reference,
-        proof: support.proof(
-          approval.reference.requirement,
-          support.reviewer("reviewer"),
-        ),
+        proof: support.proof(approval.reference, support.reviewer("reviewer")),
         context: Nil,
       )
   })
@@ -360,10 +354,7 @@ pub fn canceling_an_agent_approval_starts_no_tool_and_settles_the_graph_test() {
     fabric.approve(
       agent,
       approval.reference,
-      proof: support.proof(
-        approval.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(approval.reference, support.reviewer("reviewer")),
       context: Nil,
     )
     |> should.be_error
@@ -677,10 +668,7 @@ pub fn nested_graphs_observe_an_agents_own_delegated_family_test() {
       fabric.approve(
         agent,
         approval.reference,
-        proof: support.proof(
-          approval.reference.requirement,
-          support.reviewer("reviewer"),
-        ),
+        proof: support.proof(approval.reference, support.reviewer("reviewer")),
         context: Nil,
       )
   })

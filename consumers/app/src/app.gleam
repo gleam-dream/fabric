@@ -317,7 +317,8 @@ pub type Badge {
 /// request, the treasurer a `"treasurer"` one). Built once, at boot, and
 /// given to the agents and to the request handlers that answer.
 pub fn staff() -> Approvers(Badge) {
-  use badge: Badge, requirement <- approvers.new("library-badges")
+  use badge: Badge, request <- approvers.new("library-badges")
+  let requirement = request.requirement
   case list.contains(badge.roles, requirement.name) {
     False ->
       Error(approvers.NotAuthorized(

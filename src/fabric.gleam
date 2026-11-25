@@ -16,7 +16,7 @@
 ////   Ok(run.Suspended([pending, ..], _)) -> {
 ////     // `desk_approvers` verify the reviewer's token (`fabric/approvers`)
 ////     let assert Ok(proof) =
-////       approvers.check(desk_approvers, token, pending.reference.requirement)
+////       approvers.check(desk_approvers, token, pending.reference)
 ////     fabric.approve(handle, pending.reference, proof:,
 ////       context: current_context)
 ////   }
@@ -87,6 +87,7 @@ import fabric/approvers.{type Proof, type ProofError}
 import fabric/input
 import fabric/internal/answer as answers
 import fabric/internal/answerer
+import fabric/internal/approvers as approvers_core
 import fabric/internal/budget/model as reservations
 import fabric/internal/checked_agent
 import fabric/internal/clock
@@ -1119,7 +1120,11 @@ fn answerer_of(
   proof: Proof,
   reference: ApprovalRef,
 ) -> Result(#(reviewer.Reviewer, String), Error) {
-  answerer.check(target.approvers, proof, reference.requirement)
+  answerer.check(
+    target.approvers,
+    proof,
+    approvers_core.ActionRequest(reference),
+  )
   |> result.map_error(ProofRefused)
 }
 

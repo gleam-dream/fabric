@@ -144,7 +144,7 @@ pub fn job_observation_requires_admission_and_a_current_reference_test() {
     graph.approve(
       handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(approved) =

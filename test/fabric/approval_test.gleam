@@ -92,7 +92,7 @@ fn approve(
   fabric.approve(
     run,
     reference,
-    proof: support.proof(reference.requirement, support.reviewer("reviewer")),
+    proof: support.proof(reference, support.reviewer("reviewer")),
     context: open_desk(),
   )
 }
@@ -128,10 +128,7 @@ pub fn an_approved_tool_runs_once_after_a_restart_test() {
     fabric.approve(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("alice"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("alice")),
       context: open_desk(),
     )
   fabric.await(run, within: duration.milliseconds(5000))
@@ -162,10 +159,7 @@ pub fn a_rejected_tool_never_runs_and_the_model_sees_the_reason_test() {
     fabric.reject(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("bob"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("bob")),
       reason: "not today",
     )
   fabric.await(run, within: duration.milliseconds(5000))
@@ -217,10 +211,7 @@ pub fn a_rejection_never_runs_the_policy_test() {
     fabric.reject(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("bob"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("bob")),
       reason: "not today",
     )
   fabric.await(run, within: duration.milliseconds(5000))
@@ -303,10 +294,7 @@ pub fn the_policy_at_answer_time_wins_over_an_approval_test() {
     fabric.approve(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("alice"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("alice")),
       context: Desk(..open_desk(), frozen: True),
     )
   fabric.await(run, within: duration.milliseconds(5000))
@@ -331,10 +319,7 @@ pub fn a_changed_requirement_issues_a_new_request_test() {
     fabric.approve(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("reviewer")),
       context: stricter,
     )
   renewed.reference.requirement |> should.equal(Requirement("transfer", 2))
@@ -345,10 +330,7 @@ pub fn a_changed_requirement_issues_a_new_request_test() {
     fabric.approve(
       run,
       renewed.reference,
-      proof: support.proof(
-        renewed.reference.requirement,
-        support.reviewer("carol"),
-      ),
+      proof: support.proof(renewed.reference, support.reviewer("carol")),
       context: stricter,
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -540,10 +522,7 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
       fabric.reject(
         handle,
         pending.reference,
-        proof: support.proof(
-          pending.reference.requirement,
-          support.reviewer("reviewer"),
-        ),
+        proof: support.proof(pending.reference, support.reviewer("reviewer")),
         reason:,
       ),
     )
@@ -554,10 +533,7 @@ pub fn an_identical_record_by_another_writer_does_not_confirm_a_lost_write_test(
     fabric.reject(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("reviewer")),
       reason:,
     )
   let calling = probe.arrival(probe)

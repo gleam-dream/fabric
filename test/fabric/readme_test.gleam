@@ -70,7 +70,8 @@ const tess = Context("tess")
 /// The application's sign-in, scripted: a token names its holder, and
 /// only a treasurer's may answer a `"treasurer"` requirement.
 fn treasurers() -> Approvers(String) {
-  approvers.new("readme-sso", fn(token, requirement: run.Requirement) {
+  approvers.new("readme-sso", fn(token, request: approvers.Request) {
+    let requirement = request.requirement
     case token, requirement.name {
       "tess-token", "treasurer" ->
         reviewer.new("tess")

@@ -277,8 +277,7 @@ pub fn reconstructed_model_keeps_google_cache_and_signed_tool_replay_test() {
   let assert Ok(handle) = fabric.recover(restored, build(), context, id)
   let assert Ok([pending]) = fabric.pending(handle)
   let assert Ok(reviewer) = reviewer.new("reviewer")
-  let assert Ok(proof) =
-    approvers.check(staff, reviewer, pending.reference.requirement)
+  let assert Ok(proof) = approvers.check(staff, reviewer, pending.reference)
   let assert Ok(_) = fabric.approve(handle, pending.reference, proof, context)
   assert fabric.await(handle, duration.seconds(5))
     == Ok(run.Finished(run.Completed(14)))

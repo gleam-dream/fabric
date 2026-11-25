@@ -85,10 +85,49 @@ fn waiting_in(
 fn proof(
   approvers: Approvers(credential),
   credential: credential,
-  requirement: run.Requirement,
+  reference: run.ApprovalRef,
 ) -> approvers.Proof {
-  let assert Ok(proof) = approvers.check(approvers, credential, requirement)
+  let assert Ok(proof) = approvers.check(approvers, credential, reference)
   proof
+}
+
+fn graph_proof(
+  approvers: Approvers(credential),
+  credential: credential,
+  reference: graph.ApprovalRef,
+) -> approvers.Proof {
+  let assert Ok(proof) = graph.check_approval(approvers, credential, reference)
+  proof
+}
+
+/// `refused` is an `OtherRequest` refusal between these run and
+/// requirement pairs: the proof's and the answered request's.
+fn other_request(
+  refused: Result(status, fabric.Error),
+  proof: #(run.RunId, run.Requirement),
+  request: #(run.RunId, run.Requirement),
+) -> Nil {
+  let assert Error(fabric.ProofRefused(error)) = refused
+  is_other_request(error, proof, request)
+}
+
+fn graph_other_request(
+  refused: Result(status, graph.Error),
+  proof: #(run.RunId, run.Requirement),
+  request: #(run.RunId, run.Requirement),
+) -> Nil {
+  let assert Error(graph.ProofRefused(error)) = refused
+  is_other_request(error, proof, request)
+}
+
+fn is_other_request(
+  error: approvers.ProofError,
+  proof: #(run.RunId, run.Requirement),
+  request: #(run.RunId, run.Requirement),
+) -> Nil {
+  let assert approvers.OtherRequest(proof: made_for, request: answered) = error
+  #(made_for.run, made_for.requirement) |> should.equal(proof)
+  #(answered.run, answered.requirement) |> should.equal(request)
 }
 
 /// The run is still waiting for `pending`, unanswered.
@@ -101,21 +140,24 @@ fn still_waiting(
   again |> should.equal(pending)
 }
 
-pub fn check_names_the_reviewer_and_the_requirement_test() {
+pub fn check_names_the_reviewer_and_the_request_test() {
   let sso = desk_approvers("sesame")
-  let made = proof(sso, "sesame", transfer)
+  let #(_, pending) = waiting(spec() |> agent.with_approvers(sso) |> built)
+  let made = proof(sso, "sesame", pending.reference)
   approvers.reviewer(made) |> should.equal(support.reviewer("alice"))
   approvers.verifier(made) |> should.equal("desk-sso")
-  approvers.requirement(made) |> should.equal(transfer)
+  let request = approvers.request(made)
+  request.run |> should.equal(pending.reference.run)
+  request.requirement |> should.equal(transfer)
   approvers.name(sso) |> should.equal("desk-sso")
-  approvers.check(sso, "guess", transfer)
+  approvers.check(sso, "guess", pending.reference)
   |> should.equal(Error(approvers.NotAuthenticated("wrong password")))
 }
 
 pub fn the_agent_s_approvers_answer_and_are_recorded_test() {
   let sso = desk_approvers("sesame")
   let #(handle, pending) = waiting(spec() |> agent.with_approvers(sso) |> built)
-  let made = proof(sso, "sesame", transfer)
+  let made = proof(sso, "sesame", pending.reference)
   let assert Ok(_) =
     fabric.approve(handle, pending.reference, proof: made, context: Nil)
   let assert Ok(run.Finished(_)) =
@@ -133,7 +175,7 @@ pub fn a_rejection_takes_and_records_a_proof_too_test() {
     fabric.reject(
       handle,
       pending.reference,
-      proof: proof(sso, "sesame", transfer),
+      proof: proof(sso, "sesame", pending.reference),
       reason: "not today",
     )
   let assert Ok(snapshot) = fabric.snapshot(handle)
@@ -144,7 +186,7 @@ pub fn a_rejection_takes_and_records_a_proof_too_test() {
 
 pub fn an_agent_without_approvers_accepts_no_answer_test() {
   let #(handle, pending) = waiting(built(spec()))
-  let made = proof(testing.trusting_approvers(), alice(), transfer)
+  let made = proof(testing.trusting_approvers(), alice(), pending.reference)
   fabric.approve(handle, pending.reference, proof: made, context: Nil)
   |> should.equal(Error(fabric.ProofRefused(approvers.NoApprovers)))
   fabric.reject(handle, pending.reference, proof: made, reason: "no")
@@ -161,16 +203,16 @@ pub fn a_proof_from_other_approvers_is_refused_test() {
   // shortcut, and a permissive verifier that borrows the name: none is the
   // desk's.
   let others = [
-    #(proof(desk_approvers("sesame"), "sesame", transfer), "desk-sso"),
+    #(proof(desk_approvers("sesame"), "sesame", pending.reference), "desk-sso"),
     #(
-      proof(testing.trusting_approvers(), alice(), transfer),
+      proof(testing.trusting_approvers(), alice(), pending.reference),
       "fabric/testing.trusting_approvers",
     ),
     #(
       proof(
         approvers.new("desk-sso", fn(_, _) { Ok(support.reviewer("mallory")) }),
         "anything",
-        transfer,
+        pending.reference,
       ),
       "desk-sso",
     ),
@@ -187,18 +229,19 @@ pub fn a_proof_for_another_requirement_is_refused_test() {
   let sso = desk_approvers("sesame")
   let #(handle, pending) = waiting(spec() |> agent.with_approvers(sso) |> built)
   let elsewhere = Requirement("transfer", 2)
-  let made = proof(sso, "sesame", elsewhere)
+  let made =
+    proof(
+      sso,
+      "sesame",
+      run.ApprovalRef(..pending.reference, requirement: elsewhere),
+    )
   let refused =
     fabric.approve(handle, pending.reference, proof: made, context: Nil)
   refused
-  |> should.equal(
-    Error(
-      fabric.ProofRefused(approvers.OtherRequirement(
-        proof: elsewhere,
-        request: transfer,
-      )),
-    ),
-  )
+  |> other_request(#(pending.reference.run, elsewhere), #(
+    pending.reference.run,
+    transfer,
+  ))
   let assert Error(error) = refused
   fabric.describe_error(error)
   |> string.contains("transfer version 2")
@@ -214,7 +257,7 @@ pub fn a_proof_older_than_its_lifetime_is_refused_test() {
   let runs = support.store()
   let #(handle, pending) =
     waiting_in(runs, spec() |> agent.with_approvers(brief) |> built)
-  let made = proof(brief, "sesame", transfer)
+  let made = proof(brief, "sesame", pending.reference)
   process.sleep(20)
   let assert Error(fabric.ProofRefused(approvers.ProofExpired(age:, lifetime:))) =
     fabric.approve(handle, pending.reference, proof: made, context: Nil)
@@ -265,7 +308,7 @@ pub fn a_sub_agent_without_approvers_is_answered_with_its_parent_s_test() {
     fabric.approve(
       handle,
       pending.reference,
-      proof: proof(sso, "sesame", transfer),
+      proof: proof(sso, "sesame", pending.reference),
       context: Nil,
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -280,7 +323,7 @@ pub fn a_sub_agent_with_its_own_approvers_is_answered_with_them_test() {
   fabric.approve(
     handle,
     pending.reference,
-    proof: proof(sso, "sesame", transfer),
+    proof: proof(sso, "sesame", pending.reference),
     context: Nil,
   )
   |> should.equal(
@@ -290,7 +333,7 @@ pub fn a_sub_agent_with_its_own_approvers_is_answered_with_them_test() {
     fabric.approve(
       handle,
       pending.reference,
-      proof: proof(own, "child-only", transfer),
+      proof: proof(own, "child-only", pending.reference),
       context: Nil,
     )
 }
@@ -354,7 +397,7 @@ pub fn a_graph_runtime_answers_only_with_its_approvers_test() {
   let publish = Requirement("publish", 1)
   // No approvers: no answer.
   let #(handle, pending) = graph_waiting(publishing(runs, None))
-  let made = proof(sso, "sesame", publish)
+  let made = graph_proof(sso, "sesame", pending)
   graph.approve(handle, pending, proof: made, context: Nil)
   |> should.equal(Error(graph.ProofRefused(approvers.NoApprovers)))
   graph.error_kind(graph.ProofRefused(approvers.NoApprovers))
@@ -364,7 +407,7 @@ pub fn a_graph_runtime_answers_only_with_its_approvers_test() {
   graph.approve(
     handle,
     pending,
-    proof: proof(testing.trusting_approvers(), alice(), publish),
+    proof: graph_proof(testing.trusting_approvers(), alice(), pending),
     context: Nil,
   )
   |> should.equal(
@@ -377,18 +420,16 @@ pub fn a_graph_runtime_answers_only_with_its_approvers_test() {
   graph.reject(
     handle,
     pending,
-    proof: proof(sso, "sesame", transfer),
+    proof: graph_proof(
+      sso,
+      "sesame",
+      graph.ApprovalRef(..pending, requirement: transfer),
+    ),
     reason: "no",
   )
-  |> should.equal(
-    Error(
-      graph.ProofRefused(approvers.OtherRequirement(
-        proof: transfer,
-        request: publish,
-      )),
-    ),
-  )
+  |> graph_other_request(#(pending.run, transfer), #(pending.run, publish))
   // Its own approvers answer, and are recorded.
+  let made = graph_proof(sso, "sesame", pending)
   let assert Ok(_) = graph.approve(handle, pending, proof: made, context: Nil)
   let assert Ok(graph.Completed(42)) =
     graph.await(handle, within: duration.seconds(5))
@@ -439,7 +480,7 @@ pub fn a_record_stored_before_proofs_reads_and_is_answered_test() {
     fabric.reject(
       handle,
       pending.reference,
-      proof: proof(sso, "sesame", transfer),
+      proof: proof(sso, "sesame", pending.reference),
       reason: "stale",
     )
   let assert Ok(snapshot) = fabric.snapshot(handle)
@@ -450,4 +491,46 @@ pub fn a_record_stored_before_proofs_reads_and_is_answered_test() {
 
 fn alice() -> Reviewer {
   support.reviewer("alice")
+}
+
+// --- binding to the request ----------------------------------------------------
+
+/// A proof answers the one request it was checked for. Two runs wait for
+/// the same requirement (say, two tenants' transfers): a proof checked for
+/// the first run's request does not answer the second's, and the verifier
+/// sees which run it authorizes.
+pub fn a_proof_answers_only_the_request_it_was_checked_for_test() {
+  let sso = desk_approvers("sesame")
+  let desk = spec() |> agent.with_approvers(sso) |> built
+  let #(_, first) = waiting(desk)
+  let #(second_handle, second) = waiting(desk)
+  let made = proof(sso, "sesame", first.reference)
+  fabric.approve(second_handle, second.reference, proof: made, context: Nil)
+  |> other_request(#(first.reference.run, transfer), #(
+    second.reference.run,
+    transfer,
+  ))
+  still_waiting(second_handle, second)
+}
+
+/// The verifier sees the run whose request it authorizes, so an
+/// application can refuse a credential from another tenant.
+pub fn the_verifier_sees_the_run_it_authorizes_test() {
+  let #(_, pending) =
+    waiting(spec() |> agent.with_approvers(desk_approvers("sesame")) |> built)
+  let tenant = pending.reference.run
+  let scoped = {
+    use _credential, request <- approvers.new("tenant-sso")
+    case request.run == tenant {
+      True -> Ok(support.reviewer("alice"))
+      False -> Error(approvers.NotAuthorized("another tenant's run"))
+    }
+  }
+  approvers.check(scoped, "any", pending.reference) |> should.be_ok
+  approvers.check(
+    scoped,
+    "any",
+    run.ApprovalRef(..pending.reference, run: support.id("elsewhere")),
+  )
+  |> should.equal(Error(approvers.NotAuthorized("another tenant's run")))
 }

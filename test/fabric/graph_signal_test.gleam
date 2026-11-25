@@ -177,7 +177,7 @@ pub fn a_signal_is_available_only_after_policy_admission_test() {
     graph.approve(
       handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(approved) =

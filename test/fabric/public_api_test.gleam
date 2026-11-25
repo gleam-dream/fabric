@@ -183,7 +183,7 @@ pub fn an_answer_records_its_typed_reviewer_test() {
     fabric.approve(
       handle,
       pending.reference,
-      proof: support.proof(pending.reference.requirement, alice),
+      proof: support.proof(pending.reference, alice),
       context: Nil,
     )
   let assert Ok(run.Finished(_)) =

@@ -222,10 +222,7 @@ fn run_to_end(agent: Agent(Nil, Batch)) -> run.Status(Batch) {
     fabric.approve(
       handle,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(status) = fabric.await(handle, within: duration.seconds(5))

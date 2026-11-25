@@ -88,10 +88,7 @@ pub fn configured_writes_remain_readable_by_the_version_2_decoder_test() {
     fabric.approve(
       started,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("reviewer")),
       context: Nil,
     )
   let running = probe.arrival(body)
@@ -129,10 +126,7 @@ pub fn the_write_target_does_not_restrict_what_can_be_read_test() {
         fabric.approve(
           opened,
           pending.reference,
-          proof: support.proof(
-            pending.reference.requirement,
-            support.reviewer("reviewer"),
-          ),
+          proof: support.proof(pending.reference, support.reviewer("reviewer")),
           context: Nil,
         )
       let running = probe.arrival(body)

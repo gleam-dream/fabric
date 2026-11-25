@@ -147,7 +147,7 @@ pub fn the_policy_sees_one_action_shape_and_the_approver_context_runs_test() {
     graph.approve(
       handle,
       pending,
-      proof: support.proof(pending.requirement, alice()),
+      proof: support.graph_proof(pending, alice()),
       context: "approver",
     )
   let assert Ok(#(_, recheck)) = process.receive(seen, 30_000)
@@ -175,7 +175,7 @@ pub fn a_rejection_records_its_reviewer_and_a_second_answer_is_refused_test() {
     graph.reject(
       handle,
       pending,
-      proof: support.proof(pending.requirement, alice()),
+      proof: support.graph_proof(pending, alice()),
       reason: "not today",
     )
   let assert Ok(rejected) = graph.snapshot(handle)
@@ -186,15 +186,15 @@ pub fn a_rejection_records_its_reviewer_and_a_second_answer_is_refused_test() {
   graph.approve(
     handle,
     pending,
-    proof: support.proof(pending.requirement, alice()),
+    proof: support.graph_proof(pending, alice()),
     context: "late",
   )
   |> should.equal(Error(graph.AlreadyAnswered))
   graph.reject(
     handle,
     graph.ApprovalRef(..pending, run: support.id("other")),
-    proof: support.proof(
-      graph.ApprovalRef(..pending, run: support.id("other")).requirement,
+    proof: support.graph_proof(
+      graph.ApprovalRef(..pending, run: support.id("other")),
       alice(),
     ),
     reason: "x",
@@ -241,7 +241,7 @@ pub fn approval_requests_expire_after_seven_days_by_the_store_clock_test() {
   graph.approve(
     handle,
     pending,
-    proof: support.proof(pending.requirement, alice()),
+    proof: support.graph_proof(pending, alice()),
     context: "late",
   )
   |> should.equal(Error(graph.ApprovalExpired))
@@ -523,7 +523,7 @@ pub fn a_graph_run_emits_its_lifecycle_with_its_correlation_test() {
     graph.approve(
       handle,
       pending,
-      proof: support.proof(pending.requirement, alice()),
+      proof: support.graph_proof(pending, alice()),
       context: "approver",
     )
   let assert Ok(done) = graph.await(handle, within: duration.seconds(5))
