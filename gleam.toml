@@ -16,8 +16,11 @@ gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_crypto = ">= 1.0.0 and < 2.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
 http_gun = ">= 0.2.0 and < 0.3.0"
-json_blueprint = ">= 2.2.0 and < 3.0.0"
-llm_wire = ">= 0.2.0 and < 0.3.0"
+# Pinned to unreleased commits: json_blueprint with parse limits on by
+# default, and llm_wire's UnrecognizedStop outcome. Replaced by Hex version
+# requirements when those releases exist.
+json_blueprint = { git = "https://github.com/gleam-dream/json_blueprint.git", ref = "f2e0bd27e8583cd4c06af1d3b263aa83f2ec7121" }
+llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "876d22f952014beff99076982be3f6b54554c1db" }
 sinal = ">= 0.1.0 and < 0.2.0"
 
 [dev-dependencies]

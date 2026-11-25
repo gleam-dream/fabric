@@ -87,6 +87,7 @@ import fabric/internal/graph/signal as signal_contract
 import fabric/internal/limit as bounds
 import fabric/internal/run_id
 import fabric/internal/store as store_core
+import fabric/internal/stored_json
 import fabric/policy.{type Policy}
 import fabric/reviewer.{type Reviewer}
 import fabric/run
@@ -911,7 +912,7 @@ pub fn both(
       stores: fn() { [store_core.pid(left_store), store_core.pid(right_store)] },
       prepare: fn(encoded) {
         use values <- result.try(
-          codec.decode_json(input, encoded)
+          stored_json.decode(input, encoded)
           |> result.map_error(codec.describe_decode_error),
         )
         use left <- result.try(
@@ -937,11 +938,11 @@ pub fn both(
       check: fn(ordinal, request) {
         case ordinal, request.definition {
           1, identity if identity == left_definition.identity ->
-            codec.decode_json(left_input, request.input)
+            stored_json.decode(left_input, request.input)
             |> result.replace(Nil)
             |> result.map_error(codec.describe_decode_error)
           2, identity if identity == right_definition.identity ->
-            codec.decode_json(right_input, request.input)
+            stored_json.decode(right_input, request.input)
             |> result.replace(Nil)
             |> result.map_error(codec.describe_decode_error)
           _, _ -> Error("fork member definition changed")
@@ -952,11 +953,11 @@ pub fn both(
           Error(failure) -> Ok(Error(failure))
           Ok([left, right]) -> {
             use left <- result.try(
-              codec.decode_json(left_output, left)
+              stored_json.decode(left_output, left)
               |> result.map_error(codec.describe_decode_error),
             )
             use right <- result.map(
-              codec.decode_json(right_output, right)
+              stored_json.decode(right_output, right)
               |> result.map_error(codec.describe_decode_error),
             )
             Ok(#(left, right))
@@ -998,7 +999,7 @@ pub fn map(
       stores: fn() { [store_core.pid(runs)] },
       prepare: fn(encoded) {
         use values <- result.try(
-          codec.decode_json(input, encoded)
+          stored_json.decode(input, encoded)
           |> result.map_error(codec.describe_decode_error),
         )
         list.try_map(values, fn(value) {
@@ -1022,7 +1023,7 @@ pub fn map(
           && request.definition == child_definition.identity
         {
           True ->
-            codec.decode_json(child_input, request.input)
+            stored_json.decode(child_input, request.input)
             |> result.replace(Nil)
             |> result.map_error(codec.describe_decode_error)
           False -> Error("map member definition changed")
@@ -1033,7 +1034,7 @@ pub fn map(
           Error(failure) -> Ok(Error(failure))
           Ok(outputs) ->
             list.try_map(outputs, fn(output) {
-              codec.decode_json(child_output, output)
+              stored_json.decode(child_output, output)
               |> result.map_error(codec.describe_decode_error)
             })
             |> result.map(Ok)

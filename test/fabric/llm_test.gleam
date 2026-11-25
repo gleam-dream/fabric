@@ -635,3 +635,32 @@ pub fn a_reported_thought_count_reaches_the_run_usage_test() {
   snapshot.usage |> should.equal(run.TokenUsage(11, 7, 0, Some(4)))
   fake_provider.stop(fake)
 }
+
+/// A provider stop reason llm_wire does not recognize ends the run as a
+/// model failure that is not retried, naming the reason: its partial text
+/// is not taken as an answer and its partial calls never run.
+pub fn an_unrecognized_stop_fails_the_run_without_an_answer_test() {
+  let fake =
+    fake_provider.start([
+      testing.unrecognized_stop("pause_turn", "half an ans"),
+    ])
+  let agent =
+    agent.new("agent", scripted_model(fake), [], policy.always_allow())
+    |> support.agent
+  let assert Ok(started) =
+    fabric.start(
+      support.store(),
+      agent,
+      id: run.new_id(),
+      context: Nil,
+      prompt: "a",
+      correlation: None,
+    )
+  let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =
+    fabric.await(started, within: duration.milliseconds(10_000))
+  model.is_retryable(error) |> should.be_false
+  model.error_kind(error) |> should.equal(model.InvalidReply)
+  string.contains(model.describe_error(error), "pause_turn") |> should.be_true
+  fake_provider.remaining(fake) |> should.equal(0)
+  fake_provider.stop(fake)
+}

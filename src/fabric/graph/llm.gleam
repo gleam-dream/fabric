@@ -124,6 +124,16 @@ fn perform(
     )) -> Ok(Receipt(model, Refusal(error.describe(filtered)), usage))
     Ok(llm_wire.OutputLimited(partial_text:, partial_calls: [], usage:)) ->
       Ok(Receipt(model, OutputLimited(partial_text), usage))
+    // A stop reason llm_wire does not recognize says nothing about whether
+    // the partial text is a complete answer. The call has ended, so the
+    // decision failed definitely: nothing is uncertain and no receipt is
+    // written.
+    Ok(llm_wire.UnrecognizedStop(reason:, ..)) ->
+      Error(tool.Explain(
+        "the provider stopped for a reason Fabric does not recognize ("
+        <> reason
+        <> "); the decision has no answer",
+      ))
     Ok(llm_wire.OutputLimited(partial_calls: [_, ..], ..) as response)
     | Ok(llm_wire.NeedsTools(..) as response) ->
       Error(tool.Uncertain(
@@ -153,6 +163,7 @@ fn describe_response(response: llm_wire.Outcome(output)) -> String {
       <> " partial tool calls"
     llm_wire.Answer(..) -> "an answer"
     llm_wire.Refused(..) -> "a refusal"
+    llm_wire.UnrecognizedStop(reason:, ..) -> "a stop for reason " <> reason
   }
 }
 
