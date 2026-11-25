@@ -1082,13 +1082,12 @@ fn hand_off(runner: Runner(context)) -> Nil {
   let state = controller.hand_off(runner.setup.env, runner.state)
   let written = {
     use encoded <- result.try(store.encode(runner.setup.store, state))
-    persist(
+    store.commit_transition(
       runner.setup.store,
       state.run,
-      encoded,
       runner.revision,
+      encoded,
       store.HandOff(process.self()),
-      0,
     )
   }
   case written {
@@ -1414,13 +1413,12 @@ fn commit_answering(
   }
   let written = {
     use encoded <- result.try(store.encode(runner.setup.store, state))
-    persist(
+    store.commit_transition(
       runner.setup.store,
       state.run,
-      encoded,
       runner.revision,
+      encoded,
       ownership,
-      0,
     )
   }
   case written {
@@ -1469,44 +1467,12 @@ fn current(runner: Runner(context), effects: List(Effect)) -> Bool {
   }
 }
 
-/// How often a commit the store reports `Unavailable` is tried again, and
-/// the first wait in milliseconds (doubled per attempt).
+/// How often a read the store reports unavailable is tried again, and the
+/// first wait in milliseconds (doubled per attempt). Commits retry under
+/// `store.commit_transition`.
 const unavailable_retries = 6
 
 const unavailable_backoff = 10
-
-/// Commits the encoded state over `expected`, every attempt with the same
-/// text (one write token). A conflict means a newer owner exists:
-/// stop. `Unavailable` may be transient, so it is tried again after a
-/// bounded backoff (the store has already read back a write that happened
-/// despite the error).
-fn persist(
-  store: Store,
-  run: String,
-  encoded: String,
-  expected: Int,
-  ownership: store.Ownership,
-  attempt: Int,
-) -> Result(Int, backend.StoreError) {
-  case store.commit(store, run, expected, encoded, ownership) {
-    Error(backend.Unavailable(_)) if attempt < unavailable_retries -> {
-      process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
-      persist(store, run, encoded, expected, ownership, attempt + 1)
-    }
-    // An earlier attempt that was reported unavailable may have landed
-    // after all: the conflict is then with this runner's own write, which
-    // its write token identifies.
-    Error(backend.Conflict(current)) as conflict
-      if attempt > 0 && current == expected + 1
-    ->
-      case store.get(store, run) {
-        Ok(entry) if entry.revision == current && entry.record == encoded ->
-          Ok(current)
-        _ -> conflict
-      }
-    outcome -> outcome
-  }
-}
 
 fn perform(
   runner: Runner(context),
