@@ -19,12 +19,12 @@ packages = [
   { name = "gleam_time", version = "1.11.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_time", source = "hex", outer_checksum = "3AB789C3ED4EB9DDA7283F46C3CF83A5487C9CFB790DC3FF8F8ACB5BF7B7A6C1" },
   { name = "gleeunit", version = "1.11.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleeunit", source = "hex", outer_checksum = "EC31ABA74256AEA531EDF8169931D775BBB384FED0A8A1BDC4DD9354E3E21826" },
   { name = "gun", version = "2.6.0", build_tools = ["make", "rebar3"], requirements = ["cowlib"], otp_app = "gun", source = "hex", outer_checksum = "69BB957F4BD6C475B5714460FD65C26FC7EB85760AA64B74754DE36CE5CCED7D" },
-  { name = "http_gun", version = "0.2.0", build_tools = ["gleam"], requirements = ["cowlib", "file_streams", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "gun", "simplifile", "sinal", "youid"], otp_app = "http_gun", source = "hex", outer_checksum = "EC1765351EA2DD6A329B1BF88B8EF7B01819E9C94E5D065C1A0C62A2D05FFC39" },
-  { name = "json_blueprint", version = "2.2.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/gleam-dream/json_blueprint.git", commit = "f2e0bd27e8583cd4c06af1d3b263aa83f2ec7121" },
-  { name = "llm_wire", version = "0.2.1", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "http_gun", "json_blueprint", "sinal"], source = "git", repo = "https://github.com/gleam-dream/llm_wire.git", commit = "876d22f952014beff99076982be3f6b54554c1db" },
+  { name = "http_gun", version = "0.3.0", build_tools = ["gleam"], requirements = ["cowlib", "file_streams", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "gun", "simplifile", "sinal", "youid"], source = "git", repo = "https://github.com/gleam-dream/http_gun.git", commit = "0d6558c9ede95fab9a6bbf287ecd363e05b0fbcb" },
+  { name = "json_blueprint", version = "2.2.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/gleam-dream/json_blueprint.git", commit = "3adcf515bcc91beb8b40f025c5dc81c4f863b1cf" },
+  { name = "llm_wire", version = "0.2.1", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "http_gun", "json_blueprint", "sinal"], source = "git", repo = "https://github.com/gleam-dream/llm_wire.git", commit = "016d71c3a68ee8eaedc818821ba16ee65427a3f3" },
   { name = "simplifile", version = "2.7.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "A2727627B063E87351934C7F7F008F2D1FDB16F6DE0B8C79F9E46459CFC9C164" },
-  { name = "sinal", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib", "telemetry"], otp_app = "sinal", source = "hex", outer_checksum = "358D776FDFD6B0BE56E6FA63BBE3FA8D5A9A05C2DDD256270E54E133EB4A71FC" },
-  { name = "telemetry", version = "1.4.2", build_tools = ["rebar3"], requirements = [], otp_app = "telemetry", source = "hex", outer_checksum = "928F6495066506077862C0D1646609EED891A4326BEE3126BA54B60AF61FEBB1" },
+  { name = "sinal", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib", "telemetry"], source = "git", repo = "https://github.com/gleam-dream/sinal.git", commit = "29ea7a90bf820b3c91eb3f76e824abe0d034d78f" },
+  { name = "telemetry", version = "1.4.3", build_tools = ["rebar3"], requirements = [], otp_app = "telemetry", source = "hex", outer_checksum = "17A63581CF2E832A238287F5FE6811E8CA1F333249F1376AD653164A3C4770D4" },
   { name = "youid", version = "1.6.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_stdlib", "gleam_time"], otp_app = "youid", source = "hex", outer_checksum = "B7C1F06FF2D06300077DBBF50ECE8FF12FFEB2FF70E2D6279330B00679163BD7" },
 ]
 
@@ -37,8 +37,8 @@ gleam_otp = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_stdlib = { version = ">= 0.70.0 and < 2.0.0" }
 gleam_time = { version = ">= 1.11.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
-http_gun = { version = ">= 0.2.0 and < 0.3.0" }
-json_blueprint = { git = "https://github.com/gleam-dream/json_blueprint.git", ref = "f2e0bd27e8583cd4c06af1d3b263aa83f2ec7121" }
-llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "876d22f952014beff99076982be3f6b54554c1db" }
+http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "0d6558c9ede95fab9a6bbf287ecd363e05b0fbcb" }
+json_blueprint = { git = "https://github.com/gleam-dream/json_blueprint.git", ref = "3adcf515bcc91beb8b40f025c5dc81c4f863b1cf" }
+llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "016d71c3a68ee8eaedc818821ba16ee65427a3f3" }
 simplifile = { version = ">= 2.0.0 and < 3.0.0" }
-sinal = { version = ">= 0.1.0 and < 0.2.0" }
+sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "29ea7a90bf820b3c91eb3f76e824abe0d034d78f" }

@@ -10,13 +10,13 @@ gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 fabric = { path = "../.." }
-json_blueprint = ">= 2.2.0 and < 3.0.0"
+json_blueprint = { git = "https://github.com/gleam-dream/json_blueprint.git", ref = "3adcf515bcc91beb8b40f025c5dc81c4f863b1cf" }
 saga = ">= 0.2.0 and < 0.3.0"
-sinal = ">= 0.1.0 and < 0.2.0"
+sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "29ea7a90bf820b3c91eb3f76e824abe0d034d78f" }
 
 [dev-dependencies]
 simplifile = ">= 2.0.0 and < 3.0.0"
-http_gun = ">= 0.2.0 and < 0.3.0"
-llm_wire = ">= 0.2.0 and < 0.3.0"
+http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "0d6558c9ede95fab9a6bbf287ecd363e05b0fbcb" }
+llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "016d71c3a68ee8eaedc818821ba16ee65427a3f3" }
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleeunit = ">= 1.0.0 and < 2.0.0"

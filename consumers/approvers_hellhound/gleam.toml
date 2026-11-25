@@ -14,7 +14,7 @@ gleam_http = ">= 4.4.0 and < 5.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
 fabric = { path = "../.." }
-json_blueprint = ">= 2.2.0 and < 3.0.0"
+json_blueprint = { git = "https://github.com/gleam-dream/json_blueprint.git", ref = "3adcf515bcc91beb8b40f025c5dc81c4f863b1cf" }
 hellhound = ">= 0.3.0 and < 0.4.0"
 
 [dev-dependencies]

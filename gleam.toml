@@ -15,13 +15,13 @@ gleam_otp = ">= 1.0.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_crypto = ">= 1.0.0 and < 2.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
-http_gun = ">= 0.2.0 and < 0.3.0"
+http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "0d6558c9ede95fab9a6bbf287ecd363e05b0fbcb" }
 # Pinned to unreleased commits: json_blueprint with parse limits on by
 # default, and llm_wire's UnrecognizedStop outcome. Replaced by Hex version
 # requirements when those releases exist.
-json_blueprint = { git = "https://github.com/gleam-dream/json_blueprint.git", ref = "f2e0bd27e8583cd4c06af1d3b263aa83f2ec7121" }
-llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "876d22f952014beff99076982be3f6b54554c1db" }
-sinal = ">= 0.1.0 and < 0.2.0"
+json_blueprint = { git = "https://github.com/gleam-dream/json_blueprint.git", ref = "3adcf515bcc91beb8b40f025c5dc81c4f863b1cf" }
+llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "016d71c3a68ee8eaedc818821ba16ee65427a3f3" }
+sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "29ea7a90bf820b3c91eb3f76e824abe0d034d78f" }
 
 [dev-dependencies]
 gleam_http = ">= 4.0.0 and < 5.0.0"
