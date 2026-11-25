@@ -361,10 +361,7 @@ pub fn preparation_and_proven_unsent_failures_are_definite_test() {
   let assert Ok(client) =
     http_testing.playback(http_testing.script([]), http_config.default())
   let invalid =
-    llm_wire.with_call_timeout(
-      testing.config(),
-      llm_wire.After(duration.milliseconds(0)),
-    )
+    llm_wire.with_call_timeout(testing.config(), duration.milliseconds(0))
   [invalid, testing.config()]
   |> list.each(fn(settings) {
     let runtime =
