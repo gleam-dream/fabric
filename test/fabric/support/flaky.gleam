@@ -10,6 +10,7 @@ import fabric/store.{type Store}
 import fabric/store/backend
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
@@ -65,6 +66,12 @@ pub fn new() -> Flaky {
   })
   let assert Ok(subject) = process.receive(ready, 1000)
   Flaky(subject)
+}
+
+/// Faults that outlast a runner's bounded retry of one commit: the commit
+/// stays unconfirmed, as in a longer store outage.
+pub fn unconfirmed() -> List(Fault) {
+  list.repeat(FailBefore, 7)
 }
 
 /// The next writes meet `faults`, in order; later writes pass.

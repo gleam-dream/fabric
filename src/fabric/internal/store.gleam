@@ -780,6 +780,59 @@ pub fn commit(
   |> result.flatten
 }
 
+/// How often a transition commit the store reports `Unavailable` is tried
+/// again, and the first wait in milliseconds (doubled per attempt).
+const transition_retries = 6
+
+const transition_backoff = 10
+
+/// The one commit rule of both runners (agent and graph): commits a
+/// runner's next state, encoded once, over `expected`.
+///
+/// - `Unavailable` may be transient, so the same bytes (one write token)
+///   are tried again, at most `transition_retries` times with a doubling
+///   backoff. The store has already read back each unavailable write.
+/// - A `Conflict` at exactly `expected + 1` after an attempt reported
+///   unavailable may be this runner's own write landing late: reading the
+///   run back and finding exactly `record` there confirms it.
+/// - Any other outcome is returned. An `Error` means the transition is not
+///   confirmed: the runner must perform none of its effects and stop, and
+///   recovery decides from the stored record whether the write landed.
+pub fn commit_transition(
+  store: Store,
+  run: String,
+  expected: Int,
+  record: String,
+  ownership: Ownership,
+) -> Result(Int, StoreError) {
+  commit_attempt(store, run, expected, record, ownership, 0)
+}
+
+fn commit_attempt(
+  store: Store,
+  run: String,
+  expected: Int,
+  record: String,
+  ownership: Ownership,
+  attempt: Int,
+) -> Result(Int, StoreError) {
+  case commit(store, run, expected, record, ownership) {
+    Error(Unavailable(_)) if attempt < transition_retries -> {
+      process.sleep(transition_backoff * int.bitwise_shift_left(1, attempt))
+      commit_attempt(store, run, expected, record, ownership, attempt + 1)
+    }
+    Error(Conflict(current)) as conflict
+      if attempt > 0 && current == expected + 1
+    ->
+      case get(store, run) {
+        Ok(entry) if entry.revision == current && entry.record == record ->
+          Ok(current)
+        _ -> conflict
+      }
+    outcome -> outcome
+  }
+}
+
 /// Serializes scheduled reads within this store's lease owner. A reservation
 /// is local only: the caller must re-read and check the durable claim before
 /// observing. Caller loss releases this reservation, never the durable claim.

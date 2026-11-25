@@ -788,7 +788,7 @@ pub fn a_saved_child_result_survives_a_lost_parent_completion_commit_test() {
       correlation: None,
     )
   let arrival = probe.arrival(probe)
-  flaky.arm_run(backend, graph.id(handle), [flaky.FailBefore])
+  flaky.arm_run(backend, graph.id(handle), flaky.unconfirmed())
   probe.release(arrival)
   let assert Ok(unattended) =
     graph.await(handle, within: duration.milliseconds(5000))

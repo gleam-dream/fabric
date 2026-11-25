@@ -167,7 +167,7 @@ pub fn a_failed_start_fence_releases_no_stop_and_queued_recovery_can_request_tes
   let assert Ok(waiting) =
     graph.await(handle, within: duration.milliseconds(5000))
   let assert graph.AwaitingJob(reference) = waiting
-  flaky.arm(backend, [flaky.Pass, flaky.FailBefore])
+  flaky.arm(backend, [flaky.Pass, ..flaky.unconfirmed()])
   let assert Ok(_) = graph.cancel(handle)
   let assert Ok(unattended) =
     graph.await(handle, within: duration.milliseconds(5000))
