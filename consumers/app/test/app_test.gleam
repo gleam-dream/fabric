@@ -151,7 +151,7 @@ pub fn a_guardian_approves_a_junior_reservation_test() {
     fabric.approve(
       run,
       pending.reference,
-      proof: badge_proof(staff, pending.reference.requirement, "guardian-ann"),
+      proof: badge_proof(staff, pending.reference, "guardian-ann"),
       context: app.member("junior"),
     )
   fabric.await(run, within: duration.milliseconds(5000))
@@ -179,7 +179,7 @@ pub fn a_badge_without_the_role_cannot_answer_test() {
     )
   let assert Ok(run.Suspended([pending], [])) =
     fabric.await(run, within: duration.milliseconds(5000))
-  let requirement = pending.reference.requirement
+  let requirement = pending.reference
   approvers.check(staff, app.Badge("treasurer-tom", ["treasurer"]), requirement)
   |> should.equal(
     Error(approvers.NotAuthorized("treasurer-tom is not a guardian")),
@@ -218,7 +218,7 @@ pub fn a_rejected_reservation_is_explained_to_the_model_test() {
     fabric.reject(
       run,
       pending.reference,
-      proof: badge_proof(staff, pending.reference.requirement, "guardian-ann"),
+      proof: badge_proof(staff, pending.reference, "guardian-ann"),
       reason: "ask again tomorrow",
     )
   fabric.await(run, within: duration.milliseconds(5000))
@@ -248,7 +248,7 @@ pub fn a_paused_reservation_can_be_cancelled_test() {
   fabric.approve(
     run,
     pending.reference,
-    proof: badge_proof(staff, pending.reference.requirement, "reviewer"),
+    proof: badge_proof(staff, pending.reference, "reviewer"),
     context: app.member("junior"),
   )
   |> should.equal(Error(fabric.RunEnded))
@@ -298,7 +298,7 @@ pub fn a_paused_reservation_survives_a_restart_test() {
     fabric.approve(
       run,
       pending.reference,
-      proof: badge_proof(staff, pending.reference.requirement, "guardian-ann"),
+      proof: badge_proof(staff, pending.reference, "guardian-ann"),
       context: app.member("junior"),
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -347,7 +347,7 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
       committee.reference,
       proof: badge_proof(
         staff,
-        committee.reference.requirement,
+        committee.reference,
         "committee-chair",
       ),
       context: app.member("ada"),
@@ -363,7 +363,7 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
       treasurer.reference,
       proof: badge_proof(
         staff,
-        treasurer.reference.requirement,
+        treasurer.reference,
         "treasurer-tom",
       ),
       context: app.member("ada"),
@@ -397,7 +397,7 @@ pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
     fabric.approve(
       desk,
       committee.reference,
-      proof: badge_proof(staff, committee.reference.requirement, "reviewer"),
+      proof: badge_proof(staff, committee.reference, "reviewer"),
       context: app.member("ada"),
     )
   let assert Ok(run.Suspended([treasurer], [])) =
@@ -412,7 +412,7 @@ pub fn cancelling_the_desk_cancels_a_paused_purchase_test() {
   fabric.approve(
     desk,
     treasurer.reference,
-    proof: badge_proof(staff, treasurer.reference.requirement, "reviewer"),
+    proof: badge_proof(staff, treasurer.reference, "reviewer"),
     context: app.member("ada"),
   )
   |> should.equal(Error(fabric.RunEnded))
@@ -500,7 +500,7 @@ pub fn observations_show_what_a_run_did_test() {
     fabric.approve(
       desk,
       committee.reference,
-      proof: badge_proof(staff, committee.reference.requirement, "reviewer"),
+      proof: badge_proof(staff, committee.reference, "reviewer"),
       context: app.member("ada"),
     )
   let assert Ok(run.Suspended([treasurer], [])) =
@@ -509,7 +509,7 @@ pub fn observations_show_what_a_run_did_test() {
     fabric.approve(
       desk,
       treasurer.reference,
-      proof: badge_proof(staff, treasurer.reference.requirement, "reviewer"),
+      proof: badge_proof(staff, treasurer.reference, "reviewer"),
       context: app.member("ada"),
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -592,7 +592,7 @@ pub fn a_run_outlives_the_request_that_started_it_test() {
     fabric.reject(
       run,
       pending.reference,
-      proof: badge_proof(staff, pending.reference.requirement, "reviewer"),
+      proof: badge_proof(staff, pending.reference, "reviewer"),
       reason: "not today",
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -603,10 +603,10 @@ pub fn a_run_outlives_the_request_that_started_it_test() {
 /// request needs, answers it.
 fn badge_proof(
   staff: approvers.Approvers(app.Badge),
-  requirement: run.Requirement,
+  reference: run.ApprovalRef,
   holder: String,
 ) -> approvers.Proof {
-  let assert Ok(proof) =
-    approvers.check(staff, app.Badge(holder, [requirement.name]), requirement)
+  let badge = app.Badge(holder, [reference.requirement.name])
+  let assert Ok(proof) = approvers.check(staff, badge, reference)
   proof
 }

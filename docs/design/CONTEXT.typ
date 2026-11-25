@@ -11,7 +11,7 @@
   (slug: "term-policy", title: [Policy], body: [The application decision that allows an exact decoded action, denies it, or requires approval with current context.]),
   (slug: "term-handover", title: [Handover], body: [A policy decision that an exact agent action belongs to another system, which decides it outside the run. The action never runs and the run ends with no further model turn, naming the action as its outcome. _Avoid_: escalation, which suggests the run waits for the answer; delegation, which names a sub-agent run.]),
   (slug: "term-approval", title: [Approval], body: [An action-scoped question identified by a requirement and monotonically issued revision. An answer is evidence of an authenticated decision, not a permanent grant.]),
-  (slug: "term-proof", title: [Proof], body: [Short-lived evidence minted by one configured Approvers value after authenticating and authorizing a credential for one requirement.]),
+  (slug: "term-proof", title: [Proof], body: [Short-lived evidence minted by one configured Approvers value after authenticating and authorizing a credential for one approval request, and valid only as the answer to that request.]),
   (slug: "term-context", title: [Context], body: [A live application value supplied at execution or reopening. It is not serialized into the durable run.]),
   (slug: "term-effect-fence", title: [Effect Fence], body: [The confirmed durable transition from queued work to started work. It precedes calling a body that may affect an external system.]),
   (slug: "term-uncertain-effect", title: [Uncertain Effect], body: [An effect whose actual outcome is unresolved. Loss of a local task does not establish that its external effect stopped.]),

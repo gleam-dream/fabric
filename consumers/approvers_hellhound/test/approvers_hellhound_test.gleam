@@ -37,6 +37,13 @@ const callback = "https://desk.test/callback"
 
 const refund = run.Requirement("refund", 1)
 
+/// A request reference for checks that answer nothing: the requirement is
+/// `refund`, the run and action are arbitrary.
+fn refund_request() -> run.ApprovalRef {
+  let assert Ok(id) = run.parse_id("refund-request")
+  run.ApprovalRef(run: id, id: run.ActionId(1, "r"), requirement: refund, revision: 1)
+}
+
 type Desk {
   Desk(
     provider: testing.Provider,
@@ -132,7 +139,7 @@ pub fn a_token_with_the_scope_answers_and_is_recorded_test() {
     approvers.check(
       desk_approvers,
       login(desk, "ada"),
-      pending.reference.requirement,
+      pending.reference,
     )
   let assert Ok(_) =
     fabric.approve(handle, pending.reference, proof:, context: Nil)
@@ -152,9 +159,7 @@ pub fn a_token_without_the_scope_is_not_authorized_test() {
   let assert Error(approvers.NotAuthorized(reason)) =
     approvers.check(
       hellhound_approvers(desk.validator),
-      login(desk, "mallory"),
-      refund,
-    )
+      login(desk, "mallory"), refund_request())
   assert string.contains(reason, "approve:refund")
   stopped(desk)
 }
@@ -172,14 +177,14 @@ pub fn expired_forged_foreign_and_malformed_tokens_are_not_authenticated_test() 
   ]
   list.each(tokens, fn(token) {
     let assert Error(approvers.NotAuthenticated(_)) =
-      approvers.check(hellhound_approvers(desk.validator), token, refund)
+      approvers.check(hellhound_approvers(desk.validator), token, refund_request())
   })
   // The same token, unchanged, is accepted.
   let assert Ok(_) =
     approvers.check(
       hellhound_approvers(desk.validator),
       minted(desk, fn(s) { s }),
-      refund,
+      refund_request(),
     )
   stopped(desk)
 }
@@ -200,7 +205,7 @@ pub fn an_unreachable_key_source_is_unavailable_test() {
     |> supervisor.start
   let validator = resource.new(unreachable, audience:)
   let assert Error(approvers.Unavailable(_)) =
-    approvers.check(hellhound_approvers(validator), token, refund)
+    approvers.check(hellhound_approvers(validator), token, refund_request())
   stopped(desk)
 }
 
@@ -213,7 +218,7 @@ pub fn a_proof_from_other_approvers_is_refused_test() {
   // borrows the name: neither is the agent's approvers.
   let assert Ok(ada_reviewer) = reviewer.new("ada")
   let assert Ok(trusting) =
-    approvers.check(fabric_testing.trusting_approvers(), ada_reviewer, refund)
+    approvers.check(fabric_testing.trusting_approvers(), ada_reviewer, pending.reference)
   fabric.approve(handle, pending.reference, proof: trusting, context: Nil)
   |> should_be(
     Error(
@@ -223,11 +228,11 @@ pub fn a_proof_from_other_approvers_is_refused_test() {
     ),
   )
   let permissive =
-    approvers.new("hellhound", fn(token, _requirement) {
+    approvers.new("hellhound", fn(token, _request) {
       reviewer.new(string.slice(token, 0, 8))
       |> result_to_denial
     })
-  let assert Ok(forged) = approvers.check(permissive, ada, refund)
+  let assert Ok(forged) = approvers.check(permissive, ada, pending.reference)
   fabric.reject(handle, pending.reference, proof: forged, reason: "no")
   |> should_be(
     Error(fabric.ProofRefused(approvers.OtherApprovers("hellhound"))),
@@ -235,7 +240,7 @@ pub fn a_proof_from_other_approvers_is_refused_test() {
   // The recipe built again is other approvers, even over the same
   // validator: only the value the agent was given answers.
   let assert Ok(again) =
-    approvers.check(hellhound_approvers(desk.validator), ada, refund)
+    approvers.check(hellhound_approvers(desk.validator), ada, pending.reference)
   fabric.approve(handle, pending.reference, proof: again, context: Nil)
   |> should_be(
     Error(fabric.ProofRefused(approvers.OtherApprovers("hellhound"))),
@@ -246,13 +251,13 @@ pub fn a_proof_from_other_approvers_is_refused_test() {
   let elsewhere =
     minted(desk, testing.with_audiences(_, ["https://other.test"]))
   let assert Ok(foreign) =
-    approvers.check(hellhound_approvers(other), elsewhere, refund)
+    approvers.check(hellhound_approvers(other), elsewhere, pending.reference)
   fabric.approve(handle, pending.reference, proof: foreign, context: Nil)
   |> should_be(
     Error(fabric.ProofRefused(approvers.OtherApprovers("hellhound"))),
   )
   // Nothing was answered: the agent's own approvers still can.
-  let assert Ok(proof) = approvers.check(desk_approvers, ada, refund)
+  let assert Ok(proof) = approvers.check(desk_approvers, ada, pending.reference)
   let assert Ok(_) =
     fabric.reject(handle, pending.reference, proof:, reason: "no")
   stopped(desk)

@@ -228,7 +228,7 @@ fn workflow(
         graph.approve(
           handle,
           approval,
-          proof: operator_proof(operators, approval.requirement),
+          proof: operator_proof(operators, approval),
           context: Nil,
         )
       Nil
@@ -238,7 +238,7 @@ fn workflow(
         graph.reject(
           handle,
           approval,
-          proof: operator_proof(operators, approval.requirement),
+          proof: operator_proof(operators, approval),
           reason: "operator rejected",
         )
       Nil
@@ -297,7 +297,7 @@ fn open_graph(
 /// approval, named by `FABRIC_WRITING_OPERATOR` (default `operator`): the
 /// terminal is the authentication.
 fn operators() -> approvers.Approvers(String) {
-  use operator, _requirement <- approvers.new("writing-cli-operator")
+  use operator, _request <- approvers.new("writing-cli-operator")
   reviewer.new(operator)
   |> result.map_error(fn(error) {
     approvers.NotAuthenticated(reviewer.describe_error(error))
@@ -306,10 +306,10 @@ fn operators() -> approvers.Approvers(String) {
 
 fn operator_proof(
   operators: approvers.Approvers(String),
-  requirement: run.Requirement,
+  reference: graph.ApprovalRef,
 ) -> approvers.Proof {
   let operator =
     result.unwrap(environment("FABRIC_WRITING_OPERATOR"), "operator")
-  let assert Ok(proof) = approvers.check(operators, operator, requirement)
+  let assert Ok(proof) = graph.check_approval(operators, operator, reference)
   proof
 }
