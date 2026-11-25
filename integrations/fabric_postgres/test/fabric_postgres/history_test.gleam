@@ -66,7 +66,7 @@ fn historical() {
 
 fn editor(provider) {
   let assert Ok(agent) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new("history-editor", provider, [], fn(_: Nil, _) {
         Ok(policy.Allow)
       })

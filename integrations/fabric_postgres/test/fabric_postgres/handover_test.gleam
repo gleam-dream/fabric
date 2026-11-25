@@ -82,7 +82,7 @@ fn refund_fee(signals: Subject(Signal)) -> tool.Tool(context) {
 /// turn waits for the test first.
 fn support_agent(signals: Subject(Signal), hold: Bool) -> Agent(Nil, String) {
   let assert Ok(desk) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "support",
         model.new(fn(request: model.Request) {
@@ -150,7 +150,7 @@ fn support_agent(signals: Subject(Signal), hold: Bool) -> Agent(Nil, String) {
 /// hands the refund over instead.
 fn deciding_agent(signals: Subject(Signal)) -> Agent(String, String) {
   let assert Ok(desk) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "deciding",
         model.new(fn(request: model.Request) {

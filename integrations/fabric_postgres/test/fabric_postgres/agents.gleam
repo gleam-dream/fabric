@@ -114,7 +114,7 @@ pub fn agent(gate: Gate, amount: Int) -> Agent(Nil, String) {
     }
   }
   let assert Ok(agent) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new("worker", model, [work()], policy)
       |> agent.with_approvers(testing.trusting_approvers())
     })
