@@ -345,11 +345,7 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
     fabric.approve(
       desk,
       committee.reference,
-      proof: badge_proof(
-        staff,
-        committee.reference,
-        "committee-chair",
-      ),
+      proof: badge_proof(staff, committee.reference, "committee-chair"),
       context: app.member("ada"),
     )
 
@@ -361,11 +357,7 @@ pub fn an_acquisition_needs_the_committee_then_the_treasurer_test() {
     fabric.approve(
       desk,
       treasurer.reference,
-      proof: badge_proof(
-        staff,
-        treasurer.reference,
-        "treasurer-tom",
-      ),
+      proof: badge_proof(staff, treasurer.reference, "treasurer-tom"),
       context: app.member("ada"),
     )
   fabric.await(desk, within: duration.milliseconds(5000))

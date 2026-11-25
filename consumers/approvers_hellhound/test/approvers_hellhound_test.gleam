@@ -41,7 +41,12 @@ const refund = run.Requirement("refund", 1)
 /// `refund`, the run and action are arbitrary.
 fn refund_request() -> run.ApprovalRef {
   let assert Ok(id) = run.parse_id("refund-request")
-  run.ApprovalRef(run: id, id: run.ActionId(1, "r"), requirement: refund, revision: 1)
+  run.ApprovalRef(
+    run: id,
+    id: run.ActionId(1, "r"),
+    requirement: refund,
+    revision: 1,
+  )
 }
 
 type Desk {
@@ -136,11 +141,7 @@ pub fn a_token_with_the_scope_answers_and_is_recorded_test() {
   let desk_approvers = hellhound_approvers(desk.validator)
   let #(handle, pending) = waiting(desk_approvers)
   let assert Ok(proof) =
-    approvers.check(
-      desk_approvers,
-      login(desk, "ada"),
-      pending.reference,
-    )
+    approvers.check(desk_approvers, login(desk, "ada"), pending.reference)
   let assert Ok(_) =
     fabric.approve(handle, pending.reference, proof:, context: Nil)
   let assert Ok(snapshot) = fabric.snapshot(handle)
@@ -159,7 +160,9 @@ pub fn a_token_without_the_scope_is_not_authorized_test() {
   let assert Error(approvers.NotAuthorized(reason)) =
     approvers.check(
       hellhound_approvers(desk.validator),
-      login(desk, "mallory"), refund_request())
+      login(desk, "mallory"),
+      refund_request(),
+    )
   assert string.contains(reason, "approve:refund")
   stopped(desk)
 }
@@ -177,7 +180,11 @@ pub fn expired_forged_foreign_and_malformed_tokens_are_not_authenticated_test() 
   ]
   list.each(tokens, fn(token) {
     let assert Error(approvers.NotAuthenticated(_)) =
-      approvers.check(hellhound_approvers(desk.validator), token, refund_request())
+      approvers.check(
+        hellhound_approvers(desk.validator),
+        token,
+        refund_request(),
+      )
   })
   // The same token, unchanged, is accepted.
   let assert Ok(_) =
@@ -218,7 +225,11 @@ pub fn a_proof_from_other_approvers_is_refused_test() {
   // borrows the name: neither is the agent's approvers.
   let assert Ok(ada_reviewer) = reviewer.new("ada")
   let assert Ok(trusting) =
-    approvers.check(fabric_testing.trusting_approvers(), ada_reviewer, pending.reference)
+    approvers.check(
+      fabric_testing.trusting_approvers(),
+      ada_reviewer,
+      pending.reference,
+    )
   fabric.approve(handle, pending.reference, proof: trusting, context: Nil)
   |> should_be(
     Error(
