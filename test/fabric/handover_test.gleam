@@ -324,7 +324,7 @@ pub fn the_other_calls_of_the_reply_are_withdrawn_test() {
   fabric.approve(
     handle,
     voided,
-    proof: support.proof(Requirement("finance", 1), support.reviewer("bia")),
+    proof: support.proof(voided, support.reviewer("bia")),
     context: Nil,
   )
   |> should.equal(Error(fabric.RunEnded))
@@ -332,7 +332,7 @@ pub fn the_other_calls_of_the_reply_are_withdrawn_test() {
     handle,
     voided,
     reason: "no",
-    proof: support.proof(Requirement("finance", 1), support.reviewer("bia")),
+    proof: support.proof(voided, support.reviewer("bia")),
   )
   |> should.equal(Error(fabric.RunEnded))
   probe.entries(effects) |> should.equal([])
@@ -421,7 +421,7 @@ fn hand_over_on_answer(
     fabric.approve(
       handle,
       pending.reference,
-      proof: support.proof(Requirement("finance", 1), support.reviewer("bia")),
+      proof: support.proof(pending.reference, support.reviewer("bia")),
       context: "hand over",
     )
   handle
@@ -715,7 +715,7 @@ pub fn a_run_parked_by_the_published_format_reads_and_cancels_test() {
   fabric.approve(
     handle,
     pending.reference,
-    proof: support.proof(pending.reference.requirement, support.reviewer("bia")),
+    proof: support.proof(pending.reference, support.reviewer("bia")),
     context: Nil,
   )
   |> should.equal(Error(fabric.RunEnded))

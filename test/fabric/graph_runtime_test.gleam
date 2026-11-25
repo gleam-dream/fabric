@@ -215,7 +215,7 @@ pub fn graph_approval_after_restart_reuses_its_reserved_work_unit_test() {
     graph.approve(
       handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -271,7 +271,7 @@ pub fn a_saved_decision_survives_process_loss_without_repeating_its_body_test() 
     graph.approve(
       handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -379,7 +379,7 @@ pub fn approval_uses_fresh_context_and_passes_it_to_the_admitted_body_test() {
     graph.approve(
       handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: "publisher",
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -878,7 +878,7 @@ pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
     graph.approve(
       handle,
       first,
-      proof: support.proof(first.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(first, support.reviewer("reviewer")),
       context: 1,
     )
   let assert Ok(changed) = graph.snapshot(handle)
@@ -889,7 +889,7 @@ pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
     graph.approve(
       handle,
       first,
-      proof: support.proof(first.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(first, support.reviewer("reviewer")),
       context: 1,
     )
   probe.entries(ledger) |> should.equal([])
@@ -897,7 +897,7 @@ pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
     graph.approve(
       handle,
       second,
-      proof: support.proof(second.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(second, support.reviewer("reviewer")),
       context: 1,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
@@ -1164,7 +1164,7 @@ pub fn restart_uses_the_saved_branch_even_when_the_decision_producer_changes_its
     graph.approve(
       handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))

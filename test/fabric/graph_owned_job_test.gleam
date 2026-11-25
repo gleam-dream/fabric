@@ -148,7 +148,7 @@ pub fn cancellation_before_owned_admission_never_requests_a_remote_stop_test() {
   graph.approve(
     handle,
     approval,
-    proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+    proof: support.graph_proof(approval, support.reviewer("reviewer")),
     context: Nil,
   )
   |> should.be_error

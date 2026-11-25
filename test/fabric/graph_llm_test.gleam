@@ -197,7 +197,7 @@ pub fn policy_approval_precedes_the_provider_request_test() {
   graph.approve(
     handle,
     approval,
-    proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+    proof: support.graph_proof(approval, support.reviewer("reviewer")),
     context: Nil,
   )
   |> should.be_ok

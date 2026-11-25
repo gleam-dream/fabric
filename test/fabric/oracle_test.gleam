@@ -459,10 +459,7 @@ pub fn an_approved_call_matches_beamweaver_test() {
     fabric.approve(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -492,10 +489,7 @@ pub fn a_rejected_call_matches_beamweaver_test() {
     fabric.reject(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("reviewer")),
       reason: "payment declined by reviewer",
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -548,10 +542,7 @@ pub fn an_approval_after_a_restart_matches_beamweaver_test() {
     fabric.approve(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -667,10 +658,7 @@ pub fn an_approved_sub_agent_start_matches_beamweaver_test() {
     fabric.approve(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(run.Finished(run.Completed(_))) =
@@ -698,10 +686,7 @@ pub fn a_rejected_sub_agent_start_matches_beamweaver_test() {
     fabric.reject(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("reviewer")),
       reason: "no sub-agent today",
     )
   let assert Ok(run.Finished(run.Completed(_))) =

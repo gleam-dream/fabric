@@ -170,7 +170,7 @@ pub fn a_child_approval_survives_restart_and_continues_the_same_attachment_test(
     graph.approve(
       child_handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -203,7 +203,7 @@ pub fn an_idle_parent_releases_its_runner_and_wakes_when_its_child_is_approved_t
     graph.approve(
       child_handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -280,7 +280,7 @@ pub fn nested_approval_and_signal_waits_release_every_runner_and_keep_each_route
     graph.approve(
       leaf_handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   // The signal wait arms its 7-day deadline by the store's clock first.
@@ -389,7 +389,7 @@ pub fn parking_checks_a_child_that_completed_before_wakeup_registration_test() {
     graph.approve(
       child_handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(child_done) =

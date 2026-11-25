@@ -197,10 +197,7 @@ pub fn unsupported_or_corrupt_stored_adapter_data_stops_before_provider_io_test(
         fabric.approve(
           opened,
           pending.reference,
-          proof: support.proof(
-            pending.reference.requirement,
-            support.reviewer("reviewer"),
-          ),
+          proof: support.proof(pending.reference, support.reviewer("reviewer")),
           context: Nil,
         )
       let assert Ok(run.Finished(run.Failed(run.ModelFailed(error)))) =

@@ -231,10 +231,7 @@ pub fn graph_cancellation_refuses_agent_approval_without_starting_its_tool_test(
   fabric.approve(
     handle,
     approval.reference,
-    proof: support.proof(
-      approval.reference.requirement,
-      support.reviewer("reviewer"),
-    ),
+    proof: support.proof(approval.reference, support.reviewer("reviewer")),
     context: Nil,
   )
   |> should.be_error

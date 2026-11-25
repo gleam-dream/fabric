@@ -167,10 +167,7 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
     fabric.approve(
       run,
       first.reference,
-      proof: support.proof(
-        first.reference.requirement,
-        support.reviewer("alice"),
-      ),
+      proof: support.proof(first.reference, support.reviewer("alice")),
       context: Nil,
     )
   let running = probe.arrival(probe)
@@ -178,10 +175,7 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
     fabric.approve(
       run,
       second.reference,
-      proof: support.proof(
-        second.reference.requirement,
-        support.reviewer("alice"),
-      ),
+      proof: support.proof(second.reference, support.reviewer("alice")),
       context: Nil,
     )
   states(run) |> should.equal([run.Running, run.Queued])
@@ -199,10 +193,7 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
   fabric.approve(
     run,
     second.reference,
-    proof: support.proof(
-      second.reference.requirement,
-      support.reviewer("alice"),
-    ),
+    proof: support.proof(second.reference, support.reviewer("alice")),
     context: Nil,
   )
   |> should.equal(Error(fabric.StaleReference))
@@ -210,10 +201,7 @@ pub fn an_approved_queued_tool_is_asked_for_again_after_the_handoff_test() {
     fabric.approve(
       run,
       renewed.reference,
-      proof: support.proof(
-        renewed.reference.requirement,
-        support.reviewer("bob"),
-      ),
+      proof: support.proof(renewed.reference, support.reviewer("bob")),
       context: Nil,
     )
   probe.release(probe.arrival(probe))
@@ -325,10 +313,7 @@ pub fn a_suspended_run_is_untouched_by_a_stop_test() {
     fabric.approve(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("alice"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("alice")),
       context: Nil,
     )
   probe.release(probe.arrival(probe))
@@ -547,10 +532,7 @@ pub fn a_delegation_approved_ahead_of_the_stop_does_not_hold_up_the_drain_test()
       fabric.approve(
         run,
         pending.reference,
-        proof: support.proof(
-          pending.reference.requirement,
-          support.reviewer("reviewer"),
-        ),
+        proof: support.proof(pending.reference, support.reviewer("reviewer")),
         context: Nil,
       ),
     )

@@ -378,7 +378,7 @@ pub fn approval_does_not_start_the_clock_and_revisits_get_new_deadlines_test() {
     graph.approve(
       handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(approved) = graph.snapshot(handle)
@@ -398,7 +398,7 @@ pub fn approval_does_not_start_the_clock_and_revisits_get_new_deadlines_test() {
     graph.approve(
       handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))

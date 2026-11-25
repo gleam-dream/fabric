@@ -13,7 +13,7 @@
 //// case graph.await(handle, within: duration.seconds(5)) {
 ////   Ok(graph.AwaitingApproval(pending)) -> {
 ////     let assert Ok(proof) =
-////       approvers.check(editors, token, pending.requirement)
+////       graph.check_approval(editors, token, pending)
 ////     graph.approve(handle, pending, proof:, context: Ctx(user:))
 ////   }
 ////   ...
@@ -66,6 +66,7 @@ import fabric/graph/job
 import fabric/graph/operation
 import fabric/graph/signal
 import fabric/internal/answerer
+import fabric/internal/approvers as approvers_core
 import fabric/internal/bounded
 import fabric/internal/budget/model as reservations
 import fabric/internal/graph/agent_child
@@ -683,9 +684,9 @@ pub fn with_approval_expiry(
 }
 
 /// Who may answer this runtime's approval requests: `approve` and
-/// `reject` take a proof from `approvers.check` with these approvers,
-/// checked for the request's requirement (see `fabric/approvers`), and
-/// refuse any other. A runtime without approvers refuses every answer
+/// `reject` take a proof from `check_approval` with these approvers,
+/// checked for that very request (see `fabric/approvers`), and refuse any
+/// other. A runtime without approvers refuses every answer
 /// (`approvers.NoApprovers`). A child runtime (`as_subgraph`, `both`,
 /// `map`) answers with its own approvers, given to its own spec.
 pub fn with_approvers(
@@ -1814,6 +1815,30 @@ fn refusing_work() -> live.Work {
   }
 }
 
+/// Verifies `credential` with `approvers` for an answer to the graph
+/// request `reference` (`AwaitingApproval(reference)`), and returns the
+/// proof that answers that request and no other; `approve` and `reject`
+/// take it. An agent request is checked with `approvers.check`.
+pub fn check_approval(
+  approvers: Approvers(credential),
+  credential: credential,
+  reference: ApprovalRef,
+) -> Result(Proof, approvers.Denial) {
+  approvers_core.check(approvers, credential, binding(reference))
+}
+
+fn binding(reference: ApprovalRef) -> approvers_core.Binding {
+  let ApprovalRef(run:, activation:, attempt:, revision:, requirement:) =
+    reference
+  approvers_core.ActivationRequest(
+    run:,
+    activation:,
+    attempt:,
+    revision:,
+    requirement:,
+  )
+}
+
 /// Approves the run's waiting approval request. `context` is the
 /// application's current context: the policy is checked again with it, and
 /// a current denial or policy failure wins over the approval; a policy that
@@ -1823,9 +1848,8 @@ fn refusing_work() -> live.Work {
 /// (`with_approval_expiry`) is refused with `ApprovalExpired`: the request
 /// expires instead, and the run fails.
 ///
-/// `proof` says who answers: `approvers.check` made it for the request's
-/// requirement (`reference.requirement`) with the runtime's approvers
-/// (`with_approvers`). Any other proof, or one older than the proof
+/// `proof` says who answers: `check_approval` made it for exactly
+/// `reference` with the runtime's approvers (`with_approvers`). Any other proof, or one older than the proof
 /// lifetime, is refused with `ProofRefused` before the run is read. The
 /// reviewer it names and the approvers' name are recorded with the answer
 /// (`Snapshot.approvals`, `Receipt.approvals`).
@@ -1863,7 +1887,7 @@ fn answerer_of(
   reference: ApprovalRef,
 ) -> Result(#(Reviewer, String), Error) {
   graph_runtime.approvers(graph_handle.runtime(handle))
-  |> answerer.check(proof, reference.requirement)
+  |> answerer.check(proof, binding(reference))
   |> result.map_error(ProofRefused)
 }
 

@@ -318,7 +318,7 @@ pub fn map_restart_keeps_completed_waiting_and_pending_members_distinct_test() {
     graph.approve(
       second,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -599,7 +599,7 @@ pub fn partial_pair_survives_store_loss_and_joins_the_same_children_test() {
     graph.approve(
       right_handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))

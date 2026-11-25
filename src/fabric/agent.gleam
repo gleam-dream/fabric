@@ -423,8 +423,8 @@ pub fn with_approval_expiry(
 
 /// Who may answer this agent's approval requests: `fabric.approve` and
 /// `fabric.reject` take a proof from `approvers.check` with these
-/// approvers, checked for the request's requirement (see
-/// `fabric/approvers`), and refuse any other. An agent without approvers
+/// approvers, checked for that very request (see `fabric/approvers`),
+/// and refuse any other. An agent without approvers
 /// refuses every answer (`approvers.NoApprovers`): its policy may never
 /// require an approval, or its requests wait until they expire. A
 /// sub-agent without approvers of its own takes its parent's.

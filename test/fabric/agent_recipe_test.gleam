@@ -223,10 +223,7 @@ pub fn an_agent_approval_cannot_be_replaced_by_approval_of_the_batch_test() {
   fabric.approve(
     ordinary,
     pending.reference,
-    proof: support.proof(
-      pending.reference.requirement,
-      support.reviewer("reviewer"),
-    ),
+    proof: support.proof(pending.reference, support.reviewer("reviewer")),
     context: True,
   )
   |> should.be_ok

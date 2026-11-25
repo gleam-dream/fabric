@@ -217,7 +217,7 @@ pub fn review(
     |> result.map_error(Failed),
   )
   let prove = fn(pending: run.PendingApproval) {
-    approvers.check(treasurers, credential, pending.reference.requirement)
+    approvers.check(treasurers, credential, pending.reference)
     |> result.map_error(Denied)
   }
   case status, verdict {
