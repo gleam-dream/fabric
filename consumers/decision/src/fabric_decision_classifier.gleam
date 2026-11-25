@@ -16,7 +16,6 @@ import http_gun
 import http_gun/config as http_config
 import json/blueprint/codec
 import json/blueprint/value
-import llm_wire
 import llm_wire/classify
 import llm_wire/classify/question
 
@@ -96,7 +95,7 @@ pub fn main() -> Nil {
   let assert Ok(http) = http_gun.start(http_config.default())
   let settings =
     classify.config(fn() { key })
-    |> classify.with_timeout(llm_wire.After(duration.seconds(20)))
+    |> classify.with_timeout(duration.seconds(20))
   let model =
     environment("FABRIC_CLASSIFIER_MODEL") |> result.unwrap("jev-latest")
   let runs = store.in_memory(process.new_name("classifier-decision-demo"))

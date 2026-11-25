@@ -89,7 +89,7 @@ pub fn main() -> Nil {
   let settings =
     openai.new(raw_key)
     |> openai.config
-    |> llm_wire.with_call_timeout(llm_wire.After(duration.seconds(20)))
+    |> llm_wire.with_call_timeout(duration.seconds(20))
     |> llm_wire.with_first_token_timeout(llm_wire.After(duration.seconds(10)))
     |> llm_wire.with_idle_timeout(llm_wire.After(duration.seconds(10)))
   // The default 30-second client ceiling covers the 20-second LLM deadline.

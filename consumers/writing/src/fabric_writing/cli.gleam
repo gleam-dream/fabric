@@ -46,7 +46,7 @@ fn required(name: String) -> String {
 fn llm_settings() -> llm_wire.Config {
   openai.new(required("OPENAI_API_KEY"))
   |> openai.config
-  |> llm_wire.with_call_timeout(llm_wire.After(duration.seconds(20)))
+  |> llm_wire.with_call_timeout(duration.seconds(20))
   |> llm_wire.with_first_token_timeout(llm_wire.After(duration.seconds(10)))
   |> llm_wire.with_idle_timeout(llm_wire.After(duration.seconds(10)))
 }
@@ -74,7 +74,7 @@ pub fn main() -> Nil {
       // 20-second request it had before.
       let settings =
         classify.config(fn() { required("TYPESAFE_API_KEY") })
-        |> classify.with_timeout(llm_wire.After(duration.seconds(20)))
+        |> classify.with_timeout(duration.seconds(20))
       let model =
         environment("FABRIC_CLASSIFIER_MODEL") |> result.unwrap("jev-latest")
       dispatch(
