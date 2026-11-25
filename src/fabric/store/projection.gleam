@@ -17,7 +17,8 @@ import gleam/option.{type Option}
 pub type Projection {
   Projection(
     /// The record's `phase.tag` (for example `"ended"`), or `None` for a
-    /// record without a phase: a family budget, or an unreadable record.
+    /// record without one, such as a family budget. For text that is not a
+    /// supported record, the tag is read from the text when it has one.
     phase: Option(String),
     /// `retention.encode(run, record)`.
     retention: String,
@@ -33,7 +34,7 @@ pub type Projection {
 pub fn project(run: String, record: String) -> Projection {
   let stored = stored_record.decode(record)
   Projection(
-    phase: option.from_result(stored_record.phase_tag(stored)),
+    phase: option.from_result(stored_record.phase_tag(stored, record)),
     retention: retention.encode_stored(run, stored),
     discovery: discovery.encode_stored(run, stored),
     statistics: statistics.encode_stored(run, stored),

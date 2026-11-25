@@ -11,7 +11,7 @@ import fabric/support/restart
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
 
@@ -68,4 +68,6 @@ pub fn a_projection_of_a_misfiled_or_unreadable_record_keeps_versions_only_test(
   let unreadable = projection.project(run, "{\"format\":\"other\"}")
   unreadable.phase |> should.equal(None)
   string.contains(unreadable.retention, "version") |> should.be_true
+  let foreign = "{\"phase\":{\"tag\":\"ended\"},\"text\":\"a\\u0000b\"}"
+  projection.project(run, foreign).phase |> should.equal(Some("ended"))
 }

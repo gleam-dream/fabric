@@ -7,6 +7,9 @@ import fabric/internal/controller as agent
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/record as graph_record
 import fabric/internal/record as agent_record
+import gleam/dynamic/decode
+import gleam/json
+import gleam/result
 
 pub type Stored {
   AgentRun(agent.State)
@@ -32,12 +35,17 @@ pub fn decode(encoded: String) -> Stored {
   }
 }
 
-/// The `phase.tag` the record's text carries, from the decoded state: what
-/// the current encoders write for that phase. A budget record has none.
-pub fn phase_tag(stored: Stored) -> Result(String, Nil) {
+/// The `phase.tag` the record's text `encoded` carries. For a run record
+/// it comes from the decoded state, as the current encoders write it, so
+/// the text is not parsed again; a budget record has none. Text that no
+/// supported decoder reads is parsed for the tag alone.
+pub fn phase_tag(stored: Stored, encoded: String) -> Result(String, Nil) {
   case stored {
     AgentRun(state) -> Ok(agent_record.phase_tag(state.phase))
     GraphRun(state) -> Ok(graph_record.phase_tag(state.phase))
-    FamilyBudget(_) | Unreadable -> Error(Nil)
+    FamilyBudget(_) -> Error(Nil)
+    Unreadable ->
+      json.parse(encoded, decode.at(["phase", "tag"], decode.string))
+      |> result.replace_error(Nil)
   }
 }
