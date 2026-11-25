@@ -14,7 +14,6 @@ import fabric/store
 import fabric/testing as fabric_testing
 import fabric/tool
 import gleam/erlang/process
-import gleam/http/request
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/static_supervisor as supervisor
@@ -79,7 +78,7 @@ fn stopped(desk: Desk) -> Nil {
 /// of the session.
 fn login(desk: Desk, subject: String) -> String {
   let assert Ok(redirect) =
-    hellhound.begin_login(desk.client, request.new(), hellhound.default_login())
+    hellhound.begin_login(desk.client, hellhound.default_login())
   let assert Ok(callback) = testing.authorize(desk.provider, redirect, subject:)
   let assert Ok(session) = hellhound.complete_login(desk.client, callback)
   let assert Ok(access) = hellhound.access_token(desk.client, session)
