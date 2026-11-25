@@ -27,6 +27,7 @@ import fabric/graph/signal
 import fabric/internal/graph/contract
 import fabric/internal/graph/observer
 import fabric/internal/graph/signal as signal_contract
+import fabric/internal/stored_json
 import fabric/run
 import fabric/tool
 import gleam/int
@@ -150,7 +151,7 @@ pub fn new(
 ) -> Operation(context, input, output) {
   let invoke = fn(context, invocation, text) {
     use value <- result.try(
-      codec.decode_json(input, text)
+      stored_json.decode(input, text)
       |> result.map_error(fn(error) {
         InputDecodingFailed(codec.describe_decode_error(error))
       }),
@@ -228,7 +229,7 @@ pub fn own_job(
       read_job: observer.reader(job_observer),
       cancel_job: fn(context, invocation, encoded) {
         use value <- result.try(
-          codec.decode_json(receipt, encoded)
+          stored_json.decode(receipt, encoded)
           |> result.map_error(fn(error) {
             InputDecodingFailed(codec.describe_decode_error(error))
           }),

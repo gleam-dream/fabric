@@ -2,6 +2,7 @@
 //// comes from an earlier submission; this binding never submits or cancels it.
 
 import fabric/internal/graph/observer
+import fabric/internal/stored_json
 import fabric/run
 import gleam/result
 import gleam/time/duration.{type Duration}
@@ -77,7 +78,7 @@ fn reader(
 ) -> fn(context, String) -> Result(Progress(String), String) {
   fn(context, encoded) {
     use receipt <- result.try(
-      codec.decode_json(receipt_codec, encoded)
+      stored_json.decode(receipt_codec, encoded)
       |> result.map_error(codec.describe_decode_error),
     )
     use progress <- result.try(read(context, receipt))

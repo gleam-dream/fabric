@@ -35,6 +35,7 @@ import fabric/internal/graph/controller as control
 import fabric/internal/graph/fork_driver
 import fabric/internal/graph/record
 import fabric/internal/limit as bounds
+import fabric/internal/stored_json
 import fabric/run
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -198,7 +199,7 @@ pub fn node(
     })
   }
   let decode_input = fn(text) {
-    codec.decode_json(input, text)
+    stored_json.decode(input, text)
     |> result.map_error(fn(error) {
       OperationRejected(
         operation.InputDecodingFailed(codec.describe_decode_error(error)),
@@ -206,7 +207,7 @@ pub fn node(
     })
   }
   let decode_output = fn(text) {
-    codec.decode_json(output, text)
+    stored_json.decode(output, text)
     |> result.map_error(fn(error) {
       OperationRejected(
         operation.OutputDecodingFailed(codec.describe_decode_error(error)),
@@ -619,7 +620,7 @@ fn decode_state(
   definition: Graph(context, state, answer),
   text: String,
 ) -> Result(state, Error) {
-  codec.decode_json(definition.state, text)
+  stored_json.decode(definition.state, text)
   |> result.map_error(fn(error) {
     StateDecodingFailed(codec.describe_decode_error(error))
   })
@@ -629,7 +630,7 @@ fn decode_answer(
   definition: Graph(context, state, answer),
   text: String,
 ) -> Result(answer, Error) {
-  codec.decode_json(definition.answer, text)
+  stored_json.decode(definition.answer, text)
   |> result.map_error(fn(error) {
     AnswerDecodingFailed(codec.describe_decode_error(error))
   })
