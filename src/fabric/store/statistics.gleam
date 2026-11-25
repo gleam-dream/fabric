@@ -5,9 +5,8 @@ import fabric/graph/job
 import fabric/internal/budget/record as budget_record
 import fabric/internal/controller as agent
 import fabric/internal/graph/controller as graph
-import fabric/internal/graph/record as graph_record
-import fabric/internal/record as agent_record
 import fabric/internal/run_id
+import fabric/internal/stored_record.{type Stored}
 import fabric/run
 import gleam/json
 import gleam/list
@@ -34,18 +33,18 @@ pub type Metadata {
 /// Flags describe this record only; child requests are not copied to ancestors.
 /// Ended agents can retain uncertain effects requiring external reconciliation.
 pub fn inspect(encoded: String) -> Result(Metadata, Nil) {
-  case agent_record.decode(encoded) {
-    Ok(state) -> Ok(agent_metadata(state))
-    Error(_) ->
-      case graph_record.decode(encoded) {
-        Ok(state) -> Ok(graph_metadata(state))
-        Error(_) ->
-          budget_record.decode(encoded)
-          |> result.map(fn(record) {
-            Budget(run_id.from_string(budget_record.id(record.root)))
-          })
-          |> result.replace_error(Nil)
-      }
+  inspect_stored(stored_record.decode(encoded))
+}
+
+/// `inspect` of a record already decoded.
+@internal
+pub fn inspect_stored(stored: Stored) -> Result(Metadata, Nil) {
+  case stored {
+    stored_record.AgentRun(state) -> Ok(agent_metadata(state))
+    stored_record.GraphRun(state) -> Ok(graph_metadata(state))
+    stored_record.FamilyBudget(record) ->
+      Ok(Budget(run_id.from_string(budget_record.id(record.root))))
+    stored_record.Unreadable -> Error(Nil)
   }
 }
 
@@ -134,8 +133,14 @@ fn graph_metadata(state: graph.State) -> Metadata {
 /// Unknown or mismatched source records encode the version only. Backends
 /// retain these as explicit unknowns; refreshing cannot invent a healthy state.
 pub fn encode(storage_key: String, encoded: String) -> String {
+  encode_stored(storage_key, stored_record.decode(encoded))
+}
+
+/// `encode` of a record already decoded.
+@internal
+pub fn encode_stored(storage_key: String, stored: Stored) -> String {
   let checked =
-    inspect(encoded)
+    inspect_stored(stored)
     |> result.try(fn(metadata) {
       case run.id_to_string(metadata.id) == storage_key {
         True -> Ok(metadata)
