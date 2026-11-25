@@ -286,74 +286,94 @@ fn outcome_json(outcome: g.Outcome) -> Json {
 }
 
 fn phase_json(phase: g.Phase) -> Json {
+  let name = phase_tag(phase)
   case phase {
-    g.PreparingFork(a) ->
-      tag("preparing_fork", [#("activation", activation_json(a))])
+    g.PreparingFork(a) -> tag(name, [#("activation", activation_json(a))])
     g.Forking(a, mode) ->
-      tag("forking", [
+      tag(name, [
         #("activation", activation_json(a)),
         #("mode", fork_mode_json(mode)),
       ])
     g.WaitingFork(a, mode) ->
-      tag("waiting_fork", [
+      tag(name, [
         #("activation", activation_json(a)),
         #("mode", fork_mode_json(mode)),
       ])
     g.ChildBlocked(a, id, reason) ->
-      tag("child_blocked", [
+      tag(name, [
         #("activation", activation_json(a)),
         #("child", json.string(id)),
         #("reason", json.string(reason)),
       ])
     g.Joining(a, id) ->
-      tag("joining", [
+      tag(name, [
         #("activation", activation_json(a)),
         #("child", json.string(id)),
       ])
     g.WaitingChild(a, id) ->
-      tag("waiting_child", [
+      tag(name, [
         #("activation", activation_json(a)),
         #("child", json.string(id)),
       ])
     g.StoppingChild(a, id, cause) ->
-      tag("stopping_child", [
+      tag(name, [
         #("activation", activation_json(a)),
         #("child", json.string(id)),
         #("cause", stop_reason_json(cause)),
       ])
-    g.Ready(a) -> tag("ready", [#("activation", activation_json(a))])
-    g.Queued(a) -> tag("queued", [#("activation", activation_json(a))])
-    g.Running(a) -> tag("running", [#("activation", activation_json(a))])
-    g.Stopping(a) -> tag("stopping", [#("activation", activation_json(a))])
-    g.WaitingSignal(a) ->
-      tag("waiting_signal", [#("activation", activation_json(a))])
-    g.ArmingWait(a) ->
-      tag(
-        case a.prepared.kind {
-          operation.Signal -> "arming_signal"
-          operation.Subgraph | operation.Agent -> "arming_child"
-          _ -> "arming_job"
-        },
-        [#("activation", activation_json(a))],
-      )
-    g.WaitingJob(a) -> tag("waiting_job", [#("activation", activation_json(a))])
+    g.Ready(a) -> tag(name, [#("activation", activation_json(a))])
+    g.Queued(a) -> tag(name, [#("activation", activation_json(a))])
+    g.Running(a) -> tag(name, [#("activation", activation_json(a))])
+    g.Stopping(a) -> tag(name, [#("activation", activation_json(a))])
+    g.WaitingSignal(a) -> tag(name, [#("activation", activation_json(a))])
+    g.ArmingWait(a) -> tag(name, [#("activation", activation_json(a))])
+    g.WaitingJob(a) -> tag(name, [#("activation", activation_json(a))])
     g.StoppingJob(a, progress, cause) ->
-      tag("stopping_job", [
+      tag(name, [
         #("activation", activation_json(a)),
         #("request", stop_progress_json(progress)),
         #("cause", stop_reason_json(cause)),
       ])
     g.AwaitingApproval(a, approval) ->
-      tag("awaiting_approval", [
+      tag(name, [
         #("activation", activation_json(a)),
         #("approval", approval_json(approval)),
       ])
     g.Blocked(a, problem) ->
-      tag("blocked", [
+      tag(name, [
         #("activation", activation_json(a)),
         #("problem", problem_json(problem)),
       ])
-    g.Ended(outcome) -> tag("ended", [#("outcome", outcome_json(outcome))])
+    g.Ended(outcome) -> tag(name, [#("outcome", outcome_json(outcome))])
+  }
+}
+
+/// The `tag` the record writes for `phase`.
+pub fn phase_tag(phase: g.Phase) -> String {
+  case phase {
+    g.PreparingFork(_) -> "preparing_fork"
+    g.Forking(..) -> "forking"
+    g.WaitingFork(..) -> "waiting_fork"
+    g.ChildBlocked(..) -> "child_blocked"
+    g.Joining(..) -> "joining"
+    g.WaitingChild(..) -> "waiting_child"
+    g.StoppingChild(..) -> "stopping_child"
+    g.Ready(_) -> "ready"
+    g.Queued(_) -> "queued"
+    g.Running(_) -> "running"
+    g.Stopping(_) -> "stopping"
+    g.WaitingSignal(_) -> "waiting_signal"
+    g.ArmingWait(a) ->
+      case a.prepared.kind {
+        operation.Signal -> "arming_signal"
+        operation.Subgraph | operation.Agent -> "arming_child"
+        _ -> "arming_job"
+      }
+    g.WaitingJob(_) -> "waiting_job"
+    g.StoppingJob(..) -> "stopping_job"
+    g.AwaitingApproval(..) -> "awaiting_approval"
+    g.Blocked(..) -> "blocked"
+    g.Ended(_) -> "ended"
   }
 }
 

@@ -12,9 +12,8 @@ import fabric/internal/controller as agent
 import fabric/internal/graph/attachment
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/fork as scope
-import fabric/internal/graph/record
-import fabric/internal/record as agent_record
 import fabric/internal/run_id
+import fabric/internal/stored_record.{type Stored}
 import fabric/run
 import fabric/store/retention
 import gleam/int
@@ -43,20 +42,17 @@ pub type Wait {
 /// Inspect supported records without deployed code. Unknown/corrupt records
 /// fail; readable records without an automatic wait return `None`.
 pub fn inspect(encoded: String) -> Result(Option(Wait), Nil) {
-  classify(encoded) |> result.map(fn(entry) { entry.1 })
+  classify(stored_record.decode(encoded)) |> result.map(fn(entry) { entry.1 })
 }
 
-fn classify(encoded: String) -> Result(#(run.RunId, Option(Wait)), Nil) {
-  case record.decode(encoded) {
-    Error(_) ->
-      case agent_record.decode(encoded) {
-        Ok(state) ->
-          Ok(#(run_id.from_string(state.run), approval_expiry(state)))
-        Error(_) ->
-          retention.inspect(encoded)
-          |> result.map(fn(metadata) { #(metadata.run, None) })
-      }
-    Ok(state) -> {
+fn classify(stored: Stored) -> Result(#(run.RunId, Option(Wait)), Nil) {
+  case stored {
+    stored_record.AgentRun(state) ->
+      Ok(#(run_id.from_string(state.run), approval_expiry(state)))
+    stored_record.FamilyBudget(_) | stored_record.Unreadable ->
+      retention.inspect_stored(stored)
+      |> result.map(fn(metadata) { #(metadata.run, None) })
+    stored_record.GraphRun(state) -> {
       let wait = case state.phase {
         graph.WaitingFork(a, mode) ->
           case graph.current_fork(state, a.id) {
@@ -294,7 +290,13 @@ fn fork_deadline(state: graph.State, a: graph.Activation, due: Int) -> Wait {
 /// Metadata for a backend index. Check its version and source revision before
 /// using it. Unknown or misfiled records retain only the projection version.
 pub fn encode(stored_id: String, encoded: String) -> String {
-  let fields = case classify(encoded) {
+  encode_stored(stored_id, stored_record.decode(encoded))
+}
+
+/// `encode` of a record already decoded.
+@internal
+pub fn encode_stored(stored_id: String, stored: Stored) -> String {
+  let fields = case classify(stored) {
     Ok(#(id, wait)) ->
       case run.id_to_string(id) == stored_id {
         False -> []

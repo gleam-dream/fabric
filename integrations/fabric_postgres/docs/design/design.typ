@@ -32,7 +32,7 @@
 #attribute(id: "presence", name: "Presence", type: "Stored row presence", provenance: "derived", state-type: "stored-row-presence", state-machine: "stored-row-lifecycle")[A key has no stored evidence before insertion or after complete-family pruning; reads distinguish presence at lookup time.]
 #attribute(id: "ownership", name: "Lease validity", type: "Stored lease state", provenance: "derived", state-type: "stored-lease-state", state-machine: "stored-lease-lifecycle")[Validity derives at read from the optional owner/expiry pair and backend time. Lease-only changes do not advance execution revision.]
 #attribute(name: "Record timestamp", type: "Backend wall time", provenance: "derived")[Insert and accepted record replacement set it at write. Maintenance and ownership-only operations preserve it.]
-#attribute(name: "Metadata", type: "Retention, discovery and statistics projections", provenance: "derived")[Each view derives at write or explicit refresh from actual supported decoders and retains its source revision.]
+#attribute(name: "Metadata", type: "Retention, discovery and statistics projections", provenance: "derived")[Each view derives from actual supported decoders and retains its source revision. A write derives the phase and all three views from one decode of the record (Fabric's projection.project); an explicit refresh derives the one stale view.]
 #relates(cardinality: "1 : 0..1")[A retention projection identifies an immediate parent through its saved reciprocal attachment.]
 #relates(cardinality: "1 : 0..n")[A row can declare children or its matching budget ledger; every retained child has one checked immediate parent.]
 ]
