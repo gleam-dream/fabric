@@ -13,7 +13,9 @@ gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
-fabric = ">= 0.5.0 and < 0.6.0"
+# Pinned to an unreleased Fabric commit for `fabric/store/projection`;
+# replaced by a Hex version requirement when that Fabric release exists.
+fabric = { git = "https://github.com/gleam-dream/fabric.git", ref = "042fef806d9dd900176d20bdb04b56593ee07879" }
 # Pinned tight, not the usual `>= x.y.0 and < (x+1).0.0`: an application that
 # uses both fabric_postgres and grind shares one pog/pgo pool, and grind pins
 # these exact minor ranges because its FFI matches pog's and pgo's private
