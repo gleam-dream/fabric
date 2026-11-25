@@ -1,6 +1,6 @@
 # Build an agent only from its builder
 
-<a id="adr-0024"></a>
+<a id="adr-0025"></a>
 
 Accepted by the owner's ruling that the redesign keeps no deprecated
 functions or legacy paths and that breaking changes are welcome before the
