@@ -6,7 +6,7 @@
 > - A proof answers one request: `approvers.check` takes the request's reference, and a graph request is checked with `graph.check_approval`.
 > - Fabric depends on `llm_wire >= 0.3.0 and < 0.4.0`, `http_gun >= 0.4.0 and < 0.5.0`, `json_blueprint >= 3.0.0 and < 4.0.0` and `sinal >= 0.2.0 and < 0.3.0`.
 > - A graph runner retries a store that is briefly unavailable, as the agent runner does.
-> - `fabric_postgres-v0.4.0` accepts only Fabric 0.5; stay on 0.5 until the adapter's next release.
+> - The PostgreSQL adapter for Fabric 0.6 is `fabric_postgres-v0.5.0`; `fabric_postgres-v0.4.0` accepts only Fabric 0.5.
 > - Depend on `fabric >= 0.6.0 and < 0.7.0`.
 
 [![CI](https://github.com/gleam-dream/fabric/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gleam-dream/fabric/actions/workflows/ci.yml)
@@ -52,9 +52,8 @@ function. Fabric 0.5 names that function `agent.build_with`; the
 [migration guide](https://github.com/gleam-dream/fabric/blob/main/docs/MIGRATION.md)
 lists every change from 0.5.
 The optional [PostgreSQL adapter](https://github.com/gleam-dream/fabric/blob/main/integrations/fabric_postgres/README.md)
-installs from a Git subdirectory; its release `fabric_postgres-v0.4.0`
-requires fabric `>= 0.5.0 and < 0.6.0`, and its next release accepts
-Fabric 0.6.
+installs from a Git subdirectory; its release `fabric_postgres-v0.5.0`
+requires fabric `>= 0.6.0 and < 0.7.0`.
 
 ## Start with an agent
 

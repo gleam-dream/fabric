@@ -9,7 +9,7 @@ Fabric 0.6.0 is a breaking release. Change the dependency to `fabric >= 0.6.0 an
 | [A proof answers one request](#a-proof-answers-one-request)                                               | Applications that answer approvals with `approvers`                                |
 | [An unrecognized provider stop fails the model call](#an-unrecognized-provider-stop-fails-the-model-call) | Applications that use `fabric/llm` or `fabric/graph/llm`                           |
 | [A graph runner retries its commits](#a-graph-runner-retries-its-commits)                                 | Applications that observe graph runs during store outages                          |
-| [The PostgreSQL adapter follows later](#the-postgresql-adapter-follows-later)                             | Applications that use `fabric_postgres`                                            |
+| [The PostgreSQL adapter moves with Fabric 0.6](#the-postgresql-adapter-moves-with-fabric-06)              | Applications that use `fabric_postgres`                                            |
 
 New in 0.6.0 and not breaking: `graph.check_approval`, `approvers.Request`, the `fabric/store/projection` module, and `encode_stored` and `inspect_stored` in `fabric/store/discovery`, `fabric/store/retention` and `fabric/store/statistics`.
 
@@ -112,16 +112,16 @@ Check the credential again for each request, right before answering it; do not k
 
 **What to do.** Nothing in code. Tests that simulate an unconfirmed graph commit with a single store fault must inject faults for longer than the retries last.
 
-## The PostgreSQL adapter follows later
+## The PostgreSQL adapter moves with Fabric 0.6
 
-**What changed.** The released `fabric_postgres-v0.4.0` requires `fabric >= 0.5.0 and < 0.6.0`. Its next release, which accepts Fabric 0.6, is tagged after Fabric 0.6.0 is published on Hex. That release changes no adapter API and no table: it derives a record's phase from the decoded record (`fabric/store/projection`), and its records stay byte for byte the same.
+**What changed.** `fabric_postgres-v0.4.0` requires `fabric >= 0.5.0 and < 0.6.0`. `fabric_postgres-v0.5.0` requires `fabric >= 0.6.0 and < 0.7.0`. It changes no adapter API and no table: it derives a record's phase from the decoded record (`fabric/store/projection`), and its records stay byte for byte the same. Its version is a minor bump because its `Store` comes from Fabric 0.6.
 
-**What to do.** An application that uses `fabric_postgres` stays on Fabric 0.5 until that tag exists. Then move both together:
+**What to do.** Move both together:
 
 ```toml
 [dependencies]
 fabric = ">= 0.6.0 and < 0.7.0"
-fabric_postgres = { git = "https://github.com/gleam-dream/fabric.git", ref = "<the new fabric_postgres tag>", path = "integrations/fabric_postgres" }
+fabric_postgres = { git = "https://github.com/gleam-dream/fabric.git", ref = "fabric_postgres-v0.5.0", path = "integrations/fabric_postgres" }
 ```
 
 Rename `agent.build_with` and update approval checks as described above. Stored runs need no migration.

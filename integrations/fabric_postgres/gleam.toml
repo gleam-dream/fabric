@@ -2,7 +2,7 @@
 # several nodes that share one database. A separate package, so that Fabric
 # itself does not depend on pog.
 name = "fabric_postgres"
-version = "0.4.0"
+version = "0.5.0"
 target = "erlang"
 gleam = ">= 1.18.0"
 licenses = ["Apache-2.0"]
@@ -13,9 +13,7 @@ gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
-# The in-repository Fabric core, for the unreleased `fabric/store/projection`;
-# replaced by a Hex version requirement when that Fabric release exists.
-fabric = { path = "../.." }
+fabric = ">= 0.6.0 and < 0.7.0"
 # Pinned tight, not the usual `>= x.y.0 and < (x+1).0.0`: an application that
 # uses both fabric_postgres and grind shares one pog/pgo pool, and grind pins
 # these exact minor ranges because its FFI matches pog's and pgo's private
