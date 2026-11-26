@@ -10,11 +10,11 @@ import hellhound/resource
 /// records the token's `sub` and `iss`, and the verifier `"hellhound"`. Call
 /// it once, at boot: the agent and the request handlers share the value.
 pub fn hellhound_approvers(validator: resource.Validator) -> Approvers(String) {
-  use token, requirement <- approvers.new("hellhound")
+  use token, request <- approvers.new("hellhound")
   use claims <- result.try(
     resource.verify(validator, token) |> result.map_error(denial),
   )
-  let scope = "approve:" <> requirement.name
+  let scope = "approve:" <> request.requirement.name
   use <- bool.guard(
     !list.contains(resource.scopes(claims), scope),
     Error(approvers.NotAuthorized("the token lacks the scope " <> scope)),

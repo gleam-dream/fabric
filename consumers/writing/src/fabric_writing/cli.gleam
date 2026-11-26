@@ -46,7 +46,7 @@ fn required(name: String) -> String {
 fn llm_settings() -> llm_wire.Config {
   openai.new(required("OPENAI_API_KEY"))
   |> openai.config
-  |> llm_wire.with_call_timeout(llm_wire.After(duration.seconds(20)))
+  |> llm_wire.with_call_timeout(duration.seconds(20))
   |> llm_wire.with_first_token_timeout(llm_wire.After(duration.seconds(10)))
   |> llm_wire.with_idle_timeout(llm_wire.After(duration.seconds(10)))
 }
@@ -58,8 +58,9 @@ fn model() -> String {
 
 pub fn main() -> Nil {
   let mode = required("FABRIC_WRITING_MODE")
-  // One HTTP client for every LLM request this process makes. Its default
-  // 30-second ceiling covers the 20-second LLM deadline.
+  // One HTTP client for every LLM request this process makes. A model
+  // call's 20-second whole call replaces the client's 30-second request
+  // timeout.
   let assert Ok(http) = http_gun.start(http_config.default())
   case required("FABRIC_WRITING_REVIEWER") {
     "llm" ->
@@ -74,7 +75,7 @@ pub fn main() -> Nil {
       // 20-second request it had before.
       let settings =
         classify.config(fn() { required("TYPESAFE_API_KEY") })
-        |> classify.with_timeout(llm_wire.After(duration.seconds(20)))
+        |> classify.with_timeout(duration.seconds(20))
       let model =
         environment("FABRIC_CLASSIFIER_MODEL") |> result.unwrap("jev-latest")
       dispatch(
@@ -228,7 +229,7 @@ fn workflow(
         graph.approve(
           handle,
           approval,
-          proof: operator_proof(operators, approval.requirement),
+          proof: operator_proof(operators, approval),
           context: Nil,
         )
       Nil
@@ -238,7 +239,7 @@ fn workflow(
         graph.reject(
           handle,
           approval,
-          proof: operator_proof(operators, approval.requirement),
+          proof: operator_proof(operators, approval),
           reason: "operator rejected",
         )
       Nil
@@ -297,7 +298,7 @@ fn open_graph(
 /// approval, named by `FABRIC_WRITING_OPERATOR` (default `operator`): the
 /// terminal is the authentication.
 fn operators() -> approvers.Approvers(String) {
-  use operator, _requirement <- approvers.new("writing-cli-operator")
+  use operator, _request <- approvers.new("writing-cli-operator")
   reviewer.new(operator)
   |> result.map_error(fn(error) {
     approvers.NotAuthenticated(reviewer.describe_error(error))
@@ -306,10 +307,10 @@ fn operators() -> approvers.Approvers(String) {
 
 fn operator_proof(
   operators: approvers.Approvers(String),
-  requirement: run.Requirement,
+  reference: graph.ApprovalRef,
 ) -> approvers.Proof {
   let operator =
     result.unwrap(environment("FABRIC_WRITING_OPERATOR"), "operator")
-  let assert Ok(proof) = approvers.check(operators, operator, requirement)
+  let assert Ok(proof) = graph.check_approval(operators, operator, reference)
   proof
 }

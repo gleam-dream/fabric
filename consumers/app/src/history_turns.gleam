@@ -60,7 +60,7 @@ pub fn label_codec() -> codec.Codec(Label) {
 /// check. Imported `record_note` results are context, never authorization.
 pub fn revision_agent(provider: model.Model) -> agent.Agent(Editor, Revision) {
   let assert Ok(agent) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "document-revision",
         provider,
@@ -101,7 +101,7 @@ fn note_tool() -> tool.Tool(Editor) {
 /// with a different native answer and no tool authority.
 pub fn label_agent(provider: model.Model) -> agent.Agent(Nil, Label) {
   let assert Ok(agent) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new("text-label", provider, [], fn(_, _) { Ok(policy.Allow) })
       |> agent.with_answer(label_codec())
       |> agent.with_max_turns(3)

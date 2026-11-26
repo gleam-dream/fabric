@@ -317,7 +317,8 @@ pub type Badge {
 /// request, the treasurer a `"treasurer"` one). Built once, at boot, and
 /// given to the agents and to the request handlers that answer.
 pub fn staff() -> Approvers(Badge) {
-  use badge: Badge, requirement <- approvers.new("library-badges")
+  use badge: Badge, request <- approvers.new("library-badges")
+  let requirement = request.requirement
   case list.contains(badge.roles, requirement.name) {
     False ->
       Error(approvers.NotAuthorized(
@@ -353,13 +354,13 @@ pub fn librarian_spec(staff: Approvers(Badge)) -> agent.Spec(Member, String) {
 pub fn librarian(
   staff: Approvers(Badge),
 ) -> Result(Agent(Member, String), List(agent.ConfigError)) {
-  agent.build_with(fn() { librarian_spec(staff) })
+  agent.build(fn() { librarian_spec(staff) })
 }
 
 pub fn misconfigured(
   staff: Approvers(Badge),
 ) -> Result(Agent(Member, String), List(agent.ConfigError)) {
-  agent.build_with(fn() {
+  agent.build(fn() {
     librarian_spec(staff)
     |> agent.with_max_turns(0)
   })
@@ -435,7 +436,7 @@ fn order_tool() -> tool.Tool(Member) {
 /// (`agent.with_answer`): the delegation's output is that answer.
 pub fn purchaser() -> Agent(Member, Order) {
   let assert Ok(purchaser) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "purchaser",
         model.new(fn(request: model.Request) {
@@ -542,7 +543,7 @@ pub fn loan_tool() -> tool.Tool(Member) {
 /// requests are answered with the desk's.
 pub fn front_desk(staff: Approvers(Badge)) -> Agent(Member, String) {
   let assert Ok(desk) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "front-desk",
         model.new(fn(request: model.Request) {

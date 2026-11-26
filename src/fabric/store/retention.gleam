@@ -14,8 +14,7 @@ import fabric/internal/budget/record as budget_record
 import fabric/internal/controller as agent
 import fabric/internal/graph/controller as graph
 import fabric/internal/graph/fork as scope
-import fabric/internal/graph/record as graph_record
-import fabric/internal/record as agent_record
+import fabric/internal/stored_record.{type Stored}
 import fabric/run
 import gleam/json
 import gleam/list
@@ -46,26 +45,26 @@ pub type Metadata {
 /// Unknown, corrupt and incompatible formats are not eligible for retention
 /// decisions. No deployed definition is required and nothing executes.
 pub fn inspect(encoded: String) -> Result(Metadata, Nil) {
-  case agent_record.decode(encoded) {
-    Ok(state) -> Ok(agent_metadata(state))
-    Error(_) ->
-      case graph_record.decode(encoded) {
-        Ok(state) -> Ok(graph_metadata(state))
-        Error(_) ->
-          budget_record.decode(encoded)
-          |> result.map(fn(record) {
-            Metadata(
-              run_id.from_string(budget_record.id(record.root)),
-              Some(Link(
-                run_id.from_string(record.root),
-                budget_key(budget.limits(record.state)),
-              )),
-              [],
-              True,
-            )
-          })
-          |> result.replace_error(Nil)
-      }
+  inspect_stored(stored_record.decode(encoded))
+}
+
+/// `inspect` of a record already decoded.
+@internal
+pub fn inspect_stored(stored: Stored) -> Result(Metadata, Nil) {
+  case stored {
+    stored_record.AgentRun(state) -> Ok(agent_metadata(state))
+    stored_record.GraphRun(state) -> Ok(graph_metadata(state))
+    stored_record.FamilyBudget(record) ->
+      Ok(Metadata(
+        run_id.from_string(budget_record.id(record.root)),
+        Some(Link(
+          run_id.from_string(record.root),
+          budget_key(budget.limits(record.state)),
+        )),
+        [],
+        True,
+      ))
+    stored_record.Unreadable -> Error(Nil)
   }
 }
 
@@ -321,8 +320,14 @@ fn graph_metadata(state: graph.State) -> Metadata {
 /// storage key must match the record's ID. Refresh when the projection version
 /// or source revision differs; retain original record bytes separately.
 pub fn encode(storage_key: String, encoded: String) -> String {
+  encode_stored(storage_key, stored_record.decode(encoded))
+}
+
+/// `encode` of a record already decoded.
+@internal
+pub fn encode_stored(storage_key: String, stored: Stored) -> String {
   let checked =
-    inspect(encoded)
+    inspect_stored(stored)
     |> result.try(fn(metadata) {
       case run.id_to_string(metadata.run) == storage_key {
         True -> Ok(metadata)

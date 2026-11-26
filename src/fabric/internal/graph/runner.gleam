@@ -521,7 +521,13 @@ fn persist(
     |> result.map_error(fn(error) { CallbackFailed(string.inspect(error)) }),
   )
   use revision <- result.try(
-    store.commit(runner.runs, state.run, runner.revision, encoded, ownership)
+    store.commit_transition(
+      runner.runs,
+      state.run,
+      runner.revision,
+      encoded,
+      ownership,
+    )
     |> result.map_error(StoreFailed),
   )
   observe.committed(Some(runner.state), state)

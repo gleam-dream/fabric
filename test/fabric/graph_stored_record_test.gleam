@@ -148,7 +148,7 @@ pub fn a_stored_approval_without_a_deadline_is_answered_and_never_expires_test()
     graph.approve(
       handle,
       reference,
-      proof: support.proof(reference.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(reference, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(_) = graph.await(handle, within: duration.seconds(5))

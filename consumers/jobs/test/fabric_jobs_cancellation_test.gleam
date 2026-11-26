@@ -97,7 +97,7 @@ pub fn cancellation_requires_approval_and_acknowledgment_is_not_confirmation_tes
     graph.approve(
       handle,
       approval,
-      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
+      proof: proof_for(approval, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
@@ -455,13 +455,17 @@ fn as_reviewer(subject: String) -> reviewer.Reviewer {
   reviewer
 }
 
-/// A proof that `reviewer` answers a request waiting for `requirement`,
-/// from the trusting approvers the test's agents and runtimes are given.
+/// A proof that `reviewer` answers the graph request `reference`, from the
+/// trusting approvers the test's agents and runtimes are given.
 fn proof_for(
-  requirement: run.Requirement,
+  reference: graph.ApprovalRef,
   reviewer: reviewer.Reviewer,
 ) -> approvers.Proof {
   let assert Ok(proof) =
-    approvers.check(fabric_testing.trusting_approvers(), reviewer, requirement)
+    graph.check_approval(
+      fabric_testing.trusting_approvers(),
+      reviewer,
+      reference,
+    )
   proof
 }

@@ -57,6 +57,7 @@
 //// sent), `InvalidReply` or `Other`, and stops the run.
 
 import fabric/model.{type Model, type ModelError, type Reply, type Request}
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -82,6 +83,15 @@ import llm_wire/tool
 /// owns the provider, endpoint, credentials, limits, and timeouts. Nothing
 /// is allocated until a turn runs. Killing the task that runs a turn closes
 /// its HTTP stream.
+///
+/// A turn ends at the first of these bounds: the agent's model timeout
+/// (`agent.with_model_timeout`), llm_wire's whole call
+/// (`llm_wire.with_call_timeout`, 600 s by default), its wait for the first
+/// token (`llm_wire.with_first_token_timeout`, 180 s by default) and its gap
+/// between provider events (`llm_wire.with_idle_timeout`, 60 s by default).
+/// The whole call replaces the HTTP Gun client's request timeout. Set the
+/// model timeout and the whole call to the longest generation the agent
+/// accepts; an unbounded model timeout still ends at the whole call.
 pub fn model(
   client: http_gun.Client,
   config: llm_wire.Config,
@@ -190,6 +200,16 @@ fn execute(
       Ok(model.Truncated(partial_text, usage_of(usage)))
     Ok(llm_wire.Refused(reason:, usage:)) ->
       Ok(model.Refusal(reason, usage_of(usage)))
+    // A stop reason llm_wire does not recognize says nothing about whether
+    // the text is complete, and its calls were never admitted. Fabric takes
+    // neither: the reply is unusable and not retried, since the same request
+    // would likely stop the same way. Like every failed model call, its
+    // usage is not counted.
+    Ok(llm_wire.UnrecognizedStop(reason:, partial_text:, partial_calls:, ..)) ->
+      Error(model.error(
+        model.InvalidReply,
+        unrecognized_stop(reason, partial_text, partial_calls),
+      ))
     // A provider's safety stop is a refusal too: the run ends as
     // `run.Refused` with the provider's stage and reason.
     Error(llm_wire.Failure(
@@ -207,6 +227,20 @@ fn execute(
     )) -> Ok(model.FinalAnswer(answer(raw_output), usage_of(usage)))
     Error(failure) -> Error(failure_of(failure))
   }
+}
+
+fn unrecognized_stop(
+  reason: String,
+  partial_text: String,
+  partial_calls: List(message.ToolCall),
+) -> String {
+  "the provider stopped for a reason Fabric does not recognize ("
+  <> reason
+  <> "); "
+  <> int.to_string(string.byte_size(partial_text))
+  <> " bytes of text and "
+  <> int.to_string(list.length(partial_calls))
+  <> " tool calls were not used"
 }
 
 fn declaration(spec: model.ToolSpec) -> Result(tool.Tool, ModelError) {

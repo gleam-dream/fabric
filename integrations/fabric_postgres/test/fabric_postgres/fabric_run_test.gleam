@@ -57,7 +57,7 @@ pub fn a_suspended_run_is_approved_after_a_store_restart_and_finishes_test() {
     fabric.approve(
       opened,
       pending.reference,
-      proof: proof_for(pending.reference.requirement, as_reviewer("reviewer")),
+      proof: proof_for(pending.reference, as_reviewer("reviewer")),
       context: Nil,
     )
   let arrival = agents.arrival(gate)
@@ -171,7 +171,7 @@ pub fn the_postgres_adapter_supports_the_write_version_window_test() {
     fabric.approve(
       opened,
       pending.reference,
-      proof: proof_for(pending.reference.requirement, as_reviewer("reviewer")),
+      proof: proof_for(pending.reference, as_reviewer("reviewer")),
       context: Nil,
     )
   agents.release(agents.arrival(gate))
@@ -186,13 +186,13 @@ fn as_reviewer(subject: String) -> reviewer.Reviewer {
   reviewer
 }
 
-/// A proof that `reviewer` answers a request waiting for `requirement`,
-/// from the trusting approvers the test's agents and runtimes are given.
+/// A proof that `reviewer` answers the request `reference`, from the
+/// trusting approvers the test's agents and runtimes are given.
 fn proof_for(
-  requirement: run.Requirement,
+  reference: run.ApprovalRef,
   reviewer: reviewer.Reviewer,
 ) -> approvers.Proof {
   let assert Ok(proof) =
-    approvers.check(fabric_testing.trusting_approvers(), reviewer, requirement)
+    approvers.check(fabric_testing.trusting_approvers(), reviewer, reference)
   proof
 }

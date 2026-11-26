@@ -3,7 +3,7 @@
 ////
 //// ```gleam
 //// let assert Ok(agent) =
-////   agent.build_with(fn() {
+////   agent.build(fn() {
 ////     agent.new("researcher", model, tools(), policy)
 ////     |> agent.with_answer(summary_codec())
 ////   })
@@ -42,6 +42,7 @@ import fabric/internal/graph/runner as graph_runner
 import fabric/internal/run_id
 import fabric/internal/runner
 import fabric/internal/store as store_core
+import fabric/internal/stored_json
 import fabric/model
 import fabric/run
 import fabric/store
@@ -319,7 +320,7 @@ fn start(
       runtime.context(run_id.from_string(id)),
     )
   use input <- result.try(
-    codec.decode_json(definition.input, encoded)
+    stored_json.decode(definition.input, encoded)
     |> result.map_error(string.inspect),
   )
   let prompt = definition.prompt(input)

@@ -70,7 +70,8 @@ const tess = Context("tess")
 /// The application's sign-in, scripted: a token names its holder, and
 /// only a treasurer's may answer a `"treasurer"` requirement.
 fn treasurers() -> Approvers(String) {
-  approvers.new("readme-sso", fn(token, requirement: run.Requirement) {
+  approvers.new("readme-sso", fn(token, request: approvers.Request) {
+    let requirement = request.requirement
     case token, requirement.name {
       "tess-token", "treasurer" ->
         reviewer.new("tess")
@@ -246,7 +247,7 @@ pub fn the_readme_example_runs_test() {
 pub fn the_readme_sub_agent_and_settling_tool_build_test() {
   let quiet = scripted.plan([])
   let assert Ok(researcher) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new("researcher", quiet, [], readme_example.desk_policy)
       |> agent.with_answer(readme_example.summary_codec())
     })
@@ -255,7 +256,7 @@ pub fn the_readme_sub_agent_and_settling_tool_build_test() {
   let settling =
     readme_example.settling_transfer(fn(transfer, _settlement) { pay(transfer) })
   let assert Ok(_) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new("settler", quiet, [settling], readme_example.desk_policy)
     })
 }

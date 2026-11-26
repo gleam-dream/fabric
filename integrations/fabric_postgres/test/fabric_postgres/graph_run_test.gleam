@@ -99,7 +99,7 @@ pub fn a_graph_survives_store_restart_and_completes_on_postgres_test() {
     graph.approve(
       handle,
       approval,
-      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
+      proof: graph_proof_for(approval, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(_) = graph.await(handle, within: duration.seconds(30))
@@ -544,7 +544,7 @@ pub fn an_idle_parent_discovers_a_completed_child_after_losing_its_wakeup_test()
     graph.approve(
       child,
       approval,
-      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
+      proof: graph_proof_for(approval, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(child, within: duration.seconds(30))
@@ -683,7 +683,7 @@ pub fn a_managed_subgraph_adopts_its_approved_child_after_postgres_restart_test(
     graph.approve(
       child_handle,
       approval,
-      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
+      proof: graph_proof_for(approval, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.seconds(30))
@@ -877,7 +877,7 @@ pub fn a_managed_agent_keeps_its_approval_and_identity_after_postgres_restart_te
     fabric.approve(
       agent,
       approval.reference,
-      proof: proof_for(approval.reference.requirement, as_reviewer("reviewer")),
+      proof: proof_for(approval.reference, as_reviewer("reviewer")),
       context: Nil,
     )
   let arrival = agents.arrival(gate)
@@ -939,7 +939,7 @@ pub fn a_restarted_managed_agent_cannot_reset_its_family_work_budget_test() {
   fabric.approve(
     worker,
     approval.reference,
-    proof: proof_for(approval.reference.requirement, as_reviewer("reviewer")),
+    proof: proof_for(approval.reference, as_reviewer("reviewer")),
     context: Nil,
   )
   |> should.be_ok
@@ -992,7 +992,7 @@ pub fn a_registered_graph_recovers_its_agent_after_postgres_store_loss_test() {
   fabric.approve(
     worker,
     approval.reference,
-    proof: proof_for(approval.reference.requirement, as_reviewer("reviewer")),
+    proof: proof_for(approval.reference, as_reviewer("reviewer")),
     context: Nil,
   )
   |> should.be_ok
@@ -1059,7 +1059,7 @@ pub fn canceled_agent_evidence_settles_after_postgres_restart_test() {
     fabric.approve(
       worker,
       approval.reference,
-      proof: proof_for(approval.reference.requirement, as_reviewer("reviewer")),
+      proof: proof_for(approval.reference, as_reviewer("reviewer")),
       context: Nil,
     )
   let _started = agents.arrival(gate)
@@ -1115,13 +1115,28 @@ fn open_graph(
   handle
 }
 
-/// A proof that `reviewer` answers a request waiting for `requirement`,
-/// from the trusting approvers the test's agents and runtimes are given.
+/// A proof that `reviewer` answers the agent request `reference`, from the
+/// trusting approvers the test's agents and runtimes are given.
 fn proof_for(
-  requirement: run.Requirement,
+  reference: run.ApprovalRef,
   reviewer: reviewer.Reviewer,
 ) -> approvers.Proof {
   let assert Ok(proof) =
-    approvers.check(fabric_testing.trusting_approvers(), reviewer, requirement)
+    approvers.check(fabric_testing.trusting_approvers(), reviewer, reference)
+  proof
+}
+
+/// A proof that `reviewer` answers the graph request `reference`, from the
+/// same trusting approvers.
+fn graph_proof_for(
+  reference: graph.ApprovalRef,
+  reviewer: reviewer.Reviewer,
+) -> approvers.Proof {
+  let assert Ok(proof) =
+    graph.check_approval(
+      fabric_testing.trusting_approvers(),
+      reviewer,
+      reference,
+    )
   proof
 }

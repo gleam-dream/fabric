@@ -4,21 +4,20 @@
 import fabric/approvers.{type Approvers, type Proof, type ProofError}
 import fabric/internal/approvers as core
 import fabric/reviewer.{type Reviewer}
-import fabric/run.{type Requirement}
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
 pub type Answerer =
-  fn(Proof, Requirement) -> Result(Reviewer, ProofError)
+  fn(Proof, core.Binding) -> Result(Reviewer, ProofError)
 
 pub fn from(given: Approvers(credential)) -> Answerer {
-  fn(proof, requirement) {
-    core.accept(given, proof, requirement)
+  fn(proof, binding) {
+    core.accept(given, proof, binding)
     |> result.map_error(fn(refusal) {
       case refusal {
         core.OtherApprovers(verifier) -> approvers.OtherApprovers(verifier)
-        core.OtherRequirement(proof, request) ->
-          approvers.OtherRequirement(proof, request)
+        core.OtherRequest(proof, request) ->
+          approvers.OtherRequest(proof, request)
         core.ProofExpired(age, lifetime) ->
           approvers.ProofExpired(age, lifetime)
       }
@@ -26,17 +25,17 @@ pub fn from(given: Approvers(credential)) -> Answerer {
   }
 }
 
-/// Who answers a request that waits for `requirement` with `proof`: the
-/// reviewer and the name of the approvers that verified them.
+/// Who answers the request `binding` with `proof`: the reviewer and the
+/// name of the approvers that verified them.
 pub fn check(
   answerer: Option(Answerer),
   proof: Proof,
-  requirement: Requirement,
+  binding: core.Binding,
 ) -> Result(#(Reviewer, String), ProofError) {
   case answerer {
     None -> Error(approvers.NoApprovers)
     Some(accept) ->
-      accept(proof, requirement)
+      accept(proof, binding)
       |> result.map(fn(reviewer) { #(reviewer, approvers.verifier(proof)) })
   }
 }

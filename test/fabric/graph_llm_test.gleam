@@ -197,7 +197,7 @@ pub fn policy_approval_precedes_the_provider_request_test() {
   graph.approve(
     handle,
     approval,
-    proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+    proof: support.graph_proof(approval, support.reviewer("reviewer")),
     context: Nil,
   )
   |> should.be_ok
@@ -361,10 +361,7 @@ pub fn preparation_and_proven_unsent_failures_are_definite_test() {
   let assert Ok(client) =
     http_testing.playback(http_testing.script([]), http_config.default())
   let invalid =
-    llm_wire.with_call_timeout(
-      testing.config(),
-      llm_wire.After(duration.milliseconds(0)),
-    )
+    llm_wire.with_call_timeout(testing.config(), duration.milliseconds(0))
   [invalid, testing.config()]
   |> list.each(fn(settings) {
     let runtime =
@@ -605,4 +602,25 @@ pub fn an_llm_decision_crosses_with_its_output_codec_a_fixed_number_of_times_tes
   let base = graph_crossing(small, "{\"approve\": true}")
   let crossed = graph_crossing(nested, "{\"orders\": []}")
   { crossed - base <= 36 * grown } |> should.be_true
+}
+
+/// A provider stop reason llm_wire does not recognize fails a structured
+/// decision as a definite failure naming the reason: the call ended, its
+/// partial text is not an answer, and nothing is left uncertain.
+pub fn an_unrecognized_stop_fails_the_decision_test() {
+  let fake =
+    fake_provider.start([testing.unrecognized_stop("pause_turn", "{\"ap")])
+  let assert Ok(handle) =
+    graph.start(
+      runtime(support.store(), fake),
+      support.id("unrecognized-stop"),
+      "draft",
+      correlation: None,
+    )
+  let assert Ok(_) = graph.await(handle, within: duration.milliseconds(5000))
+  let assert Ok(done) = graph.snapshot(handle)
+  let assert graph.Failed(graph.OperationFailed(detail)) = done.status
+  string.contains(detail, "pause_turn") |> should.be_true
+  done.receipts |> should.equal([])
+  fake_provider.stop(fake)
 }

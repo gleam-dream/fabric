@@ -104,7 +104,7 @@ fn charge() -> fabric_tool.Tool(Nil) {
 
 fn desk(model: model.Model) -> agent.Agent(Nil, Answer) {
   let assert Ok(desk) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new("desk", model, [charge()], fn(_, action: policy.Action) {
         case action.name {
           "charge" ->
@@ -259,7 +259,7 @@ pub fn a_retried_call_reaches_the_same_run_test() {
     fabric.approve(
       handle,
       pending.reference,
-      proof: proof_for(pending.reference.requirement, ada),
+      proof: proof_for(pending.reference, ada),
       context: Nil,
     )
   let assert Ok(client.Succeeded(answer, _)) =
@@ -410,13 +410,13 @@ pub fn a_run_that_ends_otherwise_names_its_outcome_test() {
   count(turns) |> should.equal(2)
 }
 
-/// A proof that `reviewer` answers a request waiting for `requirement`,
-/// from the trusting approvers the test's agents and runtimes are given.
+/// A proof that `reviewer` answers the agent request `reference`, from the
+/// trusting approvers the test's agents and runtimes are given.
 fn proof_for(
-  requirement: run.Requirement,
+  reference: run.ApprovalRef,
   reviewer: reviewer.Reviewer,
 ) -> approvers.Proof {
   let assert Ok(proof) =
-    approvers.check(fabric_testing.trusting_approvers(), reviewer, requirement)
+    approvers.check(fabric_testing.trusting_approvers(), reviewer, reference)
   proof
 }

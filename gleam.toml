@@ -8,6 +8,11 @@ repository = { type = "github", user = "gleam-dream", repo = "fabric" }
 
 internal_modules = ["fabric/internal", "fabric/internal/*"]
 
+[[documentation.pages]]
+title = "Migrating from 0.5 to 0.6"
+path = "migration.html"
+source = "docs/MIGRATION.md"
+
 [dependencies]
 gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
@@ -15,10 +20,10 @@ gleam_otp = ">= 1.0.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_crypto = ">= 1.0.0 and < 2.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
-http_gun = ">= 0.2.0 and < 0.3.0"
-json_blueprint = ">= 2.2.0 and < 3.0.0"
-llm_wire = ">= 0.2.0 and < 0.3.0"
-sinal = ">= 0.1.0 and < 0.2.0"
+http_gun = ">= 0.4.0 and < 0.5.0"
+json_blueprint = ">= 3.0.0 and < 4.0.0"
+llm_wire = ">= 0.3.0 and < 0.4.0"
+sinal = ">= 0.2.0 and < 0.3.0"
 
 [dev-dependencies]
 gleam_http = ">= 4.0.0 and < 5.0.0"

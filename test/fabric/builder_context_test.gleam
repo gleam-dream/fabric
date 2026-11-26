@@ -127,10 +127,7 @@ pub fn a_sub_agent_keeps_its_approved_context_across_its_own_delegation_test() {
     fabric.approve(
       handle,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("lead"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("lead")),
       context: "C1",
     )
   let assert Ok(run.Finished(run.Completed("done"))) =

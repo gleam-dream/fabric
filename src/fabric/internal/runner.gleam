@@ -94,9 +94,8 @@ pub type Setup(context) {
     /// or for a sub-agent without its own, its parent's.
     approvers: Option(Answerer),
     /// How another process makes this setup again from the agent's
-    /// builder, instead of receiving a copy of it (`carried`); `None` for
-    /// an agent built once by the application.
-    remake: Option(fn() -> Setup(context)),
+    /// builder, instead of receiving a copy of it (`carried`).
+    remake: fn() -> Setup(context),
   )
 }
 
@@ -105,12 +104,14 @@ pub type Parent(context) {
   Parent(setup: Setup(context), run: String, action: ActionId)
 }
 
-/// The runtime setup of an admitted agent with `context`.
-pub fn setup(
+/// The runtime setup of an admitted agent with `context`, which `remake`
+/// makes again in another process.
+fn setup(
   store: Store,
   admitted: checked_agent.Admitted(context),
   context: context,
   parent: Option(Parent(context)),
+  remake: fn() -> Setup(context),
 ) -> Setup(context) {
   Setup(
     env: controller.Env(
@@ -145,24 +146,22 @@ pub fn setup(
     max_result_bytes: admitted.max_result_bytes,
     parent:,
     approvers: admitted.approvers,
-    remake: None,
+    remake:,
   )
 }
 
-/// The runtime setup of `agent` with `context`, built here. An agent kept
-/// as its builder (`agent.build_with`) is made again from it by any other
-/// process that needs this setup (`carried`).
+/// The runtime setup of `agent` with `context`, built here. Any other
+/// process that needs this setup makes it again from the agent's builder
+/// (`carried`).
 pub fn agent_setup(
   store: Store,
   agent: checked_agent.Agent(context, answer),
   context: context,
 ) -> Setup(context) {
-  let made = setup(store, checked_agent.admitted(agent), context, None)
-  case checked_agent.builder(agent) {
-    None -> made
-    Some(build) ->
-      Setup(..made, remake: Some(fn() { remade(store, build, context) }))
-  }
+  let build = checked_agent.builder(agent)
+  setup(store, checked_agent.admitted(agent), context, None, fn() {
+    remade(store, build, context)
+  })
 }
 
 fn remade(
@@ -170,28 +169,20 @@ fn remade(
   build: fn() -> checked_agent.Admitted(context),
   context: context,
 ) -> Setup(context) {
-  Setup(
-    ..setup(store, build(), context, None),
-    remake: Some(fn() { remade(store, build, context) }),
-  )
+  setup(store, build(), context, None, fn() { remade(store, build, context) })
 }
 
 /// How a process other than this one gets `setup`: made again there from
-/// the agent's builder when the agent has one (`remake`), so that only the
-/// builder, the store and the context are copied; otherwise `setup`
-/// itself, copied whole. The store and the context stay `setup`'s (a
+/// the agent's builder (`remake`), so that only the builder, the store and
+/// the context are copied. The store and the context stay `setup`'s (a
 /// runner's pinned store, a command's context).
 pub fn carried(setup: Setup(context)) -> fn() -> Setup(context) {
-  case setup.remake {
-    None -> fn() { setup }
-    Some(remake) -> {
-      let store = setup.store
-      let context = setup.env.context
-      fn() {
-        let made = pinned(remake(), store)
-        Setup(..made, env: controller.Env(..made.env, context:))
-      }
-    }
+  let remake = setup.remake
+  let store = setup.store
+  let context = setup.env.context
+  fn() {
+    let made = pinned(remake(), store)
+    Setup(..made, env: controller.Env(..made.env, context:))
   }
 }
 
@@ -437,18 +428,13 @@ pub fn child_setup(
   action: ActionId,
 ) -> Result(Setup(context), Nil) {
   use admitted <- result.map(dict.get(setup.children, name))
-  let child = self_setup(setup, admitted, run, action)
   // Made again from the parent as it is now (`carried`): its context (an
   // approval's, say) and its store, not those it was first built with.
-  let remake =
-    option.map(setup.remake, fn(_) {
-      let parent = carried(setup)
-      fn() {
-        let assert Ok(child) = child_setup(parent(), name, run, action)
-        child
-      }
-    })
-  Setup(..child, remake:)
+  let parent = carried(setup)
+  self_setup(setup, admitted, run, action, fn() {
+    let assert Ok(child) = child_setup(parent(), name, run, action)
+    child
+  })
 }
 
 fn self_setup(
@@ -456,6 +442,7 @@ fn self_setup(
   admitted: checked_agent.Admitted(context),
   run: String,
   action: ActionId,
+  remake: fn() -> Setup(context),
 ) -> Setup(context) {
   let child =
     setup(
@@ -463,6 +450,7 @@ fn self_setup(
       admitted,
       parent.env.context,
       Some(Parent(parent, run, action)),
+      remake,
     )
   Setup(..child, approvers: option.or(child.approvers, parent.approvers))
 }
@@ -577,11 +565,10 @@ type Runner(context) {
 }
 
 /// What a prepared runner is told, received once rather than through the
-/// closures that start it (`carried`). For an agent kept as its builder,
-/// before anything is written: `Build` the setup here and answer whether
-/// it is the agent `identity` names. Then, once its first state's commit
-/// is known, `Go` with that state, the setup (`None`: the one it built),
-/// and the context the first `effects` run with (`None`: the run's own).
+/// closures that start it (`carried`). Before anything is written: `Build`
+/// the setup here and answer whether it is the agent `identity` names.
+/// Then, once its first state's commit is known, `Go` with that state and
+/// the context the first `effects` run with (`None`: the run's own).
 pub type Go(context) {
   Build(
     setup: fn() -> Setup(context),
@@ -592,7 +579,6 @@ pub type Go(context) {
     revision: Int,
     state: State,
     effects: List(Effect),
-    setup: Option(fn() -> Setup(context)),
     context: Option(context),
   )
   /// The commit failed: exit without doing anything.
@@ -764,7 +750,7 @@ fn launch_over(
           revision
         }
         Ok(#(pid, mailbox, go)) -> {
-          use carried <- result.try(build_first(setup, state, pid, go))
+          use Nil <- result.try(build_first(setup, state, pid, go))
           let claim =
             store.Launch(
               pid,
@@ -780,7 +766,7 @@ fn launch_over(
             Ok(#(revision, state)) -> {
               // The runner starts before this commit's events are emitted: a
               // handler running here does not hold up the work.
-              process.send(go, Go(revision, state, effects, carried, context))
+              process.send(go, Go(revision, state, effects, context))
               observe.committed(observed, state)
               Ok(revision)
             }
@@ -794,38 +780,31 @@ fn launch_over(
   }
 }
 
-/// For an agent kept as its builder, has the prepared runner `pid` build
-/// the setup before anything is written, and checks it builds the agent
-/// `state` names; the runner is abandoned otherwise. The setup the runner
-/// then takes with its first state: `None`, the one it built, or for an
-/// agent built once, `setup` itself.
+/// Has the prepared runner `pid` build the setup before anything is
+/// written, and checks it builds the agent `state` names; the runner is
+/// abandoned otherwise.
 fn build_first(
   setup: Setup(context),
   state: State,
   pid: Pid,
   go: Subject(Go(context)),
-) -> Result(Option(fn() -> Setup(context)), LaunchError) {
-  case setup.remake {
-    None -> Ok(Some(carried(setup)))
-    Some(_) -> {
-      let reply = process.new_subject()
-      let monitor = process.monitor(pid)
-      process.send(go, Build(carried(setup), state.agent, reply))
-      let built =
-        process.new_selector()
-        |> process.select(reply)
-        |> process.select_specific_monitor(monitor, fn(_) {
-          Error("the runner exited while it built the agent")
-        })
-        |> process.selector_receive_forever
-      process.demonitor_process(monitor)
-      case built {
-        Ok(Nil) -> Ok(None)
-        Error(reason) -> {
-          process.send(go, Abandon)
-          Error(Unbuildable(reason))
-        }
-      }
+) -> Result(Nil, LaunchError) {
+  let reply = process.new_subject()
+  let monitor = process.monitor(pid)
+  process.send(go, Build(carried(setup), state.agent, reply))
+  let built =
+    process.new_selector()
+    |> process.select(reply)
+    |> process.select_specific_monitor(monitor, fn(_) {
+      Error("the runner exited while it built the agent")
+    })
+    |> process.selector_receive_forever
+  process.demonitor_process(monitor)
+  case built {
+    Ok(Nil) -> Ok(Nil)
+    Error(reason) -> {
+      process.send(go, Abandon)
+      Error(Unbuildable(reason))
     }
   }
 }
@@ -986,15 +965,12 @@ pub fn first_state(
           Error(Nil)
         }
       }
-    Ok(#(Go(revision, state, effects, setup, context), draining)) ->
-      case setup, built {
-        Some(setup), _ -> Ok(setup())
-        None, Some(setup) -> Ok(setup)
-        None, None -> Error(Nil)
+    Ok(#(Go(revision, state, effects, context), draining)) ->
+      case built {
+        Some(setup) -> Ok(#(revision, state, effects, setup, context, draining))
+        // A runner is always told to build its setup before its first state.
+        None -> Error(Nil)
       }
-      |> result.map(fn(setup) {
-        #(revision, state, effects, setup, context, draining)
-      })
   }
 }
 
@@ -1082,13 +1058,12 @@ fn hand_off(runner: Runner(context)) -> Nil {
   let state = controller.hand_off(runner.setup.env, runner.state)
   let written = {
     use encoded <- result.try(store.encode(runner.setup.store, state))
-    persist(
+    store.commit_transition(
       runner.setup.store,
       state.run,
-      encoded,
       runner.revision,
+      encoded,
       store.HandOff(process.self()),
-      0,
     )
   }
   case written {
@@ -1414,13 +1389,12 @@ fn commit_answering(
   }
   let written = {
     use encoded <- result.try(store.encode(runner.setup.store, state))
-    persist(
+    store.commit_transition(
       runner.setup.store,
       state.run,
-      encoded,
       runner.revision,
+      encoded,
       ownership,
-      0,
     )
   }
   case written {
@@ -1469,44 +1443,12 @@ fn current(runner: Runner(context), effects: List(Effect)) -> Bool {
   }
 }
 
-/// How often a commit the store reports `Unavailable` is tried again, and
-/// the first wait in milliseconds (doubled per attempt).
+/// How often a read the store reports unavailable is tried again, and the
+/// first wait in milliseconds (doubled per attempt). Commits retry under
+/// `store.commit_transition`.
 const unavailable_retries = 6
 
 const unavailable_backoff = 10
-
-/// Commits the encoded state over `expected`, every attempt with the same
-/// text (one write token). A conflict means a newer owner exists:
-/// stop. `Unavailable` may be transient, so it is tried again after a
-/// bounded backoff (the store has already read back a write that happened
-/// despite the error).
-fn persist(
-  store: Store,
-  run: String,
-  encoded: String,
-  expected: Int,
-  ownership: store.Ownership,
-  attempt: Int,
-) -> Result(Int, backend.StoreError) {
-  case store.commit(store, run, expected, encoded, ownership) {
-    Error(backend.Unavailable(_)) if attempt < unavailable_retries -> {
-      process.sleep(unavailable_backoff * int.bitwise_shift_left(1, attempt))
-      persist(store, run, encoded, expected, ownership, attempt + 1)
-    }
-    // An earlier attempt that was reported unavailable may have landed
-    // after all: the conflict is then with this runner's own write, which
-    // its write token identifies.
-    Error(backend.Conflict(current)) as conflict
-      if attempt > 0 && current == expected + 1
-    ->
-      case store.get(store, run) {
-        Ok(entry) if entry.revision == current && entry.record == encoded ->
-          Ok(current)
-        _ -> conflict
-      }
-    outcome -> outcome
-  }
-}
 
 fn perform(
   runner: Runner(context),

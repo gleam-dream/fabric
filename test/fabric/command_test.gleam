@@ -70,10 +70,7 @@ pub fn a_runner_started_by_a_command_works_while_its_handlers_run_test() {
     fabric.approve(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("reviewer")),
       context: Nil,
     )
   let _ = sinal.detach(attached)
@@ -173,10 +170,7 @@ pub fn a_handler_in_a_commands_caller_can_command_the_run_test() {
     fabric.approve(
       run,
       pending.reference,
-      proof: support.proof(
-        pending.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(pending.reference, support.reviewer("reviewer")),
       context: Nil,
     )
   let _ = sinal.detach(attached)

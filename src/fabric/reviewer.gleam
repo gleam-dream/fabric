@@ -9,8 +9,8 @@
 //// a verified access token.
 ////
 //// ```gleam
-//// use token, requirement <- approvers.new("sso")
-//// use claims <- result.try(verify_token(token, requirement))
+//// use token, request <- approvers.new("sso")
+//// use claims <- result.try(verify_token(token, request.requirement))
 //// reviewer.new(claims.subject)
 //// |> result.try(reviewer.with_issuer(_, claims.issuer))
 //// |> result.map_error(fn(error) {

@@ -6,7 +6,6 @@ import fabric/approvers.{type Approvers, type Denial}
 import fabric/internal/tool as core_tool
 import fabric/model.{type ToolCall}
 import fabric/reviewer.{type Reviewer}
-import fabric/run.{type Requirement}
 import fabric/tool.{type Definition}
 import json/blueprint/codec
 
@@ -33,9 +32,9 @@ pub fn call(
 ///
 /// ```gleam
 /// let approvers = testing.trusting_approvers()
-/// // agent.build_with(fn() { agent.new(..) |> agent.with_approvers(approvers) })
+/// // agent.build(fn() { agent.new(..) |> agent.with_approvers(approvers) })
 /// let assert Ok(proof) =
-///   approvers.check(approvers, alice, pending.reference.requirement)
+///   approvers.check(approvers, alice, pending.reference)
 /// fabric.approve(handle, pending.reference, proof:, context:)
 /// ```
 pub fn trusting_approvers() -> Approvers(Reviewer) {
@@ -51,7 +50,7 @@ fn memoized(key: String, make: fn() -> a) -> a
 
 fn trust(
   reviewer: Reviewer,
-  _requirement: Requirement,
+  _request: approvers.Request,
 ) -> Result(Reviewer, Denial) {
   Ok(reviewer)
 }

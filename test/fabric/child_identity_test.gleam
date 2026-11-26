@@ -8,7 +8,6 @@
 
 import fabric
 import fabric/agent.{type Agent}
-import fabric/internal/checked_agent
 import fabric/internal/controller
 import fabric/internal/runner
 import fabric/internal/store as store_core
@@ -361,13 +360,7 @@ pub fn a_child_command_does_not_reach_a_foreign_record_test() {
   let runs = numbered_directory(dir)
   replace_with_foreign(runs, child, paying_researcher(), False)
 
-  let setup =
-    runner.setup(
-      runs,
-      checked_agent.admitted(delegating(paying_researcher())),
-      Nil,
-      None,
-    )
+  let setup = runner.agent_setup(runs, delegating(paying_researcher()), Nil)
   let assert Ok(child_setup) =
     runner.child_setup(
       setup,

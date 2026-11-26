@@ -13,7 +13,7 @@
 //// case graph.await(handle, within: duration.seconds(5)) {
 ////   Ok(graph.AwaitingApproval(pending)) -> {
 ////     let assert Ok(proof) =
-////       approvers.check(editors, token, pending.requirement)
+////       graph.check_approval(editors, token, pending)
 ////     graph.approve(handle, pending, proof:, context: Ctx(user:))
 ////   }
 ////   ...
@@ -52,7 +52,7 @@
 ////
 //// A bound may come from configuration, so a setter only stores it; `build`
 //// checks every bound and reports every problem at once
-//// (`InvalidLimit(limit:, value:, minimum:, maximum:)`, as `agent.build_with`
+//// (`InvalidLimit(limit:, value:, minimum:, maximum:)`, as `agent.build`
 //// does). Only `build` makes the `Runtime` that `start`, `open` and the
 //// composition functions take.
 
@@ -66,6 +66,7 @@ import fabric/graph/job
 import fabric/graph/operation
 import fabric/graph/signal
 import fabric/internal/answerer
+import fabric/internal/approvers as approvers_core
 import fabric/internal/bounded
 import fabric/internal/budget/model as reservations
 import fabric/internal/graph/agent_child
@@ -86,6 +87,7 @@ import fabric/internal/graph/signal as signal_contract
 import fabric/internal/limit as bounds
 import fabric/internal/run_id
 import fabric/internal/store as store_core
+import fabric/internal/stored_json
 import fabric/policy.{type Policy}
 import fabric/reviewer.{type Reviewer}
 import fabric/run
@@ -683,9 +685,9 @@ pub fn with_approval_expiry(
 }
 
 /// Who may answer this runtime's approval requests: `approve` and
-/// `reject` take a proof from `approvers.check` with these approvers,
-/// checked for the request's requirement (see `fabric/approvers`), and
-/// refuse any other. A runtime without approvers refuses every answer
+/// `reject` take a proof from `check_approval` with these approvers,
+/// checked for that very request (see `fabric/approvers`), and refuse any
+/// other. A runtime without approvers refuses every answer
 /// (`approvers.NoApprovers`). A child runtime (`as_subgraph`, `both`,
 /// `map`) answers with its own approvers, given to its own spec.
 pub fn with_approvers(
@@ -910,7 +912,7 @@ pub fn both(
       stores: fn() { [store_core.pid(left_store), store_core.pid(right_store)] },
       prepare: fn(encoded) {
         use values <- result.try(
-          codec.decode_json(input, encoded)
+          stored_json.decode(input, encoded)
           |> result.map_error(codec.describe_decode_error),
         )
         use left <- result.try(
@@ -936,11 +938,11 @@ pub fn both(
       check: fn(ordinal, request) {
         case ordinal, request.definition {
           1, identity if identity == left_definition.identity ->
-            codec.decode_json(left_input, request.input)
+            stored_json.decode(left_input, request.input)
             |> result.replace(Nil)
             |> result.map_error(codec.describe_decode_error)
           2, identity if identity == right_definition.identity ->
-            codec.decode_json(right_input, request.input)
+            stored_json.decode(right_input, request.input)
             |> result.replace(Nil)
             |> result.map_error(codec.describe_decode_error)
           _, _ -> Error("fork member definition changed")
@@ -951,11 +953,11 @@ pub fn both(
           Error(failure) -> Ok(Error(failure))
           Ok([left, right]) -> {
             use left <- result.try(
-              codec.decode_json(left_output, left)
+              stored_json.decode(left_output, left)
               |> result.map_error(codec.describe_decode_error),
             )
             use right <- result.map(
-              codec.decode_json(right_output, right)
+              stored_json.decode(right_output, right)
               |> result.map_error(codec.describe_decode_error),
             )
             Ok(#(left, right))
@@ -997,7 +999,7 @@ pub fn map(
       stores: fn() { [store_core.pid(runs)] },
       prepare: fn(encoded) {
         use values <- result.try(
-          codec.decode_json(input, encoded)
+          stored_json.decode(input, encoded)
           |> result.map_error(codec.describe_decode_error),
         )
         list.try_map(values, fn(value) {
@@ -1021,7 +1023,7 @@ pub fn map(
           && request.definition == child_definition.identity
         {
           True ->
-            codec.decode_json(child_input, request.input)
+            stored_json.decode(child_input, request.input)
             |> result.replace(Nil)
             |> result.map_error(codec.describe_decode_error)
           False -> Error("map member definition changed")
@@ -1032,7 +1034,7 @@ pub fn map(
           Error(failure) -> Ok(Error(failure))
           Ok(outputs) ->
             list.try_map(outputs, fn(output) {
-              codec.decode_json(child_output, output)
+              stored_json.decode(child_output, output)
               |> result.map_error(codec.describe_decode_error)
             })
             |> result.map(Ok)
@@ -1814,6 +1816,30 @@ fn refusing_work() -> live.Work {
   }
 }
 
+/// Verifies `credential` with `approvers` for an answer to the graph
+/// request `reference` (`AwaitingApproval(reference)`), and returns the
+/// proof that answers that request and no other; `approve` and `reject`
+/// take it. An agent request is checked with `approvers.check`.
+pub fn check_approval(
+  approvers: Approvers(credential),
+  credential: credential,
+  reference: ApprovalRef,
+) -> Result(Proof, approvers.Denial) {
+  approvers_core.check(approvers, credential, binding(reference))
+}
+
+fn binding(reference: ApprovalRef) -> approvers_core.Binding {
+  let ApprovalRef(run:, activation:, attempt:, revision:, requirement:) =
+    reference
+  approvers_core.ActivationRequest(
+    run:,
+    activation:,
+    attempt:,
+    revision:,
+    requirement:,
+  )
+}
+
 /// Approves the run's waiting approval request. `context` is the
 /// application's current context: the policy is checked again with it, and
 /// a current denial or policy failure wins over the approval; a policy that
@@ -1823,9 +1849,8 @@ fn refusing_work() -> live.Work {
 /// (`with_approval_expiry`) is refused with `ApprovalExpired`: the request
 /// expires instead, and the run fails.
 ///
-/// `proof` says who answers: `approvers.check` made it for the request's
-/// requirement (`reference.requirement`) with the runtime's approvers
-/// (`with_approvers`). Any other proof, or one older than the proof
+/// `proof` says who answers: `check_approval` made it for exactly
+/// `reference` with the runtime's approvers (`with_approvers`). Any other proof, or one older than the proof
 /// lifetime, is refused with `ProofRefused` before the run is read. The
 /// reviewer it names and the approvers' name are recorded with the answer
 /// (`Snapshot.approvals`, `Receipt.approvals`).
@@ -1863,7 +1888,7 @@ fn answerer_of(
   reference: ApprovalRef,
 ) -> Result(#(Reviewer, String), Error) {
   graph_runtime.approvers(graph_handle.runtime(handle))
-  |> answerer.check(proof, reference.requirement)
+  |> answerer.check(proof, binding(reference))
   |> result.map_error(ProofRefused)
 }
 

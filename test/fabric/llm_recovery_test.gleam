@@ -231,10 +231,7 @@ pub fn google_signed_parts_survive_approval_and_directory_restart_test() -> Nil 
     fabric.approve(
       resumed,
       approval.reference,
-      proof: support.proof(
-        approval.reference.requirement,
-        support.reviewer("reviewer"),
-      ),
+      proof: support.proof(approval.reference, support.reviewer("reviewer")),
       context: Nil,
     )
   fabric.await(resumed, within: duration.milliseconds(5000))

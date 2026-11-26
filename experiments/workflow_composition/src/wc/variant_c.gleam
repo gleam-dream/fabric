@@ -106,16 +106,9 @@ fn batch_step(
     }
   })
   // Neither an approval pause nor an uncertain effect is a failure to roll
-  // back: the only non-terminal-failure option Saga offers is `Hold`.
-  |> saga.compensate(max_attempts: 1, with: fn(failed) {
-    case failed.failure {
-      saga.Returned(error) -> saga.Hold(error)
-      saga.Crashed(crash) ->
-        saga.Hold(UncertainEffect(model.ToolCall("?", "?", "?"), crash.reason))
-      saga.TimedOut ->
-        saga.Hold(UncertainEffect(model.ToolCall("?", "?", "?"), "timed out"))
-    }
-  })
+  // back: the only non-terminal-failure option Saga offers is `Hold`, which
+  // ends the run `Unresolved` with the attempt's own failure.
+  |> saga.compensate(max_attempts: 1, with: fn(_failed) { saga.Hold })
 }
 
 fn run_call(

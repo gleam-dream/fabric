@@ -82,7 +82,7 @@ fn refund_fee(signals: Subject(Signal)) -> tool.Tool(context) {
 /// turn waits for the test first.
 fn support_agent(signals: Subject(Signal), hold: Bool) -> Agent(Nil, String) {
   let assert Ok(desk) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "support",
         model.new(fn(request: model.Request) {
@@ -150,7 +150,7 @@ fn support_agent(signals: Subject(Signal), hold: Bool) -> Agent(Nil, String) {
 /// hands the refund over instead.
 fn deciding_agent(signals: Subject(Signal)) -> Agent(String, String) {
   let assert Ok(desk) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "deciding",
         model.new(fn(request: model.Request) {
@@ -332,7 +332,7 @@ fn a_node_killed_after_the_handover_is_recorded(
     approvers.check(
       testing.trusting_approvers(),
       as_reviewer("bia"),
-      pending.reference.requirement,
+      pending.reference,
     )
   let assert Ok(run.Working) =
     fabric.approve(handle, pending.reference, proof:, context: "hand over")
@@ -415,7 +415,7 @@ fn a_sweeper_completes_a_handover_after_its_node_died(
     approvers.check(
       testing.trusting_approvers(),
       as_reviewer("bia"),
-      pending.reference.requirement,
+      pending.reference,
     )
   let assert Ok(run.Working) =
     fabric.approve(handle, pending.reference, proof:, context: "hand over")

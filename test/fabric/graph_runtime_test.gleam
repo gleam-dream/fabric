@@ -215,7 +215,7 @@ pub fn graph_approval_after_restart_reuses_its_reserved_work_unit_test() {
     graph.approve(
       handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -271,7 +271,7 @@ pub fn a_saved_decision_survives_process_loss_without_repeating_its_body_test() 
     graph.approve(
       handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -379,7 +379,7 @@ pub fn approval_uses_fresh_context_and_passes_it_to_the_admitted_body_test() {
     graph.approve(
       handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: "publisher",
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -529,10 +529,41 @@ pub fn runtime_stops_cycles_at_the_saved_activation_bound_test() {
   restored |> should.equal(done)
 }
 
+/// A transient `Unavailable` on any graph commit (the fence, the result,
+/// the end) is retried with the same bytes, as the agent runner does: the
+/// run completes and its body runs once.
+pub fn a_graph_runner_retries_a_commit_the_store_could_not_make_test() {
+  let backend = flaky.new()
+  let ledger = probe.new()
+  flaky.arm(backend, [
+    flaky.Pass,
+    flaky.Pass,
+    flaky.FailBefore,
+    flaky.Pass,
+    flaky.FailBefore,
+    flaky.Pass,
+    flaky.FailBefore,
+  ])
+  let runtime =
+    graph.new(effect(ledger), flaky.store(backend), fn(_) { Nil }, fn(_, _) {
+      Ok(policy.Allow)
+    })
+    |> graph.with_approvers(testing.trusting_approvers())
+    |> graph.build
+    |> should.be_ok
+  let assert Ok(handle) =
+    graph.start(runtime, run_id("blip"), 0, correlation: None)
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  done |> should.equal(graph.Completed(1))
+  probe.entries(ledger) |> should.equal(["effect"])
+}
+
+/// A fence commit that stays unconfirmed after every retry releases
+/// nothing: the runner stops and recovery inspects the write.
 pub fn an_unconfirmed_start_fence_never_releases_the_body_test() {
   let backend = flaky.new()
   let ledger = probe.new()
-  flaky.arm(backend, [flaky.Pass, flaky.Pass, flaky.FailBefore])
+  flaky.arm(backend, [flaky.Pass, flaky.Pass, ..flaky.unconfirmed()])
   let runtime =
     graph.new(effect(ledger), flaky.store(backend), fn(_) { Nil }, fn(_, _) {
       Ok(policy.Allow)
@@ -832,7 +863,10 @@ pub fn a_live_foreign_lease_is_not_taken_by_graph_recovery_test() {
   probe.entries(ledger) |> should.equal(["body"])
 }
 
-pub fn a_start_fence_that_lands_late_is_reconciled_without_running_the_body_test() {
+/// A fence write reported unavailable that lands before the retry is the
+/// runner's own write: the retry's conflict finds exactly its bytes at the
+/// next revision, so the fence is confirmed and the body runs once.
+pub fn a_start_fence_that_lands_late_is_confirmed_as_the_runners_own_write_test() {
   let backend = flaky.new()
   let ledger = probe.new()
   flaky.arm(backend, [flaky.Pass, flaky.Pass, flaky.FailLate])
@@ -845,12 +879,9 @@ pub fn a_start_fence_that_lands_late_is_reconciled_without_running_the_body_test
     |> should.be_ok
   let assert Ok(handle) =
     graph.start(runtime, run_id("late-fence"), 0, correlation: None)
-  let assert Ok(stopped) =
-    graph.await(handle, within: duration.milliseconds(1000))
-  stopped |> should.equal(graph.Unattended)
-  let assert Ok(recovered) = graph.recover(handle)
-  let assert graph.Blocked(_, graph.EffectUncertain(_)) = recovered
-  probe.entries(ledger) |> should.equal([])
+  let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
+  done |> should.equal(graph.Completed(1))
+  probe.entries(ledger) |> should.equal(["effect"])
 }
 
 pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
@@ -878,7 +909,7 @@ pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
     graph.approve(
       handle,
       first,
-      proof: support.proof(first.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(first, support.reviewer("reviewer")),
       context: 1,
     )
   let assert Ok(changed) = graph.snapshot(handle)
@@ -889,7 +920,7 @@ pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
     graph.approve(
       handle,
       first,
-      proof: support.proof(first.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(first, support.reviewer("reviewer")),
       context: 1,
     )
   probe.entries(ledger) |> should.equal([])
@@ -897,7 +928,7 @@ pub fn a_changed_approval_requirement_needs_a_new_answer_test() {
     graph.approve(
       handle,
       second,
-      proof: support.proof(second.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(second, support.reviewer("reviewer")),
       context: 1,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))
@@ -1035,7 +1066,7 @@ pub fn an_uncommitted_routing_decision_does_not_admit_its_successor_test() {
       probe.record(ledger, "generate")
       Ok(n + 1)
     })
-  flaky.arm(backend, [flaky.Pass, flaky.Pass, flaky.Pass, flaky.FailBefore])
+  flaky.arm(backend, [flaky.Pass, flaky.Pass, flaky.Pass, ..flaky.unconfirmed()])
   let runtime =
     graph.new(spec, flaky.store(backend), fn(_) { Nil }, fn(_, action) {
       probe.record(admissions, support.node(action))
@@ -1164,7 +1195,7 @@ pub fn restart_uses_the_saved_branch_even_when_the_decision_producer_changes_its
     graph.approve(
       handle,
       approval,
-      proof: support.proof(approval.requirement, support.reviewer("reviewer")),
+      proof: support.graph_proof(approval, support.reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(1000))

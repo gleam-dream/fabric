@@ -54,7 +54,7 @@ pub fn configured_model_applies_settings_and_preserves_native_answer_test() {
     |> generation.with_max_tokens(128)
     |> generation.with_temperature(0.2)
   let assert Ok(agent) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "configured",
         llm.configured_model(client, config, "fixture", settings),
@@ -154,7 +154,7 @@ pub fn settings_apply_on_both_tool_turns_without_replacing_tools_or_output_test(
     |> generation.with_top_p(0.8)
     |> generation.with_openai_prompt_cache_key("accounts-v1")
   let assert Ok(agent) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "configured",
         llm.configured_model(client, config, "fixture", settings),
@@ -247,7 +247,7 @@ pub fn reconstructed_model_keeps_google_cache_and_signed_tool_replay_test() {
   let staff = fabric_testing.trusting_approvers()
   let build = fn() {
     let assert Ok(agent) =
-      agent.build_with(fn() {
+      agent.build(fn() {
         agent.new(
           "configured",
           llm.configured_model(client, config, "fixture", settings),
@@ -277,8 +277,7 @@ pub fn reconstructed_model_keeps_google_cache_and_signed_tool_replay_test() {
   let assert Ok(handle) = fabric.recover(restored, build(), context, id)
   let assert Ok([pending]) = fabric.pending(handle)
   let assert Ok(reviewer) = reviewer.new("reviewer")
-  let assert Ok(proof) =
-    approvers.check(staff, reviewer, pending.reference.requirement)
+  let assert Ok(proof) = approvers.check(staff, reviewer, pending.reference)
   let assert Ok(_) = fabric.approve(handle, pending.reference, proof, context)
   assert fabric.await(handle, duration.seconds(5))
     == Ok(run.Finished(run.Completed(14)))
@@ -354,7 +353,7 @@ pub fn invalid_generation_stops_before_http_and_default_constructor_still_works_
     ],
     fn(example) {
       let assert Ok(agent) =
-        agent.build_with(fn() {
+        agent.build(fn() {
           agent.new(
             "invalid",
             llm.configured_model(client, example.0, "fixture", example.1),
@@ -371,7 +370,7 @@ pub fn invalid_generation_stops_before_http_and_default_constructor_still_works_
     },
   )
   let assert Ok(agent) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "default",
         llm.model(client, config, "fixture"),

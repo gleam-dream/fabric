@@ -188,7 +188,7 @@ pub fn approval_precedes_request_construction_and_the_http_call_test() {
   graph.approve(
     handle,
     approval,
-    proof: proof_for(approval.requirement, as_reviewer("reviewer")),
+    proof: proof_for(approval, as_reviewer("reviewer")),
     context: support.config(url, "/v1/systemone"),
   )
   |> should.be_ok
@@ -234,7 +234,7 @@ pub fn approval_refreshes_credentials_and_execution_settings_test() {
   graph.approve(
     handle,
     approval,
-    proof: proof_for(approval.requirement, as_reviewer("reviewer")),
+    proof: proof_for(approval, as_reviewer("reviewer")),
     context: fresh,
   )
   |> should.be_ok
@@ -521,14 +521,18 @@ fn as_reviewer(subject: String) -> reviewer.Reviewer {
   reviewer
 }
 
-/// A proof that `reviewer` answers a request waiting for `requirement`,
-/// from the trusting approvers the test's agents and runtimes are given.
+/// A proof that `reviewer` answers the graph request `reference`, from the
+/// trusting approvers the test's agents and runtimes are given.
 fn proof_for(
-  requirement: run.Requirement,
+  reference: graph.ApprovalRef,
   reviewer: reviewer.Reviewer,
 ) -> approvers.Proof {
   let assert Ok(proof) =
-    approvers.check(fabric_testing.trusting_approvers(), reviewer, requirement)
+    graph.check_approval(
+      fabric_testing.trusting_approvers(),
+      reviewer,
+      reference,
+    )
   proof
 }
 

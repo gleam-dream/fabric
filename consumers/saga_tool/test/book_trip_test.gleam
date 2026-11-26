@@ -215,7 +215,7 @@ fn start_in(
   rollback_within: Int,
 ) -> fabric.Run(Nil, String) {
   let assert Ok(agent) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "traveller",
         traveller(city),
@@ -446,7 +446,7 @@ pub fn an_invalid_config_fails_the_call_before_any_step_runs_test() {
     )
   }
   let assert Ok(agent) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "traveller",
         traveller("Porto"),
@@ -495,7 +495,7 @@ pub fn the_workflow_gets_the_call_and_the_runs_correlation_test() {
     )
   }
   let assert Ok(agent) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "traveller",
         traveller("Porto"),
@@ -540,7 +540,7 @@ pub fn a_step_reads_the_runs_correlation_test() {
     )
   }
   let assert Ok(agent) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new(
         "traveller",
         traveller("Porto"),

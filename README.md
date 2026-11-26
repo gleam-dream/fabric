@@ -1,5 +1,14 @@
 # Fabric
 
+> **Fabric 0.6.0 is a breaking release.** Read the [migration guide](https://github.com/gleam-dream/fabric/blob/main/docs/MIGRATION.md) before you upgrade from 0.5.
+>
+> - `agent.build_with` is renamed `agent.build`, and the deprecated `agent.build(spec)` is removed.
+> - A proof answers one request: `approvers.check` takes the request's reference, and a graph request is checked with `graph.check_approval`.
+> - Fabric depends on `llm_wire >= 0.3.0 and < 0.4.0`, `http_gun >= 0.4.0 and < 0.5.0`, `json_blueprint >= 3.0.0 and < 4.0.0` and `sinal >= 0.2.0 and < 0.3.0`.
+> - A graph runner retries a store that is briefly unavailable, as the agent runner does.
+> - `fabric_postgres-v0.4.0` accepts only Fabric 0.5; stay on 0.5 until the adapter's next release.
+> - Depend on `fabric >= 0.6.0 and < 0.7.0`.
+
 [![CI](https://github.com/gleam-dream/fabric/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gleam-dream/fabric/actions/workflows/ci.yml)
 [![fabric on Hex](https://img.shields.io/hexpm/v/fabric?label=Hex%3A%20fabric)](https://hex.pm/packages/fabric)
 [![Gleam](https://img.shields.io/badge/Gleam-FFAFF3?logo=gleam&logoColor=000000)](https://gleam.run/)
@@ -23,11 +32,11 @@ Use Fabric when an agent or workflow needs typed boundaries, approval, or recove
 
 ## Typical uses
 
-- Approval-gated external actions such as payments, where an uncertain request must wait for review or reconciliation. See the [tested payment desk](test/fabric/readme_example.gleam) and its [test](test/fabric/readme_test.gleam).
-- Multi-stage workflows that route on typed results, wait for human signals, or observe external jobs. See the [graph consumer](consumers/graph/README.md) and [job consumer](consumers/jobs/README.md).
-- Request or job handlers that need to reopen a run by a stable id after a retry or restart. See the [usage examples](examples/usage/README.md).
+- Approval-gated external actions such as payments, where an uncertain request must wait for review or reconciliation. See the [tested payment desk](https://github.com/gleam-dream/fabric/blob/main/test/fabric/readme_example.gleam) and its [test](https://github.com/gleam-dream/fabric/blob/main/test/fabric/readme_test.gleam).
+- Multi-stage workflows that route on typed results, wait for human signals, or observe external jobs. See the [graph consumer](https://github.com/gleam-dream/fabric/blob/main/consumers/graph/README.md) and [job consumer](https://github.com/gleam-dream/fabric/blob/main/consumers/jobs/README.md).
+- Request or job handlers that need to reopen a run by a stable id after a retry or restart. See the [usage examples](https://github.com/gleam-dream/fabric/blob/main/examples/usage/README.md).
 
-Fabric does not provide retrieval or vector storage, agent token streaming, remote agent protocols, distributed Erlang, or general workflow compensation. Saga, Relay, and Hellhound integrations are application recipes; see the [module documentation](src/fabric/tool.gleam) and [consumer examples](consumers/).
+Fabric does not provide retrieval or vector storage, agent token streaming, remote agent protocols, distributed Erlang, or general workflow compensation. Saga, Relay, and Hellhound integrations are application recipes; see the [module documentation](https://github.com/gleam-dream/fabric/blob/main/src/fabric/tool.gleam) and [consumer examples](https://github.com/gleam-dream/fabric/tree/main/consumers/).
 
 ## Install
 
@@ -38,12 +47,14 @@ gleam add fabric
 ```
 
 Commit `gleam.toml` and `manifest.toml` to retain the resolved versions.
-The examples below use `agent.build_with`, from Fabric 0.5.0. On 0.4.0,
-build the agent with `agent.build` and do not send it to other processes
-per operation.
-The optional [PostgreSQL adapter](integrations/fabric_postgres/README.md)
+The examples below are for Fabric 0.6, where `agent.build` takes a builder
+function. Fabric 0.5 names that function `agent.build_with`; the
+[migration guide](https://github.com/gleam-dream/fabric/blob/main/docs/MIGRATION.md)
+lists every change from 0.5.
+The optional [PostgreSQL adapter](https://github.com/gleam-dream/fabric/blob/main/integrations/fabric_postgres/README.md)
 installs from a Git subdirectory; its release `fabric_postgres-v0.4.0`
-requires fabric `>= 0.5.0 and < 0.6.0`.
+requires fabric `>= 0.5.0 and < 0.6.0`, and its next release accepts
+Fabric 0.6.
 
 ## Start with an agent
 
@@ -76,7 +87,7 @@ pub fn summarize(
   text: String,
 ) -> Result(run.Status(String), Error) {
   use summarizer <- result.try(
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new("summarizer", model, [], policy.always_allow())
       |> agent.with_system_prompt(
         "Summarize the supplied text in one paragraph.",
@@ -110,13 +121,11 @@ The in-memory records disappear when the store stops. Services needing recovery 
 
 ## Codecs in tools and answers
 
-_`agent.build_with` and `fabric.AgentUnbuildable` are available from Fabric 0.5.0._
+Every run executes in its own runner process, with its tool bodies and model calls in tasks of that runner, and the BEAM copies a value whole into each process it reaches. Fabric therefore never sends an agent: `agent.build` keeps the function that makes the agent's spec, and a process that needs the agent builds it there. The caller builds it once per `fabric.start`, `open` or `recover`, and each runner once before it writes anything. A tool's task receives only that tool, with its codecs. What a run copies is its builder, its context and its record.
 
-Every run executes in its own runner process, with its tool bodies and model calls in tasks of that runner, and the BEAM copies a value whole into each process it reaches. Fabric therefore never sends an agent: `agent.build_with` keeps the function that makes the agent's spec, and a process that needs the agent builds it there. The caller builds it once per `fabric.start`, `open` or `recover`, and each runner once before it writes anything. A tool's task receives only that tool, with its codecs. What a run copies is its builder, its context and its record. The deprecated `agent.build` returns a built agent, which is copied whole into every runner.
+Write tool and answer codecs by the [json_blueprint codec practice](https://github.com/gleam-dream/json_blueprint/blob/main/docs/CODEC-PRACTICE.md) (json_blueprint 3.0.0 or later). Fabric's part of it:
 
-Write tool and answer codecs by the [json_blueprint codec practice](https://github.com/gleam-dream/json_blueprint/blob/main/docs/CODEC-PRACTICE.md) (json_blueprint 2.2.0 or later). Fabric's part of it:
-
-- Give `agent.build_with` a builder that builds the same agent every time from small values that are the same for every run: an HTTP client, settings, ids loaded once. A builder that captures a built tool or codec brings the copy back. Another name or version is refused before anything is stored (`fabric.AgentUnbuildable`), but `open`, `recover` and the sweeper check only those, not what the builder captured.
+- Give `agent.build` a builder that builds the same agent every time from small values that are the same for every run: an HTTP client, settings, ids loaded once. A builder that captures a built tool or codec brings the copy back. Another name or version is refused before anything is stored (`fabric.AgentUnbuildable`), but `open`, `recover` and the sweeper check only those, not what the builder captured.
 - Make subjects, names and tables outside the builder and capture them; one made inside is made again in every process.
 - Make tool and answer codecs inside the builder, by the guide's rules for child codecs and run-time enums. A run-time enum from values that differ per run makes a per-run agent: re-derive its values when you `open` or `recover`, and recover those runs yourself, since `sweeper.agent` registers one agent per name and version.
 - A `fabric.Run` handle holds the built agent: send the run's id to another process and `open` it there.
@@ -197,7 +206,7 @@ pub fn payer(
     codec.check(transfer_codec(accounts))
     |> result.map_error(codec.describe_definition_error),
   )
-  agent.build_with(fn() {
+  agent.build(fn() {
     agent.new("payer", model, [transfer_tool(accounts)], policy.always_allow())
   })
   |> result.map_error(agent.describe_config_errors)
@@ -227,10 +236,10 @@ flowchart LR
 - The application starts and stops HTTP clients, database pools, verifiers, and store supervision. Context and credentials stay live in the application and are not stored with runs.
 - Dropping a run handle does not cancel its run. `open` reads or commands a run; `recover` takes over work only when its prior runner is gone. On an unleased store, recover after the prior owner has stopped. A leased store checks ownership before takeover.
 - If a tool or operation may have reached an external system without a saved result, Fabric retains it as uncertain and blocks dependent progress until it is reconciled. Declare replay only when repeating that effect is safe.
-- The directory store supports process or VM restart on one host, but does not promise power-loss durability. Use an application backend for production durability; see the [PostgreSQL adapter](integrations/fabric_postgres/README.md).
+- The directory store supports process or VM restart on one host, but does not promise power-loss durability. Use an application backend for production durability; see the [PostgreSQL adapter](https://github.com/gleam-dream/fabric/blob/main/integrations/fabric_postgres/README.md).
 - Set execution bounds before starting work. Model/tool timeouts are not a whole-run
-  deadline; token and family budgets are opt-in. See [agent](src/fabric/agent.gleam)
-  and [graph](src/fabric/graph.gleam) for the available limits.
+  deadline; token and family budgets are opt-in. See [agent](https://github.com/gleam-dream/fabric/blob/main/src/fabric/agent.gleam)
+  and [graph](https://github.com/gleam-dream/fabric/blob/main/src/fabric/graph.gleam) for the available limits.
 
 ## Handing a call over to another system
 
@@ -340,12 +349,12 @@ be continued this way in 0.3.0: an application moving from parking to handing
 over tells those in-flight cases from its own record or starts a fresh run.
 
 A graph run takes no handover; it waits for the other system as a signal. See
-[`usage/handover`](examples/usage/src/usage/handover.gleam) and
-[ADR 0021](docs/adr/0021-hand-a-call-over-by-policy-and-end-the-run.md).
+[`usage/handover`](https://github.com/gleam-dream/fabric/blob/main/examples/usage/src/usage/handover.gleam) and
+[ADR 0021](https://github.com/gleam-dream/fabric/blob/main/docs/adr/0021-hand-a-call-over-by-policy-and-end-the-run.md).
 
 ## Examples
 
-The [usage examples](examples/usage/README.md) cover bounds, failure classification, waiting, budgets, reconciliation, and recovery. The [graph consumer](consumers/graph/README.md), [decision consumer](consumers/decision/README.md), [jobs consumer](consumers/jobs/README.md), and [writing consumer](consumers/writing/README.md) show larger applications. The [PostgreSQL adapter](integrations/fabric_postgres/README.md) documents database-backed leases and operations.
+The [usage examples](https://github.com/gleam-dream/fabric/blob/main/examples/usage/README.md) cover bounds, failure classification, waiting, budgets, reconciliation, and recovery. The [graph consumer](https://github.com/gleam-dream/fabric/blob/main/consumers/graph/README.md), [decision consumer](https://github.com/gleam-dream/fabric/blob/main/consumers/decision/README.md), [jobs consumer](https://github.com/gleam-dream/fabric/blob/main/consumers/jobs/README.md), and [writing consumer](https://github.com/gleam-dream/fabric/blob/main/consumers/writing/README.md) show larger applications. The [PostgreSQL adapter](https://github.com/gleam-dream/fabric/blob/main/integrations/fabric_postgres/README.md) documents database-backed leases and operations.
 
 Generation settings are fixed on a model instance and supplied again when rebuilding a runtime. Fabric retains its own messages, tools, answer decoding, and correlation. This checked excerpt assumes imports from `fabric/agent`, `fabric/llm`, `fabric/policy`, `llm_wire/generation`, and `json/blueprint/codec`; `client` and `config` come from your provider setup.
 
@@ -358,7 +367,7 @@ let settings =
   |> generation.with_max_tokens(128)
   |> generation.with_temperature(0.2)
 let assert Ok(agent) =
-  agent.build_with(fn() {
+  agent.build(fn() {
     agent.new(
       "configured",
       llm.configured_model(client, config, "fixture", settings),
@@ -371,4 +380,4 @@ let assert Ok(agent) =
 
 <!-- prettier-ignore-end -->
 
-The [design](docs/design/design-layer.pdf) defines supported contracts, limits, and unbuilt capabilities. [BENCHMARKS.md](docs/BENCHMARKS.md) records historical live-provider measurements and their limits; Fabric has no runtime benchmark harness. See [AGENTS.md](AGENTS.md) for development and validation commands.
+The [design](https://github.com/gleam-dream/fabric/blob/main/docs/design/design-layer.pdf) defines supported contracts, limits, and unbuilt capabilities. [BENCHMARKS.md](https://github.com/gleam-dream/fabric/blob/main/docs/BENCHMARKS.md) records historical live-provider measurements and their limits; Fabric has no runtime benchmark harness. See [AGENTS.md](https://github.com/gleam-dream/fabric/blob/main/AGENTS.md) for development and validation commands.

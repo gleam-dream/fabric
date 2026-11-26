@@ -69,7 +69,7 @@ fn refund_tool() -> tool.Tool(Stage) {
 
 pub fn shown() -> Shown {
   let assert Ok(desk) =
-    agent.build_with(fn() {
+    agent.build(fn() {
       agent.new("desk", desk_model(), [refund_tool()], refund_policy)
     })
   let runs = store.in_memory(process.new_name("usage-handover"))

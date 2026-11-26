@@ -30,6 +30,7 @@ import gleam/otp/factory_supervisor
 import gleam/otp/static_supervisor
 import gleam/otp/supervision
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import sinal/correlation.{type Correlation}
 
@@ -120,6 +121,7 @@ pub opaque type Message {
   )
   Watch(run: String, watcher: Subject(Nil), reply: Subject(Nil))
   Unwatch(run: String, watcher: Subject(Nil))
+  ReadWatched(reply: Subject(Int))
   Wake(run: String, token: String)
   Awoke(run: String, token: String, disposition: WakeupDisposition)
   Down(pid: Pid, reason: process.ExitReason)
@@ -780,6 +782,59 @@ pub fn commit(
   |> result.flatten
 }
 
+/// How often a transition commit the store reports `Unavailable` is tried
+/// again, and the first wait in milliseconds (doubled per attempt).
+const transition_retries = 6
+
+const transition_backoff = 10
+
+/// The one commit rule of both runners (agent and graph): commits a
+/// runner's next state, encoded once, over `expected`.
+///
+/// - `Unavailable` may be transient, so the same bytes (one write token)
+///   are tried again, at most `transition_retries` times with a doubling
+///   backoff. The store has already read back each unavailable write.
+/// - A `Conflict` at exactly `expected + 1` after an attempt reported
+///   unavailable may be this runner's own write landing late: reading the
+///   run back and finding exactly `record` there confirms it.
+/// - Any other outcome is returned. An `Error` means the transition is not
+///   confirmed: the runner must perform none of its effects and stop, and
+///   recovery decides from the stored record whether the write landed.
+pub fn commit_transition(
+  store: Store,
+  run: String,
+  expected: Int,
+  record: String,
+  ownership: Ownership,
+) -> Result(Int, StoreError) {
+  commit_attempt(store, run, expected, record, ownership, 0)
+}
+
+fn commit_attempt(
+  store: Store,
+  run: String,
+  expected: Int,
+  record: String,
+  ownership: Ownership,
+  attempt: Int,
+) -> Result(Int, StoreError) {
+  case commit(store, run, expected, record, ownership) {
+    Error(Unavailable(_)) if attempt < transition_retries -> {
+      process.sleep(transition_backoff * int.bitwise_shift_left(1, attempt))
+      commit_attempt(store, run, expected, record, ownership, attempt + 1)
+    }
+    Error(Conflict(current)) as conflict
+      if attempt > 0 && current == expected + 1
+    ->
+      case get(store, run) {
+        Ok(entry) if entry.revision == current && entry.record == record ->
+          Ok(current)
+        _ -> conflict
+      }
+    outcome -> outcome
+  }
+}
+
 /// Serializes scheduled reads within this store's lease owner. A reservation
 /// is local only: the caller must re-read and check the durable claim before
 /// observing. Caller loss releases this reservation, never the durable claim.
@@ -807,6 +862,13 @@ pub fn watch(
 
 pub fn unwatch(store: Store, run: String, watcher: Subject(Nil)) -> Nil {
   cast(store, Unwatch(run, watcher))
+}
+
+/// How many entries the store's process keeps for watches: zero when no
+/// watch is in force. For tests that must show an ended watch leaves
+/// nothing behind.
+pub fn watched(store: Store) -> Result(Int, Nil) {
+  call(store, ReadWatched) |> result.replace_error(Nil)
 }
 
 // --- the store process -----------------------------------------------------------
@@ -862,6 +924,9 @@ type Loop {
     /// A leased store's owner token and lease duration.
     lessee: Option(Lessee),
     live: Dict(String, #(Pid, Live)),
+    /// Per process that is the live runner of a run: those runs, so that
+    /// its exit is handled by reading its own runs only.
+    running: Dict(Pid, Set(String)),
     /// A leased store: per run with a live runner, the monotonic time until
     /// which its lease is surely held (see `valid_until`).
     valid: Dict(String, Int),
@@ -875,10 +940,19 @@ type Loop {
     draining: Option(Pid),
     drain: drain.Accounting,
     drain_reply: Option(Subject(Result(o.Drain, Nil))),
+    /// Per watched run: its watchers, each with the process that owns it.
+    /// A run with no watcher has no entry.
     watchers: Dict(String, List(#(Pid, Subject(Nil)))),
+    /// Per process that owns a watcher: the runs it watches, so that its
+    /// exit is handled by reading its own watches only. A process that
+    /// watches nothing has no entry.
+    watching: Dict(Pid, Set(String)),
     wakeups: Dict(String, Wakeup),
+    /// Per dependency of a parked run: the parked runs that wait for it, so
+    /// that a commit reads only the wakeups of the committed run.
+    waiting: Dict(String, Set(String)),
     job_observations: Dict(String, Pid),
-    monitored: List(Pid),
+    monitored: Set(Pid),
     /// Per run: the request whose backend call is in flight, and the
     /// requests waiting behind it, oldest first.
     busy: Dict(String, #(Message, List(Message))),
@@ -956,6 +1030,7 @@ fn run(
       backend:,
       lessee:,
       live: dict.new(),
+      running: dict.new(),
       valid: dict.new(),
       renewal: Idle,
       last_renewal: None,
@@ -965,9 +1040,11 @@ fn run(
       drain: drain.new(),
       drain_reply: None,
       watchers: dict.new(),
+      watching: dict.new(),
       wakeups: dict.new(),
+      waiting: dict.new(),
       job_observations: dict.new(),
-      monitored: [],
+      monitored: set.new(),
       busy: dict.new(),
       timeout: default_backend_timeout,
       starter: option.map(starter, fn(starter) { starter.caller }),
@@ -1056,7 +1133,7 @@ fn serve(state: Loop, message: Message) -> Loop {
       case dict.get(state.wakeups, run) {
         Ok(Wakeup(token: current, ..))
           if token == current && disposition == StopWatching
-        -> Loop(..state, wakeups: dict.delete(state.wakeups, run))
+        -> unpark(state, run)
         Ok(Wakeup(token: current, status: Waking(again), ..) as wakeup)
           if token == current
         -> {
@@ -1189,45 +1266,57 @@ fn serve(state: Loop, message: Message) -> Loop {
             watchers: dict.upsert(state.watchers, run, fn(existing) {
               [#(owner, watcher), ..option.unwrap(existing, [])]
             }),
+            watching: index_insert(state.watching, owner, run),
           )
       }
       process.send(reply, Nil)
       state
     }
-    Unwatch(run, watcher) ->
-      Loop(
-        ..state,
-        watchers: dict.upsert(state.watchers, run, fn(existing) {
-          option.unwrap(existing, [])
-          |> list.filter(fn(entry) { entry.1 != watcher })
-        }),
-      )
+    Unwatch(run, watcher) -> {
+      let #(ended, kept) =
+        dict.get(state.watchers, run)
+        |> result.unwrap([])
+        |> list.partition(fn(entry) { entry.1 == watcher })
+      list.fold(ended, keep_watchers(state, run, kept), fn(state, entry) {
+        case list.any(kept, fn(other) { other.0 == entry.0 }) {
+          True -> state
+          False ->
+            Loop(..state, watching: index_delete(state.watching, entry.0, run))
+        }
+      })
+    }
+    ReadWatched(reply) -> {
+      process.send(reply, dict.size(state.watchers) + dict.size(state.watching))
+      state
+    }
     Down(pid, reason) -> {
-      let #(released, live) =
-        dict.fold(state.live, #([], state.live), fn(acc, run, entry) {
-          case entry.0 == pid {
-            True -> #([run, ..acc.0], dict.delete(acc.1, run))
-            False -> acc
-          }
-        })
-      let watchers =
-        dict.map_values(state.watchers, fn(_, entries) {
-          list.filter(entries, fn(entry) { entry.0 != pid })
+      let released =
+        dict.get(state.running, pid)
+        |> result.map(set.to_list)
+        |> result.unwrap([])
+      let state = list.fold(released, state, clear_live)
+      let state =
+        dict.get(state.watching, pid)
+        |> result.map(set.to_list)
+        |> result.unwrap([])
+        |> list.fold(state, fn(state, run) {
+          dict.get(state.watchers, run)
+          |> result.unwrap([])
+          |> list.filter(fn(entry) { entry.0 != pid })
+          |> keep_watchers(state, run, _)
         })
       let state =
         Loop(
           ..state,
+          watching: dict.delete(state.watching, pid),
           drain: drain.exited(state.drain, pid, case reason {
             process.Killed -> drain.Killed
             process.Normal | process.Abnormal(_) -> drain.Exited
           }),
-          live:,
-          valid: dict.drop(state.valid, released),
-          watchers:,
           job_observations: dict.filter(state.job_observations, fn(_, owner) {
             owner != pid
           }),
-          monitored: list.filter(state.monitored, fn(p) { p != pid }),
+          monitored: set.delete(state.monitored, pid),
         )
       list.each(released, notify(state, _))
       state
@@ -1488,49 +1577,39 @@ fn confirm(
 /// Applies a committed write's ownership. A write sent at `sent` that
 /// claimed a lease holds it until `valid_until(sent)`.
 fn own(state: Loop, run: String, ownership: Ownership, sent: Int) -> Loop {
-  let state = Loop(..state, wakeups: dict.delete(state.wakeups, run))
+  let state = unpark(state, run)
   case ownership {
     Park(dependencies, callback) -> {
       let token = ids.random()
       // Read after registration, even if the dependency changed before the
       // parent parked. This message is handled after the confirmed write.
       process.send(state.subject, Wake(run, token))
-      Loop(
-        ..state,
-        live: dict.delete(state.live, run),
-        valid: dict.delete(state.valid, run),
-        wakeups: dict.insert(
-          state.wakeups,
-          run,
-          Wakeup(dependencies, token, callback, Dormant),
-        ),
-      )
+      clear_live(state, run)
+      |> park(run, Wakeup(dependencies, token, callback, Dormant))
     }
     Keep | Detached(..) -> state
     Leave(pid) | HandOff(pid) ->
       case dict.get(state.live, run) {
-        Ok(#(owner, _)) if owner == pid ->
-          Loop(
-            ..state,
-            live: dict.delete(state.live, run),
-            valid: dict.delete(state.valid, run),
-          )
+        Ok(#(owner, _)) if owner == pid -> clear_live(state, run)
         _ -> state
       }
     Launch(pid, live, _) -> {
+      let state = monitor(state, pid) |> clear_live(run)
       let state =
         Loop(
-          ..monitor(state, pid),
+          ..state,
           live: dict.insert(state.live, run, #(pid, live)),
+          running: index_insert(state.running, pid, run),
         )
       case state.lessee {
         None -> state
-        Some(lessee) ->
-          Loop(
-            ..state,
-            valid: dict.insert(state.valid, run, valid_until(lessee, sent)),
-          )
-          |> schedule_fence
+        Some(lessee) -> {
+          // The other leases already have a `Fence` set no later than
+          // their expiry, so only this one can need an earlier one.
+          let valid = valid_until(lessee, sent)
+          Loop(..state, valid: dict.insert(state.valid, run, valid))
+          |> fence_by(valid)
+        }
       }
     }
   }
@@ -1655,10 +1734,11 @@ fn renewed_leases(
       emit_apart(fn() { observe.renewal_failed(lessee.owner, runs) })
       state
     }
-    Some(lessee), Ok(held) ->
+    Some(lessee), Ok(held) -> {
+      let held = set.from_list(held)
       list.fold(runs, Loop(..state, last_renewal: Some(sent)), fn(state, entry) {
         let #(run, pid) = entry
-        case dict.get(state.live, run), list.contains(held, run) {
+        case dict.get(state.live, run), set.contains(held, run) {
           Ok(#(current, _)), True if current == pid ->
             Loop(
               ..state,
@@ -1672,6 +1752,7 @@ fn renewed_leases(
         }
       })
       |> schedule_fence
+    }
   }
   case missed {
     True -> renew(state, False)
@@ -1697,15 +1778,23 @@ fn fence(state: Loop) -> Loop {
 }
 
 /// Sets a `Fence` for the earliest time a lease could expire, unless one
-/// is set for an earlier time.
+/// is set for an earlier time. It reads every lease: a commit that adds one
+/// lease uses `fence_by` instead.
 fn schedule_fence(state: Loop) -> Loop {
   let earliest =
     dict.values(state.valid)
     |> list.reduce(int.min)
-  case earliest, state.fence_at {
-    Error(Nil), _ -> state
-    Ok(at), Some(set) if set <= at -> state
-    Ok(at), _ -> {
+  case earliest {
+    Error(Nil) -> state
+    Ok(at) -> fence_by(state, at)
+  }
+}
+
+/// Sets a `Fence` for `at`, unless one is set for that time or earlier.
+fn fence_by(state: Loop, at: Int) -> Loop {
+  case state.fence_at {
+    Some(set) if set <= at -> state
+    _ -> {
       process.send_after(state.subject, int.max(at - now_ms(), 0), Fence)
       Loop(..state, fence_at: Some(at))
     }
@@ -1723,12 +1812,7 @@ fn lose(
   reason: o.LeaseLoss,
 ) -> Loop {
   process.kill(pid)
-  let state =
-    Loop(
-      ..state,
-      live: dict.delete(state.live, run),
-      valid: dict.delete(state.valid, run),
-    )
+  let state = clear_live(state, run)
   notify(state, run)
   emit_apart(fn() {
     observe.lease_lost(run, lessee.owner, reason, live.root, live.correlation)
@@ -1770,23 +1854,109 @@ pub fn renewing(store: Store) -> Result(Bool, Nil) {
 }
 
 fn monitor(state: Loop, pid: Pid) -> Loop {
-  case list.contains(state.monitored, pid) {
+  case set.contains(state.monitored, pid) {
     True -> state
     False -> {
       let _ = process.monitor(pid)
-      Loop(..state, monitored: [pid, ..state.monitored])
+      Loop(..state, monitored: set.insert(state.monitored, pid))
     }
   }
+}
+
+/// Removes the live runner of `run` and its lease window, if it has them.
+fn clear_live(state: Loop, run: String) -> Loop {
+  let state = Loop(..state, valid: dict.delete(state.valid, run))
+  case dict.get(state.live, run) {
+    Error(Nil) -> state
+    Ok(#(pid, _)) ->
+      Loop(
+        ..state,
+        live: dict.delete(state.live, run),
+        running: index_delete(state.running, pid, run),
+      )
+  }
+}
+
+/// Registers the wakeup of the parked run `run` under each dependency.
+fn park(state: Loop, run: String, wakeup: Wakeup) -> Loop {
+  let state = unpark(state, run)
+  Loop(
+    ..state,
+    wakeups: dict.insert(state.wakeups, run, wakeup),
+    waiting: list.fold(wakeup.dependencies, state.waiting, fn(waiting, on) {
+      index_insert(waiting, on, run)
+    }),
+  )
+}
+
+/// Removes the wakeup of `run`, if it has one.
+fn unpark(state: Loop, run: String) -> Loop {
+  case dict.get(state.wakeups, run) {
+    Error(Nil) -> state
+    Ok(wakeup) ->
+      Loop(
+        ..state,
+        wakeups: dict.delete(state.wakeups, run),
+        waiting: list.fold(wakeup.dependencies, state.waiting, fn(waiting, on) {
+          index_delete(waiting, on, run)
+        }),
+      )
+  }
+}
+
+/// Adds `member` to the set under `key`.
+fn index_insert(
+  index: Dict(key, Set(String)),
+  key: key,
+  member: String,
+) -> Dict(key, Set(String)) {
+  dict.upsert(index, key, fn(existing) {
+    set.insert(option.unwrap(existing, set.new()), member)
+  })
+}
+
+/// Removes `member` from the set under `key`, keeping no empty set.
+fn index_delete(
+  index: Dict(key, Set(String)),
+  key: key,
+  member: String,
+) -> Dict(key, Set(String)) {
+  case dict.get(index, key) {
+    Error(Nil) -> index
+    Ok(members) -> {
+      let members = set.delete(members, member)
+      case set.is_empty(members) {
+        True -> dict.delete(index, key)
+        False -> dict.insert(index, key, members)
+      }
+    }
+  }
+}
+
+/// Sets the watchers of `run`, keeping no entry for a run without one.
+fn keep_watchers(
+  state: Loop,
+  run: String,
+  entries: List(#(Pid, Subject(Nil))),
+) -> Loop {
+  let watchers = case entries {
+    [] -> dict.delete(state.watchers, run)
+    _ -> dict.insert(state.watchers, run, entries)
+  }
+  Loop(..state, watchers:)
 }
 
 fn notify(state: Loop, run: String) -> Nil {
   dict.get(state.watchers, run)
   |> result.unwrap([])
   |> list.each(fn(entry) { process.send(entry.1, Nil) })
-  dict.each(state.wakeups, fn(parent, wakeup) {
-    case list.contains(wakeup.dependencies, run) {
-      True -> process.send(state.subject, Wake(parent, wakeup.token))
-      False -> Nil
+  dict.get(state.waiting, run)
+  |> result.map(set.to_list)
+  |> result.unwrap([])
+  |> list.each(fn(parent) {
+    case dict.get(state.wakeups, parent) {
+      Ok(wakeup) -> process.send(state.subject, Wake(parent, wakeup.token))
+      Error(Nil) -> Nil
     }
   })
 }

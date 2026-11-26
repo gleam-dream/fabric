@@ -84,7 +84,7 @@ pub fn approval_survives_restart_without_repeating_generation_or_review_test() {
     graph.approve(
       handle,
       first,
-      proof: proof_for(first.requirement, as_reviewer("reviewer")),
+      proof: proof_for(first, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) = graph.await(handle, within: duration.milliseconds(5000))
@@ -94,7 +94,7 @@ pub fn approval_survives_restart_without_repeating_generation_or_review_test() {
   graph.approve(
     handle,
     first,
-    proof: proof_for(first.requirement, as_reviewer("reviewer")),
+    proof: proof_for(first, as_reviewer("reviewer")),
     context: Nil,
   )
   |> should.be_error
@@ -290,7 +290,7 @@ pub fn rejection_and_rejected_human_approval_never_publish_test() {
     graph.reject(
       f.handle,
       approval,
-      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
+      proof: proof_for(approval, as_reviewer("reviewer")),
       reason: "do not publish",
     )
   let assert Ok(rejected) = graph.snapshot(f.handle)
@@ -337,7 +337,7 @@ pub fn a_corrected_draft_is_reviewed_before_approval_test() {
     graph.approve(
       f.handle,
       approval,
-      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
+      proof: proof_for(approval, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) =
@@ -420,7 +420,7 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
     graph.approve(
       f.handle,
       approval,
-      proof: proof_for(approval.requirement, as_reviewer("reviewer")),
+      proof: proof_for(approval, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(receipt) = process.receive(saved, 30_000)
@@ -434,7 +434,7 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
   graph.approve(
     f.handle,
     approval,
-    proof: proof_for(approval.requirement, as_reviewer("reviewer")),
+    proof: proof_for(approval, as_reviewer("reviewer")),
     context: Nil,
   )
   |> should.be_error
@@ -442,7 +442,7 @@ pub fn a_saved_file_with_a_lost_graph_result_is_recovered_without_duplicate_publ
     graph.approve(
       f.handle,
       renewed,
-      proof: proof_for(renewed.requirement, as_reviewer("reviewer")),
+      proof: proof_for(renewed, as_reviewer("reviewer")),
       context: Nil,
     )
   let assert Ok(done) =
@@ -466,13 +466,17 @@ fn as_reviewer(subject: String) -> reviewer.Reviewer {
   reviewer
 }
 
-/// A proof that `reviewer` answers a request waiting for `requirement`,
-/// from the trusting approvers the test's agents and runtimes are given.
+/// A proof that `reviewer` answers the graph request `reference`, from the
+/// trusting approvers the test's agents and runtimes are given.
 fn proof_for(
-  requirement: run.Requirement,
+  reference: graph.ApprovalRef,
   reviewer: reviewer.Reviewer,
 ) -> approvers.Proof {
   let assert Ok(proof) =
-    approvers.check(fabric_testing.trusting_approvers(), reviewer, requirement)
+    graph.check_approval(
+      fabric_testing.trusting_approvers(),
+      reviewer,
+      reference,
+    )
   proof
 }

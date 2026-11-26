@@ -11,9 +11,7 @@ import fabric/internal/controller
 import fabric/internal/graph/runtime as graph_runtime
 import fabric/policy
 import fabric/reviewer.{type Reviewer}
-import fabric/run.{
-  type ActionId, type DefinitionId, type Requirement, type RunId,
-}
+import fabric/run.{type ActionId, type DefinitionId, type RunId}
 import fabric/store.{type Store}
 import fabric/store/conformance
 import fabric/testing
@@ -35,11 +33,19 @@ pub fn reviewer(subject: String) -> Reviewer {
   reviewer
 }
 
-/// A proof that `reviewer` answers a request waiting for `requirement`,
-/// from the trusting approvers (`testing.trusting_approvers`).
-pub fn proof(requirement: Requirement, reviewer: Reviewer) -> Proof {
+/// A proof that `reviewer` answers the agent request `reference`, from the
+/// trusting approvers (`testing.trusting_approvers`).
+pub fn proof(reference: run.ApprovalRef, reviewer: Reviewer) -> Proof {
   let assert Ok(proof) =
-    approvers.check(testing.trusting_approvers(), reviewer, requirement)
+    approvers.check(testing.trusting_approvers(), reviewer, reference)
+  proof
+}
+
+/// A proof that `reviewer` answers the graph request `reference`, from the
+/// trusting approvers (`testing.trusting_approvers`).
+pub fn graph_proof(reference: graph.ApprovalRef, reviewer: Reviewer) -> Proof {
+  let assert Ok(proof) =
+    graph.check_approval(testing.trusting_approvers(), reviewer, reference)
   proof
 }
 
@@ -160,39 +166,14 @@ pub fn agent(spec: Spec(context, answer)) -> Agent(context, answer) {
   agent
 }
 
-/// `agent.build_with` of `spec` as it is now: whatever the spec made while
-/// it was described (a probe, a subject) is made once, as `agent.build`
-/// did, and every process builds the agent from that same spec. Within
-/// `built_once`, the deprecated `agent.build` instead.
+/// `agent.build` of `spec` as it is now: whatever the spec made while it
+/// was described (a probe, a subject) is made once, and every process
+/// builds the agent from that same spec.
 pub fn build(
   spec: Spec(context, answer),
 ) -> Result(Agent(context, answer), List(agent.ConfigError)) {
-  case building_once() {
-    True -> deprecated_build(spec)
-    False -> agent.build_with(fn() { spec })
-  }
+  agent.build(fn() { spec })
 }
-
-/// Runs `body` with every agent `build` makes built once, by the
-/// deprecated `agent.build`, whose agent is copied whole into every
-/// process: that path is kept working until it is removed. Building once
-/// ends however `body` ends, a failed assertion included.
-pub fn built_once(body: fn() -> a) -> Nil {
-  while_building_once(body)
-}
-
-/// `agent.build`, called through its compiled name so that the strict
-/// build does not fail on its deprecation.
-@external(erlang, "fabric@agent", "build")
-fn deprecated_build(
-  spec: Spec(context, answer),
-) -> Result(Agent(context, answer), List(agent.ConfigError))
-
-@external(erlang, "fabric_test_ffi", "building_once")
-fn building_once() -> Bool
-
-@external(erlang, "fabric_test_ffi", "while_building_once")
-fn while_building_once(body: fn() -> a) -> Nil
 
 /// A started in-memory store, linked to the caller. Within `leased`, a
 /// leased store over its own in-memory leased backend instead.

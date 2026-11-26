@@ -25,11 +25,9 @@ import fabric/store/backend.{
   LeasedBackend, NotFound, Release, Seize, Unavailable,
 }
 import fabric/store/discovery
-import fabric/store/retention
-import fabric/store/statistics
+import fabric/store/projection
 import gleam/dynamic/decode
 import gleam/int
-import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -128,6 +126,7 @@ fn insert(
     Claim(owner, ttl) | Seize(owner, ttl) -> #(pog.text(owner), ttl)
     Hold(_) | Release -> #(pog.null(), 0)
   }
+  let projected = projection.project(run, record)
   let outcome =
     pog.query(
       "INSERT INTO "
@@ -139,12 +138,12 @@ fn insert(
     )
     |> pog.parameter(pog.text(run))
     |> pog.parameter(pog.text(record))
-    |> pog.parameter(phase(record))
+    |> pog.parameter(phase(projected))
     |> pog.parameter(owner)
     |> pog.parameter(pog.int(ttl))
-    |> pog.parameter(pog.text(retention.encode(run, record)))
-    |> pog.parameter(pog.text(discovery.encode(run, record)))
-    |> pog.parameter(pog.text(statistics.encode(run, record)))
+    |> pog.parameter(pog.text(projected.retention))
+    |> pog.parameter(pog.text(projected.discovery))
+    |> pog.parameter(pog.text(projected.statistics))
     |> pog.execute(connection)
   case outcome {
     Ok(returned) if returned.count == 1 -> Ok(Nil)
@@ -200,15 +199,16 @@ fn compare_and_set(
       [],
     )
   }
+  let projected = projection.project(run, record)
   let outcome =
     pog.query(sql)
     |> pog.parameter(pog.text(run))
     |> pog.parameter(pog.int(expected))
     |> pog.parameter(pog.text(record))
-    |> pog.parameter(phase(record))
-    |> pog.parameter(pog.text(retention.encode(run, record)))
-    |> pog.parameter(pog.text(discovery.encode(run, record)))
-    |> pog.parameter(pog.text(statistics.encode(run, record)))
+    |> pog.parameter(phase(projected))
+    |> pog.parameter(pog.text(projected.retention))
+    |> pog.parameter(pog.text(projected.discovery))
+    |> pog.parameter(pog.text(projected.statistics))
     |> list.fold(parameters, _, pog.parameter)
     |> pog.execute(connection)
   let again = fn() {
@@ -380,13 +380,13 @@ fn rows(
 }
 
 /// The record's phase tag, kept in the `phase` column for queries, or
-/// null for a record without one. Decoded here rather than by PostgreSQL,
-/// whose JSON functions refuse a string holding an escaped NUL (`\u0000`),
-/// which a model reply or a tool result may contain.
-fn phase(record: String) -> pog.Value {
-  case json.parse(record, decode.at(["phase", "tag"], decode.string)) {
-    Ok(tag) -> pog.text(tag)
-    Error(_) -> pog.null()
+/// null for a record without one. Derived in Gleam rather than by
+/// PostgreSQL, whose JSON functions refuse a string holding an escaped NUL
+/// (`\u0000`), which a model reply or a tool result may contain.
+fn phase(projected: projection.Projection) -> pog.Value {
+  case projected.phase {
+    Some(tag) -> pog.text(tag)
+    None -> pog.null()
   }
 }
 

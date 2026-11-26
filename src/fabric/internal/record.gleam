@@ -630,16 +630,16 @@ fn delegation_limit(limit: run.DelegationLimit) -> Json {
 }
 
 fn phase_json(phase: Phase) -> Json {
+  let name = phase_tag(phase)
   case phase {
-    controller.AwaitingModel(turn) ->
-      tag("awaiting_model", [#("turn", json.int(turn))])
+    controller.AwaitingModel(turn) -> tag(name, [#("turn", json.int(turn))])
     controller.Acting(turn, actions) ->
-      tag("acting", [
+      tag(name, [
         #("turn", json.int(turn)),
         #("actions", json.array(actions, action)),
       ])
     controller.Stopping(turn, actions, reason, tools_stopped) ->
-      tag("stopping", [
+      tag(name, [
         #("turn", json.int(turn)),
         #("actions", json.array(actions, action)),
         #("tools_stopped", json.bool(tools_stopped)),
@@ -659,8 +659,19 @@ fn phase_json(phase: Phase) -> Json {
         }),
       ])
     controller.Ended(outcome) ->
-      tag("ended", [#("outcome", outcome_json(outcome))])
-    controller.NeverStarted -> tag("never_started", [])
+      tag(name, [#("outcome", outcome_json(outcome))])
+    controller.NeverStarted -> tag(name, [])
+  }
+}
+
+/// The `tag` the record writes for `phase`.
+pub fn phase_tag(phase: Phase) -> String {
+  case phase {
+    controller.AwaitingModel(_) -> "awaiting_model"
+    controller.Acting(..) -> "acting"
+    controller.Stopping(..) -> "stopping"
+    controller.Ended(_) -> "ended"
+    controller.NeverStarted -> "never_started"
   }
 }
 

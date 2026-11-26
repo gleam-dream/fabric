@@ -5,7 +5,7 @@
 //// let runs = store.in_memory(process.new_name("runs"))  // or store.directory
 //// let assert Ok(Nil) = store.start(runs)   // or store.supervised(runs)
 //// let assert Ok(agent) =
-////   agent.build_with(fn() {
+////   agent.build(fn() {
 ////     agent.new("desk", model, [weather_tool(), transfer_tool()], my_policy)
 ////     |> agent.with_approvers(desk_approvers)
 ////   })
@@ -16,7 +16,7 @@
 ////   Ok(run.Suspended([pending, ..], _)) -> {
 ////     // `desk_approvers` verify the reviewer's token (`fabric/approvers`)
 ////     let assert Ok(proof) =
-////       approvers.check(desk_approvers, token, pending.reference.requirement)
+////       approvers.check(desk_approvers, token, pending.reference)
 ////     fabric.approve(handle, pending.reference, proof:,
 ////       context: current_context)
 ////   }
@@ -87,6 +87,7 @@ import fabric/approvers.{type Proof, type ProofError}
 import fabric/input
 import fabric/internal/answer as answers
 import fabric/internal/answerer
+import fabric/internal/approvers as approvers_core
 import fabric/internal/budget/model as reservations
 import fabric/internal/checked_agent
 import fabric/internal/clock
@@ -210,7 +211,7 @@ pub type Error {
   RunnerBusy
   /// The command lost every retry against concurrent commits.
   Contended
-  /// The agent's builder (`agent.build_with`) failed, or built another
+  /// The agent's builder (`agent.build`) failed, or built another
   /// name or version than it built first, here or in the runner that was
   /// to take the run's work. Nothing was stored or changed. A builder must
   /// build the same agent every time.
@@ -1119,7 +1120,11 @@ fn answerer_of(
   proof: Proof,
   reference: ApprovalRef,
 ) -> Result(#(reviewer.Reviewer, String), Error) {
-  answerer.check(target.approvers, proof, reference.requirement)
+  answerer.check(
+    target.approvers,
+    proof,
+    approvers_core.ActionRequest(reference),
+  )
   |> result.map_error(ProofRefused)
 }
 
@@ -1224,9 +1229,8 @@ pub fn cancel(run: Run(context, answer)) -> Result(Status(answer), Error) {
 /// stops takes it with it, and the run is then recovered like any other.
 /// Call it once per owner; each call adds one watcher.
 ///
-/// The watcher holds the run's id and what makes its agent there: for an
-/// agent made with `agent.build_with`, its builder; never a copy of the
-/// built agent the handle holds. A watcher that cannot build the agent
+/// The watcher holds the run's id and what makes its agent there, its
+/// builder; never a copy of the built agent the handle holds. A watcher that cannot build the agent
 /// still cancels the run when `owner` exits, through the store
 /// (`cancel_stored`), unless the run has finished.
 pub fn cancel_when_down(run: Run(context, answer), owner owner: Pid) -> Nil {
