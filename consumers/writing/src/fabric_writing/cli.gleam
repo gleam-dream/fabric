@@ -58,8 +58,9 @@ fn model() -> String {
 
 pub fn main() -> Nil {
   let mode = required("FABRIC_WRITING_MODE")
-  // One HTTP client for every LLM request this process makes. Its default
-  // 30-second ceiling covers the 20-second LLM deadline.
+  // One HTTP client for every LLM request this process makes. A model
+  // call's 20-second whole call replaces the client's 30-second request
+  // timeout.
   let assert Ok(http) = http_gun.start(http_config.default())
   case required("FABRIC_WRITING_REVIEWER") {
     "llm" ->

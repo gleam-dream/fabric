@@ -92,7 +92,7 @@ pub fn main() -> Nil {
     |> llm_wire.with_call_timeout(duration.seconds(20))
     |> llm_wire.with_first_token_timeout(llm_wire.After(duration.seconds(10)))
     |> llm_wire.with_idle_timeout(llm_wire.After(duration.seconds(10)))
-  // The default 30-second client ceiling covers the 20-second LLM deadline.
+  // The 20-second whole call replaces the client's 30-second request timeout.
   let assert Ok(client) = http_gun.start(http_config.default())
   let runs = store.in_memory(process.new_name("real-decision-demo"))
   let assert Ok(Nil) = store.start(runs)

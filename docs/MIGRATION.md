@@ -48,10 +48,12 @@ The rules for what a builder may capture are in the README section [Codecs in to
 
 **What to do.** Move the same packages in your `gleam.toml` to these ranges, then follow each package's own guide for the code that calls it directly. A Gleam project resolves one version of each package, so an application that keeps an older range cannot resolve Fabric 0.6. Packages that depend on Sinal 0.1 or an older Fabric-facing range must move too: Saga `>= 0.3.0 and < 0.4.0` ([guide](https://github.com/gleam-dream/saga/blob/main/docs/MIGRATION.md)), Relay `>= 0.3.0 and < 0.4.0` ([guide](https://github.com/gleam-dream/relay/blob/main/docs/MIGRATION.md)) and Hellhound `>= 0.4.0 and < 0.5.0` ([guide](https://github.com/gleam-dream/hellhound/blob/main/docs/MIGRATION.md)), the versions the Saga, Relay and Hellhound recipes in `consumers/` build against. The parts that meet Fabric's own API:
 
-- **The model turn has a second bound.** `fabric/llm.model` sends each request through `llm_wire.run`, whose whole-call timeout (`llm_wire.with_call_timeout`, a `Duration`, 600 s by default) replaces HTTP Gun's 30 s request default. A turn ends at the earlier of that bound and the agent's model timeout (`agent.with_model_timeout`). Set both to the longest generation the agent accepts:
+- **The whole model call is always bounded.** `llm_wire.with_call_timeout` takes a `Duration` instead of a `Bound`, so `llm_wire.Infinity` no longer lifts the whole call. Its default stays 600 s, and in 0.5 as in 0.6 it replaces the HTTP Gun client's request timeout for each model call. A turn of `fabric/llm.model` ends at the first of these bounds: the agent's model timeout (`agent.with_model_timeout`, 600 s by default), llm_wire's whole call, its wait for the first token (`llm_wire.with_first_token_timeout`, 180 s by default) and its gap between provider events (`llm_wire.with_idle_timeout`, 60 s by default). Set the model timeout and the whole call to the longest generation the agent accepts:
 
   ```gleam
-  // 0.5: http_gun's request timeout ended a slow generation after 30 s.
+  // 0.5
+  let config =
+    llm_wire.with_call_timeout(config, llm_wire.After(duration.seconds(120)))
   // 0.6
   let config = llm_wire.with_call_timeout(config, duration.seconds(120))
   agent.new("writer", llm.model(client, config, model_id), tools, policy)

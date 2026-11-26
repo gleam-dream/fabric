@@ -84,12 +84,14 @@ import llm_wire/tool
 /// is allocated until a turn runs. Killing the task that runs a turn closes
 /// its HTTP stream.
 ///
-/// A turn ends at the earlier of two bounds: the agent's model timeout
-/// (`agent.with_model_timeout`) and llm_wire's whole call
-/// (`llm_wire.with_call_timeout`, 600 s by default), which replaces the HTTP
-/// Gun client's shorter request timeout. Set both to the longest generation
-/// the agent accepts; an unbounded model timeout still ends at the whole
-/// call.
+/// A turn ends at the first of these bounds: the agent's model timeout
+/// (`agent.with_model_timeout`), llm_wire's whole call
+/// (`llm_wire.with_call_timeout`, 600 s by default), its wait for the first
+/// token (`llm_wire.with_first_token_timeout`, 180 s by default) and its gap
+/// between provider events (`llm_wire.with_idle_timeout`, 60 s by default).
+/// The whole call replaces the HTTP Gun client's request timeout. Set the
+/// model timeout and the whole call to the longest generation the agent
+/// accepts; an unbounded model timeout still ends at the whole call.
 pub fn model(
   client: http_gun.Client,
   config: llm_wire.Config,
