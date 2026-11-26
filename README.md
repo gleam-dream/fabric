@@ -32,11 +32,11 @@ Use Fabric when an agent or workflow needs typed boundaries, approval, or recove
 
 ## Typical uses
 
-- Approval-gated external actions such as payments, where an uncertain request must wait for review or reconciliation. See the [tested payment desk](test/fabric/readme_example.gleam) and its [test](test/fabric/readme_test.gleam).
-- Multi-stage workflows that route on typed results, wait for human signals, or observe external jobs. See the [graph consumer](consumers/graph/README.md) and [job consumer](consumers/jobs/README.md).
-- Request or job handlers that need to reopen a run by a stable id after a retry or restart. See the [usage examples](examples/usage/README.md).
+- Approval-gated external actions such as payments, where an uncertain request must wait for review or reconciliation. See the [tested payment desk](https://github.com/gleam-dream/fabric/blob/main/test/fabric/readme_example.gleam) and its [test](https://github.com/gleam-dream/fabric/blob/main/test/fabric/readme_test.gleam).
+- Multi-stage workflows that route on typed results, wait for human signals, or observe external jobs. See the [graph consumer](https://github.com/gleam-dream/fabric/blob/main/consumers/graph/README.md) and [job consumer](https://github.com/gleam-dream/fabric/blob/main/consumers/jobs/README.md).
+- Request or job handlers that need to reopen a run by a stable id after a retry or restart. See the [usage examples](https://github.com/gleam-dream/fabric/blob/main/examples/usage/README.md).
 
-Fabric does not provide retrieval or vector storage, agent token streaming, remote agent protocols, distributed Erlang, or general workflow compensation. Saga, Relay, and Hellhound integrations are application recipes; see the [module documentation](src/fabric/tool.gleam) and [consumer examples](consumers/).
+Fabric does not provide retrieval or vector storage, agent token streaming, remote agent protocols, distributed Erlang, or general workflow compensation. Saga, Relay, and Hellhound integrations are application recipes; see the [module documentation](https://github.com/gleam-dream/fabric/blob/main/src/fabric/tool.gleam) and [consumer examples](https://github.com/gleam-dream/fabric/tree/main/consumers/).
 
 ## Install
 
@@ -51,7 +51,7 @@ The examples below are for Fabric 0.6, where `agent.build` takes a builder
 function. Fabric 0.5 names that function `agent.build_with`; the
 [migration guide](https://github.com/gleam-dream/fabric/blob/main/docs/MIGRATION.md)
 lists every change from 0.5.
-The optional [PostgreSQL adapter](integrations/fabric_postgres/README.md)
+The optional [PostgreSQL adapter](https://github.com/gleam-dream/fabric/blob/main/integrations/fabric_postgres/README.md)
 installs from a Git subdirectory; its release `fabric_postgres-v0.4.0`
 requires fabric `>= 0.5.0 and < 0.6.0`, and its next release accepts
 Fabric 0.6.
@@ -236,10 +236,10 @@ flowchart LR
 - The application starts and stops HTTP clients, database pools, verifiers, and store supervision. Context and credentials stay live in the application and are not stored with runs.
 - Dropping a run handle does not cancel its run. `open` reads or commands a run; `recover` takes over work only when its prior runner is gone. On an unleased store, recover after the prior owner has stopped. A leased store checks ownership before takeover.
 - If a tool or operation may have reached an external system without a saved result, Fabric retains it as uncertain and blocks dependent progress until it is reconciled. Declare replay only when repeating that effect is safe.
-- The directory store supports process or VM restart on one host, but does not promise power-loss durability. Use an application backend for production durability; see the [PostgreSQL adapter](integrations/fabric_postgres/README.md).
+- The directory store supports process or VM restart on one host, but does not promise power-loss durability. Use an application backend for production durability; see the [PostgreSQL adapter](https://github.com/gleam-dream/fabric/blob/main/integrations/fabric_postgres/README.md).
 - Set execution bounds before starting work. Model/tool timeouts are not a whole-run
-  deadline; token and family budgets are opt-in. See [agent](src/fabric/agent.gleam)
-  and [graph](src/fabric/graph.gleam) for the available limits.
+  deadline; token and family budgets are opt-in. See [agent](https://github.com/gleam-dream/fabric/blob/main/src/fabric/agent.gleam)
+  and [graph](https://github.com/gleam-dream/fabric/blob/main/src/fabric/graph.gleam) for the available limits.
 
 ## Handing a call over to another system
 
@@ -349,12 +349,12 @@ be continued this way in 0.3.0: an application moving from parking to handing
 over tells those in-flight cases from its own record or starts a fresh run.
 
 A graph run takes no handover; it waits for the other system as a signal. See
-[`usage/handover`](examples/usage/src/usage/handover.gleam) and
-[ADR 0021](docs/adr/0021-hand-a-call-over-by-policy-and-end-the-run.md).
+[`usage/handover`](https://github.com/gleam-dream/fabric/blob/main/examples/usage/src/usage/handover.gleam) and
+[ADR 0021](https://github.com/gleam-dream/fabric/blob/main/docs/adr/0021-hand-a-call-over-by-policy-and-end-the-run.md).
 
 ## Examples
 
-The [usage examples](examples/usage/README.md) cover bounds, failure classification, waiting, budgets, reconciliation, and recovery. The [graph consumer](consumers/graph/README.md), [decision consumer](consumers/decision/README.md), [jobs consumer](consumers/jobs/README.md), and [writing consumer](consumers/writing/README.md) show larger applications. The [PostgreSQL adapter](integrations/fabric_postgres/README.md) documents database-backed leases and operations.
+The [usage examples](https://github.com/gleam-dream/fabric/blob/main/examples/usage/README.md) cover bounds, failure classification, waiting, budgets, reconciliation, and recovery. The [graph consumer](https://github.com/gleam-dream/fabric/blob/main/consumers/graph/README.md), [decision consumer](https://github.com/gleam-dream/fabric/blob/main/consumers/decision/README.md), [jobs consumer](https://github.com/gleam-dream/fabric/blob/main/consumers/jobs/README.md), and [writing consumer](https://github.com/gleam-dream/fabric/blob/main/consumers/writing/README.md) show larger applications. The [PostgreSQL adapter](https://github.com/gleam-dream/fabric/blob/main/integrations/fabric_postgres/README.md) documents database-backed leases and operations.
 
 Generation settings are fixed on a model instance and supplied again when rebuilding a runtime. Fabric retains its own messages, tools, answer decoding, and correlation. This checked excerpt assumes imports from `fabric/agent`, `fabric/llm`, `fabric/policy`, `llm_wire/generation`, and `json/blueprint/codec`; `client` and `config` come from your provider setup.
 
@@ -380,4 +380,4 @@ let assert Ok(agent) =
 
 <!-- prettier-ignore-end -->
 
-The [design](docs/design/design-layer.pdf) defines supported contracts, limits, and unbuilt capabilities. [BENCHMARKS.md](docs/BENCHMARKS.md) records historical live-provider measurements and their limits; Fabric has no runtime benchmark harness. See [AGENTS.md](AGENTS.md) for development and validation commands.
+The [design](https://github.com/gleam-dream/fabric/blob/main/docs/design/design-layer.pdf) defines supported contracts, limits, and unbuilt capabilities. [BENCHMARKS.md](https://github.com/gleam-dream/fabric/blob/main/docs/BENCHMARKS.md) records historical live-provider measurements and their limits; Fabric has no runtime benchmark harness. See [AGENTS.md](https://github.com/gleam-dream/fabric/blob/main/AGENTS.md) for development and validation commands.
