@@ -84,8 +84,11 @@ pub fn c_row3_restart_breaks_pause_and_repeats_effects_test() {
 pub fn c_row3_hold_breaks_resume_test() {
   let probe = probe.new()
   let wf = workflow(probe, HoldForApproval, 3)
-  let assert Ok(execution.Unresolved(step, variant_c.NeedsApproval([call]), _)) =
-    execution.run(wf, variant_c.begin("weather and transfer"), config())
+  let assert Ok(execution.Unresolved(
+    step,
+    saga.Returned(variant_c.NeedsApproval([call])),
+    _,
+  )) = execution.run(wf, variant_c.begin("weather and transfer"), config())
   let assert "tools-1" = step.name
   let assert "c2" = call.id
   let assert Ok(execution.Unresolved(..)) =
@@ -129,7 +132,7 @@ pub fn c_row6_uncertain_effect_breaks_continuation_test() {
   process.send(reply, True)
   let assert Ok(execution.Unresolved(
     step,
-    variant_c.UncertainEffect(call, _),
+    saga.Returned(variant_c.UncertainEffect(call, _)),
     _,
   )) = execution.await(run, timeout: duration.seconds(5))
   let assert "tools-1" = step.name
