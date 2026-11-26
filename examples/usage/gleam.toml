@@ -11,8 +11,8 @@ gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 fabric = { path = "../.." }
-json_blueprint = { git = "https://github.com/gleam-dream/json_blueprint.git", ref = "0cc991164771a85cf6496efe0d2413fd59b300cf" }
-sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "02d386e070c6a99900225c613e8d273f3bebe3c2" }
+json_blueprint = ">= 3.0.0 and < 4.0.0"
+sinal = ">= 0.2.0 and < 0.3.0"
 
 [dev-dependencies]
 simplifile = ">= 2.0.0 and < 3.0.0"

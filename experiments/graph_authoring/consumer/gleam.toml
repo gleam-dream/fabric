@@ -6,7 +6,7 @@ gleam = ">= 1.18.0"
 [dependencies]
 fabric_graph_authoring = { path = ".." }
 gleam_stdlib = ">= 0.70.0 and < 2.0.0"
-json_blueprint = { git = "https://github.com/gleam-dream/json_blueprint.git", ref = "0cc991164771a85cf6496efe0d2413fd59b300cf" }
+json_blueprint = ">= 3.0.0 and < 4.0.0"
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
