@@ -20,6 +20,8 @@ fabric_postgres = { git = "https://github.com/gleam-dream/fabric.git", ref = "fa
 
 Commit `gleam.toml` and `manifest.toml` to retain the resolved versions and Git commit.
 
+Release `fabric_postgres-v0.4.0` accepts only Fabric 0.5. Fabric 0.6 needs the adapter's next release; the [Fabric migration guide](https://github.com/gleam-dream/fabric/blob/main/docs/MIGRATION.md#the-postgresql-adapter-follows-later) says how to move both.
+
 The package targets Erlang, requires Gleam 1.18 or later, and is tested against
 PostgreSQL 16. Its pog 4.1 and pgo 0.20 ranges match Grind's shared-pool requirements.
 

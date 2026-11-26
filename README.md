@@ -1,5 +1,14 @@
 # Fabric
 
+> **Fabric 0.6.0 is a breaking release.** Read the [migration guide](https://github.com/gleam-dream/fabric/blob/main/docs/MIGRATION.md) before you upgrade from 0.5.
+>
+> - `agent.build_with` is renamed `agent.build`, and the deprecated `agent.build(spec)` is removed.
+> - A proof answers one request: `approvers.check` takes the request's reference, and a graph request is checked with `graph.check_approval`.
+> - Fabric depends on `llm_wire >= 0.3.0 and < 0.4.0`, `http_gun >= 0.4.0 and < 0.5.0`, `json_blueprint >= 3.0.0 and < 4.0.0` and `sinal >= 0.2.0 and < 0.3.0`.
+> - A graph runner retries a store that is briefly unavailable, as the agent runner does.
+> - `fabric_postgres-v0.4.0` accepts only Fabric 0.5; stay on 0.5 until the adapter's next release.
+> - Depend on `fabric >= 0.6.0 and < 0.7.0`.
+
 [![CI](https://github.com/gleam-dream/fabric/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gleam-dream/fabric/actions/workflows/ci.yml)
 [![fabric on Hex](https://img.shields.io/hexpm/v/fabric?label=Hex%3A%20fabric)](https://hex.pm/packages/fabric)
 [![Gleam](https://img.shields.io/badge/Gleam-FFAFF3?logo=gleam&logoColor=000000)](https://gleam.run/)
@@ -38,13 +47,14 @@ gleam add fabric
 ```
 
 Commit `gleam.toml` and `manifest.toml` to retain the resolved versions.
-The examples below use `agent.build` with a builder function, as released
-after Fabric 0.5.1. Fabric 0.5 names that function `agent.build_with`. On
-0.4.0, `agent.build` takes the spec itself; do not send its agent to other
-processes per operation.
+The examples below are for Fabric 0.6, where `agent.build` takes a builder
+function. Fabric 0.5 names that function `agent.build_with`; the
+[migration guide](https://github.com/gleam-dream/fabric/blob/main/docs/MIGRATION.md)
+lists every change from 0.5.
 The optional [PostgreSQL adapter](integrations/fabric_postgres/README.md)
 installs from a Git subdirectory; its release `fabric_postgres-v0.4.0`
-requires fabric `>= 0.5.0 and < 0.6.0`.
+requires fabric `>= 0.5.0 and < 0.6.0`, and its next release accepts
+Fabric 0.6.
 
 ## Start with an agent
 
@@ -111,11 +121,9 @@ The in-memory records disappear when the store stops. Services needing recovery 
 
 ## Codecs in tools and answers
 
-_`fabric.AgentUnbuildable` is available from Fabric 0.5.0; Fabric 0.5 names `agent.build` `agent.build_with`._
-
 Every run executes in its own runner process, with its tool bodies and model calls in tasks of that runner, and the BEAM copies a value whole into each process it reaches. Fabric therefore never sends an agent: `agent.build` keeps the function that makes the agent's spec, and a process that needs the agent builds it there. The caller builds it once per `fabric.start`, `open` or `recover`, and each runner once before it writes anything. A tool's task receives only that tool, with its codecs. What a run copies is its builder, its context and its record.
 
-Write tool and answer codecs by the [json_blueprint codec practice](https://github.com/gleam-dream/json_blueprint/blob/main/docs/CODEC-PRACTICE.md) (json_blueprint 2.2.0 or later). Fabric's part of it:
+Write tool and answer codecs by the [json_blueprint codec practice](https://github.com/gleam-dream/json_blueprint/blob/main/docs/CODEC-PRACTICE.md) (json_blueprint 3.0.0 or later). Fabric's part of it:
 
 - Give `agent.build` a builder that builds the same agent every time from small values that are the same for every run: an HTTP client, settings, ids loaded once. A builder that captures a built tool or codec brings the copy back. Another name or version is refused before anything is stored (`fabric.AgentUnbuildable`), but `open`, `recover` and the sweeper check only those, not what the builder captured.
 - Make subjects, names and tables outside the builder and capture them; one made inside is made again in every process.
